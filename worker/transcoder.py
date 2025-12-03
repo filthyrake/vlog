@@ -64,11 +64,14 @@ def get_output_dimensions(segment_path: Path) -> tuple:
     
     try:
         data = json.loads(result.stdout)
-        stream = data.get("streams", [{}])[0]
+        streams = data.get("streams", [])
+        if not streams:
+            return (0, 0)
+        stream = streams[0]
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
         return (width, height)
-    except (json.JSONDecodeError, ValueError, KeyError):
+    except (json.JSONDecodeError, ValueError, KeyError, IndexError):
         return (0, 0)
 
 
