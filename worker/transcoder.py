@@ -346,7 +346,9 @@ async def transcode_quality_with_progress(
 
     if process.returncode != 0:
         stderr = await process.stderr.read()
-        print(f"  Warning: Failed to transcode {name}: {stderr.decode()[:200]}")
+        error_msg = stderr.decode('utf-8', errors='ignore')
+        print(f"  ERROR: Failed to transcode {name}")
+        print(f"  Full error output: {error_msg}")
         return False
 
     return True
@@ -789,6 +791,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         await init_quality_progress(job_id, qualities)
 
         successful_qualities = []
+        failed_qualities = []
         total_qualities = len(qualities)
 
         for idx, quality in enumerate(qualities):
@@ -879,19 +882,31 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     })
                     print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
                 else:
-                    await update_quality_status(
-                        job_id, quality_name, "failed",
-                        "Transcoding process returned non-zero exit code"
-                    )
+                    error_msg = "Transcoding process returned non-zero exit code"
+                    await update_quality_status(job_id, quality_name, "failed", error_msg)
+                    failed_qualities.append({"name": quality_name, "error": error_msg})
                     print(f"    {quality_name}: Failed")
             except Exception as e:
-                await update_quality_status(job_id, quality_name, "failed", str(e))
+                error_msg = str(e)
+                await update_quality_status(job_id, quality_name, "failed", error_msg)
+                failed_qualities.append({"name": quality_name, "error": error_msg})
                 print(f"    {quality_name}: Error - {e}")
 
             await checkpoint(job_id)
 
+        # Report results
         if not successful_qualities:
-            raise RuntimeError("No quality variants were successfully transcoded")
+            # All quality variants failed
+            failed_summary = ", ".join([f"{q['name']}: {q['error'][:100]}" for q in failed_qualities])
+            error_message = f"All {len(failed_qualities)} quality variant(s) failed. Details: {failed_summary}"
+            print(f"  FAILURE: {error_message}")
+            raise RuntimeError(error_message)
+        elif failed_qualities:
+            # Partial success - some qualities failed
+            print(f"  WARNING: Partial transcoding success - {len(successful_qualities)}/{total_qualities} quality variants completed")
+            print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
+            for failed in failed_qualities:
+                print(f"    - {failed['name']}: {failed['error'][:200]}")
 
         # ----------------------------------------------------------------
         # Step 4: Generate master playlist
