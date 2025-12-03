@@ -35,7 +35,7 @@ shutdown_requested = False
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     global shutdown_requested
-    sig_name = signal.Signals(sig).name if hasattr(signal, 'Signals') else str(sig)
+    sig_name = signal.strsignal(sig) if hasattr(signal, 'strsignal') else str(sig)
     print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
     shutdown_requested = True
 
@@ -506,6 +506,13 @@ async def recover_interrupted_jobs():
 # Main Processing with Checkpoints
 # ============================================================================
 
+async def reset_video_to_pending(video_id: int):
+    """Reset a video status back to pending (for graceful shutdown/retry)."""
+    await database.execute(
+        videos.update().where(videos.c.id == video_id).values(status="pending")
+    )
+
+
 async def process_video_resumable(video_id: int, video_slug: str):
     """
     Process a video with checkpoint-based resumable transcoding.
@@ -564,9 +571,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Check for shutdown after probe
             if shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
-                await database.execute(
-                    videos.update().where(videos.c.id == video_id).values(status="pending")
-                )
+                await reset_video_to_pending(video_id)
                 return False
         else:
             # Load existing video info
@@ -601,9 +606,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Check for shutdown after thumbnail
             if shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
-                await database.execute(
-                    videos.update().where(videos.c.id == video_id).values(status="pending")
-                )
+                await reset_video_to_pending(video_id)
                 return False
 
         # ----------------------------------------------------------------
@@ -629,9 +632,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Check for shutdown before processing each quality
             if shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
-                await database.execute(
-                    videos.update().where(videos.c.id == video_id).values(status="pending")
-                )
+                await reset_video_to_pending(video_id)
                 return False
 
             # Check if already completed
@@ -890,15 +891,28 @@ async def worker_loop():
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt received.")
     finally:
-        # On shutdown, reset any videos stuck in "processing" state back to "pending"
-        print("Cleaning up: resetting processing videos to pending...")
+        # On shutdown, reset videos being processed by this worker instance to "pending"
+        print("Cleaning up: resetting this worker's processing videos to pending...")
         try:
-            await database.execute(
-                videos.update()
-                .where(videos.c.status == "processing")
-                .values(status="pending")
+            # Find videos being processed by this worker through transcoding_jobs
+            jobs_query = transcoding_jobs.select().where(
+                (transcoding_jobs.c.worker_id == WORKER_ID) &
+                (transcoding_jobs.c.completed_at == None)
             )
-            print("Cleanup complete.")
+            jobs = await database.fetch_all(jobs_query)
+            
+            # Reset those videos to pending
+            for job in jobs:
+                await database.execute(
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(status="pending")
+                )
+            
+            if jobs:
+                print(f"Reset {len(jobs)} video(s) to pending.")
+            else:
+                print("No videos to reset.")
         except Exception as e:
             print(f"Error during cleanup: {e}")
         
