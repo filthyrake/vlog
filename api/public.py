@@ -112,6 +112,7 @@ async def list_videos(
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .where(videos.c.status == VideoStatus.READY)
+        .where(videos.c.deleted_at == None)  # Exclude soft-deleted videos
         .order_by(videos.c.published_at.desc())
         .limit(limit)
         .offset(offset)
@@ -343,9 +344,13 @@ async def get_category(slug: str) -> CategoryResponse:
     if not row:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    # Get video count
+    # Get video count (exclude soft-deleted)
     count_query = sa.select(sa.func.count()).select_from(videos).where(
-        sa.and_(videos.c.category_id == row["id"], videos.c.status == VideoStatus.READY)
+        sa.and_(
+            videos.c.category_id == row["id"],
+            videos.c.status == VideoStatus.READY,
+            videos.c.deleted_at == None
+        )
     )
     count = await database.fetch_val(count_query)
 
