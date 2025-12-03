@@ -7,8 +7,48 @@ from config import DATABASE_PATH
 
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
+# Note: SQLite per-connection pragmas are configured in configure_sqlite_pragmas()
 database = Database(DATABASE_URL)
 metadata = sa.MetaData()
+
+
+async def configure_sqlite_pragmas():
+    """
+    Configure SQLite pragmas for optimal performance and data integrity.
+    Should be called after database.connect() in API startup.
+
+    Pragmas configured:
+    - journal_mode=WAL: Write-Ahead Logging for better concurrency (persistent)
+    - synchronous=NORMAL: Balance between safety and speed (WAL mode makes this safe)
+    - foreign_keys=ON: Enforce foreign key constraints
+    - cache_size=-64000: 64MB cache for better read performance
+    - busy_timeout=5000: Wait 5 seconds on locked database before failing
+
+    Note: journal_mode and busy_timeout work reliably. Other per-connection
+    pragmas may not persist across connection pool reuse in the async library.
+    """
+    # WAL mode is persistent - only needs to be set once per database file
+    await database.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout works with the connection pool
+    await database.execute("PRAGMA busy_timeout=5000")
+    # These are per-connection but we set them for the initial connection
+    await database.execute("PRAGMA synchronous=NORMAL")
+    await database.execute("PRAGMA foreign_keys=ON")
+    await database.execute("PRAGMA cache_size=-64000")
+
+
+def set_sqlite_pragmas_sync(dbapi_conn, connection_record):
+    """
+    Synchronous pragma configuration for SQLAlchemy engine connections.
+    Used by create_tables() and other sync operations.
+    """
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA cache_size=-64000")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
 
 categories = sa.Table(
     "categories",
@@ -144,8 +184,11 @@ transcriptions = sa.Table(
 
 
 def create_tables():
-    """Create all tables in the database."""
-    engine = sa.create_engine(DATABASE_URL.replace("sqlite:///", "sqlite:///"))
+    """Create all tables in the database with optimized SQLite settings."""
+    engine = sa.create_engine(DATABASE_URL)
+    # Configure pragmas on each connection
+    from sqlalchemy import event
+    event.listen(engine, "connect", set_sqlite_pragmas_sync)
     metadata.create_all(engine)
     engine.dispose()
 

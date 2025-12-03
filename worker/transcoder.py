@@ -27,7 +27,8 @@ from config import (
     RETRY_BACKOFF_BASE, CLEANUP_PARTIAL_ON_FAILURE, KEEP_COMPLETED_QUALITIES,
     WORKER_USE_FILESYSTEM_WATCHER, WORKER_FALLBACK_POLL_INTERVAL, WORKER_DEBOUNCE_DELAY,
 )
-from api.database import database, videos, video_qualities, transcoding_jobs, quality_progress
+from api.database import database, videos, video_qualities, transcoding_jobs, quality_progress, configure_sqlite_pragmas
+from api.enums import VideoStatus, QualityStatus, TranscodingStep
 
 # Conditional import for filesystem watching
 if WORKER_USE_FILESYSTEM_WATCHER:
@@ -538,7 +539,7 @@ async def init_quality_progress(job_id: int, qualities: List[dict]):
                 quality_progress.insert().values(
                     job_id=job_id,
                     quality=quality["name"],
-                    status="pending",
+                    status=QualityStatus.PENDING,
                     progress_percent=0,
                 )
             )
@@ -566,12 +567,12 @@ async def update_quality_status(
         "status": status,
     }
 
-    if status == "in_progress":
+    if status == QualityStatus.IN_PROGRESS:
         values["started_at"] = datetime.utcnow()
-    elif status == "completed":
+    elif status == QualityStatus.COMPLETED:
         values["completed_at"] = datetime.utcnow()
         values["progress_percent"] = 100
-    elif status == "failed" and error_message:
+    elif status == QualityStatus.FAILED and error_message:
         values["error_message"] = error_message[:500]
 
     await database.execute(
@@ -601,7 +602,7 @@ async def get_completed_qualities(job_id: int) -> List[str]:
     rows = await database.fetch_all(
         quality_progress.select().where(
             (quality_progress.c.job_id == job_id) &
-            (quality_progress.c.status == "completed")
+            (quality_progress.c.status == QualityStatus.COMPLETED)
         )
     )
     return [row["quality"] for row in rows]
@@ -645,7 +646,7 @@ async def recover_interrupted_jobs():
             await mark_job_failed(job["id"], "Max retry attempts exceeded")
             await database.execute(
                 videos.update().where(videos.c.id == job["video_id"]).values(
-                    status="failed",
+                    status=VideoStatus.FAILED,
                     error_message="Max retry attempts exceeded"
                 )
             )
@@ -657,7 +658,7 @@ async def recover_interrupted_jobs():
             # Also reset the video status to pending so it gets picked up
             await database.execute(
                 videos.update().where(videos.c.id == job["video_id"]).values(
-                    status="pending"
+                    status=VideoStatus.PENDING
                 )
             )
 
@@ -683,7 +684,7 @@ async def recover_interrupted_jobs():
 async def reset_video_to_pending(video_id: int):
     """Reset a video status back to pending (for graceful shutdown/retry)."""
     await database.execute(
-        videos.update().where(videos.c.id == video_id).values(status="pending")
+        videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PENDING)
     )
 
 
@@ -710,7 +711,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
     if not source_file:
         await database.execute(
             videos.update().where(videos.c.id == video_id).values(
-                status="failed",
+                status=VideoStatus.FAILED,
                 error_message="Source file not found"
             )
         )
@@ -724,8 +725,8 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # ----------------------------------------------------------------
         # Step 1: Probe (skip if already done)
         # ----------------------------------------------------------------
-        if job["current_step"] in [None, "probe"]:
-            await update_job_step(job_id, "probe")
+        if job["current_step"] in [None, TranscodingStep.PROBE]:
+            await update_job_step(job_id, TranscodingStep.PROBE)
             print("  Step 1: Probing video info...")
 
             info = get_video_info(source_file)
@@ -734,7 +735,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Update video metadata
             await database.execute(
                 videos.update().where(videos.c.id == video_id).values(
-                    status="processing",
+                    status=VideoStatus.PROCESSING,
                     duration=info["duration"],
                     source_width=info["width"],
                     source_height=info["height"],
@@ -764,8 +765,8 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # ----------------------------------------------------------------
         # Step 2: Thumbnail (skip if exists)
         # ----------------------------------------------------------------
-        if job["current_step"] in [None, "probe", "thumbnail"]:
-            await update_job_step(job_id, "thumbnail")
+        if job["current_step"] in [None, TranscodingStep.PROBE, TranscodingStep.THUMBNAIL]:
+            await update_job_step(job_id, TranscodingStep.THUMBNAIL)
             thumb_path = output_dir / "thumbnail.jpg"
 
             if not thumb_path.exists():
@@ -786,7 +787,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # ----------------------------------------------------------------
         # Step 3: Transcode each quality
         # ----------------------------------------------------------------
-        await update_job_step(job_id, "transcode")
+        await update_job_step(job_id, TranscodingStep.TRANSCODE)
 
         qualities = get_applicable_qualities(info["height"])
         if not qualities:
@@ -812,7 +813,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
             # Check if already completed
             status = await get_quality_status(job_id, quality_name)
-            if status and status["status"] == "completed":
+            if status and status["status"] == QualityStatus.COMPLETED:
                 print(f"    {quality_name}: Already completed, skipping...")
                 # Get actual dimensions from existing segment
                 first_segment = output_dir / f"{quality_name}_0000.ts"
@@ -835,7 +836,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             playlist_path = output_dir / f"{quality_name}.m3u8"
             if playlist_path.exists():
                 print(f"    {quality_name}: Found existing playlist, marking complete...")
-                await update_quality_status(job_id, quality_name, "completed")
+                await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                 # Get actual dimensions from existing segment
                 first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
@@ -855,7 +856,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
             # Transcode this quality
             print(f"    {quality_name}: Transcoding...")
-            await update_quality_status(job_id, quality_name, "in_progress")
+            await update_quality_status(job_id, quality_name, QualityStatus.IN_PROGRESS)
 
             async def progress_cb(progress: int):
                 await update_quality_progress(job_id, quality_name, progress)
@@ -871,7 +872,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 )
 
                 if success:
-                    await update_quality_status(job_id, quality_name, "completed")
+                    await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                     # Get actual dimensions from transcoded segment
                     first_segment = output_dir / f"{quality_name}_0000.ts"
                     if first_segment.exists():
@@ -890,12 +891,12 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
                 else:
                     error_msg = error_detail or "Transcoding process returned non-zero exit code"
-                    await update_quality_status(job_id, quality_name, "failed", error_msg)
+                    await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
                     failed_qualities.append({"name": quality_name, "error": error_msg})
                     print(f"    {quality_name}: Failed")
             except Exception as e:
                 error_msg = str(e)
-                await update_quality_status(job_id, quality_name, "failed", error_msg)
+                await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
                 failed_qualities.append({"name": quality_name, "error": error_msg})
                 print(f"    {quality_name}: Error - {e}")
 
@@ -918,7 +919,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # ----------------------------------------------------------------
         # Step 4: Generate master playlist
         # ----------------------------------------------------------------
-        await update_job_step(job_id, "master_playlist")
+        await update_job_step(job_id, TranscodingStep.MASTER_PLAYLIST)
         print("  Step 4: Generating master playlist...")
         generate_master_playlist(output_dir, successful_qualities)
         await checkpoint(job_id)
@@ -926,7 +927,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # ----------------------------------------------------------------
         # Step 5: Finalize
         # ----------------------------------------------------------------
-        await update_job_step(job_id, "finalize")
+        await update_job_step(job_id, TranscodingStep.FINALIZE)
         print("  Step 5: Finalizing...")
 
         # Save quality info to database
@@ -953,7 +954,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # Mark video as ready
         await database.execute(
             videos.update().where(videos.c.id == video_id).values(
-                status="ready",
+                status=VideoStatus.READY,
                 published_at=datetime.utcnow(),
             )
         )
@@ -979,7 +980,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Will be retried on next worker restart or stale job check
             await database.execute(
                 videos.update().where(videos.c.id == video_id).values(
-                    status="failed",
+                    status=VideoStatus.FAILED,
                     error_message=f"Attempt {job['attempt_number']} failed: {str(e)[:400]}",
                 )
             )
@@ -987,7 +988,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Final failure
             await database.execute(
                 videos.update().where(videos.c.id == video_id).values(
-                    status="failed",
+                    status=VideoStatus.FAILED,
                     error_message=str(e)[:500],
                 )
             )
@@ -1024,7 +1025,7 @@ async def check_stale_jobs():
             await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)")
             await database.execute(
                 videos.update().where(videos.c.id == job["video_id"]).values(
-                    status="failed",
+                    status=VideoStatus.FAILED,
                     error_message="Max retry attempts exceeded"
                 )
             )
@@ -1033,7 +1034,7 @@ async def check_stale_jobs():
             await reset_job_for_retry(job["id"])
             await database.execute(
                 videos.update().where(videos.c.id == job["video_id"]).values(
-                    status="pending"
+                    status=VideoStatus.PENDING
                 )
             )
 
@@ -1053,6 +1054,7 @@ async def worker_loop():
     signal.signal(signal.SIGINT, signal_handler)
 
     await database.connect()
+    await configure_sqlite_pragmas()
     print(f"Transcoding worker started (ID: {WORKER_ID[:8]})")
 
     # Initialize the upload event for signaling between filesystem watcher and main loop
@@ -1087,7 +1089,7 @@ async def worker_loop():
     try:
         while not shutdown_requested:
             # Find pending videos
-            query = videos.select().where(videos.c.status == "pending").order_by(videos.c.created_at)
+            query = videos.select().where(videos.c.status == VideoStatus.PENDING).order_by(videos.c.created_at)
             pending = await database.fetch_all(query)
 
             for video in pending:
@@ -1148,11 +1150,11 @@ async def worker_loop():
                 video = await database.fetch_one(
                     videos.select().where(videos.c.id == job["video_id"])
                 )
-                if video and video["status"] == "processing":
+                if video and video["status"] == VideoStatus.PROCESSING:
                     await database.execute(
                         videos.update()
                         .where(videos.c.id == job["video_id"])
-                        .values(status="pending")
+                        .values(status=VideoStatus.PENDING)
                     )
 
             if jobs:

@@ -17,7 +17,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, UPLOADS_DIR, ADMIN_PORT
-from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, transcoding_jobs, quality_progress, create_tables
+from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, transcoding_jobs, quality_progress, create_tables, configure_sqlite_pragmas
+from api.enums import VideoStatus, TranscriptionStatus
 from api.schemas import (
     VideoResponse, VideoListResponse, CategoryResponse, CategoryCreate,
     VideoQualityResponse, AnalyticsOverview, VideoAnalyticsSummary,
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
     create_tables()
     await database.connect()
+    await configure_sqlite_pragmas()
     yield
     await database.disconnect()
 
@@ -177,7 +179,7 @@ async def list_all_videos(
             status=row["status"],
             created_at=row["created_at"],
             published_at=row["published_at"],
-            thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == "ready" else None,
+            thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
         )
         for row in rows
     ]
@@ -227,8 +229,8 @@ async def get_video(video_id: int) -> VideoResponse:
         error_message=row["error_message"],
         created_at=row["created_at"],
         published_at=row["published_at"],
-        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == "ready" else None,
-        stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == "ready" else None,
+        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
+        stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
         qualities=qualities,
     )
 
@@ -262,7 +264,7 @@ async def upload_video(
         slug=slug,
         description=description,
         category_id=category_id if category_id else None,
-        status="pending",
+        status=VideoStatus.PENDING,
         created_at=datetime.utcnow(),
     )
     video_id = await database.execute(query)
@@ -362,7 +364,7 @@ async def retry_video(video_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    if row["status"] != "failed":
+    if row["status"] != VideoStatus.FAILED:
         raise HTTPException(status_code=400, detail="Video is not in failed state")
 
     # Check if source file exists
@@ -378,7 +380,7 @@ async def retry_video(video_id: int):
     # Reset status to pending
     await database.execute(
         videos.update().where(videos.c.id == video_id).values(
-            status="pending",
+            status=VideoStatus.PENDING,
             error_message=None,
         )
     )
@@ -395,17 +397,17 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # If video is ready or failed, return simple status
-    if video["status"] in ["ready", "failed"]:
+    if video["status"] in [VideoStatus.READY, VideoStatus.FAILED]:
         return TranscodingProgressResponse(
             status=video["status"],
-            progress_percent=100 if video["status"] == "ready" else 0,
-            last_error=video["error_message"] if video["status"] == "failed" else None,
+            progress_percent=100 if video["status"] == VideoStatus.READY else 0,
+            last_error=video["error_message"] if video["status"] == VideoStatus.FAILED else None,
         )
 
     # If pending, return basic pending status
-    if video["status"] == "pending":
+    if video["status"] == VideoStatus.PENDING:
         return TranscodingProgressResponse(
-            status="pending",
+            status=VideoStatus.PENDING,
             progress_percent=0,
         )
 
@@ -462,10 +464,10 @@ async def get_video_transcript(video_id: int) -> TranscriptionResponse:
     )
 
     if not transcription:
-        return TranscriptionResponse(status="none")
+        return TranscriptionResponse(status=TranscriptionStatus.NONE)
 
     vtt_url = None
-    if transcription["status"] == "completed" and transcription["vtt_path"]:
+    if transcription["status"] == TranscriptionStatus.COMPLETED and transcription["vtt_path"]:
         vtt_url = f"/videos/{video['slug']}/captions.vtt"
 
     return TranscriptionResponse(
@@ -489,7 +491,7 @@ async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    if video["status"] != "ready":
+    if video["status"] != VideoStatus.READY:
         raise HTTPException(status_code=400, detail="Video must be ready before transcription")
 
     # Check if transcription already exists
@@ -498,7 +500,7 @@ async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None
     )
 
     if existing:
-        if existing["status"] == "processing":
+        if existing["status"] == TranscriptionStatus.PROCESSING:
             raise HTTPException(status_code=400, detail="Transcription already in progress")
 
         # Reset to pending for re-transcription
@@ -506,7 +508,7 @@ async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None
             transcriptions.update()
             .where(transcriptions.c.video_id == video_id)
             .values(
-                status="pending",
+                status=TranscriptionStatus.PENDING,
                 language=data.language if data else None,
                 started_at=None,
                 completed_at=None,
@@ -523,7 +525,7 @@ async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None
     await database.execute(
         transcriptions.insert().values(
             video_id=video_id,
-            status="pending",
+            status=TranscriptionStatus.PENDING,
             language=data.language if data else None,
         )
     )
@@ -723,7 +725,7 @@ async def analytics_videos(
 
     # Get total count
     count_result = await database.fetch_val(
-        sa.select(sa.func.count()).select_from(videos).where(videos.c.status == "ready")
+        sa.select(sa.func.count()).select_from(videos).where(videos.c.status == VideoStatus.READY)
     )
 
     video_stats = []
