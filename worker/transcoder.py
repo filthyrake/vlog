@@ -903,7 +903,7 @@ async def worker_loop():
             # Find videos being processed by this worker through transcoding_jobs
             jobs_query = transcoding_jobs.select().where(
                 (transcoding_jobs.c.worker_id == WORKER_ID) &
-                (transcoding_jobs.c.completed_at == None)
+                (transcoding_jobs.c.completed_at.is_(None))
             )
             jobs = await database.fetch_all(jobs_query)
             
