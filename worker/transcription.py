@@ -25,7 +25,8 @@ from config import (
     TRANSCRIPTION_TIMEOUT,
     AUDIO_EXTRACTION_TIMEOUT,
 )
-from api.database import database, videos, transcriptions
+from api.database import database, videos, transcriptions, configure_sqlite_pragmas
+from api.enums import VideoStatus, TranscriptionStatus
 
 
 def format_timestamp(seconds: float) -> str:
@@ -132,7 +133,7 @@ async def get_or_create_transcription(video_id: int) -> dict:
     result = await database.execute(
         transcriptions.insert().values(
             video_id=video_id,
-            status="pending",
+            status=TranscriptionStatus.PENDING,
         )
     )
 
@@ -313,7 +314,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         # Update status to processing
         await update_transcription_status(
             transcription_id,
-            "processing",
+            TranscriptionStatus.PROCESSING,
             started_at=datetime.utcnow(),
         )
 
@@ -368,7 +369,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         # Update database
         await update_transcription_status(
             transcription_id,
-            "completed",
+            TranscriptionStatus.COMPLETED,
             completed_at=datetime.utcnow(),
             duration_seconds=duration,
             transcript_text=result["text"],
@@ -384,7 +385,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         print(f"  Error: {error_msg}")
         await update_transcription_status(
             transcription_id,
-            "failed",
+            TranscriptionStatus.FAILED,
             error_message=error_msg,
         )
     except Exception as e:
@@ -392,7 +393,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         print(f"  Error: {error_msg}")
         await update_transcription_status(
             transcription_id,
-            "failed",
+            TranscriptionStatus.FAILED,
             error_message=error_msg,
         )
     finally:
@@ -411,6 +412,7 @@ async def worker_loop():
         return
 
     await database.connect()
+    await configure_sqlite_pragmas()
     print("Transcription worker started")
     print(f"Model: {WHISPER_MODEL}, Compute type: {TRANSCRIPTION_COMPUTE_TYPE}")
     print("Watching for videos needing transcription...")

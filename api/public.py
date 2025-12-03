@@ -14,7 +14,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, PUBLIC_PORT
-from api.database import database, videos, categories, video_qualities, playback_sessions, transcoding_jobs, quality_progress, transcriptions
+from api.database import database, videos, categories, video_qualities, playback_sessions, transcoding_jobs, quality_progress, transcriptions, configure_sqlite_pragmas
+from api.enums import VideoStatus, TranscriptionStatus
 from api.schemas import (
     VideoResponse, VideoListResponse, CategoryResponse, VideoQualityResponse,
     PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd, PlaybackSessionResponse,
@@ -29,6 +30,7 @@ from datetime import datetime
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
     await database.connect()
+    await configure_sqlite_pragmas()
     yield
     await database.disconnect()
 
@@ -109,7 +111,7 @@ async def list_videos(
             categories.c.name.label("category_name"),
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
-        .where(videos.c.status == "ready")
+        .where(videos.c.status == VideoStatus.READY)
         .order_by(videos.c.published_at.desc())
         .limit(limit)
         .offset(offset)
@@ -187,7 +189,7 @@ async def get_video(slug: str) -> VideoResponse:
 
     if transcription_row:
         transcription_status = transcription_row["status"]
-        if transcription_row["status"] == "completed" and transcription_row["vtt_path"]:
+        if transcription_row["status"] == TranscriptionStatus.COMPLETED and transcription_row["vtt_path"]:
             captions_url = f"/videos/{row['slug']}/captions.vtt"
 
     return VideoResponse(
@@ -205,8 +207,8 @@ async def get_video(slug: str) -> VideoResponse:
         error_message=row["error_message"],
         created_at=row["created_at"],
         published_at=row["published_at"],
-        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == "ready" else None,
-        stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == "ready" else None,
+        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
+        stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
         captions_url=captions_url,
         transcription_status=transcription_status,
         qualities=qualities,
@@ -224,17 +226,17 @@ async def get_video_progress(slug: str) -> TranscodingProgressResponse:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # If video is ready or failed, return simple status
-    if video["status"] in ["ready", "failed"]:
+    if video["status"] in [VideoStatus.READY, VideoStatus.FAILED]:
         return TranscodingProgressResponse(
             status=video["status"],
-            progress_percent=100 if video["status"] == "ready" else 0,
-            last_error=video["error_message"] if video["status"] == "failed" else None,
+            progress_percent=100 if video["status"] == VideoStatus.READY else 0,
+            last_error=video["error_message"] if video["status"] == VideoStatus.FAILED else None,
         )
 
     # If pending, return basic pending status
-    if video["status"] == "pending":
+    if video["status"] == VideoStatus.PENDING:
         return TranscodingProgressResponse(
-            status="pending",
+            status=VideoStatus.PENDING,
             progress_percent=0,
         )
 
@@ -288,10 +290,10 @@ async def get_transcript(slug: str) -> TranscriptionResponse:
     transcription = await database.fetch_one(transcription_query)
 
     if not transcription:
-        return TranscriptionResponse(status="none")
+        return TranscriptionResponse(status=TranscriptionStatus.NONE)
 
     vtt_url = None
-    if transcription["status"] == "completed" and transcription["vtt_path"]:
+    if transcription["status"] == TranscriptionStatus.COMPLETED and transcription["vtt_path"]:
         vtt_url = f"/videos/{slug}/captions.vtt"
 
     return TranscriptionResponse(
@@ -343,7 +345,7 @@ async def get_category(slug: str) -> CategoryResponse:
 
     # Get video count
     count_query = sa.select(sa.func.count()).select_from(videos).where(
-        sa.and_(videos.c.category_id == row["id"], videos.c.status == "ready")
+        sa.and_(videos.c.category_id == row["id"], videos.c.status == VideoStatus.READY)
     )
     count = await database.fetch_val(count_query)
 
