@@ -37,6 +37,7 @@ class VideoResponse(BaseModel):
     description: str
     category_id: Optional[int]
     category_name: Optional[str] = None
+    category_slug: Optional[str] = None
     duration: float
     source_width: int
     source_height: int
