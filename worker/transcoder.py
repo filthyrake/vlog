@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Callable, Tuple, Union
+from typing import Optional, List, Callable, Tuple, Union, Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -63,12 +63,12 @@ def signal_handler(sig, frame):
     shutdown_requested = True
 
 
-def validate_duration(duration: Union[int, float, None]) -> float:
+def validate_duration(duration: Any) -> float:
     """
     Validate and normalize video duration from ffprobe.
     
     Args:
-        duration: Duration value from ffprobe (may be None, string, int, float, etc.)
+        duration: Duration value from ffprobe (can be None, string, int, float, etc.)
     
     Returns:
         Validated duration as float
@@ -84,7 +84,7 @@ def validate_duration(duration: Union[int, float, None]) -> float:
         try:
             duration = float(duration)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid duration type: {type(duration).__name__}") from e
+            raise ValueError(f"Could not convert duration to float: {duration}") from e
     
     if math.isnan(duration) or math.isinf(duration):
         raise ValueError(f"Invalid duration value: {duration}")
