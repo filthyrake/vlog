@@ -10,3 +10,6 @@ httpx>=0.25.0
 
 # Transcription
 faster-whisper>=1.0.0
+
+# Filesystem watching (event-driven transcoding)
+watchdog>=3.0.0

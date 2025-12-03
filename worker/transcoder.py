@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Video transcoding worker with checkpoint-based resumable transcoding.
-Monitors the database for pending videos and transcodes them to HLS.
+Monitors the uploads directory for new videos and transcodes them to HLS.
+Uses filesystem watching (inotify) for event-driven processing instead of polling.
 Supports crash recovery and per-quality progress tracking.
 """
 import asyncio
@@ -11,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -22,14 +24,31 @@ from config import (
     VIDEOS_DIR, UPLOADS_DIR, QUALITY_PRESETS, HLS_SEGMENT_DURATION,
     CHECKPOINT_INTERVAL, JOB_STALE_TIMEOUT, MAX_RETRY_ATTEMPTS,
     RETRY_BACKOFF_BASE, CLEANUP_PARTIAL_ON_FAILURE, KEEP_COMPLETED_QUALITIES,
+    WORKER_USE_FILESYSTEM_WATCHER, WORKER_FALLBACK_POLL_INTERVAL, WORKER_DEBOUNCE_DELAY,
 )
 from api.database import database, videos, video_qualities, transcoding_jobs, quality_progress
+
+# Conditional import for filesystem watching
+if WORKER_USE_FILESYSTEM_WATCHER:
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent
+        WATCHDOG_AVAILABLE = True
+    except ImportError:
+        print("Warning: watchdog not installed. Falling back to polling mode.")
+        print("Install with: pip install watchdog")
+        WATCHDOG_AVAILABLE = False
+else:
+    WATCHDOG_AVAILABLE = False
 
 # Generate unique worker ID for this instance
 WORKER_ID = str(uuid.uuid4())
 
 # Global shutdown flag for graceful shutdown
 shutdown_requested = False
+
+# Global event for signaling new uploads (used by filesystem watcher)
+new_upload_event = None  # Will be initialized as asyncio.Event in worker_loop
 
 
 def signal_handler(sig, frame):
@@ -38,6 +57,108 @@ def signal_handler(sig, frame):
     sig_name = signal.strsignal(sig) if hasattr(signal, 'strsignal') else str(sig)
     print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
     shutdown_requested = True
+
+
+# ============================================================================
+# Filesystem Watcher (Event-Driven Processing)
+# ============================================================================
+
+class UploadEventHandler(FileSystemEventHandler):
+    """
+    Handles filesystem events in the uploads directory.
+    Sets an asyncio event when new video files are detected.
+    """
+
+    VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.webm', '.mov', '.avi'}
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, event: asyncio.Event):
+        super().__init__()
+        self.loop = loop
+        self.event = event
+        self._debounce_timer = None
+        self._lock = threading.Lock()
+
+    def _is_video_file(self, path: str) -> bool:
+        """Check if the file is a video file we care about."""
+        return Path(path).suffix.lower() in self.VIDEO_EXTENSIONS
+
+    def _trigger_event(self):
+        """Thread-safe way to set the asyncio event from the watchdog thread."""
+        def set_event():
+            if not self.event.is_set():
+                self.event.set()
+        self.loop.call_soon_threadsafe(set_event)
+
+    def _schedule_trigger(self):
+        """
+        Debounce file events to avoid triggering multiple times for a single upload.
+        Large files may generate multiple write events during upload.
+        """
+        with self._lock:
+            if self._debounce_timer is not None:
+                self._debounce_timer.cancel()
+            self._debounce_timer = threading.Timer(WORKER_DEBOUNCE_DELAY, self._trigger_event)
+            self._debounce_timer.start()
+
+    def on_created(self, event):
+        """Called when a file is created in the uploads directory."""
+        if not event.is_directory and self._is_video_file(event.src_path):
+            print(f"  [watcher] New file detected: {Path(event.src_path).name}")
+            self._schedule_trigger()
+
+    def on_modified(self, event):
+        """Called when a file is modified (handles uploads that create then write)."""
+        if not event.is_directory and self._is_video_file(event.src_path):
+            self._schedule_trigger()
+
+    def on_moved(self, event):
+        """Called when a file is moved into the uploads directory."""
+        if not event.is_directory and self._is_video_file(event.dest_path):
+            print(f"  [watcher] File moved in: {Path(event.dest_path).name}")
+            self._schedule_trigger()
+
+    def cleanup(self):
+        """Cancel any pending debounce timer."""
+        with self._lock:
+            if self._debounce_timer is not None:
+                self._debounce_timer.cancel()
+                self._debounce_timer = None
+
+
+def start_filesystem_watcher(loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> Optional[Observer]:
+    """
+    Start the filesystem watcher for the uploads directory.
+    Returns the Observer instance or None if watchdog is not available.
+    """
+    if not WATCHDOG_AVAILABLE:
+        return None
+
+    try:
+        handler = UploadEventHandler(loop, event)
+        observer = Observer()
+        observer.schedule(handler, str(UPLOADS_DIR), recursive=False)
+        observer.start()
+        print(f"  Filesystem watcher started on: {UPLOADS_DIR}")
+        return observer
+    except Exception as e:
+        print(f"  Warning: Failed to start filesystem watcher: {e}")
+        print(f"  Falling back to polling mode.")
+        return None
+
+
+def stop_filesystem_watcher(observer: Optional[Observer]):
+    """Stop the filesystem watcher gracefully."""
+    if observer is not None:
+        try:
+            observer.stop()
+            observer.join(timeout=5)
+            # Clean up the event handler
+            for handler_list in observer._handlers.values():
+                for handler in handler_list:
+                    if hasattr(handler, 'cleanup'):
+                        handler.cleanup()
+        except Exception as e:
+            print(f"  Warning: Error stopping filesystem watcher: {e}")
 
 
 def get_video_info(input_path: Path) -> dict:
@@ -852,13 +973,40 @@ async def check_stale_jobs():
 
 
 async def worker_loop():
-    """Main worker loop - check for pending videos and process them."""
+    """
+    Main worker loop - process pending videos using event-driven architecture.
+
+    Uses filesystem watching (inotify via watchdog) to detect new uploads immediately,
+    with a fallback poll interval for edge cases. This eliminates the constant 5-second
+    polling that wasted resources and added latency.
+    """
+    global new_upload_event
+
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     await database.connect()
     print(f"Transcoding worker started (ID: {WORKER_ID[:8]})")
+
+    # Initialize the upload event for signaling between filesystem watcher and main loop
+    loop = asyncio.get_running_loop()
+    new_upload_event = asyncio.Event()
+
+    # Start filesystem watcher if available
+    observer = None
+    if WORKER_USE_FILESYSTEM_WATCHER and WATCHDOG_AVAILABLE:
+        observer = start_filesystem_watcher(loop, new_upload_event)
+        if observer:
+            print(f"  Mode: Event-driven (inotify) with {WORKER_FALLBACK_POLL_INTERVAL}s fallback poll")
+        else:
+            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watcher failed)")
+    else:
+        if not WORKER_USE_FILESYSTEM_WATCHER:
+            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watcher disabled)")
+        else:
+            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watchdog not available)")
+
     print("Watching for new videos...")
 
     # Recover any interrupted jobs from previous crashes
@@ -866,6 +1014,9 @@ async def worker_loop():
 
     last_stale_check = datetime.utcnow()
     stale_check_interval = 300  # Check every 5 minutes
+
+    # Determine wait behavior based on watcher availability
+    use_event_driven = observer is not None
 
     try:
         while not shutdown_requested:
@@ -890,13 +1041,32 @@ async def worker_loop():
                 await check_stale_jobs()
                 last_stale_check = datetime.utcnow()
 
-            # Wait before checking again
+            # Wait for new uploads or fallback timeout
             if not shutdown_requested:
-                await asyncio.sleep(5)
+                if use_event_driven:
+                    # Event-driven: wait for filesystem event OR fallback timeout
+                    try:
+                        await asyncio.wait_for(
+                            new_upload_event.wait(),
+                            timeout=WORKER_FALLBACK_POLL_INTERVAL
+                        )
+                        # Event was set - new file detected
+                        new_upload_event.clear()
+                    except asyncio.TimeoutError:
+                        # Timeout - fallback poll, this is expected
+                        pass
+                else:
+                    # Polling mode: just wait the fallback interval
+                    await asyncio.sleep(WORKER_FALLBACK_POLL_INTERVAL)
 
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt received.")
     finally:
+        # Stop filesystem watcher
+        if observer is not None:
+            print("Stopping filesystem watcher...")
+            stop_filesystem_watcher(observer)
+
         # On shutdown, reset videos being processed by this worker instance to "pending"
         print("Cleaning up: resetting this worker's processing videos to pending...")
         try:
@@ -906,7 +1076,7 @@ async def worker_loop():
                 (transcoding_jobs.c.completed_at.is_(None))
             )
             jobs = await database.fetch_all(jobs_query)
-            
+
             # Reset those videos to pending
             for job in jobs:
                 video = await database.fetch_one(
@@ -918,14 +1088,14 @@ async def worker_loop():
                         .where(videos.c.id == job["video_id"])
                         .values(status="pending")
                     )
-            
+
             if jobs:
                 print(f"Reset {len(jobs)} video(s) to pending.")
             else:
                 print("No videos to reset.")
         except Exception as e:
             print(f"Error during cleanup: {e}")
-        
+
         await database.disconnect()
         print("Worker stopped gracefully.")
 
