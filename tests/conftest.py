@@ -19,8 +19,6 @@ _test_temp_dir = tempfile.mkdtemp()
 os.environ["VLOG_TEST_MODE"] = "1"
 
 # Import config and override paths for testing
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from api.database import (  # noqa: E402
     metadata, categories, videos, video_qualities, playback_sessions
 )

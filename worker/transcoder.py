@@ -19,8 +19,6 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Callable, Tuple, Any
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from config import (
     VIDEOS_DIR, UPLOADS_DIR, QUALITY_PRESETS, HLS_SEGMENT_DURATION,
     CHECKPOINT_INTERVAL, JOB_STALE_TIMEOUT, MAX_RETRY_ATTEMPTS,
