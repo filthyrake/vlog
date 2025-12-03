@@ -8,8 +8,7 @@ Type=simple
 User=damen
 Group=damen
 WorkingDirectory=/home/damen/vlog
-Environment=PYTHONPATH=/home/damen/vlog/venv/lib/python3.9/site-packages
-ExecStart=/usr/bin/python3 worker/transcoder.py
+ExecStart=/home/damen/vlog/venv/bin/python worker/transcoder.py
 Restart=always
 RestartSec=10
 
