@@ -1,0 +1,18 @@
+[Unit]
+Description=VLog Transcription Worker
+After=network.target mnt-nas.mount
+Wants=mnt-nas.mount
+
+[Service]
+Type=simple
+User=damen
+Group=damen
+WorkingDirectory=/home/damen/vlog
+Environment=PYTHONPATH=/home/damen/vlog/venv/lib/python3.9/site-packages
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 worker/transcription.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
