@@ -1,8 +1,7 @@
 import sqlalchemy as sa
 from databases import Database
 from datetime import datetime, timezone
-import sys
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+
 from config import DATABASE_PATH
 
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
