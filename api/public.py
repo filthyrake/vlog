@@ -150,6 +150,7 @@ async def get_video(slug: str) -> VideoResponse:
         sa.select(
             videos,
             categories.c.name.label("category_name"),
+            categories.c.slug.label("category_slug"),
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .where(videos.c.slug == slug)
@@ -180,6 +181,7 @@ async def get_video(slug: str) -> VideoResponse:
         description=row["description"],
         category_id=row["category_id"],
         category_name=row["category_name"],
+        category_slug=row["category_slug"],
         duration=row["duration"],
         source_width=row["source_width"],
         source_height=row["source_height"],
