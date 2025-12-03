@@ -33,8 +33,8 @@ cd vlog
 python3 -m venv venv
 source venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install package in development mode
+pip install -e .
 
 # Initialize database
 python api/database.py
@@ -59,44 +59,48 @@ Access:
 ## CLI Usage
 
 ```bash
-# Add CLI to path (optional)
-export PATH="$PATH:/home/damen/vlog/cli"
+# The package installs a 'vlog' command automatically
+# Make sure your venv is activated
 
 # Upload a video
-./cli/vlog upload video.mp4 -t "My Video Title" -c "Category Name"
+vlog upload video.mp4 -t "My Video Title" -c "Category Name"
 
 # List videos
-./cli/vlog list
-./cli/vlog list -s processing  # Filter by status
+vlog list
+vlog list -s processing  # Filter by status
 
 # Manage categories
-./cli/vlog categories                          # List all
-./cli/vlog categories --create "Tutorials"     # Create new
+vlog categories                          # List all
+vlog categories --create "Tutorials"     # Create new
 
 # Download from YouTube
-./cli/vlog download "https://youtube.com/watch?v=..." -c "Category"
+vlog download "https://youtube.com/watch?v=..." -c "Category"
 
 # Delete a video
-./cli/vlog delete 123
+vlog delete 123
 ```
 
 ## Directory Structure
 
 ```
 vlog/
+├── pyproject.toml        # Package configuration
 ├── api/                  # FastAPI backend
+│   ├── __init__.py
 │   ├── public.py         # Public API (port 9000)
 │   ├── admin.py          # Admin API (port 9001)
 │   ├── database.py       # SQLAlchemy schema
 │   └── schemas.py        # Pydantic models
 ├── worker/
+│   ├── __init__.py
 │   ├── transcoder.py     # HLS transcoding worker
 │   └── transcription.py  # Whisper transcription worker
 ├── web/
 │   ├── public/           # Public-facing frontend
 │   └── admin/            # Admin interface
 ├── cli/
-│   └── vlog              # Command-line tool
+│   ├── __init__.py
+│   └── main.py           # Command-line tool
 ├── docs/                 # Documentation
 ├── config.py             # Central configuration
 ├── vlog.db               # SQLite database (local)
