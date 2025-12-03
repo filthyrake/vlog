@@ -4,7 +4,10 @@ Video transcription worker using faster-whisper.
 Monitors the database for videos needing transcription and generates WebVTT captions.
 """
 import asyncio
+import os
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from datetime import datetime
@@ -14,10 +17,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import (
     VIDEOS_DIR,
+    UPLOADS_DIR,
     WHISPER_MODEL,
     TRANSCRIPTION_ENABLED,
     TRANSCRIPTION_LANGUAGE,
     TRANSCRIPTION_COMPUTE_TYPE,
+    TRANSCRIPTION_TIMEOUT,
+    AUDIO_EXTRACTION_TIMEOUT,
 )
 from api.database import database, videos, transcriptions
 
@@ -164,41 +170,128 @@ async def get_videos_needing_transcription() -> List[dict]:
     return [dict(row) for row in rows]
 
 
-async def find_audio_source(video_slug: str) -> Optional[Path]:
+def _extract_quality(filename_stem: str) -> int:
+    """
+    Extract quality number from filename like '1080p' or '720p'.
+    Returns 0 if no valid quality found.
+    
+    Examples:
+        '1080p' -> 1080
+        '720p' -> 720
+        'master' -> 0
+        'backup' -> 0 (ends with 'p' but not a quality)
+    """
+    try:
+        # Only parse if ends with 'p' and the rest is all digits
+        if filename_stem.endswith('p') and len(filename_stem) > 1:
+            quality_str = filename_stem[:-1]
+            if quality_str.isdigit():
+                return int(quality_str)
+        return 0
+    except (ValueError, AttributeError):
+        return 0
+
+
+def find_audio_source(video_id: int, video_slug: str) -> Path:
     """
     Find the best audio source for transcription.
-    Prefers the highest quality HLS file or original upload.
+    
+    Priority:
+    1. Original upload file (best quality, most reliable)
+    2. Highest quality HLS playlist (fallback)
+    
+    Args:
+        video_id: Database ID of the video
+        video_slug: URL slug of the video
+        
+    Returns:
+        Path to audio source file
+        
+    Raises:
+        ValueError: If no audio source found
     """
+    # Try 1: Find original upload file (preferred)
+    # The transcoder saves uploads as {video_id}{extension}
+    for ext in ['.mp4', '.mkv', '.webm', '.mov', '.avi']:
+        source = UPLOADS_DIR / f"{video_id}{ext}"
+        if source.exists() and source.stat().st_size > 0:
+            return source
+    
+    # Try 2: Fall back to highest quality HLS playlist
     video_dir = VIDEOS_DIR / video_slug
-
+    
     if not video_dir.exists():
-        return None
+        raise ValueError(f"Video directory not found: {video_dir}")
+    
+    # Find all quality playlists (e.g., "1080p.m3u8", "720p.m3u8")
+    playlists = sorted(
+        video_dir.glob("*p.m3u8"),
+        key=lambda p: _extract_quality(p.stem),
+        reverse=True  # Highest quality first
+    )
+    
+    if not playlists:
+        raise ValueError(
+            f"No audio source found for video {video_slug} (ID: {video_id}). "
+            f"Upload file missing and no HLS playlists available."
+        )
+    
+    # Validate that the best playlist is readable
+    best_playlist = playlists[0]
+    if not best_playlist.exists():
+        raise ValueError(f"Best quality playlist disappeared: {best_playlist}")
+    if best_playlist.stat().st_size == 0:
+        raise ValueError(f"Best quality playlist is empty: {best_playlist}")
+    
+    return best_playlist
 
-    # Try to find the highest quality m3u8 playlist and use its first segment
-    # Or use a full concatenated version if available
-    # For simplicity, we'll look for the highest quality TS segment pattern
 
-    # Find all quality playlists
-    playlists = list(video_dir.glob("*p.m3u8"))
-    if playlists:
-        # Sort by quality (parse the number from filename like "1080p.m3u8")
-        def get_quality(p):
-            try:
-                return int(p.stem.replace("p", ""))
-            except ValueError:
-                return 0
-
-        playlists.sort(key=get_quality, reverse=True)
-
-        # Use the highest quality playlist
-        best_playlist = playlists[0]
-
-        # For faster-whisper, we can point directly to the m3u8 playlist
-        # or extract audio from a few segments. Let's use the first approach
-        # since ffmpeg (used internally) can handle HLS playlists
-        return best_playlist
-
-    return None
+def extract_audio_to_wav(source_path: Path, output_path: Path) -> None:
+    """
+    Extract audio from video/HLS source to WAV file using ffmpeg.
+    This provides more reliable input for Whisper than streaming from HLS.
+    
+    Args:
+        source_path: Source video or HLS playlist
+        output_path: Output WAV file path
+        
+    Raises:
+        RuntimeError: If extraction fails
+    """
+    # Validate paths exist/are writable
+    if not source_path.exists():
+        raise RuntimeError(f"Source file does not exist: {source_path}")
+    
+    # Convert paths to strings (subprocess accepts str or Path)
+    cmd = [
+        'ffmpeg',
+        '-i', str(source_path),
+        '-vn',  # No video
+        '-acodec', 'pcm_s16le',  # PCM 16-bit WAV
+        '-ar', '16000',  # 16kHz sample rate (Whisper's preferred rate)
+        '-ac', '1',  # Mono
+        '-y',  # Overwrite output file
+        str(output_path)
+    ]
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=AUDIO_EXTRACTION_TIMEOUT
+        )
+        
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg audio extraction failed: {result.stderr}"
+            )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"Audio extraction timed out after {AUDIO_EXTRACTION_TIMEOUT} seconds"
+        )
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg not found - required for audio extraction")
 
 
 async def process_transcription(video: dict, worker: TranscriptionWorker):
@@ -214,6 +307,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
     transcription_id = transcription["id"]
 
     start_time = time.time()
+    temp_wav = None
 
     try:
         # Update status to processing
@@ -224,20 +318,39 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         )
 
         # Find audio source
-        audio_source = await find_audio_source(slug)
-        if not audio_source:
-            raise RuntimeError(f"No audio source found for video {slug}")
-
+        audio_source = find_audio_source(video_id, slug)
         print(f"  Using audio source: {audio_source}")
 
-        # Run transcription (this is CPU-intensive and blocking)
-        # We run it in the default executor to not block the event loop
+        # Extract audio to temporary WAV file for reliable processing
+        # This avoids potential issues with streaming HLS or complex video formats
+        # Use mkstemp for explicit control over file creation and cleanup
+        fd, temp_wav_path = tempfile.mkstemp(suffix='.wav', prefix='vlog_transcribe_')
+        temp_wav = Path(temp_wav_path)  # Assign before close
+        os.close(fd)  # Close file descriptor, we'll use the path
+        
+        print(f"  Extracting audio to WAV...")
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
+        await loop.run_in_executor(
             None,
-            worker.transcribe,
+            extract_audio_to_wav,
             audio_source,
-            None  # language
+            temp_wav
+        )
+        
+        if not temp_wav.exists() or temp_wav.stat().st_size == 0:
+            raise RuntimeError("Audio extraction produced empty file")
+
+        # Run transcription with timeout (this is CPU-intensive and blocking)
+        # We run it in the default executor to not block the event loop
+        print(f"  Running Whisper transcription...")
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                worker.transcribe,
+                temp_wav,
+                None  # language
+            ),
+            timeout=TRANSCRIPTION_TIMEOUT
         )
 
         # Generate WebVTT
@@ -266,6 +379,14 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
 
         print(f"  Completed in {duration:.1f}s ({word_count} words, language: {result['language']})")
 
+    except asyncio.TimeoutError:
+        error_msg = f"Transcription timed out after {TRANSCRIPTION_TIMEOUT} seconds"
+        print(f"  Error: {error_msg}")
+        await update_transcription_status(
+            transcription_id,
+            "failed",
+            error_message=error_msg,
+        )
     except Exception as e:
         error_msg = str(e)[:500]
         print(f"  Error: {error_msg}")
@@ -274,6 +395,13 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
             "failed",
             error_message=error_msg,
         )
+    finally:
+        # Clean up temporary WAV file
+        if temp_wav and temp_wav.exists():
+            try:
+                temp_wav.unlink()
+            except Exception as e:
+                print(f"  Warning: Failed to delete temp file {temp_wav}: {e}")
 
 
 async def worker_loop():
