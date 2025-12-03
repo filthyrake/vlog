@@ -51,6 +51,9 @@ shutdown_requested = False
 # Global event for signaling new uploads (used by filesystem watcher)
 new_upload_event = None  # Will be initialized as asyncio.Event in worker_loop
 
+# Maximum video duration allowed (1 week in seconds)
+MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
+
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -85,10 +88,9 @@ def validate_duration(duration: Optional[float]) -> float:
     if duration <= 0:
         raise ValueError(f"Invalid duration: {duration} seconds (must be positive)")
     
-    # Maximum duration: 1 week (604800 seconds)
-    # This prevents potential memory issues and catches corrupted metadata
-    if duration > 604800:
-        raise ValueError(f"Duration too long: {duration} seconds (max 1 week)")
+    # Prevent potential memory issues and catch corrupted metadata
+    if duration > MAX_DURATION_SECONDS:
+        raise ValueError(f"Duration too long: {duration} seconds (max {MAX_DURATION_SECONDS})")
     
     return float(duration)
 
@@ -220,7 +222,10 @@ def get_video_info(input_path: Path) -> dict:
     # Get and validate duration
     raw_duration = data.get("format", {}).get("duration")
     if raw_duration is not None:
-        raw_duration = float(raw_duration)
+        try:
+            raw_duration = float(raw_duration)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid duration format from ffprobe: {raw_duration}") from e
     duration = validate_duration(raw_duration)
 
     return {
