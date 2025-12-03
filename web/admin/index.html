@@ -220,6 +220,11 @@
                                             class="text-blue-400 hover:text-blue-300 text-sm"
                                         >Edit</button>
                                         <button
+                                            x-show="video.status !== 'processing'"
+                                            @click="openReuploadModal(video)"
+                                            class="text-purple-400 hover:text-purple-300 text-sm"
+                                        >Re-upload</button>
+                                        <button
                                             x-show="video.status === 'failed'"
                                             @click="retryVideo(video.id)"
                                             class="text-yellow-400 hover:text-yellow-300 text-sm"
@@ -442,6 +447,64 @@
         </div>
     </div>
 
+    <!-- Re-upload Video Modal -->
+    <div x-show="reuploadModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="reuploadModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
+            <h3 class="text-xl font-semibold mb-2">Re-upload Video</h3>
+            <p class="text-dark-400 text-sm mb-4">
+                Replace the video file for "<span x-text="reuploadTitle" class="text-white"></span>".
+                This will delete all transcoded files and re-process the video.
+                Metadata (title, description, category, dates) will be preserved.
+            </p>
+            <form @submit.prevent="reuploadVideo" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium mb-2">New Video File</label>
+                    <input
+                        type="file"
+                        accept="video/*"
+                        @change="reuploadFile = $event.target.files[0]"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500"
+                        required
+                    >
+                </div>
+
+                <!-- Re-upload Progress -->
+                <div x-show="reuploadProgress >= 0" class="space-y-2">
+                    <div class="flex justify-between text-sm">
+                        <span>Uploading...</span>
+                        <span x-text="reuploadProgress + '%'"></span>
+                    </div>
+                    <div class="w-full bg-dark-700 rounded-full h-2">
+                        <div
+                            class="bg-purple-500 h-2 rounded-full transition-all"
+                            :style="'width: ' + reuploadProgress + '%'"
+                        ></div>
+                    </div>
+                </div>
+
+                <div x-show="reuploadMessage" :class="reuploadError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="reuploadMessage"></div>
+
+                <div class="flex gap-3 pt-2">
+                    <button
+                        type="button"
+                        @click="reuploadModal = false"
+                        :disabled="reuploading"
+                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
+                    >Cancel</button>
+                    <button
+                        type="submit"
+                        :disabled="reuploading"
+                        class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                    >
+                        <span x-show="!reuploading">Re-upload</span>
+                        <span x-show="reuploading">Uploading...</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         function admin() {
             return {
@@ -470,6 +533,16 @@
                 editDescription: '',
                 editCategory: 0,
                 editPublishedAt: '',
+
+                // Re-upload modal
+                reuploadModal: false,
+                reuploadVideoId: null,
+                reuploadTitle: '',
+                reuploadFile: null,
+                reuploading: false,
+                reuploadProgress: -1,
+                reuploadMessage: '',
+                reuploadError: false,
 
                 // Analytics
                 analyticsOverview: {},
@@ -644,6 +717,79 @@
                         await this.loadVideos();
                     } catch (e) {
                         alert('Failed to retry: ' + e.message);
+                    }
+                },
+
+                openReuploadModal(video) {
+                    this.reuploadVideoId = video.id;
+                    this.reuploadTitle = video.title;
+                    this.reuploadFile = null;
+                    this.reuploading = false;
+                    this.reuploadProgress = -1;
+                    this.reuploadMessage = '';
+                    this.reuploadError = false;
+                    this.reuploadModal = true;
+                },
+
+                async reuploadVideo() {
+                    if (!this.reuploadFile) return;
+
+                    this.reuploading = true;
+                    this.reuploadProgress = 0;
+                    this.reuploadMessage = '';
+                    this.reuploadError = false;
+
+                    const formData = new FormData();
+                    formData.append('file', this.reuploadFile);
+
+                    try {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', `/api/videos/${this.reuploadVideoId}/re-upload`, true);
+
+                        xhr.upload.onprogress = (e) => {
+                            if (e.lengthComputable) {
+                                this.reuploadProgress = Math.round((e.loaded / e.total) * 100);
+                            }
+                        };
+
+                        xhr.onload = () => {
+                            if (xhr.status === 200) {
+                                this.reuploadMessage = 'Video uploaded successfully! Processing will begin shortly.';
+                                this.reuploadError = false;
+                                this.reuploadFile = null;
+                                this.loadVideos();
+                                // Close modal after a short delay so user sees success message
+                                setTimeout(() => {
+                                    this.reuploadModal = false;
+                                }, 1500);
+                            } else {
+                                let errorMsg = 'Re-upload failed';
+                                try {
+                                    const data = JSON.parse(xhr.responseText);
+                                    errorMsg = data.detail || errorMsg;
+                                } catch (e) {
+                                    errorMsg = xhr.responseText || errorMsg;
+                                }
+                                this.reuploadMessage = errorMsg;
+                                this.reuploadError = true;
+                            }
+                            this.reuploading = false;
+                            this.reuploadProgress = -1;
+                        };
+
+                        xhr.onerror = () => {
+                            this.reuploadMessage = 'Re-upload failed. Please try again.';
+                            this.reuploadError = true;
+                            this.reuploading = false;
+                            this.reuploadProgress = -1;
+                        };
+
+                        xhr.send(formData);
+                    } catch (e) {
+                        this.reuploadMessage = 'Re-upload failed: ' + e.message;
+                        this.reuploadError = true;
+                        this.reuploading = false;
+                        this.reuploadProgress = -1;
                     }
                 },
 
