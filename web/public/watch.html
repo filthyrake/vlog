@@ -104,7 +104,7 @@
                 <!-- Category -->
                 <div x-show="video?.category_name" class="mb-4">
                     <a
-                        :href="'/category/' + (video?.category_id || '')"
+                        :href="'/category/' + (video?.category_slug || '')"
                         class="inline-block bg-blue-600/20 text-blue-400 px-3 py-1 rounded-full text-sm hover:bg-blue-600/30"
                         x-text="video?.category_name"
                     ></a>
