@@ -17,13 +17,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, UPLOADS_DIR, ADMIN_PORT
-from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, create_tables
+from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, transcoding_jobs, quality_progress, create_tables
 from api.schemas import (
     VideoResponse, VideoListResponse, CategoryResponse, CategoryCreate,
     VideoQualityResponse, AnalyticsOverview, VideoAnalyticsSummary,
     VideoAnalyticsListResponse, VideoAnalyticsDetail, QualityBreakdown,
     DailyViews, TrendsResponse, TrendDataPoint,
     TranscriptionResponse, TranscriptionTrigger, TranscriptionUpdate,
+    TranscodingProgressResponse, QualityProgressResponse,
 )
 import sqlalchemy as sa
 from datetime import timedelta
@@ -290,6 +291,7 @@ async def update_video(
     title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     category_id: Optional[int] = Form(None),
+    published_at: Optional[str] = Form(None),
 ):
     """Update video metadata."""
     update_data = {}
@@ -299,6 +301,15 @@ async def update_video(
         update_data["description"] = description
     if category_id is not None:
         update_data["category_id"] = category_id if category_id > 0 else None
+    if published_at is not None:
+        if published_at == "":
+            update_data["published_at"] = None
+        else:
+            try:
+                # Parse ISO format datetime (e.g., "2024-01-15T14:30")
+                update_data["published_at"] = datetime.fromisoformat(published_at)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM)")
 
     if update_data:
         await database.execute(
@@ -373,6 +384,66 @@ async def retry_video(video_id: int):
     )
 
     return {"status": "ok", "message": "Video queued for retry"}
+
+
+@app.get("/api/videos/{video_id}/progress")
+async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
+    """Get transcoding progress for a video."""
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # If video is ready or failed, return simple status
+    if video["status"] in ["ready", "failed"]:
+        return TranscodingProgressResponse(
+            status=video["status"],
+            progress_percent=100 if video["status"] == "ready" else 0,
+            last_error=video["error_message"] if video["status"] == "failed" else None,
+        )
+
+    # If pending, return basic pending status
+    if video["status"] == "pending":
+        return TranscodingProgressResponse(
+            status="pending",
+            progress_percent=0,
+        )
+
+    # Get job info for processing videos
+    job = await database.fetch_one(
+        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+    )
+
+    if not job:
+        return TranscodingProgressResponse(
+            status=video["status"],
+            progress_percent=0,
+        )
+
+    # Get quality progress
+    quality_rows = await database.fetch_all(
+        quality_progress.select().where(quality_progress.c.job_id == job["id"])
+    )
+
+    qualities = [
+        QualityProgressResponse(
+            name=q["quality"],
+            status=q["status"],
+            progress=q["progress_percent"] or 0,
+        )
+        for q in quality_rows
+    ]
+
+    return TranscodingProgressResponse(
+        status=video["status"],
+        current_step=job["current_step"],
+        progress_percent=job["progress_percent"] or 0,
+        qualities=qualities,
+        attempt=job["attempt_number"] or 1,
+        max_attempts=job["max_attempts"] or 3,
+        started_at=job["started_at"],
+        last_error=job["last_error"],
+    )
 
 
 # ============ Transcription ============

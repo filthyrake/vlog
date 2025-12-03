@@ -159,16 +159,58 @@
                                 </td>
                                 <td class="px-4 py-3 text-dark-400" x-text="video.category_name || '-'"></td>
                                 <td class="px-4 py-3">
-                                    <span
-                                        :class="{
-                                            'bg-green-500/20 text-green-400': video.status === 'ready',
-                                            'bg-yellow-500/20 text-yellow-400': video.status === 'processing',
-                                            'bg-blue-500/20 text-blue-400': video.status === 'pending',
-                                            'bg-red-500/20 text-red-400': video.status === 'failed'
-                                        }"
-                                        class="px-2 py-1 rounded text-sm"
-                                        x-text="video.status"
-                                    ></span>
+                                    <div class="space-y-1">
+                                        <span
+                                            :class="{
+                                                'bg-green-500/20 text-green-400': video.status === 'ready',
+                                                'bg-yellow-500/20 text-yellow-400': video.status === 'processing',
+                                                'bg-blue-500/20 text-blue-400': video.status === 'pending',
+                                                'bg-red-500/20 text-red-400': video.status === 'failed'
+                                            }"
+                                            class="px-2 py-1 rounded text-sm"
+                                            x-text="video.status"
+                                        ></span>
+                                        <!-- Progress details for processing videos -->
+                                        <template x-if="video.status === 'processing' && progressData[video.id]">
+                                            <div class="text-xs space-y-1 mt-2">
+                                                <div class="flex items-center gap-2">
+                                                    <div class="flex-1 bg-dark-700 rounded-full h-1.5">
+                                                        <div
+                                                            class="bg-yellow-500 h-1.5 rounded-full transition-all"
+                                                            :style="'width: ' + (progressData[video.id]?.progress_percent || 0) + '%'"
+                                                        ></div>
+                                                    </div>
+                                                    <span class="text-dark-400 w-8" x-text="(progressData[video.id]?.progress_percent || 0) + '%'"></span>
+                                                </div>
+                                                <div class="text-dark-500" x-text="progressData[video.id]?.current_step || ''"></div>
+                                                <template x-if="progressData[video.id]?.qualities?.length">
+                                                    <div class="flex flex-wrap gap-1 mt-1">
+                                                        <template x-for="q in progressData[video.id].qualities" :key="q.name">
+                                                            <span
+                                                                :class="{
+                                                                    'bg-green-500/20 text-green-400': q.status === 'completed',
+                                                                    'bg-yellow-500/20 text-yellow-400': q.status === 'in_progress',
+                                                                    'bg-dark-700 text-dark-400': q.status === 'pending'
+                                                                }"
+                                                                class="px-1.5 py-0.5 rounded text-xs"
+                                                            >
+                                                                <span x-text="q.name"></span>
+                                                                <span x-show="q.status === 'in_progress'" x-text="' ' + q.progress + '%'"></span>
+                                                            </span>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </template>
+                                        <!-- Pending indicator -->
+                                        <template x-if="video.status === 'pending'">
+                                            <div class="text-xs text-dark-500 mt-1">Waiting for worker...</div>
+                                        </template>
+                                        <!-- Error message for failed -->
+                                        <template x-if="video.status === 'failed' && progressData[video.id]?.last_error">
+                                            <div class="text-xs text-red-400 mt-1 max-w-xs truncate" x-text="progressData[video.id].last_error"></div>
+                                        </template>
+                                    </div>
                                 </td>
                                 <td class="px-4 py-3 text-dark-400" x-text="formatDuration(video.duration)"></td>
                                 <td class="px-4 py-3">
@@ -376,6 +418,15 @@
                         </template>
                     </select>
                 </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Publish Date</label>
+                    <input
+                        type="datetime-local"
+                        x-model="editPublishedAt"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                    >
+                    <p class="text-xs text-gray-500 mt-1">Leave empty to use current date when video becomes ready</p>
+                </div>
                 <div class="flex gap-3 pt-2">
                     <button
                         type="button"
@@ -418,11 +469,15 @@
                 editTitle: '',
                 editDescription: '',
                 editCategory: 0,
+                editPublishedAt: '',
 
                 // Analytics
                 analyticsOverview: {},
                 analyticsVideos: [],
                 analyticsPeriod: 'all',
+
+                // Transcode progress
+                progressData: {},
 
                 async init() {
                     await Promise.all([
@@ -430,17 +485,40 @@
                         this.loadCategories()
                     ]);
 
-                    // Auto-refresh videos every 10 seconds
+                    // Auto-refresh videos every 10 seconds, progress every 3 seconds
                     setInterval(() => this.loadVideos(), 10000);
+                    setInterval(() => this.loadProgressForActiveVideos(), 3000);
                 },
 
                 async loadVideos() {
                     try {
                         const res = await fetch('/api/videos');
                         this.videos = await res.json();
+                        // Load progress for active videos after loading video list
+                        await this.loadProgressForActiveVideos();
                     } catch (e) {
                         console.error('Failed to load videos:', e);
                     }
+                },
+
+                async loadProgressForActiveVideos() {
+                    // Get videos that are processing or failed
+                    const activeVideos = this.videos.filter(v =>
+                        v.status === 'processing' || v.status === 'pending' || v.status === 'failed'
+                    );
+
+                    // Fetch progress for each
+                    await Promise.all(activeVideos.map(async (video) => {
+                        try {
+                            const res = await fetch(`/api/videos/${video.id}/progress`);
+                            if (res.ok) {
+                                const data = await res.json();
+                                this.progressData[video.id] = data;
+                            }
+                        } catch (e) {
+                            console.error(`Failed to load progress for video ${video.id}:`, e);
+                        }
+                    }));
                 },
 
                 async loadCategories() {
@@ -574,6 +652,12 @@
                     this.editTitle = video.title;
                     this.editDescription = video.description || '';
                     this.editCategory = video.category_id || 0;
+                    // Convert ISO datetime to datetime-local format (YYYY-MM-DDTHH:MM)
+                    if (video.published_at) {
+                        this.editPublishedAt = video.published_at.slice(0, 16);
+                    } else {
+                        this.editPublishedAt = '';
+                    }
                     this.editModal = true;
                 },
 
@@ -585,6 +669,7 @@
                         formData.append('title', this.editTitle);
                         formData.append('description', this.editDescription);
                         formData.append('category_id', this.editCategory);
+                        formData.append('published_at', this.editPublishedAt);
 
                         const res = await fetch(`/api/videos/${this.editVideoId}`, {
                             method: 'PUT',
