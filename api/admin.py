@@ -4,19 +4,28 @@ Runs on port 9001 (not exposed externally).
 """
 from typing import List, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from slugify import slugify
+from sqlite3 import IntegrityError
 import shutil
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, UPLOADS_DIR, ARCHIVE_DIR, ADMIN_PORT
+
+# Allowed video file extensions
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+
+# Input length limits
+MAX_TITLE_LENGTH = 255
+MAX_DESCRIPTION_LENGTH = 5000
 from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, transcoding_jobs, quality_progress, create_tables, configure_sqlite_pragmas
 from api.enums import VideoStatus, TranscriptionStatus
 from api.schemas import (
@@ -43,6 +52,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="VLog Admin", description="Video management API", lifespan=lifespan)
 
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Prevent clickjacking
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        # Prevent MIME-type sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # XSS protection for legacy browsers
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        # Control referrer information
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Permissions policy (disable unnecessary browser features)
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 # Allow CORS for admin UI (same machine, different port)
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +94,37 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="stati
 async def admin_home():
     """Serve the admin page."""
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    checks = {
+        "database": False,
+        "storage": False,
+    }
+
+    # Check database connectivity
+    try:
+        await database.fetch_one("SELECT 1")
+        checks["database"] = True
+    except Exception:
+        pass
+
+    # Check storage accessibility (NAS mount)
+    try:
+        checks["storage"] = VIDEOS_DIR.exists() and UPLOADS_DIR.exists()
+    except Exception:
+        pass
+
+    healthy = all(checks.values())
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "healthy" if healthy else "unhealthy",
+            "checks": checks,
+        }
+    )
 
 
 # ============ Categories ============
@@ -109,7 +170,7 @@ async def create_category(data: CategoryCreate) -> CategoryResponse:
         name=data.name,
         slug=slug,
         description=data.description,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     category_id = await database.execute(query)
 
@@ -118,7 +179,7 @@ async def create_category(data: CategoryCreate) -> CategoryResponse:
         name=data.name,
         slug=slug,
         description=data.description,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         video_count=0,
     )
 
@@ -244,34 +305,59 @@ async def upload_video(
     category_id: Optional[int] = Form(None),
 ):
     """Upload a new video for processing."""
-    # Generate slug
-    base_slug = slugify(title)
-    slug = base_slug
-
-    # Ensure unique slug
-    counter = 1
-    while True:
-        existing = await database.fetch_one(
-            videos.select().where(videos.c.slug == slug)
+    # Validate file extension
+    file_ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if not file_ext:
+        file_ext = ".mp4"  # Default extension
+    if file_ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
         )
-        if not existing:
-            break
-        slug = f"{base_slug}-{counter}"
-        counter += 1
 
-    # Create video record
-    query = videos.insert().values(
-        title=title,
-        slug=slug,
-        description=description,
-        category_id=category_id if category_id else None,
-        status=VideoStatus.PENDING,
-        created_at=datetime.utcnow(),
-    )
-    video_id = await database.execute(query)
+    # Validate input lengths
+    if not title or len(title.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Title is required")
+    if len(title) > MAX_TITLE_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Title must be {MAX_TITLE_LENGTH} characters or less")
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Description must be {MAX_DESCRIPTION_LENGTH} characters or less")
 
-    # Save uploaded file
-    file_ext = Path(file.filename).suffix.lower() or ".mp4"
+    # Generate slug with race condition handling
+    base_slug = slugify(title.strip())
+    slug = base_slug
+    counter = 0
+    max_attempts = 100  # Prevent infinite loop
+
+    # Try to insert with retry on slug collision
+    video_id = None
+    while video_id is None and counter < max_attempts:
+        try:
+            query = videos.insert().values(
+                title=title,
+                slug=slug,
+                description=description,
+                category_id=category_id if category_id else None,
+                status=VideoStatus.PENDING,
+                created_at=datetime.now(timezone.utc),
+            )
+            video_id = await database.execute(query)
+        except IntegrityError:
+            # Slug collision - try with incremented counter
+            counter += 1
+            slug = f"{base_slug}-{counter}"
+        except Exception as e:
+            # Check if it's a wrapped IntegrityError (databases library wraps exceptions)
+            if "UNIQUE constraint failed" in str(e) and "slug" in str(e):
+                counter += 1
+                slug = f"{base_slug}-{counter}"
+            else:
+                raise
+
+    if video_id is None:
+        raise HTTPException(status_code=500, detail="Failed to generate unique slug")
+
+    # Save uploaded file (file_ext already validated above)
     upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
 
     with open(upload_path, "wb") as f:
@@ -410,7 +496,7 @@ async def delete_video(video_id: int, permanent: bool = False):
         # Mark as deleted in database
         await database.execute(
             videos.update().where(videos.c.id == video_id).values(
-                deleted_at=datetime.utcnow()
+                deleted_at=datetime.now(timezone.utc)
             )
         )
 
@@ -520,6 +606,16 @@ async def re_upload_video(
     - Save the new file and queue for reprocessing
     - Preserve: title, description, category, published_at, created_at, slug
     """
+    # Validate file extension
+    file_ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if not file_ext:
+        file_ext = ".mp4"
+    if file_ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
+        )
+
     # Get video info
     row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not row:
@@ -576,9 +672,8 @@ async def re_upload_video(
         video_qualities.delete().where(video_qualities.c.video_id == video_id)
     )
 
-    # === UPLOAD NEW FILE ===
+    # === UPLOAD NEW FILE === (file_ext already validated above)
 
-    file_ext = Path(file.filename).suffix.lower() or ".mp4"
     upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
 
     with open(upload_path, "wb") as f:
@@ -813,7 +908,7 @@ async def delete_transcript(video_id: int):
 @app.get("/api/analytics/overview")
 async def analytics_overview() -> AnalyticsOverview:
     """Get global analytics overview."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - timedelta(days=7)
     month_start = today_start - timedelta(days=30)
@@ -892,7 +987,7 @@ async def analytics_videos(
     period: str = "all",
 ) -> VideoAnalyticsListResponse:
     """Get per-video analytics."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     period_filter = None

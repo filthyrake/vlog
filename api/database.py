@@ -1,6 +1,6 @@
 import sqlalchemy as sa
 from databases import Database
-from datetime import datetime
+from datetime import datetime, timezone
 import sys
 sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
 from config import DATABASE_PATH
@@ -57,7 +57,7 @@ categories = sa.Table(
     sa.Column("name", sa.String(100), nullable=False),
     sa.Column("slug", sa.String(100), unique=True, nullable=False),
     sa.Column("description", sa.Text, default=""),
-    sa.Column("created_at", sa.DateTime, default=datetime.utcnow),
+    sa.Column("created_at", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
 )
 
 videos = sa.Table(
@@ -73,7 +73,7 @@ videos = sa.Table(
     sa.Column("source_height", sa.Integer, default=0),
     sa.Column("status", sa.String(20), default="pending"),  # pending, processing, ready, failed
     sa.Column("error_message", sa.Text, nullable=True),
-    sa.Column("created_at", sa.DateTime, default=datetime.utcnow),
+    sa.Column("created_at", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
     sa.Column("published_at", sa.DateTime, nullable=True),
     sa.Column("deleted_at", sa.DateTime, nullable=True),  # Soft-delete timestamp (NULL = not deleted)
     sa.Index("ix_videos_status", "status"),
@@ -101,8 +101,8 @@ viewers = sa.Table(
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("session_id", sa.String(64), unique=True, nullable=False),
-    sa.Column("first_seen", sa.DateTime, default=datetime.utcnow),
-    sa.Column("last_seen", sa.DateTime, default=datetime.utcnow),
+    sa.Column("first_seen", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
+    sa.Column("last_seen", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
 )
 
 # Analytics: playback sessions
@@ -113,7 +113,7 @@ playback_sessions = sa.Table(
     sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False),
     sa.Column("viewer_id", sa.Integer, sa.ForeignKey("viewers.id", ondelete="SET NULL"), nullable=True),
     sa.Column("session_token", sa.String(64), nullable=False),
-    sa.Column("started_at", sa.DateTime, default=datetime.utcnow),
+    sa.Column("started_at", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
     sa.Column("ended_at", sa.DateTime, nullable=True),
     sa.Column("duration_watched", sa.Float, default=0),  # seconds actually watched
     sa.Column("max_position", sa.Float, default=0),  # furthest point reached

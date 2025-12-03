@@ -4,16 +4,17 @@ Runs on port 9000.
 """
 from typing import List, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Response, Query
+from fastapi import FastAPI, HTTPException, Response, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import VIDEOS_DIR, PUBLIC_PORT
+from config import VIDEOS_DIR, UPLOADS_DIR, PUBLIC_PORT
 from api.database import database, videos, categories, video_qualities, playback_sessions, transcoding_jobs, quality_progress, transcriptions, configure_sqlite_pragmas
 from api.enums import VideoStatus, TranscriptionStatus
 from api.schemas import (
@@ -23,7 +24,7 @@ from api.schemas import (
 )
 import sqlalchemy as sa
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @asynccontextmanager
@@ -36,6 +37,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="VLog", description="Self-hosted video platform", lifespan=lifespan)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Prevent clickjacking
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        # Prevent MIME-type sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # XSS protection for legacy browsers
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        # Control referrer information
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Permissions policy (disable unnecessary browser features)
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS middleware for HLS playback and analytics
 app.add_middleware(
@@ -75,6 +97,37 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="stati
 async def home():
     """Serve the main page."""
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    checks = {
+        "database": False,
+        "storage": False,
+    }
+
+    # Check database connectivity
+    try:
+        await database.fetch_one("SELECT 1")
+        checks["database"] = True
+    except Exception:
+        pass
+
+    # Check storage accessibility (NAS mount)
+    try:
+        checks["storage"] = VIDEOS_DIR.exists() and UPLOADS_DIR.exists()
+    except Exception:
+        pass
+
+    healthy = all(checks.values())
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "healthy" if healthy else "unhealthy",
+            "checks": checks,
+        }
+    )
 
 
 @app.get("/watch/{slug}", response_class=HTMLResponse)
@@ -377,7 +430,7 @@ async def start_analytics_session(data: PlaybackSessionCreate) -> PlaybackSessio
         playback_sessions.insert().values(
             video_id=data.video_id,
             session_token=session_token,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             quality_used=data.quality,
         )
     )
@@ -452,7 +505,7 @@ async def end_analytics_session(data: PlaybackEnd):
         playback_sessions.update()
         .where(playback_sessions.c.session_token == data.session_token)
         .values(
-            ended_at=datetime.utcnow(),
+            ended_at=datetime.now(timezone.utc),
             max_position=max(current_max_position, data.position),
             completed=completed,
         )

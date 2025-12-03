@@ -3,6 +3,7 @@
 VLog CLI - Command line interface for video management.
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 import httpx
@@ -10,6 +11,9 @@ import httpx
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import ADMIN_PORT
+
+# Download timeout in seconds (default 1 hour, configurable via environment)
+DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
 
 API_BASE = f"http://localhost:{ADMIN_PORT}/api"
 
@@ -164,7 +168,12 @@ def cmd_download(args):
             args.url
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print(f"Error: Download timed out after {DOWNLOAD_TIMEOUT} seconds")
+            print("You can increase the timeout with VLOG_DOWNLOAD_TIMEOUT environment variable")
+            sys.exit(1)
 
         if result.returncode != 0:
             print(f"Error downloading: {result.stderr}")
