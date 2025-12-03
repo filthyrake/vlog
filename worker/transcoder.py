@@ -131,7 +131,10 @@ def transcode_to_hls(input_path: Path, output_dir: Path, qualities: list) -> lis
 
         # Get actual resolution from the transcoded output
         first_segment = output_dir / f"{name}_0000.ts"
-        actual_width, actual_height = get_output_dimensions(first_segment)
+        actual_width, actual_height = (0, 0)
+        
+        if first_segment.exists():
+            actual_width, actual_height = get_output_dimensions(first_segment)
         
         # Fallback to 16:9 if we couldn't get dimensions
         if actual_width == 0 or actual_height == 0:
