@@ -290,7 +290,10 @@ async def transcode_quality_with_progress(
 ) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking.
-    Returns (success, error_message) tuple.
+    
+    Returns:
+        Tuple[bool, Optional[str]]: (success, error_message) where error_message 
+        is None on success or contains the ffmpeg error details on failure.
     """
     name = quality["name"]
     height = quality["height"]
