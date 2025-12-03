@@ -287,10 +287,10 @@ async def transcode_quality_with_progress(
     quality: dict,
     duration: float,
     progress_callback: Optional[Callable[[int], None]] = None
-) -> bool:
+) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking.
-    Returns True on success, False on failure.
+    Returns (success, error_message) tuple.
     """
     name = quality["name"]
     height = quality["height"]
@@ -353,9 +353,9 @@ async def transcode_quality_with_progress(
         error_msg = stderr.decode('utf-8', errors='ignore')
         print(f"  ERROR: Failed to transcode {name}")
         print(f"  Full error output: {error_msg}")
-        return False
+        return False, error_msg
 
-    return True
+    return True, None
 
 
 def generate_master_playlist(output_dir: Path, completed_qualities: List[dict]):
@@ -863,7 +863,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 await update_job_progress(job_id, overall)
 
             try:
-                success = await transcode_quality_with_progress(
+                success, error_detail = await transcode_quality_with_progress(
                     source_file, output_dir, quality, info["duration"], progress_cb
                 )
 
@@ -886,7 +886,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     })
                     print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
                 else:
-                    error_msg = "Transcoding process returned non-zero exit code"
+                    error_msg = error_detail or "Transcoding process returned non-zero exit code"
                     await update_quality_status(job_id, quality_name, "failed", error_msg)
                     failed_qualities.append({"name": quality_name, "error": error_msg})
                     print(f"    {quality_name}: Failed")
