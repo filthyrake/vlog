@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VLog Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="admin()">
+    <!-- Header -->
+    <header class="bg-dark-900 border-b border-dark-800">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <h1 class="text-2xl font-bold text-white">VLog Admin</h1>
+                <div class="flex gap-4">
+                    <button
+                        @click="tab = 'videos'"
+                        :class="tab === 'videos' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        class="font-medium"
+                    >Videos</button>
+                    <button
+                        @click="tab = 'categories'"
+                        :class="tab === 'categories' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        class="font-medium"
+                    >Categories</button>
+                    <button
+                        @click="tab = 'upload'"
+                        :class="tab === 'upload' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        class="font-medium"
+                    >Upload</button>
+                    <button
+                        @click="tab = 'analytics'; loadAnalytics()"
+                        :class="tab === 'analytics' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        class="font-medium"
+                    >Analytics</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Upload Tab -->
+        <div x-show="tab === 'upload'" x-cloak>
+            <div class="bg-dark-900 rounded-xl p-6 max-w-2xl mx-auto">
+                <h2 class="text-xl font-semibold mb-6">Upload Video</h2>
+
+                <form @submit.prevent="uploadVideo" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Video File</label>
+                        <input
+                            type="file"
+                            accept="video/*"
+                            @change="uploadFile = $event.target.files[0]"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                            required
+                        >
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Title</label>
+                        <input
+                            type="text"
+                            x-model="uploadTitle"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                            placeholder="Video title"
+                            required
+                        >
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Description</label>
+                        <textarea
+                            x-model="uploadDescription"
+                            rows="4"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                            placeholder="Video description (optional)"
+                        ></textarea>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Category</label>
+                        <select
+                            x-model="uploadCategory"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        >
+                            <option value="">No category</option>
+                            <template x-for="cat in categories" :key="cat.id">
+                                <option :value="cat.id" x-text="cat.name"></option>
+                            </template>
+                        </select>
+                    </div>
+
+                    <!-- Upload Progress -->
+                    <div x-show="uploadProgress >= 0" class="space-y-2">
+                        <div class="flex justify-between text-sm">
+                            <span>Uploading...</span>
+                            <span x-text="uploadProgress + '%'"></span>
+                        </div>
+                        <div class="w-full bg-dark-700 rounded-full h-2">
+                            <div
+                                class="bg-blue-500 h-2 rounded-full transition-all"
+                                :style="'width: ' + uploadProgress + '%'"
+                            ></div>
+                        </div>
+                    </div>
+
+                    <div x-show="uploadMessage" :class="uploadError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="uploadMessage"></div>
+
+                    <button
+                        type="submit"
+                        :disabled="uploading"
+                        class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                    >
+                        <span x-show="!uploading">Upload Video</span>
+                        <span x-show="uploading">Uploading...</span>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Videos Tab -->
+        <div x-show="tab === 'videos'" x-cloak>
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-semibold">All Videos</h2>
+                <button @click="loadVideos" class="text-blue-400 hover:text-blue-300">Refresh</button>
+            </div>
+
+            <div class="bg-dark-900 rounded-xl overflow-hidden">
+                <table class="w-full">
+                    <thead class="bg-dark-800">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-sm font-medium">Thumbnail</th>
+                            <th class="px-4 py-3 text-left text-sm font-medium">Title</th>
+                            <th class="px-4 py-3 text-left text-sm font-medium">Category</th>
+                            <th class="px-4 py-3 text-left text-sm font-medium">Status</th>
+                            <th class="px-4 py-3 text-left text-sm font-medium">Duration</th>
+                            <th class="px-4 py-3 text-left text-sm font-medium">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-dark-800">
+                        <template x-for="video in videos" :key="video.id">
+                            <tr class="hover:bg-dark-800/50">
+                                <td class="px-4 py-3">
+                                    <div class="w-24 aspect-video bg-dark-800 rounded overflow-hidden">
+                                        <img
+                                            :src="video.thumbnail_url"
+                                            class="w-full h-full object-cover"
+                                            @error="$el.style.display='none'"
+                                        >
+                                    </div>
+                                </td>
+                                <td class="px-4 py-3">
+                                    <div class="font-medium" x-text="video.title"></div>
+                                    <div class="text-dark-500 text-sm" x-text="video.slug"></div>
+                                </td>
+                                <td class="px-4 py-3 text-dark-400" x-text="video.category_name || '-'"></td>
+                                <td class="px-4 py-3">
+                                    <span
+                                        :class="{
+                                            'bg-green-500/20 text-green-400': video.status === 'ready',
+                                            'bg-yellow-500/20 text-yellow-400': video.status === 'processing',
+                                            'bg-blue-500/20 text-blue-400': video.status === 'pending',
+                                            'bg-red-500/20 text-red-400': video.status === 'failed'
+                                        }"
+                                        class="px-2 py-1 rounded text-sm"
+                                        x-text="video.status"
+                                    ></span>
+                                </td>
+                                <td class="px-4 py-3 text-dark-400" x-text="formatDuration(video.duration)"></td>
+                                <td class="px-4 py-3">
+                                    <div class="flex gap-2">
+                                        <button
+                                            @click="openEditModal(video)"
+                                            class="text-blue-400 hover:text-blue-300 text-sm"
+                                        >Edit</button>
+                                        <button
+                                            x-show="video.status === 'failed'"
+                                            @click="retryVideo(video.id)"
+                                            class="text-yellow-400 hover:text-yellow-300 text-sm"
+                                        >Retry</button>
+                                        <button
+                                            @click="deleteVideo(video.id)"
+                                            class="text-red-400 hover:text-red-300 text-sm"
+                                        >Delete</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+
+                <div x-show="videos.length === 0" class="text-center py-8 text-dark-400">
+                    No videos yet. Upload your first video!
+                </div>
+            </div>
+        </div>
+
+        <!-- Categories Tab -->
+        <div x-show="tab === 'categories'" x-cloak>
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-semibold">Categories</h2>
+            </div>
+
+            <div class="grid md:grid-cols-2 gap-6">
+                <!-- Add Category -->
+                <div class="bg-dark-900 rounded-xl p-6">
+                    <h3 class="font-medium mb-4">Add Category</h3>
+                    <form @submit.prevent="createCategory" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Name</label>
+                            <input
+                                type="text"
+                                x-model="newCategoryName"
+                                class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                placeholder="Category name"
+                                required
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Description</label>
+                            <textarea
+                                x-model="newCategoryDesc"
+                                rows="2"
+                                class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                placeholder="Optional description"
+                            ></textarea>
+                        </div>
+                        <button
+                            type="submit"
+                            class="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition"
+                        >Add Category</button>
+                    </form>
+                </div>
+
+                <!-- Category List -->
+                <div class="bg-dark-900 rounded-xl p-6">
+                    <h3 class="font-medium mb-4">Existing Categories</h3>
+                    <div class="space-y-2">
+                        <template x-for="cat in categories" :key="cat.id">
+                            <div class="flex justify-between items-center p-3 bg-dark-800 rounded-lg">
+                                <div>
+                                    <div class="font-medium" x-text="cat.name"></div>
+                                    <div class="text-dark-500 text-sm" x-text="cat.video_count + ' videos'"></div>
+                                </div>
+                                <button
+                                    @click="deleteCategory(cat.id)"
+                                    class="text-red-400 hover:text-red-300 text-sm"
+                                >Delete</button>
+                            </div>
+                        </template>
+                        <div x-show="categories.length === 0" class="text-dark-400 text-center py-4">
+                            No categories yet.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analytics Tab -->
+        <div x-show="tab === 'analytics'" x-cloak>
+            <!-- Overview Cards -->
+            <div class="grid grid-cols-3 gap-4 mb-8">
+                <div class="bg-dark-900 rounded-xl p-6">
+                    <div class="text-dark-400 text-sm mb-1">Total Views</div>
+                    <div class="text-2xl font-bold" x-text="analyticsOverview.total_views?.toLocaleString() || '0'"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-6">
+                    <div class="text-dark-400 text-sm mb-1">Watch Time</div>
+                    <div class="text-2xl font-bold" x-text="formatHours(analyticsOverview.total_watch_time_hours)"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-6">
+                    <div class="text-dark-400 text-sm mb-1">Completion Rate</div>
+                    <div class="text-2xl font-bold" x-text="formatPercent(analyticsOverview.completion_rate)"></div>
+                </div>
+            </div>
+
+            <!-- Period Stats -->
+            <div class="grid grid-cols-3 gap-4 mb-8">
+                <div class="bg-dark-800 rounded-lg p-4 text-center">
+                    <div class="text-dark-400 text-xs uppercase mb-1">Today</div>
+                    <div class="text-lg font-semibold" x-text="analyticsOverview.views_today || 0"></div>
+                </div>
+                <div class="bg-dark-800 rounded-lg p-4 text-center">
+                    <div class="text-dark-400 text-xs uppercase mb-1">This Week</div>
+                    <div class="text-lg font-semibold" x-text="analyticsOverview.views_this_week || 0"></div>
+                </div>
+                <div class="bg-dark-800 rounded-lg p-4 text-center">
+                    <div class="text-dark-400 text-xs uppercase mb-1">This Month</div>
+                    <div class="text-lg font-semibold" x-text="analyticsOverview.views_this_month || 0"></div>
+                </div>
+            </div>
+
+            <!-- Top Videos Table -->
+            <div class="bg-dark-900 rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                    <h3 class="font-semibold">Top Videos</h3>
+                    <select x-model="analyticsPeriod" @change="loadVideoAnalytics" class="bg-dark-800 border border-dark-700 rounded px-3 py-1 text-sm">
+                        <option value="all">All Time</option>
+                        <option value="month">This Month</option>
+                        <option value="week">This Week</option>
+                        <option value="day">Today</option>
+                    </select>
+                </div>
+                <table class="w-full">
+                    <thead class="bg-dark-800">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-sm font-medium">Video</th>
+                            <th class="px-4 py-3 text-right text-sm font-medium">Views</th>
+                            <th class="px-4 py-3 text-right text-sm font-medium">Watch Time</th>
+                            <th class="px-4 py-3 text-right text-sm font-medium">Avg Duration</th>
+                            <th class="px-4 py-3 text-right text-sm font-medium">Completion</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-dark-800">
+                        <template x-for="video in analyticsVideos" :key="video.video_id">
+                            <tr class="hover:bg-dark-800/50">
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center gap-3">
+                                        <div class="w-16 aspect-video bg-dark-800 rounded overflow-hidden flex-shrink-0">
+                                            <img :src="video.thumbnail_url" class="w-full h-full object-cover" @error="$el.style.display='none'">
+                                        </div>
+                                        <div class="font-medium truncate max-w-xs" x-text="video.title"></div>
+                                    </div>
+                                </td>
+                                <td class="px-4 py-3 text-right" x-text="video.total_views.toLocaleString()"></td>
+                                <td class="px-4 py-3 text-right text-dark-400" x-text="formatWatchTime(video.total_watch_time_seconds)"></td>
+                                <td class="px-4 py-3 text-right text-dark-400" x-text="formatDuration(video.avg_watch_duration_seconds)"></td>
+                                <td class="px-4 py-3 text-right" x-text="formatPercent(video.completion_rate)"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <div x-show="analyticsVideos.length === 0" class="text-center py-8 text-dark-400">
+                    No playback data yet. Views will appear here once videos are watched.
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Edit Video Modal -->
+    <div x-show="editModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="editModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
+            <h3 class="text-xl font-semibold mb-4">Edit Video</h3>
+            <form @submit.prevent="saveVideo" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium mb-2">Title</label>
+                    <input
+                        type="text"
+                        x-model="editTitle"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        required
+                    >
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Description</label>
+                    <textarea
+                        x-model="editDescription"
+                        rows="4"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                    ></textarea>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Category</label>
+                    <select
+                        x-model="editCategory"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                    >
+                        <option value="0">No category</option>
+                        <template x-for="cat in categories" :key="cat.id">
+                            <option :value="cat.id" x-text="cat.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="flex gap-3 pt-2">
+                    <button
+                        type="button"
+                        @click="editModal = false"
+                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg font-medium transition"
+                    >Cancel</button>
+                    <button
+                        type="submit"
+                        class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition"
+                    >Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function admin() {
+            return {
+                tab: 'videos',
+                videos: [],
+                categories: [],
+
+                // Upload form
+                uploadFile: null,
+                uploadTitle: '',
+                uploadDescription: '',
+                uploadCategory: '',
+                uploading: false,
+                uploadProgress: -1,
+                uploadMessage: '',
+                uploadError: false,
+
+                // Category form
+                newCategoryName: '',
+                newCategoryDesc: '',
+
+                // Edit modal
+                editModal: false,
+                editVideoId: null,
+                editTitle: '',
+                editDescription: '',
+                editCategory: 0,
+
+                // Analytics
+                analyticsOverview: {},
+                analyticsVideos: [],
+                analyticsPeriod: 'all',
+
+                async init() {
+                    await Promise.all([
+                        this.loadVideos(),
+                        this.loadCategories()
+                    ]);
+
+                    // Auto-refresh videos every 10 seconds
+                    setInterval(() => this.loadVideos(), 10000);
+                },
+
+                async loadVideos() {
+                    try {
+                        const res = await fetch('/api/videos');
+                        this.videos = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load videos:', e);
+                    }
+                },
+
+                async loadCategories() {
+                    try {
+                        const res = await fetch('/api/categories');
+                        this.categories = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load categories:', e);
+                    }
+                },
+
+                async uploadVideo() {
+                    if (!this.uploadFile || !this.uploadTitle) return;
+
+                    this.uploading = true;
+                    this.uploadProgress = 0;
+                    this.uploadMessage = '';
+                    this.uploadError = false;
+
+                    const formData = new FormData();
+                    formData.append('file', this.uploadFile);
+                    formData.append('title', this.uploadTitle);
+                    formData.append('description', this.uploadDescription);
+                    if (this.uploadCategory) {
+                        formData.append('category_id', this.uploadCategory);
+                    }
+
+                    try {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/api/videos', true);
+
+                        xhr.upload.onprogress = (e) => {
+                            if (e.lengthComputable) {
+                                this.uploadProgress = Math.round((e.loaded / e.total) * 100);
+                            }
+                        };
+
+                        xhr.onload = () => {
+                            if (xhr.status === 200) {
+                                this.uploadMessage = 'Video uploaded successfully! Processing will begin shortly.';
+                                this.uploadError = false;
+                                this.uploadFile = null;
+                                this.uploadTitle = '';
+                                this.uploadDescription = '';
+                                this.uploadCategory = '';
+                                this.loadVideos();
+                            } else {
+                                this.uploadMessage = 'Upload failed: ' + xhr.responseText;
+                                this.uploadError = true;
+                            }
+                            this.uploading = false;
+                            this.uploadProgress = -1;
+                        };
+
+                        xhr.onerror = () => {
+                            this.uploadMessage = 'Upload failed. Please try again.';
+                            this.uploadError = true;
+                            this.uploading = false;
+                            this.uploadProgress = -1;
+                        };
+
+                        xhr.send(formData);
+                    } catch (e) {
+                        this.uploadMessage = 'Upload failed: ' + e.message;
+                        this.uploadError = true;
+                        this.uploading = false;
+                        this.uploadProgress = -1;
+                    }
+                },
+
+                async createCategory() {
+                    if (!this.newCategoryName) return;
+
+                    try {
+                        const res = await fetch('/api/categories', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                name: this.newCategoryName,
+                                description: this.newCategoryDesc
+                            })
+                        });
+
+                        if (res.ok) {
+                            this.newCategoryName = '';
+                            this.newCategoryDesc = '';
+                            await this.loadCategories();
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Failed to create category');
+                        }
+                    } catch (e) {
+                        alert('Failed to create category: ' + e.message);
+                    }
+                },
+
+                async deleteCategory(id) {
+                    if (!confirm('Delete this category? Videos in it will become uncategorized.')) return;
+
+                    try {
+                        await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+                        await this.loadCategories();
+                        await this.loadVideos();
+                    } catch (e) {
+                        alert('Failed to delete category: ' + e.message);
+                    }
+                },
+
+                async deleteVideo(id) {
+                    if (!confirm('Delete this video? This cannot be undone.')) return;
+
+                    try {
+                        await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+                        await this.loadVideos();
+                    } catch (e) {
+                        alert('Failed to delete video: ' + e.message);
+                    }
+                },
+
+                async retryVideo(id) {
+                    try {
+                        await fetch(`/api/videos/${id}/retry`, { method: 'POST' });
+                        await this.loadVideos();
+                    } catch (e) {
+                        alert('Failed to retry: ' + e.message);
+                    }
+                },
+
+                openEditModal(video) {
+                    this.editVideoId = video.id;
+                    this.editTitle = video.title;
+                    this.editDescription = video.description || '';
+                    this.editCategory = video.category_id || 0;
+                    this.editModal = true;
+                },
+
+                async saveVideo() {
+                    if (!this.editTitle) return;
+
+                    try {
+                        const formData = new FormData();
+                        formData.append('title', this.editTitle);
+                        formData.append('description', this.editDescription);
+                        formData.append('category_id', this.editCategory);
+
+                        const res = await fetch(`/api/videos/${this.editVideoId}`, {
+                            method: 'PUT',
+                            body: formData
+                        });
+
+                        if (res.ok) {
+                            this.editModal = false;
+                            await this.loadVideos();
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Failed to update video');
+                        }
+                    } catch (e) {
+                        alert('Failed to update video: ' + e.message);
+                    }
+                },
+
+                formatDuration(seconds) {
+                    if (!seconds) return '-';
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    if (h > 0) {
+                        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    }
+                    return `${m}:${s.toString().padStart(2, '0')}`;
+                },
+
+                // Analytics methods
+                async loadAnalytics() {
+                    await Promise.all([
+                        this.loadAnalyticsOverview(),
+                        this.loadVideoAnalytics()
+                    ]);
+                },
+
+                async loadAnalyticsOverview() {
+                    try {
+                        const res = await fetch('/api/analytics/overview');
+                        this.analyticsOverview = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load analytics overview:', e);
+                    }
+                },
+
+                async loadVideoAnalytics() {
+                    try {
+                        const res = await fetch(`/api/analytics/videos?period=${this.analyticsPeriod}&limit=20&sort_by=views`);
+                        const data = await res.json();
+                        this.analyticsVideos = data.videos || [];
+                    } catch (e) {
+                        console.error('Failed to load video analytics:', e);
+                    }
+                },
+
+                formatHours(hours) {
+                    if (!hours) return '0h';
+                    if (hours < 1) return Math.round(hours * 60) + 'm';
+                    return hours.toFixed(1) + 'h';
+                },
+
+                formatPercent(rate) {
+                    if (rate === undefined || rate === null) return '0%';
+                    return Math.round(rate * 100) + '%';
+                },
+
+                formatWatchTime(seconds) {
+                    if (!seconds) return '0m';
+                    const hours = Math.floor(seconds / 3600);
+                    const minutes = Math.floor((seconds % 3600) / 60);
+                    if (hours > 0) return `${hours}h ${minutes}m`;
+                    return `${minutes}m`;
+                }
+            };
+        }
+    </script>
+</body>
+</html>

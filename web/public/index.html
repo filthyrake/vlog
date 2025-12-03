@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Damen's VLog</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="app()">
+    <!-- Header -->
+    <header class="bg-dark-900 border-b border-dark-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
+                <div class="flex-1 max-w-xl mx-8">
+                    <input
+                        type="text"
+                        placeholder="Search videos..."
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-white"
+                        x-model="searchQuery"
+                        @input.debounce.300ms="loadVideos()"
+                    >
+                </div>
+                <nav class="flex gap-4">
+                    <a href="/" class="text-dark-300 hover:text-white">Home</a>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Categories -->
+        <section class="mb-8" x-show="categories.length > 0">
+            <h2 class="text-xl font-semibold mb-4">Categories</h2>
+            <div class="flex flex-wrap gap-3">
+                <button
+                    @click="selectedCategory = null; loadVideos()"
+                    :class="selectedCategory === null ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                    class="px-4 py-2 rounded-lg transition"
+                >
+                    All
+                </button>
+                <template x-for="cat in categories" :key="cat.id">
+                    <button
+                        @click="selectedCategory = cat.slug; loadVideos()"
+                        :class="selectedCategory === cat.slug ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        class="px-4 py-2 rounded-lg transition"
+                    >
+                        <span x-text="cat.name"></span>
+                        <span class="text-dark-400 ml-1" x-text="'(' + cat.video_count + ')'"></span>
+                    </button>
+                </template>
+            </div>
+        </section>
+
+        <!-- Videos Grid -->
+        <section>
+            <h2 class="text-xl font-semibold mb-4" x-text="selectedCategory ? 'Videos' : 'Latest Videos'"></h2>
+
+            <div x-show="loading" class="flex justify-center py-12">
+                <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+            </div>
+
+            <div x-show="!loading && videos.length === 0" class="text-center py-12 text-dark-400">
+                No videos found.
+            </div>
+
+            <div x-show="!loading && videos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                <template x-for="video in videos" :key="video.id">
+                    <a :href="'/watch/' + video.slug" class="group">
+                        <div class="bg-dark-800 rounded-xl overflow-hidden hover:ring-2 hover:ring-blue-500 transition">
+                            <div class="aspect-video bg-dark-900 relative">
+                                <img
+                                    :src="video.thumbnail_url"
+                                    :alt="video.title"
+                                    class="w-full h-full object-cover"
+                                    loading="lazy"
+                                    @error="$el.style.display='none'"
+                                >
+                                <div class="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-sm">
+                                    <span x-text="formatDuration(video.duration)"></span>
+                                </div>
+                            </div>
+                            <div class="p-4">
+                                <h3 class="font-medium text-white group-hover:text-blue-400 line-clamp-2" x-text="video.title"></h3>
+                                <p class="text-dark-400 text-sm mt-1" x-text="video.category_name || 'Uncategorized'"></p>
+                                <p class="text-dark-500 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
+                            </div>
+                        </div>
+                    </a>
+                </template>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        function app() {
+            return {
+                videos: [],
+                categories: [],
+                loading: true,
+                searchQuery: '',
+                selectedCategory: null,
+
+                async init() {
+                    await Promise.all([
+                        this.loadCategories(),
+                        this.loadVideos()
+                    ]);
+                },
+
+                async loadCategories() {
+                    try {
+                        const res = await fetch('/api/categories');
+                        this.categories = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load categories:', e);
+                    }
+                },
+
+                async loadVideos() {
+                    this.loading = true;
+                    try {
+                        let url = '/api/videos?';
+                        if (this.selectedCategory) {
+                            url += `category=${this.selectedCategory}&`;
+                        }
+                        if (this.searchQuery) {
+                            url += `search=${encodeURIComponent(this.searchQuery)}&`;
+                        }
+                        const res = await fetch(url);
+                        this.videos = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load videos:', e);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                formatDuration(seconds) {
+                    if (!seconds) return '0:00';
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    if (h > 0) {
+                        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    }
+                    return `${m}:${s.toString().padStart(2, '0')}`;
+                },
+
+                formatDate(dateStr) {
+                    if (!dateStr) return '';
+                    return new Date(dateStr).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                    });
+                }
+            };
+        }
+    </script>
+</body>
+</html>

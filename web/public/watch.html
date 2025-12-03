@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch - Damen's VLog</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Video.js -->
+    <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet">
+    <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .video-js { width: 100%; height: 100%; }
+        .video-js .vjs-big-play-button {
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="watchPage()">
+    <!-- Header -->
+    <header class="bg-dark-900 border-b border-dark-800">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
+                <nav class="flex gap-4">
+                    <a href="/" class="text-dark-300 hover:text-white">Home</a>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Loading -->
+        <div x-show="loading" class="flex justify-center py-12">
+            <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+        </div>
+
+        <!-- Error -->
+        <div x-show="error" class="text-center py-12">
+            <p class="text-red-400 text-xl" x-text="error"></p>
+            <a href="/" class="text-blue-400 hover:underline mt-4 inline-block">Back to Home</a>
+        </div>
+
+        <!-- Video Content -->
+        <div x-show="!loading && !error && video" x-cloak>
+            <!-- Video Player -->
+            <div class="bg-black rounded-xl overflow-hidden mb-6">
+                <div class="aspect-video">
+                    <video
+                        id="player"
+                        class="video-js vjs-default-skin vjs-big-play-centered"
+                        controls
+                        preload="auto"
+                        :poster="video?.thumbnail_url"
+                    >
+                    </video>
+                </div>
+            </div>
+
+            <!-- Video Info -->
+            <div class="bg-dark-900 rounded-xl p-6">
+                <h1 class="text-2xl font-bold text-white mb-2" x-text="video?.title"></h1>
+
+                <div class="flex flex-wrap gap-4 text-dark-400 text-sm mb-4">
+                    <span x-text="formatDate(video?.published_at)"></span>
+                    <span x-text="formatDuration(video?.duration)"></span>
+                    <span x-text="video?.source_width + 'x' + video?.source_height"></span>
+                </div>
+
+                <!-- Quality Info -->
+                <div class="flex flex-wrap gap-2 mb-4" x-show="video?.qualities?.length">
+                    <span class="text-dark-500 text-sm">Available in:</span>
+                    <template x-for="q in video?.qualities" :key="q.quality">
+                        <span class="bg-dark-800 px-2 py-1 rounded text-sm text-dark-300" x-text="q.quality"></span>
+                    </template>
+                </div>
+
+                <!-- Category -->
+                <div x-show="video?.category_name" class="mb-4">
+                    <a
+                        :href="'/category/' + (video?.category_id || '')"
+                        class="inline-block bg-blue-600/20 text-blue-400 px-3 py-1 rounded-full text-sm hover:bg-blue-600/30"
+                        x-text="video?.category_name"
+                    ></a>
+                </div>
+
+                <!-- Description -->
+                <div class="border-t border-dark-800 pt-4 mt-4" x-show="video?.description">
+                    <h2 class="text-lg font-semibold mb-2">Description</h2>
+                    <p class="text-dark-300 whitespace-pre-wrap" x-text="video?.description"></p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Playback analytics tracker
+        class PlaybackAnalytics {
+            constructor(videoId, player) {
+                this.videoId = videoId;
+                this.player = player;
+                this.sessionToken = null;
+                this.heartbeatInterval = null;
+            }
+
+            async startSession(quality) {
+                try {
+                    const res = await fetch('/api/analytics/session', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            video_id: this.videoId,
+                            quality: quality
+                        })
+                    });
+                    const data = await res.json();
+                    this.sessionToken = data.session_token;
+                    this.startHeartbeat();
+                } catch (e) {
+                    console.error('Failed to start analytics session:', e);
+                }
+            }
+
+            startHeartbeat() {
+                this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 30000);
+            }
+
+            async sendHeartbeat() {
+                if (!this.sessionToken) return;
+
+                try {
+                    await fetch('/api/analytics/heartbeat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            session_token: this.sessionToken,
+                            position: this.player.currentTime(),
+                            quality: this.getCurrentQuality(),
+                            playing: !this.player.paused()
+                        })
+                    });
+                } catch (e) {
+                    console.error('Heartbeat failed:', e);
+                }
+            }
+
+            getCurrentQuality() {
+                // Try to get quality from Video.js quality levels
+                const qualityLevels = this.player.qualityLevels?.();
+                if (qualityLevels) {
+                    for (let i = 0; i < qualityLevels.length; i++) {
+                        if (qualityLevels[i].enabled) {
+                            return qualityLevels[i].height + 'p';
+                        }
+                    }
+                }
+                return null;
+            }
+
+            async endSession(completed = false) {
+                if (!this.sessionToken) return;
+
+                clearInterval(this.heartbeatInterval);
+
+                try {
+                    // Use sendBeacon for reliability on page unload
+                    const data = JSON.stringify({
+                        session_token: this.sessionToken,
+                        position: this.player.currentTime(),
+                        completed: completed
+                    });
+
+                    if (navigator.sendBeacon) {
+                        navigator.sendBeacon('/api/analytics/end', new Blob([data], { type: 'application/json' }));
+                    } else {
+                        await fetch('/api/analytics/end', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: data
+                        });
+                    }
+                } catch (e) {
+                    console.error('Failed to end session:', e);
+                }
+
+                this.sessionToken = null;
+            }
+        }
+
+        function watchPage() {
+            return {
+                video: null,
+                loading: true,
+                error: null,
+                player: null,
+                analytics: null,
+
+                async init() {
+                    const slug = window.location.pathname.split('/').pop();
+                    if (!slug) {
+                        this.error = 'Video not found';
+                        this.loading = false;
+                        return;
+                    }
+
+                    try {
+                        const res = await fetch(`/api/videos/${slug}`);
+                        if (!res.ok) {
+                            throw new Error('Video not found');
+                        }
+                        this.video = await res.json();
+
+                        if (this.video.status !== 'ready') {
+                            this.error = 'Video is still processing...';
+                            this.loading = false;
+                            return;
+                        }
+
+                        document.title = `${this.video.title} - Damen's VLog`;
+                        this.loading = false;
+
+                        // Initialize player after DOM update
+                        this.$nextTick(() => {
+                            this.initPlayer();
+                        });
+                    } catch (e) {
+                        this.error = e.message;
+                        this.loading = false;
+                    }
+                },
+
+                initPlayer() {
+                    this.player = videojs('player', {
+                        fluid: true,
+                        responsive: true,
+                        playbackRates: [0.5, 1, 1.25, 1.5, 2],
+                        html5: {
+                            vhs: {
+                                overrideNative: true
+                            }
+                        }
+                    });
+
+                    this.player.src({
+                        src: this.video.stream_url,
+                        type: 'application/x-mpegURL'
+                    });
+
+                    // Initialize analytics
+                    this.analytics = new PlaybackAnalytics(this.video.id, this.player);
+
+                    // Start session on first play
+                    this.player.one('play', () => {
+                        const quality = this.analytics.getCurrentQuality();
+                        this.analytics.startSession(quality);
+                    });
+
+                    // End session on video complete
+                    this.player.on('ended', () => {
+                        this.analytics.endSession(true);
+                    });
+
+                    // Handle page unload
+                    window.addEventListener('beforeunload', () => {
+                        this.analytics.endSession(false);
+                    });
+
+                    // Send heartbeat when tab becomes hidden
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.hidden && this.analytics) {
+                            this.analytics.sendHeartbeat();
+                        }
+                    });
+                },
+
+                formatDuration(seconds) {
+                    if (!seconds) return '0:00';
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    if (h > 0) {
+                        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    }
+                    return `${m}:${s.toString().padStart(2, '0')}`;
+                },
+
+                formatDate(dateStr) {
+                    if (!dateStr) return '';
+                    return new Date(dateStr).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
+                    });
+                }
+            };
+        }
+    </script>
+</body>
+</html>

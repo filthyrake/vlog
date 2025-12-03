@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Category - Damen's VLog</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="categoryPage()">
+    <!-- Header -->
+    <header class="bg-dark-900 border-b border-dark-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
+                <nav class="flex gap-4">
+                    <a href="/" class="text-dark-300 hover:text-white">Home</a>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Loading -->
+        <div x-show="loading" class="flex justify-center py-12">
+            <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+        </div>
+
+        <!-- Category Header -->
+        <div x-show="!loading && category" class="mb-8">
+            <h1 class="text-3xl font-bold text-white mb-2" x-text="category?.name"></h1>
+            <p class="text-dark-400" x-text="category?.description"></p>
+            <p class="text-dark-500 mt-2" x-text="category?.video_count + ' videos'"></p>
+        </div>
+
+        <!-- Videos Grid -->
+        <div x-show="!loading && videos.length === 0" class="text-center py-12 text-dark-400">
+            No videos in this category yet.
+        </div>
+
+        <div x-show="!loading && videos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <template x-for="video in videos" :key="video.id">
+                <a :href="'/watch/' + video.slug" class="group">
+                    <div class="bg-dark-800 rounded-xl overflow-hidden hover:ring-2 hover:ring-blue-500 transition">
+                        <div class="aspect-video bg-dark-900 relative">
+                            <img
+                                :src="video.thumbnail_url"
+                                :alt="video.title"
+                                class="w-full h-full object-cover"
+                                loading="lazy"
+                                @error="$el.style.display='none'"
+                            >
+                            <div class="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-sm">
+                                <span x-text="formatDuration(video.duration)"></span>
+                            </div>
+                        </div>
+                        <div class="p-4">
+                            <h3 class="font-medium text-white group-hover:text-blue-400 line-clamp-2" x-text="video.title"></h3>
+                            <p class="text-dark-500 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
+                        </div>
+                    </div>
+                </a>
+            </template>
+        </div>
+    </main>
+
+    <script>
+        function categoryPage() {
+            return {
+                category: null,
+                videos: [],
+                loading: true,
+
+                async init() {
+                    const slug = window.location.pathname.split('/').pop();
+                    if (!slug) {
+                        window.location.href = '/';
+                        return;
+                    }
+
+                    try {
+                        const [catRes, videosRes] = await Promise.all([
+                            fetch(`/api/categories/${slug}`),
+                            fetch(`/api/videos?category=${slug}`)
+                        ]);
+
+                        if (!catRes.ok) {
+                            window.location.href = '/';
+                            return;
+                        }
+
+                        this.category = await catRes.json();
+                        this.videos = await videosRes.json();
+                        document.title = `${this.category.name} - Damen's VLog`;
+                    } catch (e) {
+                        console.error('Failed to load category:', e);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                formatDuration(seconds) {
+                    if (!seconds) return '0:00';
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    if (h > 0) {
+                        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    }
+                    return `${m}:${s.toString().padStart(2, '0')}`;
+                },
+
+                formatDate(dateStr) {
+                    if (!dateStr) return '';
+                    return new Date(dateStr).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                    });
+                }
+            };
+        }
+    </script>
+</body>
+</html>
