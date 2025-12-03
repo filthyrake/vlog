@@ -75,6 +75,44 @@ playback_sessions = sa.Table(
     sa.Column("completed", sa.Boolean, default=False),  # watched >= 90%
 )
 
+# Transcoding jobs with checkpoint support
+transcoding_jobs = sa.Table(
+    "transcoding_jobs",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False, unique=True),
+    sa.Column("worker_id", sa.String(36), nullable=True),
+    # Progress tracking
+    sa.Column("current_step", sa.String(50), nullable=True),  # probe, thumbnail, transcode, master_playlist, finalize
+    sa.Column("progress_percent", sa.Integer, default=0),
+    # Timing
+    sa.Column("started_at", sa.DateTime, nullable=True),
+    sa.Column("last_checkpoint", sa.DateTime, nullable=True),
+    sa.Column("completed_at", sa.DateTime, nullable=True),
+    # Retry tracking
+    sa.Column("attempt_number", sa.Integer, default=1),
+    sa.Column("max_attempts", sa.Integer, default=3),
+    # Error tracking
+    sa.Column("last_error", sa.Text, nullable=True),
+)
+
+# Per-quality progress tracking
+quality_progress = sa.Table(
+    "quality_progress",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("job_id", sa.Integer, sa.ForeignKey("transcoding_jobs.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("quality", sa.String(10), nullable=False),  # 2160p, 1080p, etc.
+    sa.Column("status", sa.String(20), nullable=False, default="pending"),  # pending, in_progress, completed, failed, skipped
+    sa.Column("segments_total", sa.Integer, nullable=True),
+    sa.Column("segments_completed", sa.Integer, default=0),
+    sa.Column("progress_percent", sa.Integer, default=0),
+    sa.Column("started_at", sa.DateTime, nullable=True),
+    sa.Column("completed_at", sa.DateTime, nullable=True),
+    sa.Column("error_message", sa.Text, nullable=True),
+    sa.UniqueConstraint("job_id", "quality", name="uq_job_quality"),
+)
+
 
 def create_tables():
     """Create all tables in the database."""
