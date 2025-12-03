@@ -192,7 +192,7 @@ def _extract_quality(filename_stem: str) -> int:
         return 0
 
 
-async def find_audio_source(video_id: int, video_slug: str) -> Path:
+def find_audio_source(video_id: int, video_slug: str) -> Path:
     """
     Find the best audio source for transcription.
     
@@ -238,8 +238,10 @@ async def find_audio_source(video_id: int, video_slug: str) -> Path:
     
     # Validate that the best playlist is readable
     best_playlist = playlists[0]
-    if not best_playlist.exists() or best_playlist.stat().st_size == 0:
-        raise ValueError(f"Best quality playlist exists but is empty: {best_playlist}")
+    if not best_playlist.exists():
+        raise ValueError(f"Best quality playlist disappeared: {best_playlist}")
+    if best_playlist.stat().st_size == 0:
+        raise ValueError(f"Best quality playlist is empty: {best_playlist}")
     
     return best_playlist
 
@@ -316,15 +318,15 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         )
 
         # Find audio source
-        audio_source = await find_audio_source(video_id, slug)
+        audio_source = find_audio_source(video_id, slug)
         print(f"  Using audio source: {audio_source}")
 
         # Extract audio to temporary WAV file for reliable processing
         # This avoids potential issues with streaming HLS or complex video formats
         # Use mkstemp for explicit control over file creation and cleanup
         fd, temp_wav_path = tempfile.mkstemp(suffix='.wav', prefix='vlog_transcribe_')
+        temp_wav = Path(temp_wav_path)  # Assign before close
         os.close(fd)  # Close file descriptor, we'll use the path
-        temp_wav = Path(temp_wav_path)
         
         print(f"  Extracting audio to WAV...")
         loop = asyncio.get_event_loop()
