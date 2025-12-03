@@ -10,9 +10,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, UPLOADS_DIR, PUBLIC_PORT
 from api.database import database, videos, categories, video_qualities, playback_sessions, viewers, transcoding_jobs, quality_progress, transcriptions, configure_sqlite_pragmas

@@ -14,9 +14,6 @@ from datetime import datetime, timezone
 from slugify import slugify
 from sqlite3 import IntegrityError
 import shutil
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, UPLOADS_DIR, ARCHIVE_DIR, ADMIN_PORT
 
