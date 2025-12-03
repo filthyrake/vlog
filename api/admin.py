@@ -327,7 +327,13 @@ async def delete_video(video_id: int):
         if upload_file.exists():
             upload_file.unlink()
 
-    # Delete quality records
+    # Delete related records (SQLite doesn't enforce CASCADE without PRAGMA foreign_keys)
+    await database.execute(
+        playback_sessions.delete().where(playback_sessions.c.video_id == video_id)
+    )
+    await database.execute(
+        transcriptions.delete().where(transcriptions.c.video_id == video_id)
+    )
     await database.execute(
         video_qualities.delete().where(video_qualities.c.video_id == video_id)
     )
@@ -608,8 +614,18 @@ async def analytics_videos(
     elif period == "month":
         period_filter = today_start - timedelta(days=30)
 
-    # Build query with aggregations
-    base_query = """
+    # Build query with aggregations - use parameterized queries
+    period_clause = "AND ps.started_at >= :period_filter" if period_filter else ""
+
+    # Validate sort_by to prevent SQL injection (whitelist approach)
+    valid_sort_columns = {
+        "views": "total_views DESC",
+        "watch_time": "total_watch_time_seconds DESC",
+        "completion_rate": "completion_rate DESC",
+    }
+    order_clause = valid_sort_columns.get(sort_by, "total_views DESC")
+
+    base_query = f"""
         SELECT
             v.id as video_id,
             v.title,
@@ -621,30 +637,18 @@ async def analytics_videos(
             COALESCE(SUM(CASE WHEN ps.completed THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(ps.id), 0), 0) as completion_rate,
             (SELECT quality_used FROM playback_sessions WHERE video_id = v.id GROUP BY quality_used ORDER BY COUNT(*) DESC LIMIT 1) as peak_quality
         FROM videos v
-        LEFT JOIN playback_sessions ps ON v.id = ps.video_id
-    """
-
-    if period_filter:
-        base_query += f" AND ps.started_at >= '{period_filter.isoformat()}'"
-
-    base_query += """
+        LEFT JOIN playback_sessions ps ON v.id = ps.video_id {period_clause}
         WHERE v.status = 'ready'
         GROUP BY v.id
+        ORDER BY {order_clause}
+        LIMIT :limit OFFSET :offset
     """
 
-    # Sort order
-    if sort_by == "views":
-        base_query += " ORDER BY total_views DESC"
-    elif sort_by == "watch_time":
-        base_query += " ORDER BY total_watch_time_seconds DESC"
-    elif sort_by == "completion_rate":
-        base_query += " ORDER BY completion_rate DESC"
-    else:
-        base_query += " ORDER BY total_views DESC"
+    params = {"limit": limit, "offset": offset}
+    if period_filter:
+        params["period_filter"] = period_filter.isoformat()
 
-    base_query += f" LIMIT {limit} OFFSET {offset}"
-
-    rows = await database.fetch_all(sa.text(base_query))
+    rows = await database.fetch_all(sa.text(base_query), params)
 
     # Get total count
     count_result = await database.fetch_val(
@@ -761,11 +765,12 @@ async def analytics_trends(
     video_id: Optional[int] = None,
 ) -> TrendsResponse:
     """Get time-series analytics data."""
-    days = 30
-    if period == "7d":
-        days = 7
-    elif period == "90d":
-        days = 90
+    # Validate period to prevent SQL injection (whitelist approach)
+    valid_periods = {"7d": 7, "30d": 30, "90d": 90}
+    days = valid_periods.get(period, 30)
+
+    # Build query with parameterized values
+    video_clause = "AND video_id = :video_id" if video_id else ""
 
     base_query = f"""
         SELECT
@@ -774,15 +779,17 @@ async def analytics_trends(
             COUNT(DISTINCT viewer_id) as unique_viewers,
             COALESCE(SUM(duration_watched), 0) / 3600.0 as watch_time_hours
         FROM playback_sessions
-        WHERE started_at >= DATE('now', '-{days} days')
+        WHERE started_at >= DATE('now', :days_offset)
+        {video_clause}
+        GROUP BY DATE(started_at)
+        ORDER BY date
     """
 
+    params = {"days_offset": f"-{days} days"}
     if video_id:
-        base_query += f" AND video_id = {video_id}"
+        params["video_id"] = video_id
 
-    base_query += " GROUP BY DATE(started_at) ORDER BY date"
-
-    rows = await database.fetch_all(sa.text(base_query))
+    rows = await database.fetch_all(sa.text(base_query), params)
 
     data = [
         TrendDataPoint(
