@@ -909,11 +909,15 @@ async def worker_loop():
             
             # Reset those videos to pending
             for job in jobs:
-                await database.execute(
-                    videos.update()
-                    .where(videos.c.id == job["video_id"])
-                    .values(status="pending")
+                video = await database.fetch_one(
+                    videos.select().where(videos.c.id == job["video_id"])
                 )
+                if video and video["status"] == "processing":
+                    await database.execute(
+                        videos.update()
+                        .where(videos.c.id == job["video_id"])
+                        .values(status="pending")
+                    )
             
             if jobs:
                 print(f"Reset {len(jobs)} video(s) to pending.")
