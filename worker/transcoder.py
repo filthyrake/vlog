@@ -26,6 +26,7 @@ from config import (
     CHECKPOINT_INTERVAL, JOB_STALE_TIMEOUT, MAX_RETRY_ATTEMPTS,
     RETRY_BACKOFF_BASE, CLEANUP_PARTIAL_ON_FAILURE, KEEP_COMPLETED_QUALITIES,
     WORKER_USE_FILESYSTEM_WATCHER, WORKER_FALLBACK_POLL_INTERVAL, WORKER_DEBOUNCE_DELAY,
+    FFMPEG_TIMEOUT_MULTIPLIER, FFMPEG_TIMEOUT_MINIMUM, FFMPEG_TIMEOUT_MAXIMUM,
 )
 from api.database import database, videos, video_qualities, transcoding_jobs, quality_progress, configure_sqlite_pragmas
 from api.enums import VideoStatus, QualityStatus, TranscodingStep
@@ -58,6 +59,20 @@ MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 # Error message truncation limits for logging
 MAX_ERROR_SUMMARY_LENGTH = 100  # Characters per quality in total failure summary
 MAX_ERROR_DETAIL_LENGTH = 200   # Characters per quality in partial failure details
+
+
+def calculate_ffmpeg_timeout(duration: float) -> float:
+    """
+    Calculate appropriate timeout for ffmpeg transcoding based on video duration.
+
+    Args:
+        duration: Video duration in seconds
+
+    Returns:
+        Timeout in seconds, clamped between min and max values
+    """
+    timeout = duration * FFMPEG_TIMEOUT_MULTIPLIER
+    return max(FFMPEG_TIMEOUT_MINIMUM, min(timeout, FFMPEG_TIMEOUT_MAXIMUM))
 
 
 def signal_handler(sig, frame):
@@ -290,10 +305,10 @@ async def transcode_quality_with_progress(
     progress_callback: Optional[Callable[[int], None]] = None
 ) -> Tuple[bool, Optional[str]]:
     """
-    Transcode a single quality variant with progress tracking.
-    
+    Transcode a single quality variant with progress tracking and timeout.
+
     Returns:
-        Tuple[bool, Optional[str]]: (success, error_message) where error_message 
+        Tuple[bool, Optional[str]]: (success, error_message) where error_message
         is None on success or contains the ffmpeg error details on failure.
     """
     name = quality["name"]
@@ -304,6 +319,10 @@ async def transcode_quality_with_progress(
     playlist_name = f"{name}.m3u8"
     segment_pattern = f"{name}_%04d.ts"
     scale_filter = f"scale=-2:{height}"
+
+    # Calculate timeout based on video duration
+    timeout = calculate_ffmpeg_timeout(duration)
+    print(f"      Timeout set to {timeout:.0f}s ({timeout/60:.1f} min)")
 
     cmd = [
         "ffmpeg", "-y", "-i", str(input_path),
@@ -326,31 +345,47 @@ async def transcode_quality_with_progress(
     )
 
     last_progress_update = 0
+    start_time = asyncio.get_event_loop().time()
 
-    # Parse progress from stdout
-    while True:
-        line = await process.stdout.readline()
-        if not line:
-            break
+    async def read_progress():
+        """Read and parse ffmpeg progress output."""
+        nonlocal last_progress_update
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
 
-        line_str = line.decode('utf-8', errors='ignore').strip()
+            line_str = line.decode('utf-8', errors='ignore').strip()
 
-        # Parse time from progress output (format: out_time_ms=123456789)
-        if line_str.startswith('out_time_ms='):
-            try:
-                time_ms = int(line_str.split('=')[1])
-                current_seconds = time_ms / 1000000.0
-                if duration > 0:
-                    progress = min(100, int(current_seconds / duration * 100))
-                    # Only update if progress changed significantly
-                    if progress > last_progress_update:
-                        last_progress_update = progress
-                        if progress_callback:
-                            await progress_callback(progress)
-            except (ValueError, IndexError):
-                pass
+            # Parse time from progress output (format: out_time_ms=123456789)
+            if line_str.startswith('out_time_ms='):
+                try:
+                    time_ms = int(line_str.split('=')[1])
+                    current_seconds = time_ms / 1000000.0
+                    if duration > 0:
+                        progress = min(100, int(current_seconds / duration * 100))
+                        # Only update if progress changed significantly
+                        if progress > last_progress_update:
+                            last_progress_update = progress
+                            if progress_callback:
+                                await progress_callback(progress)
+                except (ValueError, IndexError):
+                    pass
 
-    await process.wait()
+    try:
+        # Run progress reading with timeout
+        await asyncio.wait_for(read_progress(), timeout=timeout)
+        await process.wait()
+    except asyncio.TimeoutError:
+        # Timeout exceeded - kill the ffmpeg process
+        elapsed = asyncio.get_event_loop().time() - start_time
+        print(f"  TIMEOUT: ffmpeg exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
+        try:
+            process.kill()
+            await process.wait()
+        except ProcessLookupError:
+            pass  # Process already terminated
+        return False, f"Transcoding timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
 
     if process.returncode != 0:
         stderr = await process.stderr.read()
