@@ -13,10 +13,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, PUBLIC_PORT
-from api.database import database, videos, categories, video_qualities, playback_sessions
+from api.database import database, videos, categories, video_qualities, playback_sessions, transcoding_jobs, quality_progress
 from api.schemas import (
     VideoResponse, VideoListResponse, CategoryResponse, VideoQualityResponse,
     PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd, PlaybackSessionResponse,
+    TranscodingProgressResponse, QualityProgressResponse,
 )
 import sqlalchemy as sa
 import uuid
@@ -195,6 +196,66 @@ async def get_video(slug: str) -> VideoResponse:
         thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == "ready" else None,
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == "ready" else None,
         qualities=qualities,
+    )
+
+
+@app.get("/api/videos/{slug}/progress")
+async def get_video_progress(slug: str) -> TranscodingProgressResponse:
+    """Get transcoding progress for a video."""
+    # Get video by slug
+    video_query = videos.select().where(videos.c.slug == slug)
+    video = await database.fetch_one(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # If video is ready or failed, return simple status
+    if video["status"] in ["ready", "failed"]:
+        return TranscodingProgressResponse(
+            status=video["status"],
+            progress_percent=100 if video["status"] == "ready" else 0,
+            last_error=video["error_message"] if video["status"] == "failed" else None,
+        )
+
+    # If pending, return basic pending status
+    if video["status"] == "pending":
+        return TranscodingProgressResponse(
+            status="pending",
+            progress_percent=0,
+        )
+
+    # Get job info for processing videos
+    job_query = transcoding_jobs.select().where(transcoding_jobs.c.video_id == video["id"])
+    job = await database.fetch_one(job_query)
+
+    if not job:
+        return TranscodingProgressResponse(
+            status=video["status"],
+            progress_percent=0,
+        )
+
+    # Get quality progress
+    quality_query = quality_progress.select().where(quality_progress.c.job_id == job["id"])
+    quality_rows = await database.fetch_all(quality_query)
+
+    qualities = [
+        QualityProgressResponse(
+            name=q["quality"],
+            status=q["status"],
+            progress=q["progress_percent"] or 0,
+        )
+        for q in quality_rows
+    ]
+
+    return TranscodingProgressResponse(
+        status=video["status"],
+        current_step=job["current_step"],
+        progress_percent=job["progress_percent"] or 0,
+        qualities=qualities,
+        attempt=job["attempt_number"] or 1,
+        max_attempts=job["max_attempts"] or 3,
+        started_at=job["started_at"],
+        last_error=job["last_error"],
     )
 
 

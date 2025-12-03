@@ -27,3 +27,11 @@ QUALITY_PRESETS = [
 
 # HLS settings
 HLS_SEGMENT_DURATION = 6  # seconds
+
+# Checkpoint/resumable transcoding settings
+CHECKPOINT_INTERVAL = 30          # seconds between checkpoint updates
+JOB_STALE_TIMEOUT = 1800          # seconds (30 min) before job considered stale
+MAX_RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_BASE = 60           # seconds, doubles each retry
+CLEANUP_PARTIAL_ON_FAILURE = True
+KEEP_COMPLETED_QUALITIES = True   # on retry, don't re-transcode completed qualities

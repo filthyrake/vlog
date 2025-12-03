@@ -151,3 +151,21 @@ class TrendDataPoint(BaseModel):
 class TrendsResponse(BaseModel):
     period: str
     data: List[TrendDataPoint]
+
+
+# Transcoding progress models
+class QualityProgressResponse(BaseModel):
+    name: str
+    status: str  # pending, in_progress, completed, failed, skipped
+    progress: int = 0
+
+
+class TranscodingProgressResponse(BaseModel):
+    status: str  # pending, processing, ready, failed
+    current_step: Optional[str] = None  # probe, thumbnail, transcode, master_playlist, finalize
+    progress_percent: int = 0
+    qualities: List[QualityProgressResponse] = []
+    attempt: int = 1
+    max_attempts: int = 3
+    started_at: Optional[datetime] = None
+    last_error: Optional[str] = None
