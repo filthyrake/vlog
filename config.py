@@ -42,6 +42,8 @@ TRANSCRIPTION_ENABLED = True       # Enable/disable auto-transcription
 TRANSCRIPTION_LANGUAGE = None      # None for auto-detect, or "en", "es", etc.
 TRANSCRIPTION_ON_UPLOAD = True     # Auto-transcribe new uploads
 TRANSCRIPTION_COMPUTE_TYPE = "int8"  # float16, int8, int8_float16 (for faster-whisper)
+TRANSCRIPTION_TIMEOUT = 3600       # Timeout for Whisper transcription (seconds, default 1 hour)
+AUDIO_EXTRACTION_TIMEOUT = 300     # Timeout for audio extraction with ffmpeg (seconds, default 5 minutes)
 
 # Worker settings (event-driven processing)
 WORKER_USE_FILESYSTEM_WATCHER = True  # Use inotify-based watching instead of polling
