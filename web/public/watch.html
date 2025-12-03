@@ -15,6 +15,15 @@
             height: 100%;
             background: #000;
         }
+        /* Caption styling */
+        #player::cue {
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            font-size: 1.1em;
+            line-height: 1.4;
+            padding: 0.2em 0.5em;
+            border-radius: 4px;
+        }
     </style>
     <script>
         tailwind.config = {
@@ -78,9 +87,24 @@
                         :poster="video?.thumbnail_url"
                     >
                     </video>
-                    <!-- Quality Selector -->
-                    <div class="absolute bottom-16 right-4 z-10" x-show="hlsLevels.length > 1">
+                    <!-- Video Controls Overlay -->
+                    <div class="absolute bottom-16 right-4 z-10 flex gap-2">
+                        <!-- Captions Toggle -->
+                        <button
+                            x-show="video?.captions_url"
+                            @click="toggleCaptions()"
+                            :class="captionsEnabled ? 'bg-blue-600' : 'bg-dark-800/90'"
+                            class="text-white text-sm px-3 py-2 rounded border border-dark-600 cursor-pointer hover:bg-dark-700 flex items-center gap-1"
+                            title="Toggle captions"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                            </svg>
+                            <span>CC</span>
+                        </button>
+                        <!-- Quality Selector -->
                         <select
+                            x-show="hlsLevels.length > 1"
                             x-model="selectedQuality"
                             @change="changeQuality($event.target.value)"
                             class="bg-dark-800/90 text-white text-sm px-3 py-2 rounded border border-dark-600 cursor-pointer hover:bg-dark-700"
@@ -237,6 +261,8 @@
                 hls: null,
                 hlsLevels: [],
                 selectedQuality: '-1',
+                captionsEnabled: false,
+                captionsTrack: null,
 
                 async init() {
                     const slug = window.location.pathname.split('/').pop();
@@ -365,6 +391,42 @@
                             this.analytics.sendHeartbeat();
                         }
                     });
+
+                    // Add captions track if available
+                    if (this.video.captions_url) {
+                        this.addCaptionsTrack(video, this.video.captions_url);
+                    }
+                },
+
+                addCaptionsTrack(videoElement, captionsUrl) {
+                    // Create track element for captions
+                    const track = document.createElement('track');
+                    track.kind = 'captions';
+                    track.label = 'English';
+                    track.srclang = 'en';
+                    track.src = captionsUrl;
+
+                    videoElement.appendChild(track);
+                    this.captionsTrack = track;
+
+                    // Default to hidden
+                    track.track.mode = 'hidden';
+                    this.captionsEnabled = false;
+
+                    console.log('Captions track added:', captionsUrl);
+                },
+
+                toggleCaptions() {
+                    if (!this.captionsTrack) return;
+
+                    if (this.captionsEnabled) {
+                        this.captionsTrack.track.mode = 'hidden';
+                        this.captionsEnabled = false;
+                    } else {
+                        this.captionsTrack.track.mode = 'showing';
+                        this.captionsEnabled = true;
+                    }
+                    console.log('Captions:', this.captionsEnabled ? 'on' : 'off');
                 },
 
                 formatDuration(seconds) {

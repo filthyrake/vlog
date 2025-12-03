@@ -16,12 +16,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, UPLOADS_DIR, ADMIN_PORT
-from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, create_tables
+from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, create_tables
 from api.schemas import (
     VideoResponse, VideoListResponse, CategoryResponse, CategoryCreate,
     VideoQualityResponse, AnalyticsOverview, VideoAnalyticsSummary,
     VideoAnalyticsListResponse, VideoAnalyticsDetail, QualityBreakdown,
     DailyViews, TrendsResponse, TrendDataPoint,
+    TranscriptionResponse, TranscriptionTrigger, TranscriptionUpdate,
 )
 import sqlalchemy as sa
 from datetime import timedelta
@@ -366,6 +367,150 @@ async def retry_video(video_id: int):
     )
 
     return {"status": "ok", "message": "Video queued for retry"}
+
+
+# ============ Transcription ============
+
+@app.get("/api/videos/{video_id}/transcript")
+async def get_video_transcript(video_id: int) -> TranscriptionResponse:
+    """Get transcription status and text for a video."""
+    # Get video
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Get transcription record
+    transcription = await database.fetch_one(
+        transcriptions.select().where(transcriptions.c.video_id == video_id)
+    )
+
+    if not transcription:
+        return TranscriptionResponse(status="none")
+
+    vtt_url = None
+    if transcription["status"] == "completed" and transcription["vtt_path"]:
+        vtt_url = f"/videos/{video['slug']}/captions.vtt"
+
+    return TranscriptionResponse(
+        status=transcription["status"],
+        language=transcription["language"],
+        text=transcription["transcript_text"],
+        vtt_url=vtt_url,
+        word_count=transcription["word_count"],
+        duration_seconds=transcription["duration_seconds"],
+        started_at=transcription["started_at"],
+        completed_at=transcription["completed_at"],
+        error_message=transcription["error_message"],
+    )
+
+
+@app.post("/api/videos/{video_id}/transcribe")
+async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None):
+    """Manually trigger transcription for a video."""
+    # Get video
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if video["status"] != "ready":
+        raise HTTPException(status_code=400, detail="Video must be ready before transcription")
+
+    # Check if transcription already exists
+    existing = await database.fetch_one(
+        transcriptions.select().where(transcriptions.c.video_id == video_id)
+    )
+
+    if existing:
+        if existing["status"] == "processing":
+            raise HTTPException(status_code=400, detail="Transcription already in progress")
+
+        # Reset to pending for re-transcription
+        await database.execute(
+            transcriptions.update()
+            .where(transcriptions.c.video_id == video_id)
+            .values(
+                status="pending",
+                language=data.language if data else None,
+                started_at=None,
+                completed_at=None,
+                duration_seconds=None,
+                transcript_text=None,
+                vtt_path=None,
+                word_count=None,
+                error_message=None,
+            )
+        )
+        return {"status": "ok", "message": "Transcription queued for retry"}
+
+    # Create new transcription record
+    await database.execute(
+        transcriptions.insert().values(
+            video_id=video_id,
+            status="pending",
+            language=data.language if data else None,
+        )
+    )
+
+    return {"status": "ok", "message": "Transcription queued"}
+
+
+@app.put("/api/videos/{video_id}/transcript")
+async def update_transcript(video_id: int, data: TranscriptionUpdate):
+    """Manually edit/correct transcript text and regenerate VTT."""
+    # Get video
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Get transcription
+    transcription = await database.fetch_one(
+        transcriptions.select().where(transcriptions.c.video_id == video_id)
+    )
+
+    if not transcription:
+        raise HTTPException(status_code=404, detail="No transcription found for this video")
+
+    # Update transcript text
+    word_count = len(data.text.split())
+    await database.execute(
+        transcriptions.update()
+        .where(transcriptions.c.video_id == video_id)
+        .values(
+            transcript_text=data.text,
+            word_count=word_count,
+        )
+    )
+
+    return {"status": "ok", "message": "Transcript updated", "word_count": word_count}
+
+
+@app.delete("/api/videos/{video_id}/transcript")
+async def delete_transcript(video_id: int):
+    """Delete transcription and VTT file for a video."""
+    # Get video
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Get transcription
+    transcription = await database.fetch_one(
+        transcriptions.select().where(transcriptions.c.video_id == video_id)
+    )
+
+    if not transcription:
+        raise HTTPException(status_code=404, detail="No transcription found for this video")
+
+    # Delete VTT file if exists
+    vtt_path = VIDEOS_DIR / video["slug"] / "captions.vtt"
+    if vtt_path.exists():
+        vtt_path.unlink()
+
+    # Delete transcription record
+    await database.execute(
+        transcriptions.delete().where(transcriptions.c.video_id == video_id)
+    )
+
+    return {"status": "ok", "message": "Transcription deleted"}
 
 
 # ============ Analytics ============

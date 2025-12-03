@@ -1,0 +1,6 @@
+[Unit]
+Description=VLog Video Platform
+Wants=vlog-public.service vlog-admin.service vlog-worker.service vlog-transcription.service
+
+[Install]
+WantedBy=multi-user.target

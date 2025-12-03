@@ -7,3 +7,6 @@ sqlalchemy>=2.0.0
 python-slugify>=8.0.0
 aiofiles>=23.0.0
 httpx>=0.25.0
+
+# Transcription
+faster-whisper>=1.0.0

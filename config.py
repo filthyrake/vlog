@@ -35,3 +35,10 @@ MAX_RETRY_ATTEMPTS = 3
 RETRY_BACKOFF_BASE = 60           # seconds, doubles each retry
 CLEANUP_PARTIAL_ON_FAILURE = True
 KEEP_COMPLETED_QUALITIES = True   # on retry, don't re-transcode completed qualities
+
+# Transcription settings
+WHISPER_MODEL = "medium"           # tiny, base, small, medium, large-v3
+TRANSCRIPTION_ENABLED = True       # Enable/disable auto-transcription
+TRANSCRIPTION_LANGUAGE = None      # None for auto-detect, or "en", "es", etc.
+TRANSCRIPTION_ON_UPLOAD = True     # Auto-transcribe new uploads
+TRANSCRIPTION_COMPUTE_TYPE = "int8"  # float16, int8, int8_float16 (for faster-whisper)

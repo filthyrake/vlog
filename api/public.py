@@ -13,11 +13,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, PUBLIC_PORT
-from api.database import database, videos, categories, video_qualities, playback_sessions, transcoding_jobs, quality_progress
+from api.database import database, videos, categories, video_qualities, playback_sessions, transcoding_jobs, quality_progress, transcriptions
 from api.schemas import (
     VideoResponse, VideoListResponse, CategoryResponse, VideoQualityResponse,
     PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd, PlaybackSessionResponse,
-    TranscodingProgressResponse, QualityProgressResponse,
+    TranscodingProgressResponse, QualityProgressResponse, TranscriptionResponse,
 )
 import sqlalchemy as sa
 import uuid
@@ -178,6 +178,18 @@ async def get_video(slug: str) -> VideoResponse:
         for q in quality_rows
     ]
 
+    # Get transcription status
+    transcription_query = transcriptions.select().where(transcriptions.c.video_id == row["id"])
+    transcription_row = await database.fetch_one(transcription_query)
+
+    captions_url = None
+    transcription_status = None
+
+    if transcription_row:
+        transcription_status = transcription_row["status"]
+        if transcription_row["status"] == "completed" and transcription_row["vtt_path"]:
+            captions_url = f"/videos/{row['slug']}/captions.vtt"
+
     return VideoResponse(
         id=row["id"],
         title=row["title"],
@@ -195,6 +207,8 @@ async def get_video(slug: str) -> VideoResponse:
         published_at=row["published_at"],
         thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == "ready" else None,
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == "ready" else None,
+        captions_url=captions_url,
+        transcription_status=transcription_status,
         qualities=qualities,
     )
 
@@ -256,6 +270,40 @@ async def get_video_progress(slug: str) -> TranscodingProgressResponse:
         max_attempts=job["max_attempts"] or 3,
         started_at=job["started_at"],
         last_error=job["last_error"],
+    )
+
+
+@app.get("/api/videos/{slug}/transcript")
+async def get_transcript(slug: str) -> TranscriptionResponse:
+    """Get transcription status and text for a video."""
+    # Get video by slug
+    video_query = videos.select().where(videos.c.slug == slug)
+    video = await database.fetch_one(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Get transcription record
+    transcription_query = transcriptions.select().where(transcriptions.c.video_id == video["id"])
+    transcription = await database.fetch_one(transcription_query)
+
+    if not transcription:
+        return TranscriptionResponse(status="none")
+
+    vtt_url = None
+    if transcription["status"] == "completed" and transcription["vtt_path"]:
+        vtt_url = f"/videos/{slug}/captions.vtt"
+
+    return TranscriptionResponse(
+        status=transcription["status"],
+        language=transcription["language"],
+        text=transcription["transcript_text"],
+        vtt_url=vtt_url,
+        word_count=transcription["word_count"],
+        duration_seconds=transcription["duration_seconds"],
+        started_at=transcription["started_at"],
+        completed_at=transcription["completed_at"],
+        error_message=transcription["error_message"],
     )
 
 

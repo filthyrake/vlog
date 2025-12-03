@@ -47,6 +47,8 @@ class VideoResponse(BaseModel):
     published_at: Optional[datetime]
     thumbnail_url: Optional[str] = None
     stream_url: Optional[str] = None
+    captions_url: Optional[str] = None  # WebVTT captions URL
+    transcription_status: Optional[str] = None  # pending, processing, completed, failed
     qualities: List[VideoQualityResponse] = []
 
 
@@ -169,3 +171,24 @@ class TranscodingProgressResponse(BaseModel):
     max_attempts: int = 3
     started_at: Optional[datetime] = None
     last_error: Optional[str] = None
+
+
+# Transcription models
+class TranscriptionResponse(BaseModel):
+    status: str  # pending, processing, completed, failed
+    language: Optional[str] = None
+    text: Optional[str] = None
+    vtt_url: Optional[str] = None
+    word_count: Optional[int] = None
+    duration_seconds: Optional[float] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+
+class TranscriptionTrigger(BaseModel):
+    language: Optional[str] = None  # Optional language hint
+
+
+class TranscriptionUpdate(BaseModel):
+    text: str  # Manually corrected transcript text

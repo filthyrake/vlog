@@ -120,6 +120,28 @@ quality_progress = sa.Table(
     sa.UniqueConstraint("job_id", "quality", name="uq_job_quality"),
 )
 
+# Transcription tracking
+transcriptions = sa.Table(
+    "transcriptions",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False, unique=True),
+    # Status tracking
+    sa.Column("status", sa.String(20), nullable=False, default="pending"),  # pending, processing, completed, failed
+    sa.Column("language", sa.String(10), default="en"),  # detected or specified language
+    # Timing
+    sa.Column("started_at", sa.DateTime, nullable=True),
+    sa.Column("completed_at", sa.DateTime, nullable=True),
+    sa.Column("duration_seconds", sa.Float, nullable=True),  # how long transcription took
+    # Output
+    sa.Column("transcript_text", sa.Text, nullable=True),  # full transcript as plain text
+    sa.Column("vtt_path", sa.String(255), nullable=True),  # path to WebVTT file
+    # Metadata
+    sa.Column("word_count", sa.Integer, nullable=True),
+    # Error tracking
+    sa.Column("error_message", sa.Text, nullable=True),
+)
+
 
 def create_tables():
     """Create all tables in the database."""
