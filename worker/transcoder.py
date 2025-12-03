@@ -7,6 +7,7 @@ Supports crash recovery and per-quality progress tracking.
 """
 import asyncio
 import json
+import math
 import re
 import shutil
 import signal
@@ -57,6 +58,39 @@ def signal_handler(sig, frame):
     sig_name = signal.strsignal(sig) if hasattr(signal, 'strsignal') else str(sig)
     print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
     shutdown_requested = True
+
+
+def validate_duration(duration: Optional[float]) -> float:
+    """
+    Validate and normalize video duration from ffprobe.
+    
+    Args:
+        duration: Duration value from ffprobe (may be None, invalid, etc.)
+    
+    Returns:
+        Validated duration as float
+    
+    Raises:
+        ValueError: If duration is invalid, missing, or out of acceptable range
+    """
+    if duration is None:
+        raise ValueError("Could not determine video duration")
+    
+    if not isinstance(duration, (int, float)):
+        raise ValueError(f"Invalid duration type: {type(duration).__name__}")
+    
+    if math.isnan(duration) or math.isinf(duration):
+        raise ValueError(f"Invalid duration value: {duration}")
+    
+    if duration <= 0:
+        raise ValueError(f"Invalid duration: {duration} seconds (must be positive)")
+    
+    # Maximum duration: 1 week (604800 seconds)
+    # This prevents potential memory issues and catches corrupted metadata
+    if duration > 604800:
+        raise ValueError(f"Duration too long: {duration} seconds (max 1 week)")
+    
+    return float(duration)
 
 
 # ============================================================================
@@ -183,10 +217,16 @@ def get_video_info(input_path: Path) -> dict:
     if not video_stream:
         raise RuntimeError("No video stream found")
 
+    # Get and validate duration
+    raw_duration = data.get("format", {}).get("duration")
+    if raw_duration is not None:
+        raw_duration = float(raw_duration)
+    duration = validate_duration(raw_duration)
+
     return {
         "width": int(video_stream.get("width", 0)),
         "height": int(video_stream.get("height", 0)),
-        "duration": float(data.get("format", {}).get("duration", 0)),
+        "duration": duration,
         "codec": video_stream.get("codec_name", "unknown"),
     }
 
