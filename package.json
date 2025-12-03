@@ -1,0 +1,14 @@
+{
+  "name": "vlog",
+  "version": "1.0.0",
+  "description": "A lightweight, self-hosted video platform with 4K support, HLS streaming, and a clean modern UI.",
+  "private": true,
+  "scripts": {
+    "build:css": "tailwindcss -i web/input.css -o web/public/static/vendor/tailwind.css --minify && cp web/public/static/vendor/tailwind.css web/admin/static/vendor/tailwind.css",
+    "watch:css": "tailwindcss -i web/input.css -o web/public/static/vendor/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.17",
+    "tailwindcss": "^4.1.17"
+  }
+}
