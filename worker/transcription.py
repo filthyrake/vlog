@@ -21,6 +21,8 @@ from config import (
     TRANSCRIPTION_ENABLED,
     TRANSCRIPTION_LANGUAGE,
     TRANSCRIPTION_COMPUTE_TYPE,
+    TRANSCRIPTION_TIMEOUT,
+    AUDIO_EXTRACTION_TIMEOUT,
 )
 from api.database import database, videos, transcriptions
 
@@ -178,8 +180,10 @@ def _extract_quality(filename_stem: str) -> int:
         'master' -> 0
     """
     try:
-        # Remove 'p' suffix and parse as integer
-        return int(filename_stem.replace("p", ""))
+        # Only remove 'p' suffix, not all 'p' characters
+        if filename_stem.endswith('p'):
+            return int(filename_stem[:-1])
+        return 0
     except (ValueError, AttributeError):
         return 0
 
@@ -264,7 +268,7 @@ def extract_audio_to_wav(source_path: Path, output_path: Path) -> None:
             cmd,
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout for audio extraction
+            timeout=AUDIO_EXTRACTION_TIMEOUT
         )
         
         if result.returncode != 0:
@@ -272,7 +276,9 @@ def extract_audio_to_wav(source_path: Path, output_path: Path) -> None:
                 f"ffmpeg audio extraction failed: {result.stderr}"
             )
     except subprocess.TimeoutExpired:
-        raise RuntimeError("Audio extraction timed out after 5 minutes")
+        raise RuntimeError(
+            f"Audio extraction timed out after {AUDIO_EXTRACTION_TIMEOUT} seconds"
+        )
     except FileNotFoundError:
         raise RuntimeError("ffmpeg not found - required for audio extraction")
 
@@ -331,7 +337,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
                 temp_wav,
                 None  # language
             ),
-            timeout=3600  # 1 hour timeout for transcription
+            timeout=TRANSCRIPTION_TIMEOUT
         )
 
         # Generate WebVTT
@@ -361,7 +367,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         print(f"  Completed in {duration:.1f}s ({word_count} words, language: {result['language']})")
 
     except asyncio.TimeoutError:
-        error_msg = "Transcription timed out after 1 hour"
+        error_msg = f"Transcription timed out after {TRANSCRIPTION_TIMEOUT} seconds"
         print(f"  Error: {error_msg}")
         await update_transcription_status(
             transcription_id,
