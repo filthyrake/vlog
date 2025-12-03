@@ -340,7 +340,7 @@ async def analytics_heartbeat(data: PlaybackHeartbeat):
     session = await database.fetch_one(query)
 
     if not session:
-        return {"status": "session_not_found"}
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Calculate time since last update (heartbeats come every ~30s)
     duration_increment = 30.0 if data.playing else 0.0
@@ -378,7 +378,7 @@ async def end_analytics_session(data: PlaybackEnd):
     session = await database.fetch_one(query)
 
     if not session:
-        return {"status": "session_not_found"}
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Get video duration to determine if completed
     video_query = videos.select().where(videos.c.id == session["video_id"])
