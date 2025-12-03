@@ -34,7 +34,7 @@ dev = [
 vlog = "cli.main:main"
 
 [tool.setuptools.packages.find]
-include = ["api*", "worker*", "cli*"]
+include = ["api", "worker", "cli"]
 where = ["."]
 
 [tool.setuptools]
