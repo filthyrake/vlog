@@ -877,7 +877,13 @@ async def worker_loop():
                 if shutdown_requested:
                     print("Shutdown requested, stopping worker loop...")
                     break
-                await process_video_resumable(video["id"], video["slug"])
+                result = await process_video_resumable(video["id"], video["slug"])
+                if result:
+                    print(f"Successfully completed: {video['slug']}")
+                elif shutdown_requested:
+                    print(f"Shutdown interrupted: {video['slug']}")
+                else:
+                    print(f"Failed to process: {video['slug']}")
 
             # Periodic stale job check
             if not shutdown_requested and (datetime.utcnow() - last_stale_check).total_seconds() > stale_check_interval:
