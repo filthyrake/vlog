@@ -2,7 +2,6 @@
 Tests for transcoder utility functions.
 Tests pure functions that don't require ffmpeg.
 """
-import math
 import pytest
 from pathlib import Path
 

@@ -76,7 +76,7 @@ class TestVideosEndpoints:
         result = await test_database.fetch_all(
             videos.select().where(
                 (videos.c.status == VideoStatus.READY) &
-                (videos.c.deleted_at == None)
+                (videos.c.deleted_at.is_(None))
             )
         )
         assert len(result) == 0
@@ -298,8 +298,6 @@ class TestVideoFiltering:
     @pytest.mark.asyncio
     async def test_search_videos_by_title(self, test_database, sample_video):
         """Test searching videos by title."""
-        import sqlalchemy as sa
-
         search_term = "%Test%"
         query = (
             videos.select()
@@ -314,8 +312,6 @@ class TestVideoFiltering:
     @pytest.mark.asyncio
     async def test_search_videos_no_match(self, test_database, sample_video):
         """Test searching videos with no matches."""
-        import sqlalchemy as sa
-
         search_term = "%nonexistent%"
         query = (
             videos.select()

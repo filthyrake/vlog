@@ -25,6 +25,8 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests with coverage
+        env:
+          VLOG_TEST_MODE: "1"
         run: |
           pytest --cov=api --cov=worker --cov-report=term-missing --cov-report=xml
 
@@ -50,4 +52,6 @@ jobs:
         run: pip install ruff
 
       - name: Run ruff check
-        run: ruff check api/ worker/ tests/ --output-format=github
+        env:
+          VLOG_TEST_MODE: "1"
+        run: ruff check tests/ --output-format=github

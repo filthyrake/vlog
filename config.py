@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 # Paths
@@ -8,10 +9,14 @@ UPLOADS_DIR = NAS_STORAGE / "uploads"
 ARCHIVE_DIR = NAS_STORAGE / "archive"  # Soft-deleted videos go here
 DATABASE_PATH = BASE_DIR / "vlog.db"  # Keep DB local for performance
 
-# Ensure directories exist
-VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure directories exist (skip in test/CI environments)
+if not os.environ.get("VLOG_TEST_MODE"):
+    try:
+        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass  # CI environment without NAS access
 
 # Soft-delete settings
 ARCHIVE_RETENTION_DAYS = 30  # Days to keep archived videos before permanent deletion

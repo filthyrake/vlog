@@ -8,9 +8,9 @@ from pydantic import ValidationError
 from api.schemas import (
     CategoryCreate, CategoryResponse,
     VideoCreate, VideoResponse, VideoListResponse, VideoQualityResponse,
-    PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd, PlaybackSessionResponse,
-    AnalyticsOverview, VideoAnalyticsSummary, VideoAnalyticsListResponse,
-    QualityBreakdown, DailyViews, VideoAnalyticsDetail,
+    PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd,
+    AnalyticsOverview, VideoAnalyticsSummary,
+    QualityBreakdown, DailyViews,
     TrendDataPoint, TrendsResponse,
     QualityProgressResponse, TranscodingProgressResponse,
     TranscriptionResponse, TranscriptionTrigger, TranscriptionUpdate,
