@@ -51,6 +51,30 @@ def get_applicable_qualities(source_height: int) -> list:
     return [q for q in QUALITY_PRESETS if q["height"] <= source_height]
 
 
+def get_output_dimensions(segment_path: Path) -> tuple:
+    """Get actual dimensions from a transcoded segment file."""
+    cmd = [
+        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "json", str(segment_path)
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return (0, 0)
+    
+    try:
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+        if not streams:
+            return (0, 0)
+        stream = streams[0]
+        width = int(stream.get("width", 0))
+        height = int(stream.get("height", 0))
+        return (width, height)
+    except (json.JSONDecodeError, ValueError, KeyError):
+        return (0, 0)
+
+
 def generate_thumbnail(input_path: Path, output_path: Path, timestamp: float = 5.0):
     """Generate a thumbnail from the video."""
     cmd = [
@@ -105,17 +129,32 @@ def transcode_to_hls(input_path: Path, output_dir: Path, qualities: list) -> lis
             print(f"  Warning: Failed to transcode {name}: {result.stderr[:200]}")
             continue
 
-        # Get actual resolution from the output
+        # Get actual resolution from the transcoded output
+        first_segment = output_dir / f"{name}_0000.ts"
+        actual_width, actual_height = (0, 0)
+        
+        if first_segment.exists():
+            actual_width, actual_height = get_output_dimensions(first_segment)
+        
+        # Fallback to 16:9 if we couldn't get dimensions
+        if actual_width == 0 or actual_height == 0:
+            actual_width = int(height * 16 / 9)
+            if actual_width % 2 != 0:
+                actual_width += 1
+            actual_height = height
+
         variant_playlists.append({
             "name": name,
-            "height": height,
+            "width": actual_width,
+            "height": actual_height,
             "bitrate": int(bitrate.replace("k", "")) * 1000,
             "playlist": playlist_name,
         })
 
         generated.append({
             "quality": name,
-            "height": height,
+            "width": actual_width,
+            "height": actual_height,
             "bitrate": int(bitrate.replace("k", "")),
         })
 
@@ -123,11 +162,8 @@ def transcode_to_hls(input_path: Path, output_dir: Path, qualities: list) -> lis
     master_content = "#EXTM3U\n#EXT-X-VERSION:3\n\n"
     for variant in variant_playlists:
         bandwidth = variant["bitrate"]
+        resolution_width = variant["width"]
         resolution_height = variant["height"]
-        # Approximate width as 16:9
-        resolution_width = int(resolution_height * 16 / 9)
-        if resolution_width % 2 != 0:
-            resolution_width += 1
 
         master_content += f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={resolution_width}x{resolution_height}\n'
         master_content += f'{variant["playlist"]}\n'
@@ -197,16 +233,11 @@ async def process_video(video_id: int, video_slug: str):
 
         # Save quality info to database
         for q in generated:
-            # Estimate width from 16:9 aspect ratio
-            width = int(q["height"] * 16 / 9)
-            if width % 2 != 0:
-                width += 1
-
             await database.execute(
                 video_qualities.insert().values(
                     video_id=video_id,
                     quality=q["quality"],
-                    width=width,
+                    width=q["width"],
                     height=q["height"],
                     bitrate=q["bitrate"],
                 )
