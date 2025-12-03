@@ -47,9 +47,9 @@ CLEANUP_PARTIAL_ON_FAILURE = True
 KEEP_COMPLETED_QUALITIES = True   # on retry, don't re-transcode completed qualities
 
 # FFmpeg timeout settings (prevents stuck transcoding jobs)
-FFMPEG_TIMEOUT_MULTIPLIER = 5     # timeout = video_duration * multiplier
+FFMPEG_TIMEOUT_MULTIPLIER = 3     # timeout = video_duration * multiplier
 FFMPEG_TIMEOUT_MINIMUM = 300      # minimum timeout in seconds (5 minutes)
-FFMPEG_TIMEOUT_MAXIMUM = 14400    # maximum timeout in seconds (4 hours)
+FFMPEG_TIMEOUT_MAXIMUM = 3600     # maximum timeout in seconds (1 hour)
 
 # Transcription settings
 WHISPER_MODEL = "medium"           # tiny, base, small, medium, large-v3
