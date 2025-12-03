@@ -35,6 +35,10 @@ videos = sa.Table(
     sa.Column("error_message", sa.Text, nullable=True),
     sa.Column("created_at", sa.DateTime, default=datetime.utcnow),
     sa.Column("published_at", sa.DateTime, nullable=True),
+    sa.Index("ix_videos_status", "status"),
+    sa.Index("ix_videos_category_id", "category_id"),
+    sa.Index("ix_videos_created_at", "created_at"),
+    sa.Index("ix_videos_published_at", "published_at"),
 )
 
 # Available quality variants for each video
@@ -73,6 +77,9 @@ playback_sessions = sa.Table(
     sa.Column("max_position", sa.Float, default=0),  # furthest point reached
     sa.Column("quality_used", sa.String(10), nullable=True),  # primary quality
     sa.Column("completed", sa.Boolean, default=False),  # watched >= 90%
+    sa.Index("ix_playback_sessions_video_id", "video_id"),
+    sa.Index("ix_playback_sessions_started_at", "started_at"),
+    sa.Index("ix_playback_sessions_session_token", "session_token"),
 )
 
 # Transcoding jobs with checkpoint support
