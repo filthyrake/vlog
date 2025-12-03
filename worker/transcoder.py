@@ -68,7 +68,7 @@ def validate_duration(duration: Any) -> float:
     Validate and normalize video duration from ffprobe.
     
     Args:
-        duration: Duration value from ffprobe (can be None, string, int, float, etc.)
+        duration: Duration value from ffprobe (accepts any input type)
     
     Returns:
         Validated duration as float
@@ -84,7 +84,7 @@ def validate_duration(duration: Any) -> float:
         try:
             duration = float(duration)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"Could not convert duration to float: {duration}") from e
+            raise ValueError(f"Could not convert duration to float: {type(duration).__name__}") from e
     
     if math.isnan(duration) or math.isinf(duration):
         raise ValueError(f"Invalid duration value: {duration}")
