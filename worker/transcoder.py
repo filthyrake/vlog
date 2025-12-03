@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Callable, Tuple
+from typing import Optional, List, Callable, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -63,12 +63,12 @@ def signal_handler(sig, frame):
     shutdown_requested = True
 
 
-def validate_duration(duration: Optional[float]) -> float:
+def validate_duration(duration: Union[int, float, None]) -> float:
     """
     Validate and normalize video duration from ffprobe.
     
     Args:
-        duration: Duration value from ffprobe (may be None, invalid, etc.)
+        duration: Duration value from ffprobe (may be None, string, int, float, etc.)
     
     Returns:
         Validated duration as float
@@ -79,8 +79,12 @@ def validate_duration(duration: Optional[float]) -> float:
     if duration is None:
         raise ValueError("Could not determine video duration")
     
+    # Convert to float if possible
     if not isinstance(duration, (int, float)):
-        raise ValueError(f"Invalid duration type: {type(duration).__name__}")
+        try:
+            duration = float(duration)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid duration type: {type(duration).__name__}") from e
     
     if math.isnan(duration) or math.isinf(duration):
         raise ValueError(f"Invalid duration value: {duration}")
@@ -219,13 +223,8 @@ def get_video_info(input_path: Path) -> dict:
     if not video_stream:
         raise RuntimeError("No video stream found")
 
-    # Get and validate duration
+    # Get and validate duration (validate_duration handles conversion to float)
     raw_duration = data.get("format", {}).get("duration")
-    if raw_duration is not None:
-        try:
-            raw_duration = float(raw_duration)
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid duration format from ffprobe: {raw_duration}") from e
     duration = validate_duration(raw_duration)
 
     return {
