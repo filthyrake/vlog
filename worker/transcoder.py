@@ -54,6 +54,10 @@ new_upload_event = None  # Will be initialized as asyncio.Event in worker_loop
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 
+# Error message truncation limits for logging
+MAX_ERROR_SUMMARY_LENGTH = 100  # Characters per quality in total failure summary
+MAX_ERROR_DETAIL_LENGTH = 200   # Characters per quality in partial failure details
+
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -897,7 +901,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # Report results
         if not successful_qualities:
             # All quality variants failed
-            failed_summary = ", ".join([f"{q['name']}: {q['error'][:100]}" for q in failed_qualities])
+            failed_summary = ", ".join([f"{q['name']}: {q['error'][:MAX_ERROR_SUMMARY_LENGTH]}" for q in failed_qualities])
             error_message = f"All {len(failed_qualities)} quality variant(s) failed. Details: {failed_summary}"
             print(f"  FAILURE: {error_message}")
             raise RuntimeError(error_message)
@@ -906,7 +910,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             print(f"  WARNING: Partial transcoding success - {len(successful_qualities)}/{total_qualities} quality variants completed")
             print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
-                print(f"    - {failed['name']}: {failed['error'][:200]}")
+                print(f"    - {failed['name']}: {failed['error'][:MAX_ERROR_DETAIL_LENGTH]}")
 
         # ----------------------------------------------------------------
         # Step 4: Generate master playlist
