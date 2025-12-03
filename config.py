@@ -42,3 +42,8 @@ TRANSCRIPTION_ENABLED = True       # Enable/disable auto-transcription
 TRANSCRIPTION_LANGUAGE = None      # None for auto-detect, or "en", "es", etc.
 TRANSCRIPTION_ON_UPLOAD = True     # Auto-transcribe new uploads
 TRANSCRIPTION_COMPUTE_TYPE = "int8"  # float16, int8, int8_float16 (for faster-whisper)
+
+# Worker settings (event-driven processing)
+WORKER_USE_FILESYSTEM_WATCHER = True  # Use inotify-based watching instead of polling
+WORKER_FALLBACK_POLL_INTERVAL = 60    # Fallback poll interval in seconds (safety net)
+WORKER_DEBOUNCE_DELAY = 1.0           # Seconds to wait after file event before processing
