@@ -1,3 +1,7 @@
+# NOTE: This file is maintained for backward compatibility.
+# The canonical dependency list is in pyproject.toml
+# For development, use: pip install -e .
+
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 python-multipart>=0.0.6
