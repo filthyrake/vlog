@@ -3,7 +3,8 @@ Admin API - handles uploads and video management.
 Runs on port 9001 (not exposed externally).
 """
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +28,17 @@ from api.schemas import (
 import sqlalchemy as sa
 from datetime import timedelta
 
-app = FastAPI(title="VLog Admin", description="Video management API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application startup and shutdown."""
+    create_tables()
+    await database.connect()
+    yield
+    await database.disconnect()
+
+
+app = FastAPI(title="VLog Admin", description="Video management API", lifespan=lifespan)
 
 # Allow CORS for admin UI (same machine, different port)
 app.add_middleware(
@@ -44,17 +55,6 @@ app.mount("/videos", StaticFiles(directory=str(VIDEOS_DIR)), name="videos")
 # Serve admin web files
 WEB_DIR = Path(__file__).parent.parent / "web" / "admin"
 app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
-
-
-@app.on_event("startup")
-async def startup():
-    create_tables()
-    await database.connect()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await database.disconnect()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -136,8 +136,8 @@ async def delete_category(category_id: int):
 @app.get("/api/videos")
 async def list_all_videos(
     status: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(default=100, ge=1, le=500, description="Max items per page"),
+    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
 ) -> List[VideoListResponse]:
     """List all videos (including non-ready ones for admin)."""
     query = (
@@ -597,8 +597,8 @@ async def analytics_overview() -> AnalyticsOverview:
 
 @app.get("/api/analytics/videos")
 async def analytics_videos(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
+    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
     sort_by: str = "views",
     period: str = "all",
 ) -> VideoAnalyticsListResponse:

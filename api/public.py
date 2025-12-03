@@ -3,7 +3,8 @@ Public API - serves the video browsing interface.
 Runs on port 9000.
 """
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Response
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Response, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +24,16 @@ import sqlalchemy as sa
 import uuid
 from datetime import datetime
 
-app = FastAPI(title="VLog", description="Self-hosted video platform")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application startup and shutdown."""
+    await database.connect()
+    yield
+    await database.disconnect()
+
+
+app = FastAPI(title="VLog", description="Self-hosted video platform", lifespan=lifespan)
 
 # CORS middleware for HLS playback and analytics
 app.add_middleware(
@@ -59,16 +69,6 @@ WEB_DIR = Path(__file__).parent.parent / "web" / "public"
 app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
 
-@app.on_event("startup")
-async def startup():
-    await database.connect()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await database.disconnect()
-
-
 @app.get("/", response_class=HTMLResponse)
 async def home():
     """Serve the main page."""
@@ -91,8 +91,8 @@ async def category_page(slug: str):
 async def list_videos(
     category: Optional[str] = None,
     search: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
+    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
 ) -> List[VideoListResponse]:
     """List all published videos."""
     query = (
