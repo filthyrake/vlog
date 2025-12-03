@@ -397,18 +397,136 @@ async def transcode_quality_with_progress(
     return True, None
 
 
+async def create_original_quality(
+    input_path: Path,
+    output_dir: Path,
+    duration: float,
+    progress_callback: Optional[Callable[[int], None]] = None
+) -> Tuple[bool, Optional[str], Optional[dict]]:
+    """
+    Create 'original' quality by remuxing source to HLS without re-encoding.
+    Preserves original video/audio quality with no generation loss.
+
+    Returns:
+        Tuple[bool, Optional[str], Optional[dict]]: (success, error_message, quality_info)
+        where quality_info contains width, height, bitrate for the master playlist.
+    """
+    playlist_name = "original.m3u8"
+    segment_pattern = "original_%04d.ts"
+
+    # Calculate timeout based on duration (remuxing is much faster than transcoding)
+    timeout = calculate_ffmpeg_timeout(duration) / 3  # Remux is ~3x faster
+    timeout = max(FFMPEG_TIMEOUT_MINIMUM, timeout)
+    print(f"      Timeout set to {timeout:.0f}s ({timeout/60:.1f} min) for remux")
+
+    # Use copy codec to remux without re-encoding
+    cmd = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-c:v", "copy",  # Copy video stream as-is
+        "-c:a", "copy",  # Copy audio stream as-is
+        "-hls_time", str(HLS_SEGMENT_DURATION),
+        "-hls_list_size", "0",
+        "-hls_segment_filename", str(output_dir / segment_pattern),
+        "-progress", "pipe:1",
+        "-f", "hls",
+        str(output_dir / playlist_name)
+    ]
+
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    last_progress_update = 0
+    start_time = asyncio.get_event_loop().time()
+
+    async def read_progress():
+        nonlocal last_progress_update
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            line_str = line.decode('utf-8', errors='ignore').strip()
+            if line_str.startswith('out_time_ms='):
+                try:
+                    time_ms = int(line_str.split('=')[1])
+                    current_seconds = time_ms / 1000000.0
+                    if duration > 0:
+                        progress = min(100, int(current_seconds / duration * 100))
+                        if progress > last_progress_update:
+                            last_progress_update = progress
+                            if progress_callback:
+                                await progress_callback(progress)
+                except (ValueError, IndexError):
+                    pass
+
+    try:
+        await asyncio.wait_for(read_progress(), timeout=timeout)
+        await process.wait()
+    except asyncio.TimeoutError:
+        elapsed = asyncio.get_event_loop().time() - start_time
+        print(f"  TIMEOUT: ffmpeg remux exceeded {timeout:.0f}s limit")
+        try:
+            process.kill()
+            await process.wait()
+        except ProcessLookupError:
+            pass
+        return False, f"Remux timed out after {elapsed:.0f} seconds", None
+
+    if process.returncode != 0:
+        stderr = await process.stderr.read()
+        error_msg = stderr.decode('utf-8', errors='ignore')
+        print(f"  ERROR: Failed to create original quality")
+        return False, error_msg, None
+
+    # Get the actual bitrate from the source for master playlist
+    # We'll estimate based on file size and duration
+    try:
+        source_size = input_path.stat().st_size
+        bitrate_bps = int((source_size * 8) / duration) if duration > 0 else 10000000
+    except Exception:
+        bitrate_bps = 10000000  # Default 10Mbps if can't calculate
+
+    return True, None, {"bitrate_bps": bitrate_bps}
+
+
 def generate_master_playlist(output_dir: Path, completed_qualities: List[dict]):
-    """Generate master HLS playlist from completed quality variants."""
+    """Generate master HLS playlist from completed quality variants.
+
+    Qualities are sorted by bandwidth (highest first) so players pick the best quality.
+    The 'original' quality uses bitrate_bps if available, others use bitrate string.
+    """
     master_content = "#EXTM3U\n#EXT-X-VERSION:3\n\n"
 
+    # Calculate bandwidth for each quality and sort by bandwidth (highest first)
+    qualities_with_bandwidth = []
     for quality in completed_qualities:
         name = quality["name"]
         width = quality["width"]
         height = quality["height"]
-        bitrate = int(quality["bitrate"].replace("k", "")) * 1000
 
-        master_content += f'#EXT-X-STREAM-INF:BANDWIDTH={bitrate},RESOLUTION={width}x{height}\n'
-        master_content += f'{name}.m3u8\n'
+        # Handle original quality (has bitrate_bps) vs transcoded (has bitrate string)
+        if quality.get("is_original") and quality.get("bitrate_bps"):
+            bandwidth = quality["bitrate_bps"]
+        elif quality.get("bitrate_bps"):
+            bandwidth = quality["bitrate_bps"]
+        else:
+            bandwidth = int(quality["bitrate"].replace("k", "")) * 1000
+
+        qualities_with_bandwidth.append({
+            "name": name,
+            "width": width,
+            "height": height,
+            "bandwidth": bandwidth,
+        })
+
+    # Sort by bandwidth descending (highest quality first)
+    qualities_with_bandwidth.sort(key=lambda q: q["bandwidth"], reverse=True)
+
+    for quality in qualities_with_bandwidth:
+        master_content += f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},RESOLUTION={quality["width"]}x{quality["height"]}\n'
+        master_content += f'{quality["name"]}.m3u8\n'
 
     (output_dir / "master.m3u8").write_text(master_content)
 
@@ -428,8 +546,8 @@ async def cleanup_partial_output(video_slug: str, keep_completed_qualities: bool
 
     # Selective cleanup - keep completed quality files
     for file in output_dir.iterdir():
-        # Match quality files like "1080p.m3u8" or "1080p_0001.ts"
-        quality_match = re.match(r'(\d+p)(_\d+\.ts|\.m3u8)$', file.name)
+        # Match quality files like "1080p.m3u8", "1080p_0001.ts", "original.m3u8", "original_0001.ts"
+        quality_match = re.match(r'(\d+p|original)(_\d+\.ts|\.m3u8)$', file.name)
         if quality_match:
             quality = quality_match.group(1)
             if quality not in completed_quality_names:
@@ -828,18 +946,91 @@ async def process_video_resumable(video_id: int, video_slug: str):
         if not qualities:
             qualities = [QUALITY_PRESETS[-1]]
 
-        print(f"  Step 3: Transcoding to: {[q['name'] for q in qualities]}")
+        # Add "original" as a pseudo-quality for tracking
+        original_quality = {"name": "original", "height": info["height"], "bitrate": "0k", "audio_bitrate": "0k"}
+        all_qualities_for_tracking = [original_quality] + qualities
 
-        # Initialize quality progress records
-        await init_quality_progress(job_id, qualities)
+        print(f"  Step 3: Creating original + transcoding to: {[q['name'] for q in qualities]}")
+
+        # Initialize quality progress records (including original)
+        await init_quality_progress(job_id, all_qualities_for_tracking)
 
         successful_qualities = []
         failed_qualities = []
-        total_qualities = len(qualities)
+        total_qualities = len(qualities) + 1  # +1 for original
+
+        # ----------------------------------------------------------------
+        # Step 3a: Create "original" quality (remux without re-encoding)
+        # ----------------------------------------------------------------
+        original_status = await get_quality_status(job_id, "original")
+        if original_status and original_status["status"] == QualityStatus.COMPLETED:
+            print(f"    original: Already completed, skipping...")
+            # Add to successful with source dimensions
+            successful_qualities.append({
+                "name": "original",
+                "width": info["width"],
+                "height": info["height"],
+                "bitrate": "0k",  # Will be calculated from file size
+                "is_original": True,
+            })
+        elif (output_dir / "original.m3u8").exists():
+            print(f"    original: Found existing playlist, marking complete...")
+            await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
+            successful_qualities.append({
+                "name": "original",
+                "width": info["width"],
+                "height": info["height"],
+                "bitrate": "0k",
+                "is_original": True,
+            })
+        else:
+            print(f"    original: Remuxing source to HLS (no re-encoding)...")
+            await update_quality_status(job_id, "original", QualityStatus.IN_PROGRESS)
+
+            async def original_progress_cb(progress: int):
+                await update_quality_progress(job_id, "original", progress)
+                # Original is first, so its progress is direct
+                overall = int(progress / total_qualities)
+                await update_job_progress(job_id, overall)
+
+            try:
+                success, error_detail, quality_info = await create_original_quality(
+                    source_file, output_dir, info["duration"], original_progress_cb
+                )
+
+                if success:
+                    await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
+                    successful_qualities.append({
+                        "name": "original",
+                        "width": info["width"],
+                        "height": info["height"],
+                        "bitrate": "0k",
+                        "bitrate_bps": quality_info["bitrate_bps"] if quality_info else 0,
+                        "is_original": True,
+                    })
+                    print(f"    original: Done ({info['width']}x{info['height']})")
+                else:
+                    error_msg = error_detail or "Remux failed"
+                    await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
+                    failed_qualities.append({"name": "original", "error": error_msg})
+                    print(f"    original: Failed - {error_msg[:100]}")
+            except Exception as e:
+                error_msg = str(e)
+                await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
+                failed_qualities.append({"name": "original", "error": error_msg})
+                print(f"    original: Error - {e}")
+
+            await checkpoint(job_id)
+
+        # ----------------------------------------------------------------
+        # Step 3b: Transcode to lower qualities
+        # ----------------------------------------------------------------
 
         for idx, quality in enumerate(qualities):
             quality_name = quality["name"]
-            
+            # idx+1 because original is index 0
+            quality_idx = idx + 1
+
             # Check for shutdown before processing each quality
             if shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
@@ -893,10 +1084,10 @@ async def process_video_resumable(video_id: int, video_slug: str):
             print(f"    {quality_name}: Transcoding...")
             await update_quality_status(job_id, quality_name, QualityStatus.IN_PROGRESS)
 
-            async def progress_cb(progress: int):
-                await update_quality_progress(job_id, quality_name, progress)
-                # Update overall progress
-                base_progress = int((idx / total_qualities) * 100)
+            async def progress_cb(progress: int, q_idx=quality_idx, q_name=quality_name):
+                await update_quality_progress(job_id, q_name, progress)
+                # Update overall progress (original is done, so start from quality_idx)
+                base_progress = int((q_idx / total_qualities) * 100)
                 quality_contribution = int((progress / 100) * (100 / total_qualities))
                 overall = base_progress + quality_contribution
                 await update_job_progress(job_id, overall)
@@ -997,9 +1188,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # Mark job completed
         await mark_job_completed(job_id)
 
-        # Clean up source file
-        source_file.unlink()
-        print(f"  Done! Video is ready.")
+        # NOTE: Source file is intentionally kept for potential future re-transcoding
+        # (e.g., if new quality presets are added or original quality is needed)
+        print(f"  Done! Video is ready. Source file preserved at: {source_file}")
         return True
 
     except Exception as e:
