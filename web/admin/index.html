@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VLog Admin</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
+    <script src="/static/js/utils.js"></script>
     <script defer src="/static/vendor/alpine.min.js"></script>
     <style>
         [x-cloak] { display: none !important; }
@@ -835,14 +836,7 @@
                 },
 
                 formatDuration(seconds) {
-                    if (!seconds) return '-';
-                    const h = Math.floor(seconds / 3600);
-                    const m = Math.floor((seconds % 3600) / 60);
-                    const s = Math.floor(seconds % 60);
-                    if (h > 0) {
-                        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                    }
-                    return `${m}:${s.toString().padStart(2, '0')}`;
+                    return VLogUtils.formatDuration(seconds, '-');
                 },
 
                 // Analytics methods

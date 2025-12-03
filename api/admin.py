@@ -36,6 +36,7 @@ from api.schemas import (
     TranscriptionResponse, TranscriptionTrigger, TranscriptionUpdate,
     TranscodingProgressResponse, QualityProgressResponse,
 )
+from api.errors import sanitize_error_message, sanitize_progress_error
 import sqlalchemy as sa
 from datetime import timedelta
 
@@ -288,7 +289,7 @@ async def get_video(video_id: int) -> VideoResponse:
         source_width=row["source_width"],
         source_height=row["source_height"],
         status=row["status"],
-        error_message=row["error_message"],
+        error_message=sanitize_error_message(row["error_message"], context=f"video_id={video_id}"),
         created_at=row["created_at"],
         published_at=row["published_at"],
         thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
@@ -712,7 +713,7 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
         return TranscodingProgressResponse(
             status=video["status"],
             progress_percent=100 if video["status"] == VideoStatus.READY else 0,
-            last_error=video["error_message"] if video["status"] == VideoStatus.FAILED else None,
+            last_error=sanitize_progress_error(video["error_message"]) if video["status"] == VideoStatus.FAILED else None,
         )
 
     # If pending, return basic pending status
@@ -755,7 +756,7 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
         attempt=job["attempt_number"] or 1,
         max_attempts=job["max_attempts"] or 3,
         started_at=job["started_at"],
-        last_error=job["last_error"],
+        last_error=sanitize_progress_error(job["last_error"]),
     )
 
 
@@ -790,7 +791,7 @@ async def get_video_transcript(video_id: int) -> TranscriptionResponse:
         duration_seconds=transcription["duration_seconds"],
         started_at=transcription["started_at"],
         completed_at=transcription["completed_at"],
-        error_message=transcription["error_message"],
+        error_message=sanitize_error_message(transcription["error_message"], context=f"video_id={video_id}"),
     )
 
 
