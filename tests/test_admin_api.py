@@ -35,8 +35,6 @@ class TestCategoryManagement:
     @pytest.mark.asyncio
     async def test_create_category_duplicate_slug_fails(self, test_database, sample_category):
         """Test creating category with duplicate slug fails."""
-        import sqlite3
-
         with pytest.raises(Exception):  # sqlite3.IntegrityError wrapped
             await test_database.execute(
                 categories.insert().values(
@@ -106,7 +104,7 @@ class TestVideoManagement:
             )
 
         result = await test_database.fetch_all(
-            videos.select().where(videos.c.deleted_at == None)
+            videos.select().where(videos.c.deleted_at.is_(None))
         )
         assert len(result) == 4
 
@@ -380,7 +378,7 @@ class TestAnalyticsAdmin:
         count = await test_database.fetch_val(
             sa.select(sa.func.count())
             .select_from(playback_sessions)
-            .where(playback_sessions.c.completed == True)
+            .where(playback_sessions.c.completed.is_(True))
         )
         assert count == 1
 
@@ -505,7 +503,7 @@ class TestArchivedVideos:
         )
 
         result = await test_database.fetch_all(
-            videos.select().where(videos.c.deleted_at != None)
+            videos.select().where(videos.c.deleted_at.isnot(None))
         )
         assert len(result) == 3
 
@@ -539,7 +537,7 @@ class TestArchivedVideos:
         result = await test_database.fetch_all(
             videos.select().where(
                 (videos.c.status == VideoStatus.READY) &
-                (videos.c.deleted_at == None)
+                (videos.c.deleted_at.is_(None))
             )
         )
         assert len(result) == 1

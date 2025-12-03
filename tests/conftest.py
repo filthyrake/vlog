@@ -4,10 +4,11 @@ Provides test database, test clients, and sample data.
 """
 import asyncio
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator, AsyncGenerator
+from typing import AsyncGenerator
 
 import pytest
 import sqlalchemy as sa
@@ -18,11 +19,12 @@ _test_temp_dir = tempfile.mkdtemp()
 os.environ["VLOG_TEST_MODE"] = "1"
 
 # Import config and override paths for testing
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from api.database import metadata, categories, videos, video_qualities, playback_sessions, viewers, transcoding_jobs, quality_progress, transcriptions
-from api.enums import VideoStatus
+from api.database import (  # noqa: E402
+    metadata, categories, videos, video_qualities, playback_sessions
+)
+from api.enums import VideoStatus  # noqa: E402
 
 
 # Test database path
