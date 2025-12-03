@@ -7,6 +7,7 @@ Supports crash recovery and per-quality progress tracking.
 """
 import asyncio
 import json
+import math
 import re
 import shutil
 import signal
@@ -16,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Callable, Tuple
+from typing import Optional, List, Callable, Tuple, Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -50,6 +51,9 @@ shutdown_requested = False
 # Global event for signaling new uploads (used by filesystem watcher)
 new_upload_event = None  # Will be initialized as asyncio.Event in worker_loop
 
+# Maximum video duration allowed (1 week in seconds)
+MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
+
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -57,6 +61,42 @@ def signal_handler(sig, frame):
     sig_name = signal.strsignal(sig) if hasattr(signal, 'strsignal') else str(sig)
     print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
     shutdown_requested = True
+
+
+def validate_duration(duration: Any) -> float:
+    """
+    Validate and normalize video duration from ffprobe.
+    
+    Args:
+        duration: Duration value from ffprobe (accepts any input type)
+    
+    Returns:
+        Validated duration as float
+    
+    Raises:
+        ValueError: If duration is invalid, missing, or out of acceptable range
+    """
+    if duration is None:
+        raise ValueError("Could not determine video duration")
+    
+    # Convert to float if possible
+    if not isinstance(duration, (int, float)):
+        try:
+            duration = float(duration)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Could not convert duration to float: {type(duration).__name__}") from e
+    
+    if math.isnan(duration) or math.isinf(duration):
+        raise ValueError(f"Invalid duration value: {duration}")
+    
+    if duration <= 0:
+        raise ValueError(f"Invalid duration: {duration} seconds (must be positive)")
+    
+    # Prevent potential memory issues and catch corrupted metadata
+    if duration > MAX_DURATION_SECONDS:
+        raise ValueError(f"Duration too long: {duration} seconds (max {MAX_DURATION_SECONDS})")
+    
+    return float(duration)
 
 
 # ============================================================================
@@ -183,10 +223,14 @@ def get_video_info(input_path: Path) -> dict:
     if not video_stream:
         raise RuntimeError("No video stream found")
 
+    # Get and validate duration (validate_duration handles conversion to float)
+    raw_duration = data.get("format", {}).get("duration")
+    duration = validate_duration(raw_duration)
+
     return {
         "width": int(video_stream.get("width", 0)),
         "height": int(video_stream.get("height", 0)),
-        "duration": float(data.get("format", {}).get("duration", 0)),
+        "duration": duration,
         "codec": video_stream.get("codec_name", "unknown"),
     }
 
