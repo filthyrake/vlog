@@ -39,10 +39,13 @@ app.add_middleware(
 class HLSStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope) -> Response:
         response = await super().get_response(path, scope)
-        # Add cache headers for HLS segments
+        # Fix MIME types and cache headers for HLS
         if path.endswith('.ts'):
+            # CRITICAL: .ts files are MPEG Transport Stream, not TypeScript/Qt Linguist
+            response.headers["Content-Type"] = "video/mp2t"
             response.headers["Cache-Control"] = "public, max-age=31536000"
         elif path.endswith('.m3u8'):
+            response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
             response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -281,9 +284,11 @@ async def analytics_heartbeat(data: PlaybackHeartbeat):
     # Calculate time since last update (heartbeats come every ~30s)
     duration_increment = 30.0 if data.playing else 0.0
 
-    # Update session
-    new_duration = session["duration_watched"] + duration_increment
-    new_max_position = max(session["max_position"], data.position)
+    # Update session (handle None values from fresh sessions)
+    current_duration = session["duration_watched"] or 0.0
+    current_max_position = session["max_position"] or 0.0
+    new_duration = current_duration + duration_increment
+    new_max_position = max(current_max_position, data.position)
 
     update_values = {
         "duration_watched": new_duration,
@@ -325,13 +330,14 @@ async def end_analytics_session(data: PlaybackEnd):
         if percent_watched >= 0.9:
             completed = True
 
-    # Final update
+    # Final update (handle None values from fresh sessions)
+    current_max_position = session["max_position"] or 0.0
     await database.execute(
         playback_sessions.update()
         .where(playback_sessions.c.session_token == data.session_token)
         .values(
             ended_at=datetime.utcnow(),
-            max_position=max(session["max_position"], data.position),
+            max_position=max(current_max_position, data.position),
             completed=completed,
         )
     )

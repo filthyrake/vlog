@@ -6,16 +6,14 @@
     <title>Watch - Damen's VLog</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <!-- Video.js -->
-    <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet">
-    <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
+    <!-- hls.js for HLS playback -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
     <style>
         [x-cloak] { display: none !important; }
-        .video-js { width: 100%; height: 100%; }
-        .video-js .vjs-big-play-button {
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
+        #player {
+            width: 100%;
+            height: 100%;
+            background: #000;
         }
     </style>
     <script>
@@ -71,15 +69,28 @@
         <div x-show="!loading && !error && video" x-cloak>
             <!-- Video Player -->
             <div class="bg-black rounded-xl overflow-hidden mb-6">
-                <div class="aspect-video">
+                <div class="aspect-video relative">
                     <video
                         id="player"
-                        class="video-js vjs-default-skin vjs-big-play-centered"
                         controls
                         preload="auto"
+                        playsinline
                         :poster="video?.thumbnail_url"
                     >
                     </video>
+                    <!-- Quality Selector -->
+                    <div class="absolute bottom-16 right-4 z-10" x-show="hlsLevels.length > 1">
+                        <select
+                            x-model="selectedQuality"
+                            @change="changeQuality($event.target.value)"
+                            class="bg-dark-800/90 text-white text-sm px-3 py-2 rounded border border-dark-600 cursor-pointer hover:bg-dark-700"
+                        >
+                            <option value="-1">Auto</option>
+                            <template x-for="(level, index) in hlsLevels" :key="index">
+                                <option :value="index" x-text="level.height + 'p'"></option>
+                            </template>
+                        </select>
+                    </div>
                 </div>
             </div>
 
@@ -223,6 +234,9 @@
                 error: null,
                 player: null,
                 analytics: null,
+                hls: null,
+                hlsLevels: [],
+                selectedQuality: '-1',
 
                 async init() {
                     const slug = window.location.pathname.split('/').pop();
@@ -259,33 +273,84 @@
                 },
 
                 initPlayer() {
-                    this.player = videojs('player', {
-                        fluid: true,
-                        responsive: true,
-                        playbackRates: [0.5, 1, 1.25, 1.5, 2],
-                        html5: {
-                            vhs: {
-                                overrideNative: true
-                            }
-                        }
-                    });
+                    const self = this;
+                    const video = document.getElementById('player');
+                    const streamUrl = this.video.stream_url;
 
-                    this.player.src({
-                        src: this.video.stream_url,
-                        type: 'application/x-mpegURL'
-                    });
+                    console.log('Initializing hls.js with source:', streamUrl);
+
+                    if (Hls.isSupported()) {
+                        console.log('hls.js is supported');
+                        this.hls = new Hls({
+                            debug: false,
+                            enableWorker: false,  // Disable worker to avoid DataCloneError on quality switch
+                            lowLatencyMode: false,
+                        });
+
+                        this.hls.loadSource(streamUrl);
+                        this.hls.attachMedia(video);
+
+                        this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+                            console.log('HLS manifest parsed, levels:', data.levels);
+                            // Populate quality levels for selector (sorted by height descending)
+                            this.hlsLevels = data.levels.slice().sort((a, b) => b.height - a.height);
+                        });
+
+                        this.hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+                            console.log('Level loaded:', data.level);
+                        });
+
+                        this.hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
+                            console.log('Fragment loaded:', data.frag.sn);
+                        });
+
+                        this.hls.on(Hls.Events.ERROR, (event, data) => {
+                            console.error('HLS error:', data.type, data.details, data);
+                            if (data.fatal) {
+                                switch (data.type) {
+                                    case Hls.ErrorTypes.NETWORK_ERROR:
+                                        console.error('Fatal network error, trying to recover...');
+                                        this.hls.startLoad();
+                                        break;
+                                    case Hls.ErrorTypes.MEDIA_ERROR:
+                                        console.error('Fatal media error, trying to recover...');
+                                        this.hls.recoverMediaError();
+                                        break;
+                                    default:
+                                        console.error('Fatal error, cannot recover');
+                                        this.hls.destroy();
+                                        this.error = `Playback error: ${data.details}`;
+                                        break;
+                                }
+                            }
+                        });
+
+                        this.player = video;
+                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                        // Safari has native HLS support
+                        console.log('Using native HLS support');
+                        video.src = streamUrl;
+                        this.player = video;
+                    } else {
+                        this.error = 'HLS playback not supported in this browser';
+                        return;
+                    }
 
                     // Initialize analytics
-                    this.analytics = new PlaybackAnalytics(this.video.id, this.player);
-
-                    // Start session on first play
-                    this.player.one('play', () => {
-                        const quality = this.analytics.getCurrentQuality();
-                        this.analytics.startSession(quality);
+                    this.analytics = new PlaybackAnalytics(this.video.id, {
+                        currentTime: () => video.currentTime,
+                        paused: () => video.paused,
+                        qualityLevels: () => this.hls ? this.hls.levels : null
                     });
 
+                    // Start session on first play (use once: true for one-time listener)
+                    video.addEventListener('play', () => {
+                        const quality = this.hls?.levels?.[this.hls.currentLevel]?.height + 'p' || 'auto';
+                        this.analytics.startSession(quality);
+                    }, { once: true });
+
                     // End session on video complete
-                    this.player.on('ended', () => {
+                    video.addEventListener('ended', () => {
                         this.analytics.endSession(true);
                     });
 
@@ -320,6 +385,25 @@
                         month: 'long',
                         day: 'numeric'
                     });
+                },
+
+                changeQuality(levelIndex) {
+                    if (!this.hls) return;
+                    const idx = parseInt(levelIndex, 10);
+                    if (idx === -1) {
+                        // Auto quality - let hls.js decide
+                        this.hls.nextLevel = -1;
+                        console.log('Quality set to auto');
+                    } else {
+                        // Find the actual hls.js level index for this height
+                        const targetLevel = this.hlsLevels[idx];
+                        const hlsIndex = this.hls.levels.findIndex(l => l.height === targetLevel.height);
+                        if (hlsIndex !== -1) {
+                            // Use nextLevel for smooth switching (waits for current segment to finish)
+                            this.hls.nextLevel = hlsIndex;
+                            console.log('Quality set to', targetLevel.height + 'p');
+                        }
+                    }
                 }
             };
         }
