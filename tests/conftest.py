@@ -1,0 +1,280 @@
+"""
+Pytest fixtures for VLog tests.
+Provides test database, test clients, and sample data.
+"""
+import asyncio
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Generator, AsyncGenerator
+
+import pytest
+import sqlalchemy as sa
+from databases import Database
+
+# Set up test paths BEFORE importing config
+_test_temp_dir = tempfile.mkdtemp()
+os.environ["VLOG_TEST_MODE"] = "1"
+
+# Import config and override paths for testing
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from api.database import metadata, categories, videos, video_qualities, playback_sessions, viewers, transcoding_jobs, quality_progress, transcriptions
+from api.enums import VideoStatus
+
+
+# Test database path
+TEST_DB_PATH = Path(_test_temp_dir) / "test_vlog.db"
+TEST_DB_URL = f"sqlite:///{TEST_DB_PATH}"
+
+# Test storage paths
+TEST_VIDEOS_DIR = Path(_test_temp_dir) / "videos"
+TEST_UPLOADS_DIR = Path(_test_temp_dir) / "uploads"
+TEST_ARCHIVE_DIR = Path(_test_temp_dir) / "archive"
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Create an instance of the default event loop for each test case."""
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest.fixture(scope="function")
+def test_db_path(tmp_path: Path) -> Path:
+    """Create a unique test database path for each test."""
+    return tmp_path / "test_vlog.db"
+
+
+@pytest.fixture(scope="function")
+def test_storage(tmp_path: Path) -> dict:
+    """Create test storage directories."""
+    videos_dir = tmp_path / "videos"
+    uploads_dir = tmp_path / "uploads"
+    archive_dir = tmp_path / "archive"
+
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "videos": videos_dir,
+        "uploads": uploads_dir,
+        "archive": archive_dir,
+    }
+
+
+@pytest.fixture(scope="function")
+async def test_database(test_db_path: Path) -> AsyncGenerator[Database, None]:
+    """Create a fresh test database for each test."""
+    db_url = f"sqlite:///{test_db_path}"
+
+    # Create tables using sync engine
+    engine = sa.create_engine(db_url)
+    metadata.create_all(engine)
+    engine.dispose()
+
+    # Connect async database
+    database = Database(db_url)
+    await database.connect()
+
+    yield database
+
+    await database.disconnect()
+
+    # Clean up
+    if test_db_path.exists():
+        test_db_path.unlink()
+
+
+@pytest.fixture(scope="function")
+async def sample_category(test_database: Database) -> dict:
+    """Create a sample category for testing."""
+    now = datetime.now(timezone.utc)
+    result = await test_database.execute(
+        categories.insert().values(
+            name="Test Category",
+            slug="test-category",
+            description="A test category",
+            created_at=now,
+        )
+    )
+    return {
+        "id": result,
+        "name": "Test Category",
+        "slug": "test-category",
+        "description": "A test category",
+        "created_at": now,
+    }
+
+
+@pytest.fixture(scope="function")
+async def sample_video(test_database: Database, sample_category: dict) -> dict:
+    """Create a sample video for testing."""
+    now = datetime.now(timezone.utc)
+    result = await test_database.execute(
+        videos.insert().values(
+            title="Test Video",
+            slug="test-video",
+            description="A test video description",
+            category_id=sample_category["id"],
+            duration=120.5,
+            source_width=1920,
+            source_height=1080,
+            status=VideoStatus.READY,
+            created_at=now,
+            published_at=now,
+        )
+    )
+    return {
+        "id": result,
+        "title": "Test Video",
+        "slug": "test-video",
+        "description": "A test video description",
+        "category_id": sample_category["id"],
+        "duration": 120.5,
+        "source_width": 1920,
+        "source_height": 1080,
+        "status": VideoStatus.READY,
+        "created_at": now,
+        "published_at": now,
+    }
+
+
+@pytest.fixture(scope="function")
+async def sample_video_with_qualities(test_database: Database, sample_video: dict) -> dict:
+    """Create a sample video with quality variants."""
+    video_id = sample_video["id"]
+
+    qualities = [
+        {"quality": "1080p", "width": 1920, "height": 1080, "bitrate": 5000},
+        {"quality": "720p", "width": 1280, "height": 720, "bitrate": 2500},
+        {"quality": "480p", "width": 854, "height": 480, "bitrate": 1000},
+    ]
+
+    for q in qualities:
+        await test_database.execute(
+            video_qualities.insert().values(
+                video_id=video_id,
+                quality=q["quality"],
+                width=q["width"],
+                height=q["height"],
+                bitrate=q["bitrate"],
+            )
+        )
+
+    sample_video["qualities"] = qualities
+    return sample_video
+
+
+@pytest.fixture(scope="function")
+async def sample_pending_video(test_database: Database, sample_category: dict) -> dict:
+    """Create a sample pending video for testing."""
+    now = datetime.now(timezone.utc)
+    result = await test_database.execute(
+        videos.insert().values(
+            title="Pending Video",
+            slug="pending-video",
+            description="A video waiting to be processed",
+            category_id=sample_category["id"],
+            status=VideoStatus.PENDING,
+            created_at=now,
+        )
+    )
+    return {
+        "id": result,
+        "title": "Pending Video",
+        "slug": "pending-video",
+        "status": VideoStatus.PENDING,
+    }
+
+
+@pytest.fixture(scope="function")
+async def sample_playback_session(test_database: Database, sample_video: dict) -> dict:
+    """Create a sample playback session for testing."""
+    import uuid
+    now = datetime.now(timezone.utc)
+    session_token = str(uuid.uuid4())
+
+    result = await test_database.execute(
+        playback_sessions.insert().values(
+            video_id=sample_video["id"],
+            session_token=session_token,
+            started_at=now,
+            duration_watched=60.0,
+            max_position=90.0,
+            quality_used="1080p",
+        )
+    )
+
+    return {
+        "id": result,
+        "video_id": sample_video["id"],
+        "session_token": session_token,
+        "started_at": now,
+        "duration_watched": 60.0,
+        "max_position": 90.0,
+    }
+
+
+# ============================================================================
+# Test Client Fixtures (require patching config)
+# ============================================================================
+
+@pytest.fixture(scope="function")
+def public_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
+    """
+    Create a test client for the public API.
+    Patches config to use test paths.
+    """
+    from fastapi.testclient import TestClient
+
+    # Patch config before importing app
+    import config
+    monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+    monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+    monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+    monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+
+    # Patch database in api.database
+    import api.database
+    monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
+    monkeypatch.setattr(api.database, "database", test_database)
+
+    # Import app after patching
+    from api.public import app
+
+    # Create test client without lifespan (we manage database ourselves)
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client
+
+
+@pytest.fixture(scope="function")
+def admin_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
+    """
+    Create a test client for the admin API.
+    Patches config to use test paths.
+    """
+    from fastapi.testclient import TestClient
+
+    # Patch config before importing app
+    import config
+    monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+    monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+    monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+    monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+
+    # Patch database in api.database
+    import api.database
+    monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
+    monkeypatch.setattr(api.database, "database", test_database)
+
+    # Import app after patching
+    from api.admin import app
+
+    # Create test client without lifespan
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client
