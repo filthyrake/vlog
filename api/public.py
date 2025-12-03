@@ -4,7 +4,7 @@ Runs on port 9000.
 """
 from typing import List, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Response, Query, Request
+from fastapi import FastAPI, HTTPException, Response, Query, Request, Cookie
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,13 +15,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import VIDEOS_DIR, UPLOADS_DIR, PUBLIC_PORT
-from api.database import database, videos, categories, video_qualities, playback_sessions, transcoding_jobs, quality_progress, transcriptions, configure_sqlite_pragmas
+from api.database import database, videos, categories, video_qualities, playback_sessions, viewers, transcoding_jobs, quality_progress, transcriptions, configure_sqlite_pragmas
 from api.enums import VideoStatus, TranscriptionStatus
 from api.schemas import (
     VideoResponse, VideoListResponse, CategoryResponse, VideoQualityResponse,
     PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd, PlaybackSessionResponse,
     TranscodingProgressResponse, QualityProgressResponse, TranscriptionResponse,
 )
+from api.errors import sanitize_error_message, sanitize_progress_error
 import sqlalchemy as sa
 import uuid
 from datetime import datetime, timezone
@@ -258,7 +259,7 @@ async def get_video(slug: str) -> VideoResponse:
         source_width=row["source_width"],
         source_height=row["source_height"],
         status=row["status"],
-        error_message=row["error_message"],
+        error_message=sanitize_error_message(row["error_message"], context=f"video_slug={slug}"),
         created_at=row["created_at"],
         published_at=row["published_at"],
         thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
@@ -284,7 +285,7 @@ async def get_video_progress(slug: str) -> TranscodingProgressResponse:
         return TranscodingProgressResponse(
             status=video["status"],
             progress_percent=100 if video["status"] == VideoStatus.READY else 0,
-            last_error=video["error_message"] if video["status"] == VideoStatus.FAILED else None,
+            last_error=sanitize_progress_error(video["error_message"]) if video["status"] == VideoStatus.FAILED else None,
         )
 
     # If pending, return basic pending status
@@ -325,7 +326,7 @@ async def get_video_progress(slug: str) -> TranscodingProgressResponse:
         attempt=job["attempt_number"] or 1,
         max_attempts=job["max_attempts"] or 3,
         started_at=job["started_at"],
-        last_error=job["last_error"],
+        last_error=sanitize_progress_error(job["last_error"]),
     )
 
 
@@ -359,7 +360,7 @@ async def get_transcript(slug: str) -> TranscriptionResponse:
         duration_seconds=transcription["duration_seconds"],
         started_at=transcription["started_at"],
         completed_at=transcription["completed_at"],
-        error_message=transcription["error_message"],
+        error_message=sanitize_error_message(transcription["error_message"], context=f"video_slug={slug}"),
     )
 
 
@@ -422,13 +423,59 @@ async def get_category(slug: str) -> CategoryResponse:
 # ============================================================================
 
 @app.post("/api/analytics/session")
-async def start_analytics_session(data: PlaybackSessionCreate) -> PlaybackSessionResponse:
-    """Start a new playback session for tracking."""
-    session_token = str(uuid.uuid4())
+async def start_analytics_session(
+    data: PlaybackSessionCreate,
+    response: Response,
+    vlog_viewer: Optional[str] = Cookie(default=None),
+) -> PlaybackSessionResponse:
+    """
+    Start a new playback session for tracking.
 
+    Uses a persistent viewer cookie to track unique visitors across sessions.
+    Creates/updates viewer record and links playback session to viewer.
+    """
+    session_token = str(uuid.uuid4())
+    viewer_id = None
+
+    # Get or create viewer from cookie
+    if vlog_viewer:
+        # Look up existing viewer
+        viewer = await database.fetch_one(
+            viewers.select().where(viewers.c.session_id == vlog_viewer)
+        )
+        if viewer:
+            viewer_id = viewer["id"]
+            # Update last_seen timestamp
+            await database.execute(
+                viewers.update()
+                .where(viewers.c.id == viewer_id)
+                .values(last_seen=datetime.now(timezone.utc))
+            )
+
+    # If no valid viewer cookie, create new viewer
+    if viewer_id is None:
+        new_viewer_session = str(uuid.uuid4())
+        viewer_id = await database.execute(
+            viewers.insert().values(
+                session_id=new_viewer_session,
+                first_seen=datetime.now(timezone.utc),
+                last_seen=datetime.now(timezone.utc),
+            )
+        )
+        # Set viewer cookie (expires in 1 year)
+        response.set_cookie(
+            key="vlog_viewer",
+            value=new_viewer_session,
+            max_age=365 * 24 * 60 * 60,  # 1 year
+            httponly=True,
+            samesite="lax",
+        )
+
+    # Create playback session linked to viewer
     await database.execute(
         playback_sessions.insert().values(
             video_id=data.video_id,
+            viewer_id=viewer_id,
             session_token=session_token,
             started_at=datetime.now(timezone.utc),
             quality_used=data.quality,
