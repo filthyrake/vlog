@@ -71,7 +71,7 @@ def get_output_dimensions(segment_path: Path) -> tuple:
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
         return (width, height)
-    except (json.JSONDecodeError, ValueError, KeyError, IndexError):
+    except (json.JSONDecodeError, ValueError, KeyError):
         return (0, 0)
 
 
