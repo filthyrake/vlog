@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import uuid
@@ -26,6 +27,17 @@ from api.database import database, videos, video_qualities, transcoding_jobs, qu
 
 # Generate unique worker ID for this instance
 WORKER_ID = str(uuid.uuid4())
+
+# Global shutdown flag for graceful shutdown
+shutdown_requested = False
+
+
+def signal_handler(sig, frame):
+    """Handle shutdown signals gracefully."""
+    global shutdown_requested
+    sig_name = signal.strsignal(sig) if hasattr(signal, 'strsignal') else str(sig)
+    print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
+    shutdown_requested = True
 
 
 def get_video_info(input_path: Path) -> dict:
@@ -494,12 +506,24 @@ async def recover_interrupted_jobs():
 # Main Processing with Checkpoints
 # ============================================================================
 
+async def reset_video_to_pending(video_id: int):
+    """Reset a video status back to pending (for graceful shutdown/retry)."""
+    await database.execute(
+        videos.update().where(videos.c.id == video_id).values(status="pending")
+    )
+
+
 async def process_video_resumable(video_id: int, video_slug: str):
     """
     Process a video with checkpoint-based resumable transcoding.
     Can resume from the last successful step if interrupted.
     """
     print(f"Processing video: {video_slug} (id={video_id})")
+
+    # Check for shutdown at the start
+    if shutdown_requested:
+        print("  Shutdown requested, skipping this video")
+        return False
 
     # Find the source file
     source_file = None
@@ -516,7 +540,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 error_message="Source file not found"
             )
         )
-        return
+        return False
 
     # Get or create job record
     job = await get_or_create_job(video_id)
@@ -543,6 +567,12 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 )
             )
             await checkpoint(job_id)
+            
+            # Check for shutdown after probe
+            if shutdown_requested:
+                print("  Shutdown requested, resetting video to pending...")
+                await reset_video_to_pending(video_id)
+                return False
         else:
             # Load existing video info
             video_row = await database.fetch_one(
@@ -572,6 +602,12 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 print("  Step 2: Thumbnail already exists, skipping...")
 
             await checkpoint(job_id)
+            
+            # Check for shutdown after thumbnail
+            if shutdown_requested:
+                print("  Shutdown requested, resetting video to pending...")
+                await reset_video_to_pending(video_id)
+                return False
 
         # ----------------------------------------------------------------
         # Step 3: Transcode each quality
@@ -592,6 +628,12 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
         for idx, quality in enumerate(qualities):
             quality_name = quality["name"]
+            
+            # Check for shutdown before processing each quality
+            if shutdown_requested:
+                print("  Shutdown requested, resetting video to pending...")
+                await reset_video_to_pending(video_id)
+                return False
 
             # Check if already completed
             status = await get_quality_status(job_id, quality_name)
@@ -735,6 +777,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # Clean up source file
         source_file.unlink()
         print(f"  Done! Video is ready.")
+        return True
 
     except Exception as e:
         print(f"  Error: {e}")
@@ -761,6 +804,8 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     error_message=str(e)[:500],
                 )
             )
+        
+        return False
 
 
 async def check_stale_jobs():
@@ -808,6 +853,10 @@ async def check_stale_jobs():
 
 async def worker_loop():
     """Main worker loop - check for pending videos and process them."""
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     await database.connect()
     print(f"Transcoding worker started (ID: {WORKER_ID[:8]})")
     print("Watching for new videos...")
@@ -819,26 +868,66 @@ async def worker_loop():
     stale_check_interval = 300  # Check every 5 minutes
 
     try:
-        while True:
+        while not shutdown_requested:
             # Find pending videos
             query = videos.select().where(videos.c.status == "pending").order_by(videos.c.created_at)
             pending = await database.fetch_all(query)
 
             for video in pending:
-                await process_video_resumable(video["id"], video["slug"])
+                if shutdown_requested:
+                    print("Shutdown requested, stopping worker loop...")
+                    break
+                result = await process_video_resumable(video["id"], video["slug"])
+                if result:
+                    print(f"Successfully completed: {video['slug']}")
+                elif shutdown_requested:
+                    print(f"Shutdown interrupted: {video['slug']}")
+                else:
+                    print(f"Failed to process: {video['slug']}")
 
             # Periodic stale job check
-            if (datetime.utcnow() - last_stale_check).total_seconds() > stale_check_interval:
+            if not shutdown_requested and (datetime.utcnow() - last_stale_check).total_seconds() > stale_check_interval:
                 await check_stale_jobs()
                 last_stale_check = datetime.utcnow()
 
             # Wait before checking again
-            await asyncio.sleep(5)
+            if not shutdown_requested:
+                await asyncio.sleep(5)
 
     except KeyboardInterrupt:
-        print("\nWorker stopped.")
+        print("\nKeyboardInterrupt received.")
     finally:
+        # On shutdown, reset videos being processed by this worker instance to "pending"
+        print("Cleaning up: resetting this worker's processing videos to pending...")
+        try:
+            # Find videos being processed by this worker through transcoding_jobs
+            jobs_query = transcoding_jobs.select().where(
+                (transcoding_jobs.c.worker_id == WORKER_ID) &
+                (transcoding_jobs.c.completed_at.is_(None))
+            )
+            jobs = await database.fetch_all(jobs_query)
+            
+            # Reset those videos to pending
+            for job in jobs:
+                video = await database.fetch_one(
+                    videos.select().where(videos.c.id == job["video_id"])
+                )
+                if video and video["status"] == "processing":
+                    await database.execute(
+                        videos.update()
+                        .where(videos.c.id == job["video_id"])
+                        .values(status="pending")
+                    )
+            
+            if jobs:
+                print(f"Reset {len(jobs)} video(s) to pending.")
+            else:
+                print("No videos to reset.")
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+        
         await database.disconnect()
+        print("Worker stopped gracefully.")
 
 
 if __name__ == "__main__":
