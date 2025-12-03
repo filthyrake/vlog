@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import VIDEOS_DIR, UPLOADS_DIR, ADMIN_PORT
+from config import VIDEOS_DIR, UPLOADS_DIR, ARCHIVE_DIR, ADMIN_PORT
 from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, transcoding_jobs, quality_progress, create_tables, configure_sqlite_pragmas
 from api.enums import VideoStatus, TranscriptionStatus
 from api.schemas import (
@@ -157,6 +157,7 @@ async def list_all_videos(
             categories.c.name.label("category_name"),
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
+        .where(videos.c.deleted_at == None)  # Exclude soft-deleted videos
         .order_by(videos.c.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -322,39 +323,156 @@ async def update_video(
 
 
 @app.delete("/api/videos/{video_id}")
-async def delete_video(video_id: int):
-    """Delete a video and its files."""
+async def delete_video(video_id: int, permanent: bool = False):
+    """
+    Soft-delete a video (moves to archive) or permanently delete if permanent=True.
+
+    Soft-delete:
+    - Moves video files to archive directory
+    - Sets deleted_at timestamp
+    - Video can be restored within retention period
+
+    Permanent delete:
+    - Removes all files permanently
+    - Deletes all database records
+    - Cannot be undone
+    """
     # Get video info
     row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Delete files
+    if permanent:
+        # PERMANENT DELETE - remove everything
+        # Delete video files
+        video_dir = VIDEOS_DIR / row["slug"]
+        if video_dir.exists():
+            shutil.rmtree(video_dir)
+
+        # Delete archived files if any
+        archive_dir = ARCHIVE_DIR / row["slug"]
+        if archive_dir.exists():
+            shutil.rmtree(archive_dir)
+
+        # Delete source file from uploads if still there
+        for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+            upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+            if upload_file.exists():
+                upload_file.unlink()
+
+        # Delete ALL related records (fix orphaned records issue)
+        # First get the job ID for quality_progress cleanup
+        job = await database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+        )
+        if job:
+            await database.execute(
+                quality_progress.delete().where(quality_progress.c.job_id == job["id"])
+            )
+        await database.execute(
+            transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id)
+        )
+        await database.execute(
+            playback_sessions.delete().where(playback_sessions.c.video_id == video_id)
+        )
+        await database.execute(
+            transcriptions.delete().where(transcriptions.c.video_id == video_id)
+        )
+        await database.execute(
+            video_qualities.delete().where(video_qualities.c.video_id == video_id)
+        )
+
+        # Delete video record
+        await database.execute(videos.delete().where(videos.c.id == video_id))
+
+        return {"status": "ok", "message": "Video permanently deleted"}
+
+    else:
+        # SOFT DELETE - move to archive
+        video_dir = VIDEOS_DIR / row["slug"]
+        archive_video_dir = ARCHIVE_DIR / row["slug"]
+
+        # Move video files to archive
+        if video_dir.exists():
+            # Ensure archive parent exists
+            archive_video_dir.parent.mkdir(parents=True, exist_ok=True)
+            # Move the directory
+            shutil.move(str(video_dir), str(archive_video_dir))
+
+        # Move source file to archive if still in uploads
+        for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+            upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+            if upload_file.exists():
+                archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
+                archive_upload.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(upload_file), str(archive_upload))
+
+        # Mark as deleted in database
+        await database.execute(
+            videos.update().where(videos.c.id == video_id).values(
+                deleted_at=datetime.utcnow()
+            )
+        )
+
+        return {"status": "ok", "message": "Video moved to archive"}
+
+
+@app.post("/api/videos/{video_id}/restore")
+async def restore_video(video_id: int):
+    """Restore a soft-deleted video from archive."""
+    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if not row["deleted_at"]:
+        raise HTTPException(status_code=400, detail="Video is not deleted")
+
+    # Move files back from archive
+    archive_video_dir = ARCHIVE_DIR / row["slug"]
     video_dir = VIDEOS_DIR / row["slug"]
-    if video_dir.exists():
-        shutil.rmtree(video_dir)
 
-    # Delete from uploads if still there
+    if archive_video_dir.exists():
+        shutil.move(str(archive_video_dir), str(video_dir))
+
+    # Move source file back if archived
     for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
-        upload_file = UPLOADS_DIR / f"{video_id}{ext}"
-        if upload_file.exists():
-            upload_file.unlink()
+        archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
+        if archive_upload.exists():
+            upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+            shutil.move(str(archive_upload), str(upload_file))
 
-    # Delete related records (SQLite doesn't enforce CASCADE without PRAGMA foreign_keys)
+    # Clear deleted_at
     await database.execute(
-        playback_sessions.delete().where(playback_sessions.c.video_id == video_id)
-    )
-    await database.execute(
-        transcriptions.delete().where(transcriptions.c.video_id == video_id)
-    )
-    await database.execute(
-        video_qualities.delete().where(video_qualities.c.video_id == video_id)
+        videos.update().where(videos.c.id == video_id).values(
+            deleted_at=None
+        )
     )
 
-    # Delete video record
-    await database.execute(videos.delete().where(videos.c.id == video_id))
+    return {"status": "ok", "message": "Video restored from archive"}
 
-    return {"status": "ok"}
+
+@app.get("/api/videos/archived")
+async def list_archived_videos():
+    """List all soft-deleted videos in archive."""
+    query = (
+        videos.select()
+        .where(videos.c.deleted_at != None)
+        .order_by(videos.c.deleted_at.desc())
+    )
+    rows = await database.fetch_all(query)
+
+    return {
+        "videos": [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "slug": row["slug"],
+                "deleted_at": row["deleted_at"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
 
 
 @app.post("/api/videos/{video_id}/retry")

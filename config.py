@@ -5,11 +5,16 @@ BASE_DIR = Path(__file__).parent
 NAS_STORAGE = Path("/mnt/nas/vlog-storage")
 VIDEOS_DIR = NAS_STORAGE / "videos"
 UPLOADS_DIR = NAS_STORAGE / "uploads"
+ARCHIVE_DIR = NAS_STORAGE / "archive"  # Soft-deleted videos go here
 DATABASE_PATH = BASE_DIR / "vlog.db"  # Keep DB local for performance
 
 # Ensure directories exist
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Soft-delete settings
+ARCHIVE_RETENTION_DAYS = 30  # Days to keep archived videos before permanent deletion
 
 # Server ports
 PUBLIC_PORT = 9000

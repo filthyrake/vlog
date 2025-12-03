@@ -75,10 +75,12 @@ videos = sa.Table(
     sa.Column("error_message", sa.Text, nullable=True),
     sa.Column("created_at", sa.DateTime, default=datetime.utcnow),
     sa.Column("published_at", sa.DateTime, nullable=True),
+    sa.Column("deleted_at", sa.DateTime, nullable=True),  # Soft-delete timestamp (NULL = not deleted)
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
     sa.Index("ix_videos_published_at", "published_at"),
+    sa.Index("ix_videos_deleted_at", "deleted_at"),
 )
 
 # Available quality variants for each video
