@@ -506,6 +506,104 @@ async def retry_video(video_id: int):
     return {"status": "ok", "message": "Video queued for retry"}
 
 
+@app.post("/api/videos/{video_id}/re-upload")
+async def re_upload_video(
+    video_id: int,
+    file: UploadFile = File(...),
+):
+    """
+    Re-upload a video file, replacing the existing transcoded content.
+
+    This will:
+    - Delete all existing transcoded files (HLS segments, playlists, thumbnail)
+    - Delete video_qualities, transcoding_jobs, quality_progress, transcriptions
+    - Save the new file and queue for reprocessing
+    - Preserve: title, description, category, published_at, created_at, slug
+    """
+    # Get video info
+    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if row["deleted_at"]:
+        raise HTTPException(status_code=400, detail="Cannot re-upload a deleted video")
+
+    if row["status"] == VideoStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail="Cannot re-upload while video is processing")
+
+    slug = row["slug"]
+    video_dir = VIDEOS_DIR / slug
+
+    # === CLEANUP PHASE ===
+
+    # 1. Delete all files in video directory (keep directory structure)
+    if video_dir.exists():
+        for item in video_dir.iterdir():
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+    else:
+        # Create the directory if it doesn't exist
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Delete old source file from uploads
+    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+        upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+        if upload_file.exists():
+            upload_file.unlink()
+
+    # 3. Delete transcoding job and quality_progress
+    job = await database.fetch_one(
+        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+    )
+    if job:
+        await database.execute(
+            quality_progress.delete().where(quality_progress.c.job_id == job["id"])
+        )
+    await database.execute(
+        transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id)
+    )
+
+    # 4. Delete transcriptions
+    # Also delete VTT file if it exists (should already be deleted above, but be thorough)
+    await database.execute(
+        transcriptions.delete().where(transcriptions.c.video_id == video_id)
+    )
+
+    # 5. Delete video_qualities
+    await database.execute(
+        video_qualities.delete().where(video_qualities.c.video_id == video_id)
+    )
+
+    # === UPLOAD NEW FILE ===
+
+    file_ext = Path(file.filename).suffix.lower() or ".mp4"
+    upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
+
+    with open(upload_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # === RESET VIDEO STATE ===
+
+    await database.execute(
+        videos.update().where(videos.c.id == video_id).values(
+            status=VideoStatus.PENDING,
+            duration=0,
+            source_width=0,
+            source_height=0,
+            error_message=None,
+        )
+    )
+
+    return {
+        "status": "ok",
+        "video_id": video_id,
+        "slug": slug,
+        "message": "Video queued for reprocessing",
+    }
+
+
 @app.get("/api/videos/{video_id}/progress")
 async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
