@@ -4,6 +4,7 @@ Video transcription worker using faster-whisper.
 Monitors the database for videos needing transcription and generates WebVTT captions.
 """
 import asyncio
+import os
 import subprocess
 import sys
 import tempfile
@@ -178,11 +179,14 @@ def _extract_quality(filename_stem: str) -> int:
         '1080p' -> 1080
         '720p' -> 720
         'master' -> 0
+        'backup' -> 0 (ends with 'p' but not a quality)
     """
     try:
-        # Only remove 'p' suffix, not all 'p' characters
-        if filename_stem.endswith('p'):
-            return int(filename_stem[:-1])
+        # Only parse if ends with 'p' and the rest is all digits
+        if filename_stem.endswith('p') and len(filename_stem) > 1:
+            quality_str = filename_stem[:-1]
+            if quality_str.isdigit():
+                return int(quality_str)
         return 0
     except (ValueError, AttributeError):
         return 0
@@ -252,6 +256,11 @@ def extract_audio_to_wav(source_path: Path, output_path: Path) -> None:
     Raises:
         RuntimeError: If extraction fails
     """
+    # Validate paths exist/are writable
+    if not source_path.exists():
+        raise RuntimeError(f"Source file does not exist: {source_path}")
+    
+    # Convert paths to strings (subprocess accepts str or Path)
     cmd = [
         'ffmpeg',
         '-i', str(source_path),
@@ -312,8 +321,10 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
 
         # Extract audio to temporary WAV file for reliable processing
         # This avoids potential issues with streaming HLS or complex video formats
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            temp_wav = Path(tmp.name)
+        # Use mkstemp for explicit control over file creation and cleanup
+        fd, temp_wav_path = tempfile.mkstemp(suffix='.wav', prefix='vlog_transcribe_')
+        os.close(fd)  # Close file descriptor, we'll use the path
+        temp_wav = Path(temp_wav_path)
         
         print(f"  Extracting audio to WAV...")
         loop = asyncio.get_event_loop()
