@@ -1,11 +1,25 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Set
+
+# Whisper-supported language codes (ISO 639-1)
+# Full list from OpenAI Whisper documentation
+WHISPER_LANGUAGES: Set[str] = {
+    "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs",
+    "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi",
+    "fo", "fr", "gl", "gu", "ha", "haw", "he", "hi", "hr", "ht", "hu", "hy",
+    "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb",
+    "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt",
+    "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru",
+    "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw",
+    "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi",
+    "yi", "yo", "zh", "yue",
+}
 
 
 class CategoryCreate(BaseModel):
-    name: str
-    description: str = ""
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field(default="", max_length=1000)
 
 
 class CategoryResponse(BaseModel):
@@ -18,8 +32,8 @@ class CategoryResponse(BaseModel):
 
 
 class VideoCreate(BaseModel):
-    title: str
-    description: str = ""
+    title: str = Field(..., min_length=1, max_length=255)
+    description: str = Field(default="", max_length=5000)
     category_id: Optional[int] = None
 
 
@@ -187,8 +201,16 @@ class TranscriptionResponse(BaseModel):
 
 
 class TranscriptionTrigger(BaseModel):
-    language: Optional[str] = None  # Optional language hint
+    language: Optional[str] = Field(default=None, description="ISO 639-1 language code")
+
+    @validator('language')
+    def validate_language(cls, v):
+        if v is not None:
+            v = v.lower().strip()
+            if v not in WHISPER_LANGUAGES:
+                raise ValueError(f"Invalid language code: '{v}'. Must be a valid ISO 639-1 code supported by Whisper.")
+        return v
 
 
 class TranscriptionUpdate(BaseModel):
-    text: str  # Manually corrected transcript text
+    text: str = Field(..., min_length=1, max_length=500000)  # 500KB max transcript

@@ -16,7 +16,7 @@ import sys
 import threading
 import uuid
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Callable, Tuple, Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -579,8 +579,8 @@ async def get_or_create_job(video_id: int) -> dict:
             worker_id=WORKER_ID,
             current_step=None,
             progress_percent=0,
-            started_at=datetime.utcnow(),
-            last_checkpoint=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
+            last_checkpoint=datetime.now(timezone.utc),
             attempt_number=1,
             max_attempts=MAX_RETRY_ATTEMPTS,
         )
@@ -597,7 +597,7 @@ async def update_job_step(job_id: int, step: str):
         .where(transcoding_jobs.c.id == job_id)
         .values(
             current_step=step,
-            last_checkpoint=datetime.utcnow(),
+            last_checkpoint=datetime.now(timezone.utc),
         )
     )
 
@@ -609,7 +609,7 @@ async def update_job_progress(job_id: int, progress: int):
         .where(transcoding_jobs.c.id == job_id)
         .values(
             progress_percent=progress,
-            last_checkpoint=datetime.utcnow(),
+            last_checkpoint=datetime.now(timezone.utc),
         )
     )
 
@@ -619,7 +619,7 @@ async def checkpoint(job_id: int):
     await database.execute(
         transcoding_jobs.update()
         .where(transcoding_jobs.c.id == job_id)
-        .values(last_checkpoint=datetime.utcnow())
+        .values(last_checkpoint=datetime.now(timezone.utc))
     )
 
 
@@ -629,9 +629,9 @@ async def mark_job_completed(job_id: int):
         transcoding_jobs.update()
         .where(transcoding_jobs.c.id == job_id)
         .values(
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
             progress_percent=100,
-            last_checkpoint=datetime.utcnow(),
+            last_checkpoint=datetime.now(timezone.utc),
         )
     )
 
@@ -643,7 +643,7 @@ async def mark_job_failed(job_id: int, error: str):
         .where(transcoding_jobs.c.id == job_id)
         .values(
             last_error=error[:500],
-            last_checkpoint=datetime.utcnow(),
+            last_checkpoint=datetime.now(timezone.utc),
         )
     )
 
@@ -665,8 +665,8 @@ async def reset_job_for_retry(job_id: int):
         .values(
             worker_id=WORKER_ID,
             attempt_number=new_attempt,
-            started_at=datetime.utcnow(),
-            last_checkpoint=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
+            last_checkpoint=datetime.now(timezone.utc),
             completed_at=None,
         )
     )
@@ -721,9 +721,9 @@ async def update_quality_status(
     }
 
     if status == QualityStatus.IN_PROGRESS:
-        values["started_at"] = datetime.utcnow()
+        values["started_at"] = datetime.now(timezone.utc)
     elif status == QualityStatus.COMPLETED:
-        values["completed_at"] = datetime.utcnow()
+        values["completed_at"] = datetime.now(timezone.utc)
         values["progress_percent"] = 100
     elif status == QualityStatus.FAILED and error_message:
         values["error_message"] = error_message[:500]
@@ -773,7 +773,7 @@ async def recover_interrupted_jobs():
     print(f"Worker {WORKER_ID[:8]} checking for interrupted jobs...")
 
     # Find jobs that have a checkpoint but no completion and are stale
-    stale_threshold = datetime.utcnow() - timedelta(seconds=JOB_STALE_TIMEOUT)
+    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
@@ -1181,7 +1181,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         await database.execute(
             videos.update().where(videos.c.id == video_id).values(
                 status=VideoStatus.READY,
-                published_at=datetime.utcnow(),
+                published_at=datetime.now(timezone.utc),
             )
         )
 
@@ -1227,7 +1227,7 @@ async def check_stale_jobs():
     Periodic check for stale jobs that might need recovery.
     Called periodically during the worker loop.
     """
-    stale_threshold = datetime.utcnow() - timedelta(seconds=JOB_STALE_TIMEOUT)
+    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
@@ -1306,7 +1306,7 @@ async def worker_loop():
     # Recover any interrupted jobs from previous crashes
     await recover_interrupted_jobs()
 
-    last_stale_check = datetime.utcnow()
+    last_stale_check = datetime.now(timezone.utc)
     stale_check_interval = 300  # Check every 5 minutes
 
     # Determine wait behavior based on watcher availability
@@ -1331,9 +1331,9 @@ async def worker_loop():
                     print(f"Failed to process: {video['slug']}")
 
             # Periodic stale job check
-            if not shutdown_requested and (datetime.utcnow() - last_stale_check).total_seconds() > stale_check_interval:
+            if not shutdown_requested and (datetime.now(timezone.utc) - last_stale_check).total_seconds() > stale_check_interval:
                 await check_stale_jobs()
-                last_stale_check = datetime.utcnow()
+                last_stale_check = datetime.now(timezone.utc)
 
             # Wait for new uploads or fallback timeout
             if not shutdown_requested:
