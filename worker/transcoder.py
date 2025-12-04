@@ -343,7 +343,8 @@ async def transcode_quality_with_progress(
     )
 
     last_progress_update = 0
-    start_time = asyncio.get_event_loop().time()
+    start_time = asyncio.get_running_loop().time()
+    timed_out = False
 
     async def read_progress():
         """Read and parse ffmpeg progress output."""
@@ -370,19 +371,38 @@ async def transcode_quality_with_progress(
                 except (ValueError, IndexError):
                     pass
 
-    try:
-        # Run progress reading with timeout
-        await asyncio.wait_for(read_progress(), timeout=timeout)
+    async def drain_and_wait():
+        """Read all output and wait for process to complete."""
+        await read_progress()
         await process.wait()
-    except asyncio.TimeoutError:
-        # Timeout exceeded - kill the ffmpeg process
-        elapsed = asyncio.get_event_loop().time() - start_time
+
+    async def timeout_killer():
+        """Kill process after timeout, then drain pipes to prevent deadlock."""
+        nonlocal timed_out
+        await asyncio.sleep(timeout)
+        timed_out = True
+        elapsed = asyncio.get_running_loop().time() - start_time
         print(f"  TIMEOUT: ffmpeg exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
         try:
             process.kill()
-            await process.wait()
         except ProcessLookupError:
             pass  # Process already terminated
+
+    # Run drain_and_wait with a timeout killer running concurrently
+    # The timeout_killer will kill the process if needed, which causes
+    # drain_and_wait to complete (stdout closes when process dies)
+    timeout_task = asyncio.create_task(timeout_killer())
+    try:
+        await drain_and_wait()
+    finally:
+        timeout_task.cancel()
+        try:
+            await timeout_task
+        except asyncio.CancelledError:
+            pass
+
+    if timed_out:
+        elapsed = asyncio.get_running_loop().time() - start_time
         return False, f"Transcoding timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
 
     if process.returncode != 0:
@@ -437,7 +457,8 @@ async def create_original_quality(
     )
 
     last_progress_update = 0
-    start_time = asyncio.get_event_loop().time()
+    start_time = asyncio.get_running_loop().time()
+    timed_out = False
 
     async def read_progress():
         nonlocal last_progress_update
@@ -459,17 +480,36 @@ async def create_original_quality(
                 except (ValueError, IndexError):
                     pass
 
-    try:
-        await asyncio.wait_for(read_progress(), timeout=timeout)
+    async def drain_and_wait():
+        """Read all output and wait for process to complete."""
+        await read_progress()
         await process.wait()
-    except asyncio.TimeoutError:
-        elapsed = asyncio.get_event_loop().time() - start_time
-        print(f"  TIMEOUT: ffmpeg remux exceeded {timeout:.0f}s limit")
+
+    async def timeout_killer():
+        """Kill process after timeout, then drain pipes to prevent deadlock."""
+        nonlocal timed_out
+        await asyncio.sleep(timeout)
+        timed_out = True
+        elapsed = asyncio.get_running_loop().time() - start_time
+        print(f"  TIMEOUT: ffmpeg remux exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
         try:
             process.kill()
-            await process.wait()
         except ProcessLookupError:
+            pass  # Process already terminated
+
+    # Run drain_and_wait with a timeout killer running concurrently
+    timeout_task = asyncio.create_task(timeout_killer())
+    try:
+        await drain_and_wait()
+    finally:
+        timeout_task.cancel()
+        try:
+            await timeout_task
+        except asyncio.CancelledError:
             pass
+
+    if timed_out:
+        elapsed = asyncio.get_running_loop().time() - start_time
         return False, f"Remux timed out after {elapsed:.0f} seconds", None
 
     if process.returncode != 0:
@@ -871,6 +911,13 @@ async def process_video_resumable(video_id: int, video_slug: str):
     # Get or create job record
     job = await get_or_create_job(video_id)
     job_id = job["id"]
+
+    # Always mark video as processing when we start/resume
+    await database.execute(
+        videos.update().where(videos.c.id == video_id).values(
+            status=VideoStatus.PROCESSING
+        )
+    )
 
     try:
         # ----------------------------------------------------------------
