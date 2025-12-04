@@ -34,9 +34,10 @@ from config import (
     ARCHIVE_DIR,
     ARCHIVE_RETENTION_DAYS,
     CLEANUP_PARTIAL_ON_FAILURE,
+    FFMPEG_TIMEOUT_BASE_MULTIPLIER,
     FFMPEG_TIMEOUT_MAXIMUM,
     FFMPEG_TIMEOUT_MINIMUM,
-    FFMPEG_TIMEOUT_MULTIPLIER,
+    FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS,
     HLS_SEGMENT_DURATION,
     JOB_STALE_TIMEOUT,
     KEEP_COMPLETED_QUALITIES,
@@ -134,17 +135,23 @@ class ProgressTracker:
             self.last_job_progress = progress
 
 
-def calculate_ffmpeg_timeout(duration: float) -> float:
+def calculate_ffmpeg_timeout(duration: float, height: int = 1080) -> float:
     """
-    Calculate appropriate timeout for ffmpeg transcoding based on video duration.
+    Calculate appropriate timeout for ffmpeg transcoding based on video duration and resolution.
+
+    Higher resolutions take longer to encode, so timeouts scale accordingly.
 
     Args:
         duration: Video duration in seconds
+        height: Target resolution height (e.g., 360, 720, 1080, 2160)
 
     Returns:
         Timeout in seconds, clamped between min and max values
     """
-    timeout = duration * FFMPEG_TIMEOUT_MULTIPLIER
+    # Get resolution multiplier (default to 2.0 for unknown resolutions)
+    resolution_multiplier = FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS.get(height, 2.0)
+    effective_multiplier = FFMPEG_TIMEOUT_BASE_MULTIPLIER * resolution_multiplier
+    timeout = duration * effective_multiplier
     return max(FFMPEG_TIMEOUT_MINIMUM, min(timeout, FFMPEG_TIMEOUT_MAXIMUM))
 
 
@@ -531,9 +538,9 @@ async def transcode_quality_with_progress(
     segment_pattern = f"{name}_%04d.ts"
     scale_filter = f"scale=-2:{height}"
 
-    # Calculate timeout based on video duration
-    timeout = calculate_ffmpeg_timeout(duration)
-    print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min)")
+    # Calculate timeout based on video duration and resolution
+    timeout = calculate_ffmpeg_timeout(duration, height)
+    print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for {name}")
 
     cmd = [
         "ffmpeg",
