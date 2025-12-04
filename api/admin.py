@@ -309,14 +309,28 @@ async def list_all_videos(
 
 @app.get("/api/videos/archived")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def list_archived_videos(request: Request):
+async def list_archived_videos(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500, description="Max items per page"),
+    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
+):
     """List all soft-deleted videos in archive.
 
     NOTE: This route must be defined before /api/videos/{video_id}
     to prevent "archived" from being matched as a video_id.
     """
-    query = videos.select().where(videos.c.deleted_at.is_not(None)).order_by(videos.c.deleted_at.desc())
+    query = (
+        videos.select()
+        .where(videos.c.deleted_at.is_not(None))
+        .order_by(videos.c.deleted_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     rows = await database.fetch_all(query)
+
+    # Get total count of archived videos
+    count_query = sa.select(sa.func.count()).select_from(videos).where(videos.c.deleted_at.is_not(None))
+    total = await database.fetch_val(count_query)
 
     return {
         "videos": [
@@ -328,7 +342,8 @@ async def list_archived_videos(request: Request):
                 "created_at": row["created_at"],
             }
             for row in rows
-        ]
+        ],
+        "total": total,
     }
 
 
