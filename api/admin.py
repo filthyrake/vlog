@@ -11,7 +11,7 @@ from sqlite3 import IntegrityError
 from typing import List, Optional
 
 import sqlalchemy as sa
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +19,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slugify import slugify
 
+from api.analytics_cache import AnalyticsCache
 from api.common import (
     SecurityHeadersMiddleware,
     check_health,
@@ -62,6 +63,9 @@ from api.schemas import (
 from config import (
     ADMIN_CORS_ALLOWED_ORIGINS,
     ADMIN_PORT,
+    ANALYTICS_CACHE_ENABLED,
+    ANALYTICS_CACHE_TTL,
+    ANALYTICS_CLIENT_CACHE_MAX_AGE,
     ARCHIVE_DIR,
     MAX_UPLOAD_SIZE,
     RATE_LIMIT_ADMIN_DEFAULT,
@@ -79,6 +83,9 @@ limiter = Limiter(
     storage_uri=RATE_LIMIT_STORAGE_URL if RATE_LIMIT_ENABLED else None,
     enabled=RATE_LIMIT_ENABLED,
 )
+
+# Initialize analytics cache
+analytics_cache = AnalyticsCache(ttl_seconds=ANALYTICS_CACHE_TTL, enabled=ANALYTICS_CACHE_ENABLED)
 
 # Allowed video file extensions
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
@@ -993,8 +1000,18 @@ async def delete_transcript(request: Request, video_id: int):
 
 @app.get("/api/analytics/overview")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def analytics_overview(request: Request) -> AnalyticsOverview:
+async def analytics_overview(request: Request, response: Response) -> AnalyticsOverview:
     """Get global analytics overview."""
+    # Try to get from cache first
+    cache_key = "analytics_overview"
+    cached_data = analytics_cache.get(cache_key)
+    
+    if cached_data is not None:
+        # Set Cache-Control header for client-side caching
+        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        return AnalyticsOverview(**cached_data)
+    
+    # Cache miss - compute fresh data
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - timedelta(days=7)
@@ -1069,28 +1086,47 @@ async def analytics_overview(request: Request) -> AnalyticsOverview:
         or 0
     )
 
-    return AnalyticsOverview(
-        total_views=total_views,
-        unique_viewers=unique_viewers,
-        total_watch_time_hours=round(total_watch_time_hours, 1),
-        completion_rate=round(completion_rate, 2),
-        avg_watch_duration_seconds=round(avg_watch, 1),
-        views_today=views_today,
-        views_this_week=views_week,
-        views_this_month=views_month,
-    )
+    result_data = {
+        "total_views": total_views,
+        "unique_viewers": unique_viewers,
+        "total_watch_time_hours": round(total_watch_time_hours, 1),
+        "completion_rate": round(completion_rate, 2),
+        "avg_watch_duration_seconds": round(avg_watch, 1),
+        "views_today": views_today,
+        "views_this_week": views_week,
+        "views_this_month": views_month,
+    }
+    
+    # Store in cache
+    analytics_cache.set(cache_key, result_data)
+    
+    # Set Cache-Control header for client-side caching
+    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    
+    return AnalyticsOverview(**result_data)
 
 
 @app.get("/api/analytics/videos")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_videos(
     request: Request,
+    response: Response,
     limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
     sort_by: str = "views",
     period: str = "all",
 ) -> VideoAnalyticsListResponse:
     """Get per-video analytics."""
+    # Try to get from cache first
+    cache_key = f"analytics_videos:{limit}:{offset}:{sort_by}:{period}"
+    cached_data = analytics_cache.get(cache_key)
+    
+    if cached_data is not None:
+        # Set Cache-Control header for client-side caching
+        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        return VideoAnalyticsListResponse(**cached_data)
+    
+    # Cache miss - compute fresh data
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -1160,16 +1196,34 @@ async def analytics_videos(
             )
         )
 
-    return VideoAnalyticsListResponse(
-        videos=video_stats,
-        total_count=count_result or 0,
-    )
+    result_data = {
+        "videos": [v.model_dump() for v in video_stats],
+        "total_count": count_result or 0,
+    }
+    
+    # Store in cache
+    analytics_cache.set(cache_key, result_data)
+    
+    # Set Cache-Control header for client-side caching
+    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    
+    return VideoAnalyticsListResponse(**result_data)
 
 
 @app.get("/api/analytics/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def analytics_video_detail(request: Request, video_id: int) -> VideoAnalyticsDetail:
+async def analytics_video_detail(request: Request, response: Response, video_id: int) -> VideoAnalyticsDetail:
     """Get detailed analytics for a specific video."""
+    # Try to get from cache first
+    cache_key = f"analytics_video_detail:{video_id}"
+    cached_data = analytics_cache.get(cache_key)
+    
+    if cached_data is not None:
+        # Set Cache-Control header for client-side caching
+        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        return VideoAnalyticsDetail(**cached_data)
+    
+    # Cache miss - compute fresh data
     # Get video info
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not video:
@@ -1222,29 +1276,48 @@ async def analytics_video_detail(request: Request, video_id: int) -> VideoAnalyt
 
     views_over_time = [DailyViews(date=str(v["date"]), views=v["views"]) for v in views_rows] if views_rows else []
 
-    return VideoAnalyticsDetail(
-        video_id=video_id,
-        title=video["title"],
-        duration=video["duration"] or 0,
-        total_views=stats["total_views"] or 0,
-        unique_viewers=stats["unique_viewers"] or 0,
-        total_watch_time_seconds=stats["total_watch_time_seconds"] or 0,
-        avg_watch_duration_seconds=round(stats["avg_watch_duration_seconds"] or 0, 1),
-        completion_rate=round(stats["completion_rate"] or 0, 2),
-        avg_percent_watched=round(stats["avg_percent_watched"] or 0, 2),
-        quality_breakdown=quality_breakdown,
-        views_over_time=views_over_time,
-    )
+    result_data = {
+        "video_id": video_id,
+        "title": video["title"],
+        "duration": video["duration"] or 0,
+        "total_views": stats["total_views"] or 0,
+        "unique_viewers": stats["unique_viewers"] or 0,
+        "total_watch_time_seconds": stats["total_watch_time_seconds"] or 0,
+        "avg_watch_duration_seconds": round(stats["avg_watch_duration_seconds"] or 0, 1),
+        "completion_rate": round(stats["completion_rate"] or 0, 2),
+        "avg_percent_watched": round(stats["avg_percent_watched"] or 0, 2),
+        "quality_breakdown": [q.model_dump() for q in quality_breakdown],
+        "views_over_time": [v.model_dump() for v in views_over_time],
+    }
+    
+    # Store in cache
+    analytics_cache.set(cache_key, result_data)
+    
+    # Set Cache-Control header for client-side caching
+    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    
+    return VideoAnalyticsDetail(**result_data)
 
 
 @app.get("/api/analytics/trends")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_trends(
     request: Request,
+    response: Response,
     period: str = "30d",
     video_id: Optional[int] = None,
 ) -> TrendsResponse:
     """Get time-series analytics data."""
+    # Try to get from cache first
+    cache_key = f"analytics_trends:{period}:{video_id or 'all'}"
+    cached_data = analytics_cache.get(cache_key)
+    
+    if cached_data is not None:
+        # Set Cache-Control header for client-side caching
+        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        return TrendsResponse(**cached_data)
+    
+    # Cache miss - compute fresh data
     # Validate period to prevent SQL injection (whitelist approach)
     valid_periods = {"7d": 7, "30d": 30, "90d": 90}
     days = valid_periods.get(period, 30)
@@ -1281,7 +1354,18 @@ async def analytics_trends(
         for r in rows
     ]
 
-    return TrendsResponse(period=period, data=data)
+    result_data = {
+        "period": period,
+        "data": [d.model_dump() for d in data],
+    }
+    
+    # Store in cache
+    analytics_cache.set(cache_key, result_data)
+    
+    # Set Cache-Control header for client-side caching
+    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    
+    return TrendsResponse(**result_data)
 
 
 if __name__ == "__main__":
