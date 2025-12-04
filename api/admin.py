@@ -52,7 +52,14 @@ from api.schemas import (
     VideoQualityResponse,
     VideoResponse,
 )
-from config import ADMIN_PORT, ARCHIVE_DIR, UPLOADS_DIR, VIDEOS_DIR
+from config import (
+    ADMIN_PORT,
+    ARCHIVE_DIR,
+    MAX_UPLOAD_SIZE,
+    UPLOAD_CHUNK_SIZE,
+    UPLOADS_DIR,
+    VIDEOS_DIR,
+)
 
 # Allowed video file extensions
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
@@ -60,6 +67,42 @@ ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 # Input length limits
 MAX_TITLE_LENGTH = 255
 MAX_DESCRIPTION_LENGTH = 5000
+
+
+async def save_upload_with_size_limit(
+    file: UploadFile, upload_path: Path, max_size: int = MAX_UPLOAD_SIZE
+) -> int:
+    """
+    Stream upload to disk with size validation.
+    Returns the total bytes written.
+    Raises HTTPException if file exceeds max_size.
+    """
+    total_size = 0
+    try:
+        with open(upload_path, "wb") as f:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > max_size:
+                    # Clean up partial file
+                    f.close()
+                    upload_path.unlink(missing_ok=True)
+                    max_size_gb = max_size / (1024 * 1024 * 1024)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum upload size is {max_size_gb:.0f} GB",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up on any error
+        upload_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+    return total_size
 
 
 @asynccontextmanager
@@ -375,11 +418,9 @@ async def upload_video(
     if video_id is None:
         raise HTTPException(status_code=500, detail="Failed to generate unique slug")
 
-    # Save uploaded file (file_ext already validated above)
+    # Save uploaded file with size validation (file_ext already validated above)
     upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
-
-    with open(upload_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    await save_upload_with_size_limit(file, upload_path)
 
     # Create output directory
     (VIDEOS_DIR / slug).mkdir(parents=True, exist_ok=True)
@@ -669,9 +710,7 @@ async def re_upload_video(
     # === UPLOAD NEW FILE === (file_ext already validated above)
 
     upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
-
-    with open(upload_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    await save_upload_with_size_limit(file, upload_path)
 
     # === RESET VIDEO STATE ===
 
