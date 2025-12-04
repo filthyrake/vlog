@@ -91,6 +91,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_playback_sessions_video_id", "playback_sessions", ["video_id"])
     op.create_index("ix_playback_sessions_started_at", "playback_sessions", ["started_at"])
+    # Note: Unique constraint on session_token creates its own index automatically
 
     # Transcoding jobs table
     op.create_table(
