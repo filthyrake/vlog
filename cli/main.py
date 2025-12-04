@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+
 import httpx
 
 from config import ADMIN_PORT
@@ -13,58 +14,139 @@ from config import ADMIN_PORT
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
 
+# Default timeout for API requests (30 seconds)
+DEFAULT_API_TIMEOUT = int(os.getenv("VLOG_API_TIMEOUT", "30"))
+
 # Admin API URL - can override host and port, or use the port from config
 _default_api_url = f"http://localhost:{ADMIN_PORT}"
 API_BASE = os.getenv("VLOG_ADMIN_API_URL", _default_api_url).rstrip("/") + "/api"
 
 
+class CLIError(Exception):
+    """Custom exception for CLI errors."""
+    pass
+
+
+def safe_json_response(response, default_error="Request failed"):
+    """
+    Safely parse JSON response with proper error handling.
+
+    Args:
+        response: httpx.Response object
+        default_error: Default error message if response has no detail
+
+    Returns:
+        Parsed JSON data if successful
+
+    Raises:
+        CLIError: If response status is not successful or JSON parsing fails
+    """
+    if not response.is_success:
+        # Try to extract error detail from response
+        try:
+            detail = response.json().get("detail", response.text)
+        except (ValueError, httpx.ResponseNotRead):
+            # If JSON parsing fails, use raw text or default
+            detail = response.text[:200] if response.text else default_error
+        raise CLIError(f"API error ({response.status_code}): {detail}")
+
+    # Try to parse JSON from successful response
+    try:
+        return response.json()
+    except (ValueError, httpx.ResponseNotRead):
+        raise CLIError(f"Invalid JSON response: {response.text[:100]}")
+
+
+def validate_file(file_path):
+    """
+    Validate file exists and is readable.
+
+    Args:
+        file_path: Path object pointing to the file
+
+    Returns:
+        int: File size in bytes
+
+    Raises:
+        CLIError: If file doesn't exist, isn't readable, or is empty
+    """
+    if not file_path.exists():
+        raise CLIError(f"File not found: {file_path}")
+
+    if not file_path.is_file():
+        raise CLIError(f"Path is not a file: {file_path}")
+
+    if not os.access(file_path, os.R_OK):
+        raise CLIError(f"File is not readable: {file_path}")
+
+    # Check if file is empty
+    file_size = file_path.stat().st_size
+    if file_size == 0:
+        raise CLIError(f"File is empty: {file_path}")
+
+    # Warn about very large files (> 10GB)
+    if file_size > 10 * 1024 * 1024 * 1024:
+        print(f"Warning: Large file detected ({file_size / (1024**3):.2f} GB). Upload may take a while.")
+
+    return file_size
+
+
 def cmd_upload(args):
     """Upload a video."""
-    file_path = Path(args.file)
-    if not file_path.exists():
-        print(f"Error: File not found: {file_path}")
-        sys.exit(1)
+    try:
+        file_path = Path(args.file)
+        validate_file(file_path)
 
-    title = args.title or file_path.stem.replace("-", " ").replace("_", " ").title()
+        title = args.title or file_path.stem.replace("-", " ").replace("_", " ").title()
 
-    print(f"Uploading: {file_path.name}")
-    print(f"Title: {title}")
+        print(f"Uploading: {file_path.name}")
+        print(f"Title: {title}")
 
-    with open(file_path, "rb") as f:
-        files = {"file": (file_path.name, f)}
-        data = {
-            "title": title,
-            "description": args.description or "",
-        }
-        if args.category:
-            # Look up category ID by name/slug
-            cats = httpx.get(f"{API_BASE}/categories").json()
-            cat_match = None
-            for cat in cats:
-                if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
-                    cat_match = cat
-                    break
-            if cat_match:
-                data["category_id"] = cat_match["id"]
-            else:
-                print(f"Warning: Category '{args.category}' not found, uploading without category")
+        with open(file_path, "rb") as f:
+            files = {"file": (file_path.name, f)}
+            data = {
+                "title": title,
+                "description": args.description or "",
+            }
+            if args.category:
+                # Look up category ID by name/slug
+                try:
+                    response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+                    cats = safe_json_response(response)
+                    cat_match = None
+                    for cat in cats:
+                        if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
+                            cat_match = cat
+                            break
+                    if cat_match:
+                        data["category_id"] = cat_match["id"]
+                    else:
+                        print(f"Warning: Category '{args.category}' not found, uploading without category")
+                except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
+                    print(f"Warning: Could not fetch categories: {e}")
+                    print("Uploading without category")
 
-        try:
             with httpx.Client(timeout=None) as client:
                 response = client.post(f"{API_BASE}/videos", files=files, data=data)
 
-            if response.status_code == 200:
-                result = response.json()
-                print(f"Success! Video queued for processing.")
-                print(f"  ID: {result['video_id']}")
-                print(f"  Slug: {result['slug']}")
-            else:
-                print(f"Error: {response.text}")
-                sys.exit(1)
-        except httpx.ConnectError:
-            print(f"Error: Could not connect to admin API at {API_BASE}")
-            print("Make sure the admin server is running.")
-            sys.exit(1)
+            result = safe_json_response(response)
+            print("Success! Video queued for processing.")
+            print(f"  ID: {result['video_id']}")
+            print(f"  Slug: {result['slug']}")
+
+    except httpx.ConnectError:
+        print(f"Error: Could not connect to admin API at {API_BASE}")
+        print("Make sure the admin server is running.")
+        sys.exit(1)
+    except httpx.TimeoutException:
+        print(f"Error: Request timed out while connecting to {API_BASE}")
+        sys.exit(1)
+    except CLIError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 
 def cmd_list(args):
@@ -74,8 +156,8 @@ def cmd_list(args):
         if args.status:
             params["status"] = args.status
 
-        response = httpx.get(f"{API_BASE}/videos", params=params)
-        videos = response.json()
+        response = httpx.get(f"{API_BASE}/videos", params=params, timeout=DEFAULT_API_TIMEOUT)
+        videos = safe_json_response(response)
 
         if not videos:
             print("No videos found.")
@@ -91,6 +173,15 @@ def cmd_list(args):
     except httpx.ConnectError:
         print(f"Error: Could not connect to admin API at {API_BASE}")
         sys.exit(1)
+    except httpx.TimeoutException:
+        print(f"Error: Request timed out while connecting to {API_BASE}")
+        sys.exit(1)
+    except CLIError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 
 def cmd_categories(args):
@@ -99,17 +190,14 @@ def cmd_categories(args):
         if args.create:
             response = httpx.post(
                 f"{API_BASE}/categories",
-                json={"name": args.create, "description": args.description or ""}
+                json={"name": args.create, "description": args.description or ""},
+                timeout=DEFAULT_API_TIMEOUT
             )
-            if response.status_code == 200:
-                cat = response.json()
-                print(f"Created category: {cat['name']} (slug: {cat['slug']})")
-            else:
-                print(f"Error: {response.json().get('detail', response.text)}")
-                sys.exit(1)
+            cat = safe_json_response(response)
+            print(f"Created category: {cat['name']} (slug: {cat['slug']})")
         else:
-            response = httpx.get(f"{API_BASE}/categories")
-            categories = response.json()
+            response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+            categories = safe_json_response(response)
 
             if not categories:
                 print("No categories found.")
@@ -123,19 +211,34 @@ def cmd_categories(args):
     except httpx.ConnectError:
         print(f"Error: Could not connect to admin API at {API_BASE}")
         sys.exit(1)
+    except httpx.TimeoutException:
+        print(f"Error: Request timed out while connecting to {API_BASE}")
+        sys.exit(1)
+    except CLIError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 
 def cmd_delete(args):
     """Delete a video."""
     try:
-        response = httpx.delete(f"{API_BASE}/videos/{args.video_id}")
-        if response.status_code == 200:
-            print(f"Video {args.video_id} deleted.")
-        else:
-            print(f"Error: {response.text}")
-            sys.exit(1)
+        response = httpx.delete(f"{API_BASE}/videos/{args.video_id}", timeout=DEFAULT_API_TIMEOUT)
+        safe_json_response(response)  # Will raise CLIError if not successful
+        print(f"Video {args.video_id} deleted.")
     except httpx.ConnectError:
         print(f"Error: Could not connect to admin API at {API_BASE}")
+        sys.exit(1)
+    except httpx.TimeoutException:
+        print(f"Error: Request timed out while connecting to {API_BASE}")
+        sys.exit(1)
+    except CLIError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
         sys.exit(1)
 
 
@@ -157,68 +260,88 @@ def cmd_download(args):
 
     print(f"Downloading from YouTube: {args.url}")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_template = f"{tmpdir}/%(title)s.%(ext)s"
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_template = f"{tmpdir}/%(title)s.%(ext)s"
 
-        cmd = [
-            "yt-dlp",
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
-            "-o", output_template,
-            args.url
-        ]
+            cmd = [
+                "yt-dlp",
+                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "-o", output_template,
+                args.url
+            ]
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            print(f"Error: Download timed out after {DOWNLOAD_TIMEOUT} seconds")
-            print("You can increase the timeout with VLOG_DOWNLOAD_TIMEOUT environment variable")
-            sys.exit(1)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                print(f"Error: Download timed out after {DOWNLOAD_TIMEOUT} seconds")
+                print("You can increase the timeout with VLOG_DOWNLOAD_TIMEOUT environment variable")
+                sys.exit(1)
 
-        if result.returncode != 0:
-            print(f"Error downloading: {result.stderr}")
-            sys.exit(1)
+            if result.returncode != 0:
+                print(f"Error downloading: {result.stderr}")
+                sys.exit(1)
 
-        # Find the downloaded file
-        downloaded = list(Path(tmpdir).glob("*.mp4"))
-        if not downloaded:
-            downloaded = list(Path(tmpdir).glob("*"))
+            # Find the downloaded file
+            downloaded = list(Path(tmpdir).glob("*.mp4"))
+            if not downloaded:
+                downloaded = list(Path(tmpdir).glob("*"))
 
-        if not downloaded:
-            print("Error: No file was downloaded")
-            sys.exit(1)
+            if not downloaded:
+                print("Error: No file was downloaded")
+                sys.exit(1)
 
-        video_file = downloaded[0]
-        title = args.title or video_file.stem
+            video_file = downloaded[0]
 
-        print(f"Downloaded: {video_file.name}")
-        print(f"Uploading as: {title}")
+            # Validate the downloaded file
+            validate_file(video_file)
 
-        # Upload the video
-        with open(video_file, "rb") as f:
-            files = {"file": (video_file.name, f)}
-            data = {
-                "title": title,
-                "description": args.description or "",
-            }
-            if args.category:
-                cats = httpx.get(f"{API_BASE}/categories").json()
-                for cat in cats:
-                    if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
-                        data["category_id"] = cat["id"]
-                        break
+            title = args.title or video_file.stem
 
-            with httpx.Client(timeout=None) as client:
-                response = client.post(f"{API_BASE}/videos", files=files, data=data)
+            print(f"Downloaded: {video_file.name}")
+            print(f"Uploading as: {title}")
 
-            if response.status_code == 200:
-                result = response.json()
-                print(f"Success! Video queued for processing.")
+            # Upload the video
+            with open(video_file, "rb") as f:
+                files = {"file": (video_file.name, f)}
+                data = {
+                    "title": title,
+                    "description": args.description or "",
+                }
+                if args.category:
+                    try:
+                        response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+                        cats = safe_json_response(response)
+                        for cat in cats:
+                            if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
+                                data["category_id"] = cat["id"]
+                                break
+                    except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
+                        print(f"Warning: Could not fetch categories: {e}")
+                        print("Uploading without category")
+
+                with httpx.Client(timeout=None) as client:
+                    response = client.post(f"{API_BASE}/videos", files=files, data=data)
+
+                result = safe_json_response(response)
+                print("Success! Video queued for processing.")
                 print(f"  ID: {result['video_id']}")
                 print(f"  Slug: {result['slug']}")
-            else:
-                print(f"Error: {response.text}")
-                sys.exit(1)
+
+    except httpx.ConnectError:
+        print(f"Error: Could not connect to admin API at {API_BASE}")
+        print("Make sure the admin server is running.")
+        sys.exit(1)
+    except httpx.TimeoutException:
+        print(f"Error: Request timed out while connecting to {API_BASE}")
+        sys.exit(1)
+    except CLIError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 
 def main():
