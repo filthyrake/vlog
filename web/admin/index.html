@@ -567,11 +567,15 @@
                 async loadVideos() {
                     try {
                         const res = await fetch('/api/videos');
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
                         this.videos = await res.json();
                         // Load progress for active videos after loading video list
                         await this.loadProgressForActiveVideos();
                     } catch (e) {
                         console.error('Failed to load videos:', e);
+                        this.videos = [];
                     }
                 },
 
@@ -598,9 +602,13 @@
                 async loadCategories() {
                     try {
                         const res = await fetch('/api/categories');
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
                         this.categories = await res.json();
                     } catch (e) {
                         console.error('Failed to load categories:', e);
+                        this.categories = [];
                     }
                 },
 
@@ -850,19 +858,27 @@
                 async loadAnalyticsOverview() {
                     try {
                         const res = await fetch('/api/analytics/overview');
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
                         this.analyticsOverview = await res.json();
                     } catch (e) {
                         console.error('Failed to load analytics overview:', e);
+                        this.analyticsOverview = {};
                     }
                 },
 
                 async loadVideoAnalytics() {
                     try {
                         const res = await fetch(`/api/analytics/videos?period=${this.analyticsPeriod}&limit=20&sort_by=views`);
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
                         const data = await res.json();
                         this.analyticsVideos = data.videos || [];
                     } catch (e) {
                         console.error('Failed to load video analytics:', e);
+                        this.analyticsVideos = [];
                     }
                 },
 

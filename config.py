@@ -64,3 +64,6 @@ AUDIO_EXTRACTION_TIMEOUT = int(os.getenv("VLOG_AUDIO_EXTRACTION_TIMEOUT", "300")
 WORKER_USE_FILESYSTEM_WATCHER = os.getenv("VLOG_WORKER_USE_FILESYSTEM_WATCHER", "true").lower() == "true"
 WORKER_FALLBACK_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_FALLBACK_POLL_INTERVAL", "60"))
 WORKER_DEBOUNCE_DELAY = float(os.getenv("VLOG_WORKER_DEBOUNCE_DELAY", "1.0"))
+
+# Progress update rate limiting (prevents database overload during transcoding)
+PROGRESS_UPDATE_INTERVAL = float(os.getenv("VLOG_PROGRESS_UPDATE_INTERVAL", "5.0"))
