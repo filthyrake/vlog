@@ -133,6 +133,12 @@
     </main>
 
     <script>
+        // Debug logging - only enabled on localhost
+        const DEBUG_MODE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        function debugLog(...args) {
+            if (DEBUG_MODE) console.log(...args);
+        }
+
         // Playback analytics tracker
         class PlaybackAnalytics {
             constructor(videoId, player) {
@@ -281,10 +287,10 @@
                     const video = document.getElementById('player');
                     const streamUrl = this.video.stream_url;
 
-                    console.log('Initializing hls.js with source:', streamUrl);
+                    debugLog('Initializing hls.js with source:', streamUrl);
 
                     if (Hls.isSupported()) {
-                        console.log('hls.js is supported');
+                        debugLog('hls.js is supported');
                         this.hls = new Hls({
                             debug: false,
                             enableWorker: false,  // Disable worker to avoid DataCloneError on quality switch
@@ -295,17 +301,17 @@
                         this.hls.attachMedia(video);
 
                         this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-                            console.log('HLS manifest parsed, levels:', data.levels);
+                            debugLog('HLS manifest parsed, levels:', data.levels);
                             // Populate quality levels for selector (sorted by height descending)
                             this.hlsLevels = data.levels.slice().sort((a, b) => b.height - a.height);
                         });
 
                         this.hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
-                            console.log('Level loaded:', data.level);
+                            debugLog('Level loaded:', data.level);
                         });
 
                         this.hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
-                            console.log('Fragment loaded:', data.frag.sn);
+                            debugLog('Fragment loaded:', data.frag.sn);
                         });
 
                         this.hls.on(Hls.Events.ERROR, (event, data) => {
@@ -332,7 +338,7 @@
                         this.player = video;
                     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                         // Safari has native HLS support
-                        console.log('Using native HLS support');
+                        debugLog('Using native HLS support');
                         video.src = streamUrl;
                         this.player = video;
                     } else {
@@ -391,7 +397,7 @@
                     track.track.mode = 'hidden';
                     this.captionsEnabled = false;
 
-                    console.log('Captions track added:', captionsUrl);
+                    debugLog('Captions track added:', captionsUrl);
                 },
 
                 toggleCaptions() {
@@ -404,7 +410,7 @@
                         this.captionsTrack.track.mode = 'showing';
                         this.captionsEnabled = true;
                     }
-                    console.log('Captions:', this.captionsEnabled ? 'on' : 'off');
+                    debugLog('Captions:', this.captionsEnabled ? 'on' : 'off');
                 },
 
                 formatDuration(seconds) {
@@ -421,7 +427,7 @@
                     if (idx === -1) {
                         // Auto quality - let hls.js decide
                         this.hls.nextLevel = -1;
-                        console.log('Quality set to auto');
+                        debugLog('Quality set to auto');
                     } else {
                         // Find the actual hls.js level index for this height
                         const targetLevel = this.hlsLevels[idx];
@@ -429,7 +435,7 @@
                         if (hlsIndex !== -1) {
                             // Use nextLevel for smooth switching (waits for current segment to finish)
                             this.hls.nextLevel = hlsIndex;
-                            console.log('Quality set to', targetLevel.height + 'p');
+                            debugLog('Quality set to', targetLevel.height + 'p');
                         }
                     }
                 }
