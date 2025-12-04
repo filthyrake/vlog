@@ -232,9 +232,7 @@ class TestTimeoutConfiguration:
         try:
             with mock.patch.dict(os.environ, {"VLOG_UPLOAD_TIMEOUT": "14400"}):
                 importlib.reload(cli.main)
-                from cli.main import UPLOAD_TIMEOUT
-
-                assert UPLOAD_TIMEOUT == 14400  # 4 hours
+                assert cli.main.UPLOAD_TIMEOUT == 14400  # 4 hours
         finally:
             # Restore original state
             importlib.reload(cli.main)
