@@ -19,9 +19,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
-from api.database import configure_sqlite_pragmas, database, quality_progress, transcoding_jobs, video_qualities, videos
+from api.database import (
+    configure_sqlite_pragmas,
+    database,
+    playback_sessions,
+    quality_progress,
+    transcoding_jobs,
+    transcriptions,
+    video_qualities,
+    videos,
+)
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from config import (
+    ARCHIVE_DIR,
+    ARCHIVE_RETENTION_DAYS,
     CLEANUP_PARTIAL_ON_FAILURE,
     FFMPEG_TIMEOUT_MAXIMUM,
     FFMPEG_TIMEOUT_MINIMUM,
@@ -1729,6 +1740,78 @@ async def check_stale_jobs():
                 )
 
 
+async def cleanup_expired_archives():
+    """
+    Delete archived videos that have exceeded the retention period.
+    Called periodically during the worker loop.
+    """
+    if ARCHIVE_RETENTION_DAYS <= 0:
+        return  # Cleanup disabled
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ARCHIVE_RETENTION_DAYS)
+
+    expired = await database.fetch_all(
+        videos.select().where(
+            videos.c.deleted_at.isnot(None) & (videos.c.deleted_at < cutoff)
+        )
+    )
+
+    if not expired:
+        return
+
+    print(f"Found {len(expired)} archived video(s) past retention period, cleaning up...")
+
+    for video in expired:
+        video_id = video["id"]
+        slug = video["slug"]
+
+        try:
+            # Delete database records atomically
+            async with database.transaction():
+                # Get job ID for quality_progress cleanup
+                job = await database.fetch_one(
+                    transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+                )
+                if job:
+                    await database.execute(
+                        quality_progress.delete().where(quality_progress.c.job_id == job["id"])
+                    )
+                await database.execute(
+                    transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id)
+                )
+                await database.execute(
+                    playback_sessions.delete().where(playback_sessions.c.video_id == video_id)
+                )
+                await database.execute(
+                    transcriptions.delete().where(transcriptions.c.video_id == video_id)
+                )
+                await database.execute(
+                    video_qualities.delete().where(video_qualities.c.video_id == video_id)
+                )
+                # Delete video record last
+                await database.execute(videos.delete().where(videos.c.id == video_id))
+
+            # Delete files after successful transaction
+            video_dir = VIDEOS_DIR / slug
+            if video_dir.exists():
+                shutil.rmtree(video_dir)
+
+            archive_dir = ARCHIVE_DIR / slug
+            if archive_dir.exists():
+                shutil.rmtree(archive_dir)
+
+            # Delete source file from uploads if still there
+            for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+                upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+                if upload_file.exists():
+                    upload_file.unlink()
+
+            print(f"  Permanently deleted expired archive: {slug}")
+
+        except Exception as e:
+            print(f"  Error cleaning up expired archive '{slug}': {e}")
+
+
 async def worker_loop():
     """
     Main worker loop - process pending videos using event-driven architecture.
@@ -1773,6 +1856,9 @@ async def worker_loop():
     last_stale_check = datetime.now(timezone.utc)
     stale_check_interval = 300  # Check every 5 minutes
 
+    last_archive_cleanup = datetime.now(timezone.utc)
+    archive_cleanup_interval = 3600  # Check every hour
+
     # Determine wait behavior based on watcher availability
     use_event_driven = observer is not None
 
@@ -1801,6 +1887,14 @@ async def worker_loop():
             ):
                 await check_stale_jobs()
                 last_stale_check = datetime.now(timezone.utc)
+
+            # Periodic archive cleanup
+            if (
+                not shutdown_requested
+                and (datetime.now(timezone.utc) - last_archive_cleanup).total_seconds() > archive_cleanup_interval
+            ):
+                await cleanup_expired_archives()
+                last_archive_cleanup = datetime.now(timezone.utc)
 
             # Wait for new uploads or fallback timeout
             if not shutdown_requested:
@@ -1846,11 +1940,11 @@ async def worker_loop():
                         videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PENDING)
                     )
 
-                # Reset job status so it can be picked up again
+                # Reset job so it can be picked up again
                 await database.execute(
                     transcoding_jobs.update()
                     .where(transcoding_jobs.c.id == job_id)
-                    .values(status="pending", started_at=None, current_step=None, worker_id=None)
+                    .values(started_at=None, current_step=None, worker_id=None, progress_percent=0)
                 )
 
                 # Reset quality_progress records that were in_progress
