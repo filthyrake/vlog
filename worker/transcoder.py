@@ -1673,32 +1673,58 @@ async def worker_loop():
             print("Stopping filesystem watcher...")
             stop_filesystem_watcher(observer)
 
-        # On shutdown, reset videos being processed by this worker instance to "pending"
-        print("Cleaning up: resetting this worker's processing videos to pending...")
+        # On shutdown, reset all state for jobs being processed by this worker
+        print("Cleaning up: resetting this worker's in-progress jobs...")
         try:
-            # Find videos being processed by this worker through transcoding_jobs
+            # Find incomplete jobs for this worker
             jobs_query = transcoding_jobs.select().where(
                 (transcoding_jobs.c.worker_id == WORKER_ID) &
                 (transcoding_jobs.c.completed_at.is_(None))
             )
             jobs = await database.fetch_all(jobs_query)
 
-            # Reset those videos to pending
+            reset_count = 0
             for job in jobs:
+                video_id = job["video_id"]
+                job_id = job["id"]
+
+                # Reset video status to pending (only if still processing)
                 video = await database.fetch_one(
-                    videos.select().where(videos.c.id == job["video_id"])
+                    videos.select().where(videos.c.id == video_id)
                 )
                 if video and video["status"] == VideoStatus.PROCESSING:
                     await database.execute(
                         videos.update()
-                        .where(videos.c.id == job["video_id"])
+                        .where(videos.c.id == video_id)
                         .values(status=VideoStatus.PENDING)
                     )
 
-            if jobs:
-                print(f"Reset {len(jobs)} video(s) to pending.")
+                # Reset job status so it can be picked up again
+                await database.execute(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job_id)
+                    .values(
+                        status="pending",
+                        started_at=None,
+                        current_step=None,
+                        worker_id=None
+                    )
+                )
+
+                # Reset quality_progress records that were in_progress
+                await database.execute(
+                    quality_progress.update()
+                    .where(quality_progress.c.job_id == job_id)
+                    .where(quality_progress.c.status == "in_progress")
+                    .values(status="pending", progress_percent=0)
+                )
+
+                reset_count += 1
+
+            if reset_count > 0:
+                print(f"Reset {reset_count} job(s) to pending state.")
             else:
-                print("No videos to reset.")
+                print("No jobs to reset.")
         except Exception as e:
             print(f"Error during cleanup: {e}")
 
