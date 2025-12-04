@@ -226,6 +226,33 @@ class TestVideoManagementHTTP:
         assert data["title"] == "Updated Title"
         assert data["description"] == "Updated description"
 
+    def test_update_video_title_too_long(self, admin_client, sample_video):
+        """Test updating video with title too long fails."""
+        response = admin_client.put(
+            f"/api/videos/{sample_video['id']}",
+            data={"title": "x" * 300},
+        )
+        assert response.status_code == 400
+        assert "255 characters" in response.json()["detail"]
+
+    def test_update_video_description_too_long(self, admin_client, sample_video):
+        """Test updating video with description too long fails."""
+        response = admin_client.put(
+            f"/api/videos/{sample_video['id']}",
+            data={"description": "x" * 6000},
+        )
+        assert response.status_code == 400
+        assert "5000 characters" in response.json()["detail"]
+
+    def test_update_video_empty_title(self, admin_client, sample_video):
+        """Test updating video with empty title fails."""
+        response = admin_client.put(
+            f"/api/videos/{sample_video['id']}",
+            data={"title": "   "},
+        )
+        assert response.status_code == 400
+        assert "cannot be empty" in response.json()["detail"]
+
     @pytest.mark.asyncio
     async def test_soft_delete_video(self, admin_client, sample_video, test_storage):
         """Test soft-deleting a video."""

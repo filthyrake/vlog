@@ -493,8 +493,14 @@ async def update_video(
     """Update video metadata."""
     update_data = {}
     if title is not None:
+        if len(title.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        if len(title) > MAX_TITLE_LENGTH:
+            raise HTTPException(status_code=400, detail=f"Title must be {MAX_TITLE_LENGTH} characters or less")
         update_data["title"] = title
     if description is not None:
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            raise HTTPException(status_code=400, detail=f"Description must be {MAX_DESCRIPTION_LENGTH} characters or less")
         update_data["description"] = description
     if category_id is not None:
         if category_id > 0:
