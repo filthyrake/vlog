@@ -209,8 +209,6 @@ class TestAnalyticsEndpoints:
     @pytest.mark.asyncio
     async def test_session_validation_accepts_ready_video(self, test_database, sample_video):
         """Test that session validation accepts ready videos."""
-        from api.enums import VideoStatus
-
         # Verify the video can be found with the validation query
         video = await test_database.fetch_one(
             videos.select().where(
@@ -226,12 +224,13 @@ class TestAnalyticsEndpoints:
     @pytest.mark.asyncio
     async def test_session_validation_rejects_nonexistent_video(self, test_database):
         """Test that session validation rejects non-existent videos."""
-        from api.enums import VideoStatus
+        # Use a very large ID that won't exist
+        nonexistent_id = 999999
 
         # Verify the video cannot be found with the validation query
         video = await test_database.fetch_one(
             videos.select().where(
-                videos.c.id == 99999,
+                videos.c.id == nonexistent_id,
                 videos.c.status == VideoStatus.READY,
                 videos.c.deleted_at.is_(None),
             )
@@ -241,8 +240,6 @@ class TestAnalyticsEndpoints:
     @pytest.mark.asyncio
     async def test_session_validation_rejects_pending_video(self, test_database, sample_pending_video):
         """Test that session validation rejects pending videos."""
-        from api.enums import VideoStatus
-
         # Verify the video cannot be found with the validation query
         video = await test_database.fetch_one(
             videos.select().where(
@@ -256,8 +253,6 @@ class TestAnalyticsEndpoints:
     @pytest.mark.asyncio
     async def test_session_validation_rejects_deleted_video(self, test_database, sample_deleted_video):
         """Test that session validation rejects soft-deleted videos."""
-        from api.enums import VideoStatus
-
         # Verify the video cannot be found with the validation query
         video = await test_database.fetch_one(
             videos.select().where(
