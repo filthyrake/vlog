@@ -1124,7 +1124,9 @@ async def analytics_videos(
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
-        return VideoAnalyticsListResponse(**cached_data)
+        # Reconstruct response models from cached data
+        videos = [VideoAnalyticsSummary(**v) for v in cached_data["videos"]]
+        return VideoAnalyticsListResponse(videos=videos, total_count=cached_data["total_count"])
 
     # Cache miss - compute fresh data
     now = datetime.now(timezone.utc)
@@ -1221,7 +1223,22 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
-        return VideoAnalyticsDetail(**cached_data)
+        # Reconstruct response models from cached data
+        quality_breakdown = [QualityBreakdown(**q) for q in cached_data["quality_breakdown"]]
+        views_over_time = [DailyViews(**v) for v in cached_data["views_over_time"]]
+        return VideoAnalyticsDetail(
+            video_id=cached_data["video_id"],
+            title=cached_data["title"],
+            duration=cached_data["duration"],
+            total_views=cached_data["total_views"],
+            unique_viewers=cached_data["unique_viewers"],
+            total_watch_time_seconds=cached_data["total_watch_time_seconds"],
+            avg_watch_duration_seconds=cached_data["avg_watch_duration_seconds"],
+            completion_rate=cached_data["completion_rate"],
+            avg_percent_watched=cached_data["avg_percent_watched"],
+            quality_breakdown=quality_breakdown,
+            views_over_time=views_over_time,
+        )
 
     # Cache miss - compute fresh data
     # Get video info
@@ -1315,7 +1332,9 @@ async def analytics_trends(
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
-        return TrendsResponse(**cached_data)
+        # Reconstruct response models from cached data
+        data = [TrendDataPoint(**d) for d in cached_data["data"]]
+        return TrendsResponse(period=cached_data["period"], data=data)
 
     # Cache miss - compute fresh data
     # Validate period to prevent SQL injection (whitelist approach)
