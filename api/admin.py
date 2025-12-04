@@ -376,6 +376,31 @@ async def list_all_videos(
     ]
 
 
+@app.get("/api/videos/archived")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_archived_videos(request: Request):
+    """List all soft-deleted videos in archive.
+
+    NOTE: This route must be defined before /api/videos/{video_id}
+    to prevent "archived" from being matched as a video_id.
+    """
+    query = videos.select().where(videos.c.deleted_at.is_not(None)).order_by(videos.c.deleted_at.desc())
+    rows = await database.fetch_all(query)
+
+    return {
+        "videos": [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "slug": row["slug"],
+                "deleted_at": row["deleted_at"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
 @app.get("/api/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video(request: Request, video_id: int) -> VideoResponse:
@@ -688,27 +713,6 @@ async def restore_video(request: Request, video_id: int):
         raise HTTPException(status_code=500, detail=f"Failed to restore files: {e}")
 
     return {"status": "ok", "message": "Video restored from archive"}
-
-
-@app.get("/api/videos/archived")
-@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def list_archived_videos(request: Request):
-    """List all soft-deleted videos in archive."""
-    query = videos.select().where(videos.c.deleted_at.is_not(None)).order_by(videos.c.deleted_at.desc())
-    rows = await database.fetch_all(query)
-
-    return {
-        "videos": [
-            {
-                "id": row["id"],
-                "title": row["title"],
-                "slug": row["slug"],
-                "deleted_at": row["deleted_at"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
-    }
 
 
 @app.post("/api/videos/{video_id}/retry")

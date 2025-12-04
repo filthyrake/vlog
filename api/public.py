@@ -297,6 +297,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .where(videos.c.slug == slug)
+        .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
     )
 
     row = await database.fetch_one(query)
@@ -356,8 +357,8 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video_progress(request: Request, slug: str) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
-    # Get video by slug
-    video_query = videos.select().where(videos.c.slug == slug)
+    # Get video by slug (exclude soft-deleted)
+    video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
     video = await database.fetch_one(video_query)
 
     if not video:
@@ -419,8 +420,8 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
-    # Get video by slug
-    video_query = videos.select().where(videos.c.slug == slug)
+    # Get video by slug (exclude soft-deleted)
+    video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
     video = await database.fetch_one(video_query)
 
     if not video:

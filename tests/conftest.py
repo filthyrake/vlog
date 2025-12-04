@@ -259,6 +259,9 @@ def public_client(test_database: Database, test_storage: dict, test_db_path: Pat
     Create a test client for the public API.
     Patches config to use test paths.
     """
+    import importlib
+    import sys
+
     from fastapi.testclient import TestClient
 
     # Patch config before importing app
@@ -269,14 +272,22 @@ def public_client(test_database: Database, test_storage: dict, test_db_path: Pat
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
     monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
 
-    # Patch database in api.database
+    # Patch database in api.database module
     import api.database
 
     monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
     monkeypatch.setattr(api.database, "database", test_database)
 
-    # Import app after patching
+    # Force reload the public module to pick up the patched database
+    if "api.public" in sys.modules:
+        # Re-patch the module's database reference after reload
+        importlib.reload(sys.modules["api.public"])
+
+    # Patch the app's database reference directly
+    import api.public
     from api.public import app
+
+    monkeypatch.setattr(api.public, "database", test_database)
 
     # Create test client without lifespan (we manage database ourselves)
     with TestClient(app, raise_server_exceptions=True) as client:
@@ -289,6 +300,9 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
     Create a test client for the admin API.
     Patches config to use test paths.
     """
+    import importlib
+    import sys
+
     from fastapi.testclient import TestClient
 
     # Patch config before importing app
@@ -299,14 +313,21 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
     monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
 
-    # Patch database in api.database
+    # Patch database in api.database module
     import api.database
 
     monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
     monkeypatch.setattr(api.database, "database", test_database)
 
-    # Import app after patching
+    # Force reload the admin module to pick up the patched database
+    if "api.admin" in sys.modules:
+        importlib.reload(sys.modules["api.admin"])
+
+    # Patch the app's database reference directly
+    import api.admin
     from api.admin import app
+
+    monkeypatch.setattr(api.admin, "database", test_database)
 
     # Create test client without lifespan
     with TestClient(app, raise_server_exceptions=True) as client:
