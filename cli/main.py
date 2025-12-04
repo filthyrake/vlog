@@ -145,7 +145,8 @@ def cmd_upload(args):
         print("Make sure the admin server is running.")
         sys.exit(1)
     except httpx.TimeoutException:
-        print(f"Error: Request timed out while connecting to {API_BASE}")
+        print(f"Error: Upload timed out (exceeded {UPLOAD_TIMEOUT}s timeout)")
+        print("You can increase the timeout with VLOG_UPLOAD_TIMEOUT environment variable")
         sys.exit(1)
     except CLIError as e:
         print(f"Error: {e}")
@@ -343,7 +344,8 @@ def cmd_download(args):
         print("Make sure the admin server is running.")
         sys.exit(1)
     except httpx.TimeoutException:
-        print(f"Error: Request timed out while connecting to {API_BASE}")
+        print(f"Error: Upload timed out (exceeded {UPLOAD_TIMEOUT}s timeout)")
+        print("You can increase the timeout with VLOG_UPLOAD_TIMEOUT environment variable")
         sys.exit(1)
     except CLIError as e:
         print(f"Error: {e}")
