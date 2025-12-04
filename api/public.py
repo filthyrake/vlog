@@ -16,9 +16,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-from starlette.middleware.base import BaseHTTPMiddleware
 
+from api.common import (
+    SecurityHeadersMiddleware,
+    check_health,
+    get_real_ip,
+    rate_limit_exceeded_handler,
+)
 from api.database import (
     categories,
     configure_sqlite_pragmas,
@@ -54,51 +58,16 @@ from config import (
     RATE_LIMIT_PUBLIC_DEFAULT,
     RATE_LIMIT_PUBLIC_VIDEOS_LIST,
     RATE_LIMIT_STORAGE_URL,
-    TRUSTED_PROXIES,
-    UPLOADS_DIR,
     VIDEOS_DIR,
 )
-
-
-def _get_real_ip(request: Request) -> str:
-    """
-    Get the real client IP address, respecting X-Forwarded-For header only from trusted proxies.
-
-    Security: X-Forwarded-For is only trusted when the direct client IP is in TRUSTED_PROXIES.
-    This prevents attackers from spoofing the header to bypass rate limiting.
-    Configure VLOG_TRUSTED_PROXIES with your proxy IPs (e.g., "127.0.0.1,10.0.0.1").
-    """
-    client_ip = get_remote_address(request)
-
-    # Only trust X-Forwarded-For if request came from a trusted proxy
-    if TRUSTED_PROXIES and client_ip in TRUSTED_PROXIES:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
-            # The first one is the original client
-            return forwarded.split(",")[0].strip()
-
-    return client_ip
-
 
 # Initialize rate limiter
 # Uses in-memory storage by default, can be configured to use Redis
 limiter = Limiter(
-    key_func=_get_real_ip,
+    key_func=get_real_ip,
     storage_uri=RATE_LIMIT_STORAGE_URL if RATE_LIMIT_ENABLED else None,
     enabled=RATE_LIMIT_ENABLED,
 )
-
-
-def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-    """Handle rate limit exceeded errors with a proper JSON response."""
-    return JSONResponse(
-        status_code=429,
-        content={
-            "detail": "Rate limit exceeded",
-            "error": str(exc.detail),
-        },
-    )
 
 
 @asynccontextmanager
@@ -114,26 +83,7 @@ app = FastAPI(title="VLog", description="Self-hosted video platform", lifespan=l
 
 # Register rate limiter with the app
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add security headers to all responses."""
-
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        # Prevent clickjacking
-        response.headers["X-Frame-Options"] = "SAMEORIGIN"
-        # Prevent MIME-type sniffing
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        # XSS protection for legacy browsers
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        # Control referrer information
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        # Permissions policy (disable unnecessary browser features)
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        return response
-
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -182,30 +132,12 @@ async def home():
 @app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring and load balancers."""
-    checks = {
-        "database": False,
-        "storage": False,
-    }
-
-    # Check database connectivity
-    try:
-        await database.fetch_one("SELECT 1")
-        checks["database"] = True
-    except Exception:
-        pass
-
-    # Check storage accessibility (NAS mount)
-    try:
-        checks["storage"] = VIDEOS_DIR.exists() and UPLOADS_DIR.exists()
-    except Exception:
-        pass
-
-    healthy = all(checks.values())
+    result = await check_health()
     return JSONResponse(
-        status_code=200 if healthy else 503,
+        status_code=result["status_code"],
         content={
-            "status": "healthy" if healthy else "unhealthy",
-            "checks": checks,
+            "status": "healthy" if result["healthy"] else "unhealthy",
+            "checks": result["checks"],
         },
     )
 
