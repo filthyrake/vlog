@@ -196,6 +196,30 @@ async def sample_pending_video(test_database: Database, sample_category: dict) -
 
 
 @pytest.fixture(scope="function")
+async def sample_deleted_video(test_database: Database, sample_category: dict) -> dict:
+    """Create a sample deleted video for testing."""
+    now = datetime.now(timezone.utc)
+    result = await test_database.execute(
+        videos.insert().values(
+            title="Deleted Video",
+            slug="deleted-video",
+            description="A video that has been deleted",
+            category_id=sample_category["id"],
+            status=VideoStatus.READY,
+            created_at=now,
+            deleted_at=now,  # Soft-deleted
+        )
+    )
+    return {
+        "id": result,
+        "title": "Deleted Video",
+        "slug": "deleted-video",
+        "status": VideoStatus.READY,
+        "deleted_at": now,
+    }
+
+
+@pytest.fixture(scope="function")
 async def sample_playback_session(test_database: Database, sample_video: dict) -> dict:
     """Create a sample playback session for testing."""
     import uuid
