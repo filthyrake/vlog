@@ -11,7 +11,6 @@ import math
 import re
 import shutil
 import signal
-import subprocess
 import threading
 import time
 import uuid
@@ -282,17 +281,44 @@ def stop_filesystem_watcher(observer: Optional[Observer]):
             print(f"  Warning: Error stopping filesystem watcher: {e}")
 
 
-def get_video_info(input_path: Path) -> dict:
-    """Get video metadata using ffprobe."""
+async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
+    """Get video metadata using ffprobe (async with timeout).
+
+    Args:
+        input_path: Path to the video file
+        timeout: Maximum time to wait for ffprobe (default 30 seconds)
+
+    Returns:
+        Dictionary with video metadata (width, height, duration, codec)
+
+    Raises:
+        RuntimeError: If ffprobe fails or times out
+    """
     cmd = [
         "ffprobe", "-v", "quiet", "-print_format", "json",
         "-show_format", "-show_streams", str(input_path)
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {result.stderr}")
 
-    data = json.loads(result.stdout)
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise RuntimeError(f"ffprobe timed out after {timeout}s (file may be on slow storage or corrupted)")
+
+    if process.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {stderr.decode('utf-8', errors='ignore')}")
+
+    data = json.loads(stdout.decode('utf-8', errors='ignore'))
 
     # Find video stream
     video_stream = None
@@ -321,19 +347,38 @@ def get_applicable_qualities(source_height: int) -> list:
     return [q for q in QUALITY_PRESETS if q["height"] <= source_height]
 
 
-def get_output_dimensions(segment_path: Path) -> Tuple[int, int]:
-    """Get actual dimensions from a transcoded segment file."""
+async def get_output_dimensions(segment_path: Path, timeout: float = 10.0) -> Tuple[int, int]:
+    """Get actual dimensions from a transcoded segment file (async with timeout).
+
+    Args:
+        segment_path: Path to the segment file
+        timeout: Maximum time to wait for ffprobe (default 10 seconds)
+
+    Returns:
+        Tuple of (width, height), or (0, 0) on failure
+    """
     cmd = [
         "ffprobe", "-v", "quiet", "-select_streams", "v:0",
         "-show_entries", "stream=width,height",
         "-of", "json", str(segment_path)
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        return (0, 0)
 
     try:
-        data = json.loads(result.stdout)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, _ = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout
+        )
+
+        if process.returncode != 0:
+            return (0, 0)
+
+        data = json.loads(stdout.decode('utf-8', errors='ignore'))
         streams = data.get("streams", [])
         if not streams:
             return (0, 0)
@@ -341,7 +386,7 @@ def get_output_dimensions(segment_path: Path) -> Tuple[int, int]:
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
         return (width, height)
-    except (json.JSONDecodeError, ValueError, KeyError):
+    except (asyncio.TimeoutError, json.JSONDecodeError, ValueError, KeyError):
         return (0, 0)
 
 
@@ -359,8 +404,18 @@ def is_hls_playlist_complete(playlist_path: Path) -> bool:
         return False
 
 
-def generate_thumbnail(input_path: Path, output_path: Path, timestamp: float = 5.0):
-    """Generate a thumbnail from the video."""
+async def generate_thumbnail(input_path: Path, output_path: Path, timestamp: float = 5.0, timeout: float = 60.0):
+    """Generate a thumbnail from the video (async with timeout).
+
+    Args:
+        input_path: Path to the video file
+        output_path: Path to save the thumbnail
+        timestamp: Time position to capture (default 5 seconds)
+        timeout: Maximum time to wait for ffmpeg (default 60 seconds)
+
+    Raises:
+        RuntimeError: If ffmpeg fails or times out
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg", "-y", "-i", str(input_path),
@@ -369,7 +424,25 @@ def generate_thumbnail(input_path: Path, output_path: Path, timestamp: float = 5
         "-vf", "scale=640:-1",
         str(output_path)
     ]
-    subprocess.run(cmd, capture_output=True, check=True)
+
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    try:
+        _, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise RuntimeError(f"Thumbnail generation timed out after {timeout}s")
+
+    if process.returncode != 0:
+        raise RuntimeError(f"Thumbnail generation failed: {stderr.decode('utf-8', errors='ignore')[:200]}")
 
 
 async def transcode_quality_with_progress(
@@ -1048,7 +1121,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             print("  Step 1: Probing video info...")
 
             try:
-                info = get_video_info(source_file)
+                info = await get_video_info(source_file)
             except Exception as e:
                 error_msg = f"Failed to probe video file: {e}"
                 print(f"  ERROR: {error_msg}")
@@ -1105,7 +1178,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             if not thumb_path.exists():
                 print("  Step 2: Generating thumbnail...")
                 thumbnail_time = min(5.0, info["duration"] / 4)
-                generate_thumbnail(source_file, thumb_path, thumbnail_time)
+                await generate_thumbnail(source_file, thumb_path, thumbnail_time)
             else:
                 print("  Step 2: Thumbnail already exists, skipping...")
 
@@ -1227,7 +1300,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 # Get actual dimensions from existing segment
                 first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
-                    actual_width, actual_height = get_output_dimensions(first_segment)
+                    actual_width, actual_height = await get_output_dimensions(first_segment)
                 else:
                     actual_width = int(quality["height"] * 16 / 9)
                     if actual_width % 2 != 0:
@@ -1249,7 +1322,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 # Get actual dimensions from existing segment
                 first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
-                    actual_width, actual_height = get_output_dimensions(first_segment)
+                    actual_width, actual_height = await get_output_dimensions(first_segment)
                 else:
                     actual_width = int(quality["height"] * 16 / 9)
                     if actual_width % 2 != 0:
@@ -1285,7 +1358,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     # Get actual dimensions from transcoded segment
                     first_segment = output_dir / f"{quality_name}_0000.ts"
                     if first_segment.exists():
-                        actual_width, actual_height = get_output_dimensions(first_segment)
+                        actual_width, actual_height = await get_output_dimensions(first_segment)
                     else:
                         actual_width = int(quality["height"] * 16 / 9)
                         if actual_width % 2 != 0:
@@ -1364,7 +1437,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     else:
                         first_segment = output_dir / f"{quality_name}_0000.ts"
                         if first_segment.exists():
-                            actual_width, actual_height = get_output_dimensions(first_segment)
+                            actual_width, actual_height = await get_output_dimensions(first_segment)
                         else:
                             actual_width = int(quality["height"] * 16 / 9)
                             if actual_width % 2 != 0:
@@ -1411,7 +1484,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                             first_segment = output_dir / f"{quality_name}_0000.ts"
                             if first_segment.exists():
-                                actual_width, actual_height = get_output_dimensions(first_segment)
+                                actual_width, actual_height = await get_output_dimensions(first_segment)
                             else:
                                 actual_width = int(quality["height"] * 16 / 9)
                                 if actual_width % 2 != 0:
