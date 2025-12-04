@@ -54,6 +54,7 @@ from config import (
     RATE_LIMIT_PUBLIC_DEFAULT,
     RATE_LIMIT_PUBLIC_VIDEOS_LIST,
     RATE_LIMIT_STORAGE_URL,
+    TRUSTED_PROXIES,
     UPLOADS_DIR,
     VIDEOS_DIR,
 )
@@ -61,18 +62,23 @@ from config import (
 
 def _get_real_ip(request: Request) -> str:
     """
-    Get the real client IP address, respecting X-Forwarded-For header.
-    Handles reverse proxy setups (nginx, traefik, etc).
-    """
-    # Check for forwarded headers (common proxy setups)
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
-        # The first one is the original client
-        return forwarded.split(",")[0].strip()
+    Get the real client IP address, respecting X-Forwarded-For header only from trusted proxies.
 
-    # Fall back to direct client IP
-    return get_remote_address(request)
+    Security: X-Forwarded-For is only trusted when the direct client IP is in TRUSTED_PROXIES.
+    This prevents attackers from spoofing the header to bypass rate limiting.
+    Configure VLOG_TRUSTED_PROXIES with your proxy IPs (e.g., "127.0.0.1,10.0.0.1").
+    """
+    client_ip = get_remote_address(request)
+
+    # Only trust X-Forwarded-For if request came from a trusted proxy
+    if TRUSTED_PROXIES and client_ip in TRUSTED_PROXIES:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
+            # The first one is the original client
+            return forwarded.split(",")[0].strip()
+
+    return client_ip
 
 
 # Initialize rate limiter

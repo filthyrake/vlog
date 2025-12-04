@@ -104,3 +104,12 @@ RATE_LIMIT_ADMIN_UPLOAD = os.getenv("VLOG_RATE_LIMIT_ADMIN_UPLOAD", "10/hour")
 # Storage backend for rate limiting
 # Options: "memory" (default, per-process), or a Redis URL like "redis://localhost:6379"
 RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
+
+# Trusted proxy configuration for X-Forwarded-For header
+# Only trust X-Forwarded-For when request comes from these IPs
+# Set VLOG_TRUSTED_PROXIES to comma-separated IPs (e.g., "127.0.0.1,10.0.0.1,192.168.1.1")
+# If empty (default), X-Forwarded-For is never trusted (prevents rate limit bypass)
+_trusted_proxies_env = os.getenv("VLOG_TRUSTED_PROXIES", "")
+TRUSTED_PROXIES = set(
+    ip.strip() for ip in _trusted_proxies_env.split(",") if ip.strip()
+)
