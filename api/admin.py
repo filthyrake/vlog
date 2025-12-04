@@ -1005,12 +1005,12 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
     # Try to get from cache first
     cache_key = "analytics_overview"
     cached_data = analytics_cache.get(cache_key)
-    
+
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
         return AnalyticsOverview(**cached_data)
-    
+
     # Cache miss - compute fresh data
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1096,13 +1096,13 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
         "views_this_week": views_week,
         "views_this_month": views_month,
     }
-    
+
     # Store in cache
     analytics_cache.set(cache_key, result_data)
-    
+
     # Set Cache-Control header for client-side caching
     response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
-    
+
     return AnalyticsOverview(**result_data)
 
 
@@ -1120,12 +1120,12 @@ async def analytics_videos(
     # Try to get from cache first
     cache_key = f"analytics_videos:{limit}:{offset}:{sort_by}:{period}"
     cached_data = analytics_cache.get(cache_key)
-    
+
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
         return VideoAnalyticsListResponse(**cached_data)
-    
+
     # Cache miss - compute fresh data
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1200,13 +1200,13 @@ async def analytics_videos(
         "videos": [v.model_dump() for v in video_stats],
         "total_count": count_result or 0,
     }
-    
+
     # Store in cache
     analytics_cache.set(cache_key, result_data)
-    
+
     # Set Cache-Control header for client-side caching
     response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
-    
+
     return VideoAnalyticsListResponse(**result_data)
 
 
@@ -1217,12 +1217,12 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
     # Try to get from cache first
     cache_key = f"analytics_video_detail:{video_id}"
     cached_data = analytics_cache.get(cache_key)
-    
+
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
         return VideoAnalyticsDetail(**cached_data)
-    
+
     # Cache miss - compute fresh data
     # Get video info
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
@@ -1289,13 +1289,13 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         "quality_breakdown": [q.model_dump() for q in quality_breakdown],
         "views_over_time": [v.model_dump() for v in views_over_time],
     }
-    
+
     # Store in cache
     analytics_cache.set(cache_key, result_data)
-    
+
     # Set Cache-Control header for client-side caching
     response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
-    
+
     return VideoAnalyticsDetail(**result_data)
 
 
@@ -1311,12 +1311,12 @@ async def analytics_trends(
     # Try to get from cache first
     cache_key = f"analytics_trends:{period}:{video_id or 'all'}"
     cached_data = analytics_cache.get(cache_key)
-    
+
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
         return TrendsResponse(**cached_data)
-    
+
     # Cache miss - compute fresh data
     # Validate period to prevent SQL injection (whitelist approach)
     valid_periods = {"7d": 7, "30d": 30, "90d": 90}
@@ -1358,13 +1358,13 @@ async def analytics_trends(
         "period": period,
         "data": [d.model_dump() for d in data],
     }
-    
+
     # Store in cache
     analytics_cache.set(cache_key, result_data)
-    
+
     # Set Cache-Control header for client-side caching
     response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
-    
+
     return TrendsResponse(**result_data)
 
 

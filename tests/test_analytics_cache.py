@@ -4,8 +4,6 @@ Tests for analytics caching functionality.
 
 import time
 
-import pytest
-
 from api.analytics_cache import AnalyticsCache
 
 
@@ -119,7 +117,7 @@ class TestAnalyticsCache:
     def test_cleanup_expired(self):
         """Test cleanup of expired entries."""
         cache = AnalyticsCache(ttl_seconds=1)
-        
+
         # Add some entries
         cache.set("key1", {"data": 1})
         cache.set("key2", {"data": 2})
@@ -152,15 +150,15 @@ class TestAnalyticsCache:
     def test_cache_stats(self):
         """Test cache statistics."""
         cache = AnalyticsCache(ttl_seconds=120, enabled=True)
-        
+
         # Initially empty
         stats = cache.get_stats()
         assert stats["entry_count"] == 0
-        
+
         # Add some entries
         cache.set("key1", {"data": 1})
         cache.set("key2", {"data": 2})
-        
+
         stats = cache.get_stats()
         assert stats["entry_count"] == 2
         assert stats["ttl_seconds"] == 120
@@ -169,29 +167,29 @@ class TestAnalyticsCache:
     def test_cache_overwrites_existing_key(self):
         """Test that setting the same key overwrites the old value."""
         cache = AnalyticsCache()
-        
+
         cache.set("test_key", {"value": 1})
         assert cache.get("test_key") == {"value": 1}
-        
+
         cache.set("test_key", {"value": 2})
         assert cache.get("test_key") == {"value": 2}
 
     def test_cache_multiple_data_types(self):
         """Test cache can store different data types."""
         cache = AnalyticsCache()
-        
+
         # Dictionary
         cache.set("dict_key", {"a": 1, "b": 2})
         assert cache.get("dict_key") == {"a": 1, "b": 2}
-        
+
         # List
         cache.set("list_key", [1, 2, 3])
         assert cache.get("list_key") == [1, 2, 3]
-        
+
         # String
         cache.set("string_key", "test_value")
         assert cache.get("string_key") == "test_value"
-        
+
         # Number
         cache.set("number_key", 42)
         assert cache.get("number_key") == 42
@@ -199,18 +197,18 @@ class TestAnalyticsCache:
     def test_cache_key_generation_consistency(self):
         """Test that cache keys are consistent for the same parameters."""
         cache = AnalyticsCache()
-        
+
         # Simulate cache key generation for analytics endpoints
         params1 = {"limit": 50, "offset": 0, "sort_by": "views", "period": "all"}
         key1 = f"analytics_videos:{params1['limit']}:{params1['offset']}:{params1['sort_by']}:{params1['period']}"
-        
+
         params2 = {"limit": 50, "offset": 0, "sort_by": "views", "period": "all"}
         key2 = f"analytics_videos:{params2['limit']}:{params2['offset']}:{params2['sort_by']}:{params2['period']}"
-        
+
         assert key1 == key2
-        
+
         # Different parameters should generate different keys
         params3 = {"limit": 100, "offset": 0, "sort_by": "views", "period": "all"}
         key3 = f"analytics_videos:{params3['limit']}:{params3['offset']}:{params3['sort_by']}:{params3['period']}"
-        
+
         assert key1 != key3
