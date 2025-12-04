@@ -8,9 +8,33 @@ Type=simple
 User=damen
 Group=damen
 WorkingDirectory=/home/damen/vlog
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/damen/vlog/venv/bin/python worker/transcoder.py
-Restart=always
-RestartSec=10
+
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Allowed paths (NAS storage and working directory)
+ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+
+# Resource limits (higher for transcoding)
+LimitNOFILE=65535
+MemoryMax=8G
+
+# Restart policy (longer delay for worker to avoid rapid restarts)
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Timeouts (longer for transcoding jobs)
+TimeoutStartSec=30
+TimeoutStopSec=120
 
 [Install]
 WantedBy=multi-user.target
