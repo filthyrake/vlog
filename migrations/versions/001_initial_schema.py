@@ -81,7 +81,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer, primary_key=True),
         sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False),
         sa.Column("viewer_id", sa.Integer, sa.ForeignKey("viewers.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("session_token", sa.String(64), nullable=False),
+        sa.Column("session_token", sa.String(64), unique=True, nullable=False),
         sa.Column("started_at", sa.DateTime),
         sa.Column("ended_at", sa.DateTime, nullable=True),
         sa.Column("duration_watched", sa.Float, server_default="0"),
@@ -91,7 +91,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_playback_sessions_video_id", "playback_sessions", ["video_id"])
     op.create_index("ix_playback_sessions_started_at", "playback_sessions", ["started_at"])
-    op.create_index("ix_playback_sessions_session_token", "playback_sessions", ["session_token"])
+    # Note: Unique constraint on session_token creates its own index automatically
 
     # Transcoding jobs table
     op.create_table(

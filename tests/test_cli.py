@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 # Import CLI functions and classes
-from cli.main import CLIError, safe_json_response, validate_file
+from cli.main import CLIError, safe_json_response, validate_file, validate_url
 
 
 class TestCLIError:
@@ -181,6 +181,87 @@ class TestValidateFile:
             assert "Warning: Large file detected" in captured.out
             assert "11.00 GB" in captured.out
             assert file_size == 11 * 1024 * 1024 * 1024
+
+
+class TestValidateUrl:
+    """Test the validate_url function."""
+
+    def test_valid_http_url(self):
+        """Test validation of a valid HTTP URL."""
+        url = "http://example.com/video"
+        result = validate_url(url)
+        assert result == url
+
+    def test_valid_https_url(self):
+        """Test validation of a valid HTTPS URL."""
+        url = "https://youtube.com/watch?v=test123"
+        result = validate_url(url)
+        assert result == url
+
+    def test_valid_url_with_port(self):
+        """Test validation of URL with port number."""
+        url = "https://example.com:8080/video"
+        result = validate_url(url)
+        assert result == url
+
+    def test_valid_url_with_path_and_query(self):
+        """Test validation of URL with path and query parameters."""
+        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&feature=share"
+        result = validate_url(url)
+        assert result == url
+
+    def test_invalid_scheme_ftp(self):
+        """Test that FTP URLs are rejected."""
+        url = "ftp://example.com/video.mp4"
+        with pytest.raises(CLIError) as exc_info:
+            validate_url(url)
+        assert "Invalid URL scheme" in str(exc_info.value)
+        assert "ftp" in str(exc_info.value)
+        assert "http or https" in str(exc_info.value)
+
+    def test_invalid_scheme_file(self):
+        """Test that file URLs are rejected."""
+        url = "file:///path/to/video.mp4"
+        with pytest.raises(CLIError) as exc_info:
+            validate_url(url)
+        assert "Invalid URL scheme" in str(exc_info.value)
+        assert "file" in str(exc_info.value)
+
+    def test_invalid_scheme_empty(self):
+        """Test that URLs without scheme are rejected."""
+        url = "example.com/video"
+        with pytest.raises(CLIError) as exc_info:
+            validate_url(url)
+        assert "missing scheme" in str(exc_info.value)
+        assert "http:// or https://" in str(exc_info.value)
+
+    def test_missing_domain(self):
+        """Test that URLs without domain are rejected."""
+        url = "http://"
+        with pytest.raises(CLIError) as exc_info:
+            validate_url(url)
+        assert "missing domain" in str(exc_info.value)
+
+    def test_missing_domain_with_path(self):
+        """Test that URLs with path but no domain are rejected."""
+        url = "http:///path/to/video"
+        with pytest.raises(CLIError) as exc_info:
+            validate_url(url)
+        assert "missing domain" in str(exc_info.value)
+
+    def test_javascript_url(self):
+        """Test that javascript URLs are rejected."""
+        url = "javascript:alert('xss')"
+        with pytest.raises(CLIError) as exc_info:
+            validate_url(url)
+        assert "Invalid URL scheme" in str(exc_info.value)
+
+    def test_data_url(self):
+        """Test that data URLs are rejected."""
+        url = "data:text/html,<script>alert('xss')</script>"
+        with pytest.raises(CLIError) as exc_info:
+            validate_url(url)
+        assert "Invalid URL scheme" in str(exc_info.value)
 
 
 class TestTimeoutConfiguration:
@@ -786,6 +867,43 @@ class TestCmdDownload:
         """Test download command handling of upload timeout exceptions."""
         import httpx
 
+    def test_download_invalid_url_scheme(self, capsys):
+        """Test download with invalid URL scheme."""
+        from cli.main import cmd_download
+
+        args = mock.Mock()
+        args.url = "ftp://example.com/video.mp4"
+        args.title = None
+        args.description = ""
+        args.category = None
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_download(args)
+        assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "Invalid URL scheme" in captured.out
+        assert "ftp" in captured.out
+
+    def test_download_invalid_url_missing_domain(self, capsys):
+        """Test download with URL missing domain."""
+        from cli.main import cmd_download
+
+        args = mock.Mock()
+        args.url = "http://"
+        args.title = None
+        args.description = ""
+        args.category = None
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_download(args)
+        assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "missing domain" in captured.out
+
+    def test_download_valid_url_format(self, capsys):
+        """Test download with valid URL format passes URL validation."""
         from cli.main import cmd_download
 
         args = mock.Mock()
@@ -829,6 +947,35 @@ class TestCmdDownload:
         captured = capsys.readouterr()
         assert "Upload timed out" in captured.out
         assert "VLOG_UPLOAD_TIMEOUT" in captured.out
+        # Mock yt-dlp version check to pass
+        version_result = mock.Mock()
+        version_result.returncode = 0
+
+        # Mock the actual download to fail (we're just testing URL validation)
+        download_result = mock.Mock()
+        download_result.returncode = 1
+        download_result.stderr = "Some download error"
+
+        def run_side_effect(cmd, **kwargs):
+            if "--version" in cmd:
+                return version_result
+            return download_result
+
+        with mock.patch("subprocess.run", side_effect=run_side_effect):
+            with mock.patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+                mock_tmpdir.return_value.__enter__ = mock.Mock(return_value="/tmp/test")
+                mock_tmpdir.return_value.__exit__ = mock.Mock(return_value=False)
+
+                # Should get past URL validation and fail at download stage
+                with pytest.raises(SystemExit) as exc_info:
+                    cmd_download(args)
+                assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        # Should see the "Downloading" message (URL validation passed)
+        assert "Downloading" in captured.out
+        # Should see download error (not URL validation error)
+        assert "Error downloading" in captured.out
 
 
 class TestMainParser:

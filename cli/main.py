@@ -7,6 +7,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -95,6 +96,29 @@ def validate_file(file_path):
         print(f"Warning: Large file detected ({file_size / (1024**3):.2f} GB). Upload may take a while.")
 
     return file_size
+
+
+def validate_url(url):
+    """
+    Validate URL before passing to yt-dlp.
+
+    Args:
+        url: URL string to validate
+
+    Returns:
+        str: The validated URL
+
+    Raises:
+        CLIError: If URL is invalid (wrong scheme, missing domain, or malformed)
+    """
+    result = urlparse(url)
+    if not result.scheme:
+        raise CLIError("Invalid URL: missing scheme. Use http:// or https://")
+    if result.scheme not in ('http', 'https'):
+        raise CLIError(f"Invalid URL scheme: '{result.scheme}'. Use http or https.")
+    if not result.netloc:
+        raise CLIError("Invalid URL: missing domain")
+    return url
 
 
 def cmd_upload(args):
@@ -258,6 +282,13 @@ def cmd_download(args):
         print("Error: Required modules not available")
         sys.exit(1)
 
+    # Validate URL before proceeding
+    try:
+        validate_url(args.url)
+    except CLIError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
     # Check if yt-dlp is available
     try:
         subprocess.run(["yt-dlp", "--version"], capture_output=True, check=True)
@@ -265,7 +296,7 @@ def cmd_download(args):
         print("Error: yt-dlp is not installed. Install with: pip install yt-dlp")
         sys.exit(1)
 
-    print(f"Downloading from YouTube: {args.url}")
+    print(f"Downloading: {args.url}")
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -387,7 +418,7 @@ def main():
 
     # Download command (from YouTube)
     dl_parser = subparsers.add_parser("download", help="Download from YouTube and upload")
-    dl_parser.add_argument("url", help="YouTube URL")
+    dl_parser.add_argument("url", help="Video URL (YouTube, Vimeo, and many other sites supported)")
     dl_parser.add_argument("-t", "--title", help="Override video title")
     dl_parser.add_argument("-d", "--description", help="Video description")
     dl_parser.add_argument("-c", "--category", help="Category name or slug")
