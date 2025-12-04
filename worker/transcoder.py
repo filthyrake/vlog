@@ -728,15 +728,25 @@ async def mark_job_completed(job_id: int):
     )
 
 
-async def mark_job_failed(job_id: int, error: str):
-    """Mark job as failed."""
+async def mark_job_failed(job_id: int, error: str, final: bool = False):
+    """Mark job as failed.
+
+    Args:
+        job_id: The job ID
+        error: Error message
+        final: If True, sets completed_at to indicate job is finished (no more retries)
+    """
+    values = {
+        "last_error": error[:500],
+        "last_checkpoint": datetime.now(timezone.utc),
+    }
+    if final:
+        values["completed_at"] = datetime.now(timezone.utc)
+
     await database.execute(
         transcoding_jobs.update()
         .where(transcoding_jobs.c.id == job_id)
-        .values(
-            last_error=error[:500],
-            last_checkpoint=datetime.now(timezone.utc),
-        )
+        .values(**values)
     )
 
 
@@ -889,7 +899,7 @@ async def recover_interrupted_jobs():
             # Max retries exceeded - use transaction to ensure consistency
             print("    Max retries exceeded, marking as failed")
             async with database.transaction():
-                await mark_job_failed(job["id"], "Max retry attempts exceeded")
+                await mark_job_failed(job["id"], "Max retry attempts exceeded", final=True)
                 await database.execute(
                     videos.update().where(videos.c.id == job["video_id"]).values(
                         status=VideoStatus.FAILED,
@@ -982,7 +992,22 @@ async def process_video_resumable(video_id: int, video_slug: str):
             await update_job_step(job_id, TranscodingStep.PROBE)
             print("  Step 1: Probing video info...")
 
-            info = get_video_info(source_file)
+            try:
+                info = get_video_info(source_file)
+            except Exception as e:
+                error_msg = f"Failed to probe video file: {e}"
+                print(f"  ERROR: {error_msg}")
+                # Probe failures are typically unrecoverable (corrupted/unsupported file)
+                # Mark as final failure immediately
+                await mark_job_failed(job_id, error_msg, final=True)
+                await database.execute(
+                    videos.update().where(videos.c.id == video_id).values(
+                        status=VideoStatus.FAILED,
+                        error_message=error_msg[:500]
+                    )
+                )
+                return False
+
             print(f"  Source: {info['width']}x{info['height']}, {info['duration']:.1f}s")
 
             # Update video metadata
@@ -1295,7 +1320,6 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
     except Exception as e:
         print(f"  Error: {e}")
-        await mark_job_failed(job_id, str(e))
 
         # Check if we should retry
         job = await database.fetch_one(
@@ -1304,6 +1328,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
         if job and job["attempt_number"] < job["max_attempts"]:
             # Will be retried on next worker restart or stale job check
+            await mark_job_failed(job_id, str(e), final=False)
             await database.execute(
                 videos.update().where(videos.c.id == video_id).values(
                     status=VideoStatus.FAILED,
@@ -1311,7 +1336,8 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 )
             )
         else:
-            # Final failure
+            # Final failure - mark job as completed (finished, even though failed)
+            await mark_job_failed(job_id, str(e), final=True)
             await database.execute(
                 videos.update().where(videos.c.id == video_id).values(
                     status=VideoStatus.FAILED,
@@ -1349,7 +1375,7 @@ async def check_stale_jobs():
         if job["attempt_number"] >= job["max_attempts"]:
             print(f"Stale job for '{video['slug']}' exceeded max retries, marking failed")
             async with database.transaction():
-                await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)")
+                await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)", final=True)
                 await database.execute(
                     videos.update().where(videos.c.id == job["video_id"]).values(
                         status=VideoStatus.FAILED,
