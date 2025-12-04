@@ -232,7 +232,8 @@ class TestValidateUrl:
         url = "example.com/video"
         with pytest.raises(CLIError) as exc_info:
             validate_url(url)
-        assert "Invalid URL scheme" in str(exc_info.value)
+        assert "missing scheme" in str(exc_info.value)
+        assert "http:// or https://" in str(exc_info.value)
 
     def test_missing_domain(self):
         """Test that URLs without domain are rejected."""

@@ -108,6 +108,8 @@ def validate_url(url):
         CLIError: If URL is invalid (wrong scheme, missing domain, or malformed)
     """
     result = urlparse(url)
+    if not result.scheme:
+        raise CLIError("Invalid URL: missing scheme. Use http:// or https://")
     if result.scheme not in ('http', 'https'):
         raise CLIError(f"Invalid URL scheme: '{result.scheme}'. Use http or https.")
     if not result.netloc:
@@ -410,7 +412,7 @@ def main():
 
     # Download command (from YouTube)
     dl_parser = subparsers.add_parser("download", help="Download from YouTube and upload")
-    dl_parser.add_argument("url", help="Video URL (YouTube, Vimeo, and many other sites supported)")
+    dl_parser.add_argument("url", help="Video URL (YouTube, Vimeo, and many other sites supported).")
     dl_parser.add_argument("-t", "--title", help="Override video title")
     dl_parser.add_argument("-d", "--description", help="Video description")
     dl_parser.add_argument("-c", "--category", help="Category name or slug")
