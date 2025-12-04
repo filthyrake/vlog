@@ -416,7 +416,7 @@ async def transcode_quality_with_progress(
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.DEVNULL  # Don't capture stderr - it fills pipe and blocks ffmpeg
     )
 
     last_progress_update = 0
@@ -546,7 +546,7 @@ async def create_original_quality(
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.DEVNULL  # Don't capture stderr - it fills pipe and blocks ffmpeg
     )
 
     last_progress_update = 0
