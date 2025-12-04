@@ -489,9 +489,8 @@ class TestArchivedVideosHTTP:
         now = datetime.now(timezone.utc)
 
         # Create multiple archived videos
-        video_ids = []
         for i in range(5):
-            result = await test_database.execute(
+            await test_database.execute(
                 videos.insert().values(
                     title=f"Archived Video {i}",
                     slug=f"archived-test-{i}",
@@ -500,7 +499,6 @@ class TestArchivedVideosHTTP:
                     deleted_at=now,
                 )
             )
-            video_ids.append(result)
 
         # Test with default pagination
         response = admin_client.get("/api/videos/archived")
