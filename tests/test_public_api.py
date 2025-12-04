@@ -4,6 +4,7 @@ Tests for the public API endpoints.
 Includes both database-level tests and HTTP-level tests using FastAPI TestClient.
 """
 
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
@@ -570,8 +571,6 @@ class TestAnalyticsEndpoints:
     @pytest.mark.asyncio
     async def test_session_token_unique_constraint(self, test_database, sample_video):
         """Test that session_token has a unique constraint."""
-        import sqlite3
-
         session_token = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
