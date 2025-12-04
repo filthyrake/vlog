@@ -387,18 +387,74 @@ async def get_output_dimensions(segment_path: Path, timeout: float = 10.0) -> Tu
         return (0, 0)
 
 
-def is_hls_playlist_complete(playlist_path: Path) -> bool:
+def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> Tuple[bool, Optional[str]]:
     """
-    Check if an HLS playlist is complete by looking for #EXT-X-ENDLIST.
-    FFmpeg only writes this marker when transcoding finishes successfully.
+    Validate an HLS playlist is complete and well-formed.
+
+    Args:
+        playlist_path: Path to the .m3u8 playlist file
+        check_segments: If True, also verify all referenced segments exist and are non-empty
+
+    Returns:
+        Tuple[bool, Optional[str]]: (is_valid, error_message)
+        error_message is None if valid, otherwise describes the issue
     """
     if not playlist_path.exists():
-        return False
+        return False, "Playlist file does not exist"
+
     try:
         content = playlist_path.read_text()
-        return "#EXT-X-ENDLIST" in content
-    except (IOError, OSError):
-        return False
+
+        # Check for required HLS header
+        if not content.startswith("#EXTM3U"):
+            return False, "Missing #EXTM3U header"
+
+        # Check for end marker (indicates transcoding completed)
+        if "#EXT-X-ENDLIST" not in content:
+            return False, "Missing #EXT-X-ENDLIST (incomplete transcode)"
+
+        if not check_segments:
+            return True, None
+
+        # Validate all referenced segment files exist and are non-empty
+        segment_count = 0
+        for line in content.splitlines():
+            line = line.strip()
+            # Skip empty lines and comments/tags
+            if not line or line.startswith("#"):
+                continue
+
+            # This should be a segment filename
+            if line.endswith(".ts"):
+                segment_path = playlist_path.parent / line
+                if not segment_path.exists():
+                    return False, f"Missing segment file: {line}"
+                if segment_path.stat().st_size == 0:
+                    return False, f"Empty segment file: {line}"
+                segment_count += 1
+
+        # Sanity check - playlist should have at least one segment
+        if segment_count == 0:
+            return False, "Playlist contains no segment references"
+
+        return True, None
+
+    except (IOError, OSError) as e:
+        return False, f"Error reading playlist: {e}"
+
+
+def is_hls_playlist_complete(playlist_path: Path) -> bool:
+    """
+    Check if an HLS playlist is complete and valid.
+    Validates the playlist structure and ensures all segment files exist.
+
+    This is a convenience wrapper around validate_hls_playlist().
+    """
+    is_valid, error = validate_hls_playlist(playlist_path, check_segments=True)
+    if not is_valid and error:
+        # Log validation failures for debugging
+        print(f"      Playlist validation failed: {error}")
+    return is_valid
 
 
 async def generate_thumbnail(input_path: Path, output_path: Path, timestamp: float = 5.0, timeout: float = 60.0):

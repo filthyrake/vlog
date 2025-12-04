@@ -53,6 +53,7 @@ from api.schemas import (
     VideoResponse,
 )
 from config import (
+    ADMIN_CORS_ALLOWED_ORIGINS,
     ADMIN_PORT,
     ARCHIVE_DIR,
     MAX_UPLOAD_SIZE,
@@ -138,13 +139,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Allow CORS for admin UI (same machine, different port)
+# Allow CORS for admin UI (restricted to configured origins)
+# Defaults to localhost ports 9000 and 9001 for same-machine access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ADMIN_CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Serve video files for preview
@@ -251,9 +253,17 @@ async def create_category(data: CategoryCreate) -> CategoryResponse:
 @app.delete("/api/categories/{category_id}")
 async def delete_category(category_id: int):
     """Delete a category."""
-    # Set videos in this category to uncategorized
-    await database.execute(videos.update().where(videos.c.category_id == category_id).values(category_id=None))
-    await database.execute(categories.delete().where(categories.c.id == category_id))
+    # Verify category exists
+    existing = await database.fetch_one(categories.select().where(categories.c.id == category_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    # Use transaction to ensure atomicity
+    async with database.transaction():
+        # Set videos in this category to uncategorized
+        await database.execute(videos.update().where(videos.c.category_id == category_id).values(category_id=None))
+        await database.execute(categories.delete().where(categories.c.id == category_id))
+
     return {"status": "ok"}
 
 
@@ -495,7 +505,20 @@ async def delete_video(video_id: int, permanent: bool = False):
 
     if permanent:
         # PERMANENT DELETE - remove everything
-        # Delete video files
+        # First, delete all database records atomically
+        async with database.transaction():
+            # Get job ID for quality_progress cleanup
+            job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+            if job:
+                await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+            await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
+            await database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
+            await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+            await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
+            # Delete video record last (foreign key dependencies)
+            await database.execute(videos.delete().where(videos.c.id == video_id))
+
+        # Delete files AFTER successful transaction (file ops can't be rolled back)
         video_dir = VIDEOS_DIR / row["slug"]
         if video_dir.exists():
             shutil.rmtree(video_dir)
@@ -510,19 +533,6 @@ async def delete_video(video_id: int, permanent: bool = False):
             upload_file = UPLOADS_DIR / f"{video_id}{ext}"
             if upload_file.exists():
                 upload_file.unlink()
-
-        # Delete ALL related records (fix orphaned records issue)
-        # First get the job ID for quality_progress cleanup
-        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
-        if job:
-            await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
-        await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
-        await database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
-        await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
-        await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
-
-        # Delete video record
-        await database.execute(videos.delete().where(videos.c.id == video_id))
 
         return {"status": "ok", "message": "Video permanently deleted"}
 
@@ -694,37 +704,37 @@ async def re_upload_video(
         if upload_file.exists():
             upload_file.unlink()
 
-    # 3. Delete transcoding job and quality_progress
-    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
-    if job:
-        await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
-    await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
+    # === DATABASE CLEANUP (atomic) ===
+    async with database.transaction():
+        # Delete transcoding job and quality_progress
+        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        if job:
+            await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+        await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
 
-    # 4. Delete transcriptions
-    # Also delete VTT file if it exists (should already be deleted above, but be thorough)
-    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+        # Delete transcriptions
+        await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
 
-    # 5. Delete video_qualities
-    await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
+        # Delete video_qualities
+        await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
+
+        # Reset video state
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(
+                status=VideoStatus.PENDING,
+                duration=0,
+                source_width=0,
+                source_height=0,
+                error_message=None,
+            )
+        )
 
     # === UPLOAD NEW FILE === (file_ext already validated above)
-
+    # Done after transaction so DB state is consistent even if upload fails
     upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
     await save_upload_with_size_limit(file, upload_path)
-
-    # === RESET VIDEO STATE ===
-
-    await database.execute(
-        videos.update()
-        .where(videos.c.id == video_id)
-        .values(
-            status=VideoStatus.PENDING,
-            duration=0,
-            source_width=0,
-            source_height=0,
-            error_message=None,
-        )
-    )
 
     return {
         "status": "ok",
