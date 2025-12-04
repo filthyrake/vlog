@@ -12,28 +12,36 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
 import threading
 import uuid
-from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Callable, Tuple, Any
+from pathlib import Path
+from typing import Any, Callable, List, Optional, Tuple
 
+from api.database import configure_sqlite_pragmas, database, quality_progress, transcoding_jobs, video_qualities, videos
+from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from config import (
-    VIDEOS_DIR, UPLOADS_DIR, QUALITY_PRESETS, HLS_SEGMENT_DURATION,
-    CHECKPOINT_INTERVAL, JOB_STALE_TIMEOUT, MAX_RETRY_ATTEMPTS,
-    RETRY_BACKOFF_BASE, CLEANUP_PARTIAL_ON_FAILURE, KEEP_COMPLETED_QUALITIES,
-    WORKER_USE_FILESYSTEM_WATCHER, WORKER_FALLBACK_POLL_INTERVAL, WORKER_DEBOUNCE_DELAY,
-    FFMPEG_TIMEOUT_MULTIPLIER, FFMPEG_TIMEOUT_MINIMUM, FFMPEG_TIMEOUT_MAXIMUM,
+    CLEANUP_PARTIAL_ON_FAILURE,
+    FFMPEG_TIMEOUT_MAXIMUM,
+    FFMPEG_TIMEOUT_MINIMUM,
+    FFMPEG_TIMEOUT_MULTIPLIER,
+    HLS_SEGMENT_DURATION,
+    JOB_STALE_TIMEOUT,
+    KEEP_COMPLETED_QUALITIES,
+    MAX_RETRY_ATTEMPTS,
+    QUALITY_PRESETS,
+    UPLOADS_DIR,
+    VIDEOS_DIR,
+    WORKER_DEBOUNCE_DELAY,
+    WORKER_FALLBACK_POLL_INTERVAL,
+    WORKER_USE_FILESYSTEM_WATCHER,
 )
-from api.database import database, videos, video_qualities, transcoding_jobs, quality_progress, configure_sqlite_pragmas
-from api.enums import VideoStatus, QualityStatus, TranscodingStep
 
 # Conditional import for filesystem watching
 if WORKER_USE_FILESYSTEM_WATCHER:
     try:
+        from watchdog.events import FileSystemEventHandler
         from watchdog.observers import Observer
-        from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent
         WATCHDOG_AVAILABLE = True
     except ImportError:
         print("Warning: watchdog not installed. Falling back to polling mode.")
@@ -84,36 +92,36 @@ def signal_handler(sig, frame):
 def validate_duration(duration: Any) -> float:
     """
     Validate and normalize video duration from ffprobe.
-    
+
     Args:
         duration: Duration value from ffprobe (accepts any input type)
-    
+
     Returns:
         Validated duration as float
-    
+
     Raises:
         ValueError: If duration is invalid, missing, or out of acceptable range
     """
     if duration is None:
         raise ValueError("Could not determine video duration")
-    
+
     # Convert to float if possible
     if not isinstance(duration, (int, float)):
         try:
             duration = float(duration)
         except (ValueError, TypeError) as e:
             raise ValueError(f"Could not convert duration to float: {type(duration).__name__}") from e
-    
+
     if math.isnan(duration) or math.isinf(duration):
         raise ValueError(f"Invalid duration value: {duration}")
-    
+
     if duration <= 0:
         raise ValueError(f"Invalid duration: {duration} seconds (must be positive)")
-    
+
     # Prevent potential memory issues and catch corrupted metadata
     if duration > MAX_DURATION_SECONDS:
         raise ValueError(f"Duration too long: {duration} seconds (max {MAX_DURATION_SECONDS})")
-    
+
     return float(duration)
 
 
@@ -200,7 +208,7 @@ def start_filesystem_watcher(loop: asyncio.AbstractEventLoop, event: asyncio.Eve
         return observer
     except Exception as e:
         print(f"  Warning: Failed to start filesystem watcher: {e}")
-        print(f"  Falling back to polling mode.")
+        print("  Falling back to polling mode.")
         return None
 
 
@@ -394,12 +402,28 @@ async def transcode_quality_with_progress(
     timeout_task = asyncio.create_task(timeout_killer())
     try:
         await drain_and_wait()
+    except Exception as e:
+        # Log unexpected exceptions before cleanup
+        print(f"  ERROR: Unexpected exception during transcoding: {e}")
+        raise
     finally:
+        # Cancel the timeout task
         timeout_task.cancel()
         try:
             await timeout_task
         except asyncio.CancelledError:
             pass
+
+        # Ensure FFmpeg process is cleaned up on any exception or early exit
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass  # Process already terminated
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                print("  WARNING: FFmpeg process did not terminate after kill")
 
     if timed_out:
         elapsed = asyncio.get_running_loop().time() - start_time
@@ -501,12 +525,28 @@ async def create_original_quality(
     timeout_task = asyncio.create_task(timeout_killer())
     try:
         await drain_and_wait()
+    except Exception as e:
+        # Log unexpected exceptions before cleanup
+        print(f"  ERROR: Unexpected exception during remux: {e}")
+        raise
     finally:
+        # Cancel the timeout task
         timeout_task.cancel()
         try:
             await timeout_task
         except asyncio.CancelledError:
             pass
+
+        # Ensure FFmpeg process is cleaned up on any exception or early exit
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass  # Process already terminated
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                print("  WARNING: FFmpeg remux process did not terminate after kill")
 
     if timed_out:
         elapsed = asyncio.get_running_loop().time() - start_time
@@ -515,7 +555,7 @@ async def create_original_quality(
     if process.returncode != 0:
         stderr = await process.stderr.read()
         error_msg = stderr.decode('utf-8', errors='ignore')
-        print(f"  ERROR: Failed to create original quality")
+        print("  ERROR: Failed to create original quality")
         return False, error_msg, None
 
     # Get the actual bitrate from the source for master playlist
@@ -815,8 +855,8 @@ async def recover_interrupted_jobs():
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
-            (transcoding_jobs.c.completed_at == None) &
-            (transcoding_jobs.c.last_checkpoint != None) &
+            transcoding_jobs.c.completed_at.is_(None) &
+            transcoding_jobs.c.last_checkpoint.isnot(None) &
             (transcoding_jobs.c.last_checkpoint < stale_threshold)
         )
     )
@@ -832,26 +872,27 @@ async def recover_interrupted_jobs():
         print(f"  Found stale job for video '{video['slug']}' (attempt {job['attempt_number']})")
 
         if job["attempt_number"] >= job["max_attempts"]:
-            # Max retries exceeded
-            print(f"    Max retries exceeded, marking as failed")
-            await mark_job_failed(job["id"], "Max retry attempts exceeded")
-            await database.execute(
-                videos.update().where(videos.c.id == job["video_id"]).values(
-                    status=VideoStatus.FAILED,
-                    error_message="Max retry attempts exceeded"
+            # Max retries exceeded - use transaction to ensure consistency
+            print("    Max retries exceeded, marking as failed")
+            async with database.transaction():
+                await mark_job_failed(job["id"], "Max retry attempts exceeded")
+                await database.execute(
+                    videos.update().where(videos.c.id == job["video_id"]).values(
+                        status=VideoStatus.FAILED,
+                        error_message="Max retry attempts exceeded"
+                    )
                 )
-            )
         else:
-            # Reset for retry
+            # Reset for retry - use transaction to ensure consistency
             print(f"    Resetting for retry (attempt {job['attempt_number'] + 1})")
-            await reset_job_for_retry(job["id"])
-
-            # Also reset the video status to pending so it gets picked up
-            await database.execute(
-                videos.update().where(videos.c.id == job["video_id"]).values(
-                    status=VideoStatus.PENDING
+            async with database.transaction():
+                await reset_job_for_retry(job["id"])
+                # Also reset the video status to pending so it gets picked up
+                await database.execute(
+                    videos.update().where(videos.c.id == job["video_id"]).values(
+                        status=VideoStatus.PENDING
+                    )
                 )
-            )
 
             # Optionally clean up partial output
             if CLEANUP_PARTIAL_ON_FAILURE:
@@ -940,7 +981,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 )
             )
             await checkpoint(job_id)
-            
+
             # Check for shutdown after probe
             if shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
@@ -975,7 +1016,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 print("  Step 2: Thumbnail already exists, skipping...")
 
             await checkpoint(job_id)
-            
+
             # Check for shutdown after thumbnail
             if shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
@@ -1009,7 +1050,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # ----------------------------------------------------------------
         original_status = await get_quality_status(job_id, "original")
         if original_status and original_status["status"] == QualityStatus.COMPLETED:
-            print(f"    original: Already completed, skipping...")
+            print("    original: Already completed, skipping...")
             # Add to successful with source dimensions
             successful_qualities.append({
                 "name": "original",
@@ -1019,7 +1060,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 "is_original": True,
             })
         elif (output_dir / "original.m3u8").exists():
-            print(f"    original: Found existing playlist, marking complete...")
+            print("    original: Found existing playlist, marking complete...")
             await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
             successful_qualities.append({
                 "name": "original",
@@ -1029,7 +1070,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 "is_original": True,
             })
         else:
-            print(f"    original: Remuxing source to HLS (no re-encoding)...")
+            print("    original: Remuxing source to HLS (no re-encoding)...")
             await update_quality_status(job_id, "original", QualityStatus.IN_PROGRESS)
 
             async def original_progress_cb(progress: int):
@@ -1263,7 +1304,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     error_message=str(e)[:500],
                 )
             )
-        
+
         return False
 
 
@@ -1276,8 +1317,8 @@ async def check_stale_jobs():
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
-            (transcoding_jobs.c.completed_at == None) &
-            (transcoding_jobs.c.last_checkpoint != None) &
+            transcoding_jobs.c.completed_at.is_(None) &
+            transcoding_jobs.c.last_checkpoint.isnot(None) &
             (transcoding_jobs.c.last_checkpoint < stale_threshold) &
             (transcoding_jobs.c.worker_id != WORKER_ID)  # Not our own jobs
         )
@@ -1293,21 +1334,23 @@ async def check_stale_jobs():
 
         if job["attempt_number"] >= job["max_attempts"]:
             print(f"Stale job for '{video['slug']}' exceeded max retries, marking failed")
-            await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)")
-            await database.execute(
-                videos.update().where(videos.c.id == job["video_id"]).values(
-                    status=VideoStatus.FAILED,
-                    error_message="Max retry attempts exceeded"
+            async with database.transaction():
+                await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)")
+                await database.execute(
+                    videos.update().where(videos.c.id == job["video_id"]).values(
+                        status=VideoStatus.FAILED,
+                        error_message="Max retry attempts exceeded"
+                    )
                 )
-            )
         else:
             print(f"Found stale job for '{video['slug']}', resetting for retry")
-            await reset_job_for_retry(job["id"])
-            await database.execute(
-                videos.update().where(videos.c.id == job["video_id"]).values(
-                    status=VideoStatus.PENDING
+            async with database.transaction():
+                await reset_job_for_retry(job["id"])
+                await database.execute(
+                    videos.update().where(videos.c.id == job["video_id"]).values(
+                        status=VideoStatus.PENDING
+                    )
                 )
-            )
 
 
 async def worker_loop():
