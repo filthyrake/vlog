@@ -1,5 +1,7 @@
 """
 Tests for the public API endpoints.
+
+Includes both database-level tests and HTTP-level tests using FastAPI TestClient.
 """
 
 import uuid
@@ -9,6 +11,310 @@ import pytest
 
 from api.database import categories, playback_sessions, transcriptions, video_qualities, videos
 from api.enums import TranscriptionStatus, VideoStatus
+
+# ============================================================================
+# HTTP-Level Tests using FastAPI TestClient
+# ============================================================================
+
+
+class TestPublicAPIHTTP:
+    """HTTP-level tests for public API endpoints using TestClient."""
+
+    def test_health_check(self, public_client):
+        """Test health check endpoint returns valid response."""
+        response = public_client.get("/health")
+        assert response.status_code in [200, 503]  # May fail if storage not mocked
+        data = response.json()
+        assert "status" in data
+        assert "checks" in data
+
+    def test_list_videos_empty(self, public_client):
+        """Test listing videos when database is empty."""
+        response = public_client.get("/api/videos")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    async def test_list_videos_returns_ready_only(self, public_client, test_database, sample_category):
+        """Test listing videos only returns ready videos."""
+        now = datetime.now(timezone.utc)
+        # Create videos with different statuses
+        await test_database.execute(
+            videos.insert().values(
+                title="Ready Video",
+                slug="ready-video",
+                description="A ready video",
+                duration=60.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+            )
+        )
+        await test_database.execute(
+            videos.insert().values(
+                title="Pending Video",
+                slug="pending-video",
+                description="A pending video",
+                duration=0,
+                status=VideoStatus.PENDING,
+                created_at=now,
+            )
+        )
+
+        response = public_client.get("/api/videos")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["slug"] == "ready-video"
+
+    @pytest.mark.asyncio
+    async def test_list_videos_excludes_deleted(self, public_client, test_database, sample_category):
+        """Test listing videos excludes soft-deleted videos."""
+        now = datetime.now(timezone.utc)
+        await test_database.execute(
+            videos.insert().values(
+                title="Active Video",
+                slug="active-video",
+                description="An active video",
+                duration=60.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+            )
+        )
+        await test_database.execute(
+            videos.insert().values(
+                title="Deleted Video",
+                slug="deleted-video",
+                description="A deleted video",
+                duration=60.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+                deleted_at=now,
+            )
+        )
+
+        response = public_client.get("/api/videos")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["slug"] == "active-video"
+
+    @pytest.mark.asyncio
+    async def test_get_video_by_slug(self, public_client, sample_video):
+        """Test getting a video by slug."""
+        response = public_client.get("/api/videos/test-video")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["slug"] == "test-video"
+        assert data["title"] == "Test Video"
+        assert data["duration"] == 120.5
+
+    def test_get_video_not_found(self, public_client):
+        """Test getting non-existent video returns 404."""
+        response = public_client.get("/api/videos/nonexistent")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Video not found"
+
+    @pytest.mark.asyncio
+    async def test_get_video_rejects_deleted(self, public_client, sample_deleted_video):
+        """Test that deleted videos return 404 (issue #76)."""
+        response = public_client.get(f"/api/videos/{sample_deleted_video['slug']}")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Video not found"
+
+    @pytest.mark.asyncio
+    async def test_get_video_progress_rejects_deleted(self, public_client, sample_deleted_video):
+        """Test that progress for deleted videos returns 404 (issue #76)."""
+        response = public_client.get(f"/api/videos/{sample_deleted_video['slug']}/progress")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Video not found"
+
+    @pytest.mark.asyncio
+    async def test_get_transcript_rejects_deleted(self, public_client, sample_deleted_video):
+        """Test that transcript for deleted videos returns 404 (issue #76)."""
+        response = public_client.get(f"/api/videos/{sample_deleted_video['slug']}/transcript")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Video not found"
+
+    def test_list_categories(self, public_client):
+        """Test listing categories."""
+        response = public_client.get("/api/categories")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    @pytest.mark.asyncio
+    async def test_list_categories_with_data(self, public_client, sample_category):
+        """Test listing categories returns data."""
+        response = public_client.get("/api/categories")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) >= 1
+        assert any(c["slug"] == "test-category" for c in data)
+
+    @pytest.mark.asyncio
+    async def test_get_category_by_slug(self, public_client, sample_category):
+        """Test getting a category by slug."""
+        response = public_client.get("/api/categories/test-category")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["slug"] == "test-category"
+        assert data["name"] == "Test Category"
+
+    def test_get_category_not_found(self, public_client):
+        """Test getting non-existent category returns 404."""
+        response = public_client.get("/api/categories/nonexistent")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_filter_videos_by_category(self, public_client, sample_video, sample_category):
+        """Test filtering videos by category slug."""
+        response = public_client.get("/api/videos?category=test-category")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["slug"] == "test-video"
+
+    def test_filter_videos_by_nonexistent_category(self, public_client):
+        """Test filtering by non-existent category returns empty."""
+        response = public_client.get("/api/videos?category=nonexistent")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    async def test_search_videos(self, public_client, sample_video):
+        """Test searching videos by title."""
+        response = public_client.get("/api/videos?search=Test")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["title"] == "Test Video"
+
+    def test_search_videos_no_match(self, public_client):
+        """Test searching with no matches returns empty."""
+        response = public_client.get("/api/videos?search=nonexistent")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    async def test_pagination(self, public_client, test_database, sample_category):
+        """Test pagination with limit and offset."""
+        now = datetime.now(timezone.utc)
+        for i in range(5):
+            await test_database.execute(
+                videos.insert().values(
+                    title=f"Video {i}",
+                    slug=f"video-{i}",
+                    description=f"Description for video {i}",
+                    duration=60.0,
+                    status=VideoStatus.READY,
+                    created_at=now,
+                    published_at=now,
+                )
+            )
+
+        # Test limit
+        response = public_client.get("/api/videos?limit=3")
+        assert response.status_code == 200
+        assert len(response.json()) == 3
+
+        # Test offset
+        response = public_client.get("/api/videos?limit=3&offset=3")
+        assert response.status_code == 200
+        assert len(response.json()) == 2
+
+
+class TestAnalyticsHTTP:
+    """HTTP-level tests for analytics endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_start_analytics_session(self, public_client, sample_video):
+        """Test starting an analytics session."""
+        response = public_client.post(
+            "/api/analytics/session",
+            json={"video_id": sample_video["id"], "quality": "1080p"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "session_token" in data
+
+    @pytest.mark.asyncio
+    async def test_start_session_invalid_video(self, public_client, sample_video):
+        """Test starting session with non-existent video fails."""
+        # Use an ID that's guaranteed not to exist
+        nonexistent_id = -(sample_video["id"] + 1000)
+        response = public_client.post(
+            "/api/analytics/session",
+            json={"video_id": nonexistent_id, "quality": "1080p"},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_start_session_rejects_deleted_video(self, public_client, sample_deleted_video):
+        """Test starting session with deleted video fails."""
+        response = public_client.post(
+            "/api/analytics/session",
+            json={"video_id": sample_deleted_video["id"], "quality": "1080p"},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_analytics_heartbeat(self, public_client, sample_playback_session):
+        """Test sending analytics heartbeat."""
+        response = public_client.post(
+            "/api/analytics/heartbeat",
+            json={
+                "session_token": sample_playback_session["session_token"],
+                "position": 30.0,
+                "playing": True,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+
+    def test_heartbeat_invalid_session(self, public_client):
+        """Test heartbeat with invalid session returns 404."""
+        response = public_client.post(
+            "/api/analytics/heartbeat",
+            json={
+                "session_token": "invalid-token",
+                "position": 30.0,
+                "playing": True,
+            },
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_end_analytics_session(self, public_client, sample_playback_session):
+        """Test ending an analytics session."""
+        response = public_client.post(
+            "/api/analytics/end",
+            json={
+                "session_token": sample_playback_session["session_token"],
+                "position": 120.0,
+                "completed": True,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+
+    def test_end_session_invalid_token(self, public_client):
+        """Test ending session with invalid token returns 404."""
+        response = public_client.post(
+            "/api/analytics/end",
+            json={
+                "session_token": "invalid-token",
+                "position": 120.0,
+                "completed": True,
+            },
+        )
+        assert response.status_code == 404
+
+
+# ============================================================================
+# Database-Level Tests (existing tests)
+# ============================================================================
 
 
 class TestHealthEndpoint:
