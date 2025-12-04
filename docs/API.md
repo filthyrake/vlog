@@ -13,6 +13,17 @@ Both APIs return JSON responses and support CORS.
 
 ## Public API (Port 9000)
 
+### Health Check
+
+```
+GET /health
+```
+
+Response:
+```json
+{"status": "healthy"}
+```
+
 ### Videos
 
 #### List Videos
@@ -228,6 +239,17 @@ Response:
 
 **Warning:** This API should only be accessible from internal networks.
 
+### Health Check
+
+```
+GET /health
+```
+
+Response:
+```json
+{"status": "healthy"}
+```
+
 ### Categories
 
 #### List Categories
@@ -326,6 +348,60 @@ POST /api/videos/{video_id}/retry
 
 Resets failed video to pending status for reprocessing.
 
+#### Re-upload Video
+```
+POST /api/videos/{video_id}/re-upload
+Content-Type: multipart/form-data
+```
+
+Replace source file for an existing video and restart transcoding.
+
+Form fields:
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| file | file | yes | New video file |
+
+Response:
+```json
+{
+  "status": "ok",
+  "video_id": 1,
+  "message": "Video re-queued for processing"
+}
+```
+
+### Soft-Delete / Archive
+
+#### List Archived Videos
+```
+GET /api/videos/archived
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| limit | int | 100 | Max items (1-500) |
+| offset | int | 0 | Pagination offset |
+
+Response: Same as video list but with `deleted_at` field populated.
+
+#### Restore Video
+```
+POST /api/videos/{video_id}/restore
+```
+
+Restores a soft-deleted video from archive.
+
+Response:
+```json
+{
+  "status": "ok",
+  "message": "Video restored"
+}
+```
+
+**Note:** When a video is deleted via `DELETE /api/videos/{video_id}`, it is soft-deleted (moved to archive). Videos remain in archive for `ARCHIVE_RETENTION_DAYS` (default 30) before permanent deletion.
+
 #### Get Transcoding Progress
 ```
 GET /api/videos/{video_id}/progress
@@ -421,6 +497,30 @@ Query parameters:
 
 ---
 
+## Rate Limiting
+
+Both APIs implement rate limiting via slowapi. Default limits:
+
+**Public API:**
+- Default: 100 requests/minute
+- Video listing: 60 requests/minute
+- Analytics: 120 requests/minute
+
+**Admin API:**
+- Default: 200 requests/minute
+- Uploads: 10 requests/hour
+
+When rate limited, the response includes:
+```json
+{
+  "detail": "Rate limit exceeded: 100 per 1 minute"
+}
+```
+
+Rate limiting can be disabled via `VLOG_RATE_LIMIT_ENABLED=false`.
+
+---
+
 ## Error Responses
 
 All endpoints return standard HTTP error codes:
@@ -429,6 +529,7 @@ All endpoints return standard HTTP error codes:
 |------|-------------|
 | 400 | Bad Request - Invalid input |
 | 404 | Not Found - Resource doesn't exist |
+| 429 | Too Many Requests - Rate limit exceeded |
 | 500 | Server Error - Internal error |
 
 Error response format:

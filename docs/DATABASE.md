@@ -42,6 +42,7 @@ Core video metadata and processing status.
 | error_message | TEXT | NULLABLE | Error details if failed |
 | created_at | DATETIME | DEFAULT now | Upload timestamp |
 | published_at | DATETIME | NULLABLE | Publication timestamp |
+| deleted_at | DATETIME | NULLABLE | Soft-delete timestamp (NULL = not deleted) |
 
 **Status Values:**
 - `pending` - Uploaded, waiting for processing
@@ -49,11 +50,19 @@ Core video metadata and processing status.
 - `ready` - Ready for playback
 - `failed` - Processing failed
 
+**Soft-Delete:**
+- When a video is deleted, `deleted_at` is set to the current timestamp
+- Videos with non-NULL `deleted_at` are excluded from normal queries
+- Files are moved to `archive/` directory
+- Archived videos can be restored via the API
+- Permanent deletion occurs after `ARCHIVE_RETENTION_DAYS` (default 30)
+
 **Indexes:**
 - `ix_videos_status` - Fast status filtering
 - `ix_videos_category_id` - Category filtering
 - `ix_videos_created_at` - Recent videos
 - `ix_videos_published_at` - Publication ordering
+- `ix_videos_deleted_at` - Soft-delete filtering
 
 ### video_qualities
 
