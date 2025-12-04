@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from unittest import mock
 
+import httpx
 import pytest
 
 # Import CLI functions and classes
@@ -901,7 +902,7 @@ class TestCmdDownload:
         captured = capsys.readouterr()
         assert "missing domain" in captured.out
 
-    def test_download_valid_url_format(self, capsys):
+    def test_download_valid_url_format(self, capsys, tmp_path):
         """Test download with valid URL format passes URL validation."""
         from cli.main import cmd_download
 
