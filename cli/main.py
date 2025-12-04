@@ -13,7 +13,9 @@ from config import ADMIN_PORT
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
 
-API_BASE = f"http://localhost:{ADMIN_PORT}/api"
+# Admin API URL - can override host and port, or use the port from config
+_default_api_url = f"http://localhost:{ADMIN_PORT}"
+API_BASE = os.getenv("VLOG_ADMIN_API_URL", _default_api_url).rstrip("/") + "/api"
 
 
 def cmd_upload(args):
