@@ -297,6 +297,27 @@ class TestTimeoutConfiguration:
             # Restore original state
             importlib.reload(cli.main)
 
+    def test_upload_timeout_is_set(self):
+        """Test that UPLOAD_TIMEOUT is configured."""
+        from cli.main import UPLOAD_TIMEOUT
+
+        assert UPLOAD_TIMEOUT > 0
+        assert UPLOAD_TIMEOUT == 7200  # Default value (2 hours)
+
+    def test_upload_timeout_env_var(self):
+        """Test that upload timeout can be configured via environment variable."""
+        import importlib
+
+        import cli.main
+
+        try:
+            with mock.patch.dict(os.environ, {"VLOG_UPLOAD_TIMEOUT": "14400"}):
+                importlib.reload(cli.main)
+                assert cli.main.UPLOAD_TIMEOUT == 14400  # 4 hours
+        finally:
+            # Restore original state
+            importlib.reload(cli.main)
+
 
 class TestAPIBaseConfiguration:
     """Test that API_BASE URL is properly configured."""
@@ -720,6 +741,72 @@ class TestCmdUpload:
         assert "not found" in captured.out
         assert "Success" in captured.out  # Upload should still succeed
 
+    def test_upload_timeout_exception(self, capsys, tmp_path):
+        """Test upload handling of timeout exceptions."""
+        import httpx
+
+        from cli.main import cmd_upload
+
+        # Create a test file
+        test_file = tmp_path / "test_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        args = mock.Mock()
+        args.file = str(test_file)
+        args.title = "Test Video"
+        args.description = ""
+        args.category = None
+
+        # Mock the httpx.Client to raise timeout
+        mock_client = mock.Mock()
+        mock_client.post.side_effect = httpx.TimeoutException("Upload timed out")
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("httpx.Client", return_value=mock_client):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_upload(args)
+            assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "Upload timed out" in captured.out
+        assert "VLOG_UPLOAD_TIMEOUT" in captured.out
+
+    def test_upload_uses_timeout(self, tmp_path):
+        """Test that upload uses the configured timeout."""
+        from cli.main import cmd_upload
+
+        # Create a test file
+        test_file = tmp_path / "test_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        args = mock.Mock()
+        args.file = str(test_file)
+        args.title = "Test Video"
+        args.description = ""
+        args.category = None
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "video_id": 1,
+            "slug": "test-video",
+        }
+
+        mock_client = mock.Mock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("httpx.Client", return_value=mock_client) as mock_client_class:
+            cmd_upload(args)
+            # Verify that httpx.Client was called with a timeout
+            call_args = mock_client_class.call_args
+            assert call_args is not None
+            assert "timeout" in call_args[1]
+            # Verify it's not None (previously was None)
+            assert call_args[1]["timeout"] is not None
+
 
 class TestCmdDownload:
     """Test the cmd_download command."""
@@ -776,6 +863,10 @@ class TestCmdDownload:
         captured = capsys.readouterr()
         assert "timed out" in captured.out
 
+    def test_download_upload_timeout_exception(self, capsys, tmp_path):
+        """Test download command handling of upload timeout exceptions."""
+        import httpx
+
     def test_download_invalid_url_scheme(self, capsys):
         """Test download with invalid URL scheme."""
         from cli.main import cmd_download
@@ -821,6 +912,41 @@ class TestCmdDownload:
         args.description = ""
         args.category = None
 
+        # First call for version check
+        version_result = mock.Mock()
+        version_result.returncode = 0
+
+        # Second call for download
+        download_result = mock.Mock()
+        download_result.returncode = 0
+
+        def run_side_effect(*args, **kwargs):
+            if "--version" in args[0]:
+                return version_result
+            return download_result
+
+        # Create fake downloaded file
+        test_file = tmp_path / "downloaded_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        # Mock the httpx.Client to raise timeout during upload
+        mock_client = mock.Mock()
+        mock_client.post.side_effect = httpx.TimeoutException("Upload timed out")
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("subprocess.run", side_effect=run_side_effect):
+            with mock.patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+                mock_tmpdir.return_value.__enter__ = mock.Mock(return_value=str(tmp_path))
+                mock_tmpdir.return_value.__exit__ = mock.Mock(return_value=False)
+                with mock.patch("httpx.Client", return_value=mock_client):
+                    with pytest.raises(SystemExit) as exc_info:
+                        cmd_download(args)
+                    assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "Upload timed out" in captured.out
+        assert "VLOG_UPLOAD_TIMEOUT" in captured.out
         # Mock yt-dlp version check to pass
         version_result = mock.Mock()
         version_result.returncode = 0
