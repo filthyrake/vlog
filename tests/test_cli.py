@@ -690,7 +690,8 @@ class TestCmdUpload:
             assert exc_info.value.code == 1
 
         captured = capsys.readouterr()
-        assert "timed out" in captured.out
+        assert "Upload timed out" in captured.out
+        assert "VLOG_UPLOAD_TIMEOUT" in captured.out
 
     def test_upload_uses_timeout(self, tmp_path):
         """Test that upload uses the configured timeout."""
@@ -828,7 +829,8 @@ class TestCmdDownload:
                     assert exc_info.value.code == 1
 
         captured = capsys.readouterr()
-        assert "timed out" in captured.out
+        assert "Upload timed out" in captured.out
+        assert "VLOG_UPLOAD_TIMEOUT" in captured.out
 
 
 class TestMainParser:
