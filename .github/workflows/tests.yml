@@ -54,4 +54,4 @@ jobs:
       - name: Run ruff check
         env:
           VLOG_TEST_MODE: "1"
-        run: ruff check tests/ --output-format=github
+        run: ruff check api/ worker/ cli/ tests/ config.py --output-format=github

@@ -387,7 +387,20 @@ async def update_video(
     if description is not None:
         update_data["description"] = description
     if category_id is not None:
-        update_data["category_id"] = category_id if category_id > 0 else None
+        if category_id > 0:
+            # Validate category exists
+            existing_category = await database.fetch_one(
+                categories.select().where(categories.c.id == category_id)
+            )
+            if not existing_category:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Category with ID {category_id} does not exist"
+                )
+            update_data["category_id"] = category_id
+        else:
+            # category_id <= 0 means uncategorize
+            update_data["category_id"] = None
     if published_at is not None:
         if published_at == "":
             update_data["published_at"] = None

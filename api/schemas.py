@@ -1,6 +1,10 @@
+import math
 from pydantic import BaseModel, Field, validator
 from datetime import datetime
 from typing import List, Optional, Set
+
+# Maximum position value (24 hours in seconds)
+MAX_POSITION_SECONDS = 86400
 
 # Whisper-supported language codes (ISO 639-1)
 # Full list from OpenAI Whisper documentation
@@ -92,11 +96,31 @@ class PlaybackHeartbeat(BaseModel):
     quality: Optional[str] = None
     playing: bool = True
 
+    @validator('position')
+    def validate_position(cls, v):
+        if not math.isfinite(v):
+            raise ValueError('position must be a finite number')
+        if v < 0:
+            raise ValueError('position must be non-negative')
+        if v > MAX_POSITION_SECONDS:
+            raise ValueError(f'position exceeds maximum allowed value ({MAX_POSITION_SECONDS}s)')
+        return v
+
 
 class PlaybackEnd(BaseModel):
     session_token: str
     position: float
     completed: bool = False
+
+    @validator('position')
+    def validate_position(cls, v):
+        if not math.isfinite(v):
+            raise ValueError('position must be a finite number')
+        if v < 0:
+            raise ValueError('position must be non-negative')
+        if v > MAX_POSITION_SECONDS:
+            raise ValueError(f'position exceeds maximum allowed value ({MAX_POSITION_SECONDS}s)')
+        return v
 
 
 # Analytics response models
