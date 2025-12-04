@@ -1,6 +1,7 @@
 """
-Tests for admin API list_categories endpoint with soft-deleted videos.
-This test file specifically validates that soft-deleted videos are excluded from category counts.
+Database-level tests for the SQL query logic used by the admin API list_categories endpoint.
+These tests validate that soft-deleted videos are excluded from category counts,
+but do not call the API endpoint directly.
 """
 
 from datetime import datetime, timezone
@@ -59,50 +60,6 @@ class TestAdminListCategoriesWithSoftDelete:
 
         assert len(rows) == 1
         assert rows[0]["video_count"] == 3  # Only active videos
-
-    @pytest.mark.asyncio
-    async def test_list_categories_with_old_query_counts_all(self, test_database, sample_category):
-        """Test that the OLD query incorrectly counts soft-deleted videos."""
-        now = datetime.now(timezone.utc)
-        category_id = sample_category["id"]
-
-        # Create 3 active videos
-        for i in range(3):
-            await test_database.execute(
-                videos.insert().values(
-                    title=f"Active Video {i}",
-                    slug=f"active-video-{i}",
-                    category_id=category_id,
-                    status=VideoStatus.READY,
-                    created_at=now,
-                )
-            )
-
-        # Create 2 soft-deleted videos
-        for i in range(2):
-            await test_database.execute(
-                videos.insert().values(
-                    title=f"Deleted Video {i}",
-                    slug=f"deleted-video-{i}",
-                    category_id=category_id,
-                    status=VideoStatus.READY,
-                    created_at=now,
-                    deleted_at=now,  # Soft-deleted
-                )
-            )
-
-        # Execute the OLD query that doesn't filter soft-deleted videos
-        query = sa.text("""
-            SELECT c.*, COUNT(v.id) as video_count
-            FROM categories c
-            LEFT JOIN videos v ON v.category_id = c.id
-            GROUP BY c.id
-            ORDER BY c.name
-        """)
-        rows = await test_database.fetch_all(query)
-
-        assert len(rows) == 1
-        assert rows[0]["video_count"] == 5  # Incorrectly counts deleted videos
 
     @pytest.mark.asyncio
     async def test_list_categories_empty_when_all_deleted(self, test_database, sample_category):
