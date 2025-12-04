@@ -473,8 +473,60 @@ class TestArchivedVideosHTTP:
         assert response.status_code == 200
         data = response.json()
         assert "videos" in data
+        assert "total" in data
         assert len(data["videos"]) >= 1
+        assert data["total"] >= 1
         assert any(v["id"] == sample_deleted_video["id"] for v in data["videos"])
+
+    @pytest.mark.asyncio
+    async def test_list_archived_videos_pagination(self, admin_client, test_database, sample_category):
+        """Test pagination for archived videos endpoint."""
+        from datetime import datetime, timezone
+
+        from api.database import videos
+        from api.enums import VideoStatus
+
+        now = datetime.now(timezone.utc)
+
+        # Create multiple archived videos
+        for i in range(5):
+            await test_database.execute(
+                videos.insert().values(
+                    title=f"Archived Video {i}",
+                    slug=f"archived-test-{i}",
+                    status=VideoStatus.READY,
+                    created_at=now,
+                    deleted_at=now,
+                )
+            )
+
+        # Test with default pagination
+        response = admin_client.get("/api/videos/archived")
+        assert response.status_code == 200
+        data = response.json()
+        assert "total" in data
+        assert data["total"] >= 5
+
+        # Test with limit
+        response = admin_client.get("/api/videos/archived?limit=2")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["videos"]) == 2
+        assert data["total"] >= 5
+
+        # Test with offset
+        response = admin_client.get("/api/videos/archived?limit=2&offset=2")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["videos"]) >= 1  # At least one more
+        assert data["total"] >= 5
+
+        # Test with offset beyond total
+        response = admin_client.get("/api/videos/archived?offset=1000")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["videos"]) == 0
+        assert data["total"] >= 5
 
 
 class TestAnalyticsAdminHTTP:
