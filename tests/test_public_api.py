@@ -178,8 +178,6 @@ class TestAnalyticsEndpoints:
     @pytest.mark.asyncio
     async def test_end_playback_session(self, test_database, sample_video):
         """Test ending a playback session."""
-        import uuid
-
         session_token = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
@@ -222,10 +220,10 @@ class TestAnalyticsEndpoints:
         assert video["status"] == VideoStatus.READY
 
     @pytest.mark.asyncio
-    async def test_session_validation_rejects_nonexistent_video(self, test_database):
+    async def test_session_validation_rejects_nonexistent_video(self, test_database, sample_video):
         """Test that session validation rejects non-existent videos."""
-        # Use a very large ID that won't exist
-        nonexistent_id = 999999
+        # Use an ID that's guaranteed not to exist (negative of existing max ID)
+        nonexistent_id = -(sample_video["id"] + 1000)
 
         # Verify the video cannot be found with the validation query
         video = await test_database.fetch_one(
