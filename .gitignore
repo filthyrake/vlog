@@ -34,3 +34,4 @@ node_modules/
 # Local config
 .claude/
 test_env/
+.coverage
