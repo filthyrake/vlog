@@ -107,17 +107,12 @@ def validate_url(url):
     Raises:
         CLIError: If URL is invalid (wrong scheme, missing domain, or malformed)
     """
-    try:
-        result = urlparse(url)
-        if result.scheme not in ('http', 'https'):
-            raise CLIError(f"Invalid URL scheme: '{result.scheme}'. Use http or https.")
-        if not result.netloc:
-            raise CLIError("Invalid URL: missing domain")
-        return url
-    except ValueError as e:
-        raise CLIError(f"Invalid URL: {e}")
-    except Exception as e:
-        raise CLIError(f"Invalid URL: {e}")
+    result = urlparse(url)
+    if result.scheme not in ('http', 'https'):
+        raise CLIError(f"Invalid URL scheme: '{result.scheme}'. Use http or https.")
+    if not result.netloc:
+        raise CLIError("Invalid URL: missing domain")
+    return url
 
 
 def cmd_upload(args):
@@ -294,7 +289,7 @@ def cmd_download(args):
         print("Error: yt-dlp is not installed. Install with: pip install yt-dlp")
         sys.exit(1)
 
-    print(f"Downloading from YouTube: {args.url}")
+    print(f"Downloading: {args.url}")
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
