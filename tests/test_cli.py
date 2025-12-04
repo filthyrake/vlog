@@ -865,7 +865,6 @@ class TestCmdDownload:
 
     def test_download_upload_timeout_exception(self, capsys, tmp_path):
         """Test download command handling of upload timeout exceptions."""
-        import httpx
 
     def test_download_invalid_url_scheme(self, capsys):
         """Test download with invalid URL scheme."""
