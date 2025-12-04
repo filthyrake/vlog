@@ -290,6 +290,20 @@ def get_output_dimensions(segment_path: Path) -> Tuple[int, int]:
         return (0, 0)
 
 
+def is_hls_playlist_complete(playlist_path: Path) -> bool:
+    """
+    Check if an HLS playlist is complete by looking for #EXT-X-ENDLIST.
+    FFmpeg only writes this marker when transcoding finishes successfully.
+    """
+    if not playlist_path.exists():
+        return False
+    try:
+        content = playlist_path.read_text()
+        return "#EXT-X-ENDLIST" in content
+    except (IOError, OSError):
+        return False
+
+
 def generate_thumbnail(input_path: Path, output_path: Path, timestamp: float = 5.0):
     """Generate a thumbnail from the video."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1059,8 +1073,8 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 "bitrate": "0k",  # Will be calculated from file size
                 "is_original": True,
             })
-        elif (output_dir / "original.m3u8").exists():
-            print("    original: Found existing playlist, marking complete...")
+        elif is_hls_playlist_complete(output_dir / "original.m3u8"):
+            print("    original: Found complete playlist, marking complete...")
             await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
             successful_qualities.append({
                 "name": "original",
@@ -1144,10 +1158,10 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 })
                 continue
 
-            # Check if playlist file already exists (from previous attempt)
+            # Check if playlist file is complete (from previous attempt)
             playlist_path = output_dir / f"{quality_name}.m3u8"
-            if playlist_path.exists():
-                print(f"    {quality_name}: Found existing playlist, marking complete...")
+            if is_hls_playlist_complete(playlist_path):
+                print(f"    {quality_name}: Found complete playlist, marking complete...")
                 await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                 # Get actual dimensions from existing segment
                 first_segment = output_dir / f"{quality_name}_0000.ts"
