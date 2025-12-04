@@ -521,6 +521,17 @@ async def start_analytics_session(
     Uses a persistent viewer cookie to track unique visitors across sessions.
     Creates/updates viewer record and links playback session to viewer.
     """
+    # Verify video exists and is accessible
+    video = await database.fetch_one(
+        videos.select().where(
+            videos.c.id == data.video_id,
+            videos.c.status == VideoStatus.READY,
+            videos.c.deleted_at.is_(None),
+        )
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
     session_token = str(uuid.uuid4())
     viewer_id = None
 
