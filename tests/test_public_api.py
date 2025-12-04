@@ -567,6 +567,34 @@ class TestAnalyticsEndpoints:
         )
         assert video is None
 
+    @pytest.mark.asyncio
+    async def test_session_token_unique_constraint(self, test_database, sample_video):
+        """Test that session_token has a unique constraint."""
+        import sqlite3
+
+        session_token = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        # Insert first session
+        await test_database.execute(
+            playback_sessions.insert().values(
+                video_id=sample_video["id"],
+                session_token=session_token,
+                started_at=now,
+            )
+        )
+
+        # Try to insert second session with the same session_token
+        # This should raise an IntegrityError due to the unique constraint
+        with pytest.raises(sqlite3.IntegrityError):
+            await test_database.execute(
+                playback_sessions.insert().values(
+                    video_id=sample_video["id"],
+                    session_token=session_token,  # Same token - should fail
+                    started_at=now,
+                )
+            )
+
 
 class TestTranscriptionEndpoints:
     """Tests for transcription endpoints."""

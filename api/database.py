@@ -113,7 +113,7 @@ playback_sessions = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False),
     sa.Column("viewer_id", sa.Integer, sa.ForeignKey("viewers.id", ondelete="SET NULL"), nullable=True),
-    sa.Column("session_token", sa.String(64), nullable=False),
+    sa.Column("session_token", sa.String(64), unique=True, nullable=False),
     sa.Column("started_at", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
     sa.Column("ended_at", sa.DateTime, nullable=True),
     sa.Column("duration_watched", sa.Float, default=0),  # seconds actually watched
@@ -122,7 +122,6 @@ playback_sessions = sa.Table(
     sa.Column("completed", sa.Boolean, default=False),  # watched >= 90%
     sa.Index("ix_playback_sessions_video_id", "video_id"),
     sa.Index("ix_playback_sessions_started_at", "started_at"),
-    sa.Index("ix_playback_sessions_session_token", "session_token"),
 )
 
 # Transcoding jobs with checkpoint support
