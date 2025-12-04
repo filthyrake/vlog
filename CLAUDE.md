@@ -58,19 +58,20 @@ ruff format api/ worker/ cli/ tests/ config.py   # Auto-format
 ```
 api/
 ├── public.py     # Public browsing API, serves /api/videos, /api/categories, HLS files, analytics
-├── admin.py      # Upload/management API, multipart uploads, CRUD operations
+├── admin.py      # Upload/management API, multipart uploads, CRUD operations, soft-delete
 ├── database.py   # SQLAlchemy table definitions (categories, videos, video_qualities, analytics, transcoding_jobs, transcriptions)
 └── schemas.py    # Pydantic models for request/response validation
 
 worker/
-└── transcoder.py # Event-driven (inotify) transcoder with checkpoint-based resumable processing
+├── transcoder.py     # Event-driven (inotify) transcoder with checkpoint-based resumable processing
+└── transcription.py  # Whisper transcription worker
 
 web/
 ├── public/       # Tailwind + Alpine.js frontend for browsing
 └── admin/        # Admin UI for uploads and video management
 
 cli/
-└── vlog          # Argparse CLI, talks to admin API via httpx
+└── main.py       # Argparse CLI, talks to admin API via httpx
 ```
 
 ### Key Flows
@@ -85,9 +86,13 @@ cli/
 
 **Transcription**: Optional auto-transcription using faster-whisper generates WebVTT subtitles. Configurable model size and language detection.
 
+**Soft-delete**: Videos are soft-deleted (moved to archive) with configurable retention. Can be restored or permanently deleted.
+
+**Rate limiting**: Configurable per-endpoint rate limits using slowapi. Supports memory or Redis storage.
+
 ### Database Schema
 
-Core tables: `categories`, `videos`, `video_qualities`
+Core tables: `categories`, `videos` (with `deleted_at` for soft-delete), `video_qualities`
 Analytics: `viewers`, `playback_sessions` (cookie-based viewer tracking, watch progress)
 Transcoding: `transcoding_jobs`, `quality_progress` (checkpoint-based resumable transcoding)
 Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
@@ -96,8 +101,12 @@ Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
 
 - `pyproject.toml`: Package configuration with dependencies and CLI entry point
 - `config.py`: Central config for paths, ports, quality presets, worker settings, transcription options
+  - All settings support environment variable overrides (prefix: `VLOG_`)
+  - Rate limiting: `VLOG_RATE_LIMIT_ENABLED`, `VLOG_RATE_LIMIT_PUBLIC_DEFAULT`, etc.
+  - CORS: `VLOG_CORS_ORIGINS`, `VLOG_ADMIN_CORS_ORIGINS`
+  - Archive: `VLOG_ARCHIVE_RETENTION_DAYS` (default: 30)
 - NAS mount: `//10.0.10.84/MainPool` mounted at `/mnt/nas` via fstab
-- systemd services use venv Python directly: `/home/damen/vlog/venv/bin/python`
+- systemd services: Located in `systemd/` folder, use venv Python with security hardening
 - Package installed in development mode: `pip install -e .` makes `vlog` CLI available
 
 ## Python Version Note

@@ -35,17 +35,18 @@ cd vlog
 
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -e .  # Install package in development mode
 ```
 
 ### 2. Create Storage Directories
 
 ```bash
 # For NAS setup
-sudo mkdir -p /mnt/nas/vlog-storage/{videos,uploads}
+sudo mkdir -p /mnt/nas/vlog-storage/{videos,uploads,archive}
 sudo chown $USER:$USER /mnt/nas/vlog-storage
 
-# Or for local storage, edit config.py to use local paths
+# Or for local storage, set environment variable
+export VLOG_STORAGE_PATH=/home/damen/vlog-storage
 ```
 
 ### 3. Initialize Database
@@ -92,7 +93,18 @@ sudo chmod 600 /etc/samba/credentials
 
 ### 2. Systemd Service Files
 
-Create service files in `/etc/systemd/system/`:
+Service files are provided in the `systemd/` directory. Copy them to `/etc/systemd/system/`:
+
+```bash
+sudo cp systemd/*.service systemd/*.target /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+The service files include:
+- **Security hardening** - PrivateTmp, ProtectSystem, NoNewPrivileges
+- **Resource limits** - Memory caps, file descriptor limits
+- **Restart policies** - Automatic restart on failure with rate limiting
+- **Venv Python** - Uses `/home/damen/vlog/venv/bin/python` directly
 
 #### vlog-public.service
 
@@ -107,10 +119,28 @@ Type=simple
 User=damen
 Group=damen
 WorkingDirectory=/home/damen/vlog
-Environment=PYTHONPATH=/home/damen/vlog/venv/lib/python3.9/site-packages
-ExecStart=/usr/bin/python3 -m uvicorn api.public:app --host 0.0.0.0 --port 9000 --proxy-headers --forwarded-allow-ips=*
-Restart=always
+ExecStart=/home/damen/vlog/venv/bin/python -m uvicorn api.public:app --host 0.0.0.0 --port 9000 --proxy-headers --forwarded-allow-ips='127.0.0.1,10.0.10.1'
+
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Allowed paths
+ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+
+# Resource limits
+LimitNOFILE=65535
+MemoryMax=2G
+
+# Restart policy
+Restart=on-failure
 RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
@@ -129,9 +159,23 @@ Type=simple
 User=damen
 Group=damen
 WorkingDirectory=/home/damen/vlog
-Environment=PYTHONPATH=/home/damen/vlog/venv/lib/python3.9/site-packages
-ExecStart=/usr/bin/python3 -m uvicorn api.admin:app --host 0.0.0.0 --port 9001
-Restart=always
+ExecStart=/home/damen/vlog/venv/bin/python -m uvicorn api.admin:app --host 0.0.0.0 --port 9001
+
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+
+# Allowed paths
+ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+
+# Resource limits
+LimitNOFILE=65535
+MemoryMax=2G
+
+# Restart policy
+Restart=on-failure
 RestartSec=5
 
 [Install]
@@ -151,10 +195,28 @@ Type=simple
 User=damen
 Group=damen
 WorkingDirectory=/home/damen/vlog
-Environment=PYTHONPATH=/home/damen/vlog/venv/lib/python3.9/site-packages
-ExecStart=/usr/bin/python3 worker/transcoder.py
-Restart=always
-RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/damen/vlog/venv/bin/python worker/transcoder.py
+
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+
+# Allowed paths
+ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+
+# Resource limits (higher for transcoding)
+LimitNOFILE=65535
+MemoryMax=8G
+
+# Restart policy
+Restart=on-failure
+RestartSec=30
+
+# Timeouts (longer for transcoding jobs)
+TimeoutStopSec=120
 
 [Install]
 WantedBy=multi-user.target
@@ -173,11 +235,29 @@ Type=simple
 User=damen
 Group=damen
 WorkingDirectory=/home/damen/vlog
-Environment=PYTHONPATH=/home/damen/vlog/venv/lib/python3.9/site-packages
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 worker/transcription.py
-Restart=always
+ExecStart=/home/damen/vlog/venv/bin/python worker/transcription.py
+
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+
+# Allowed paths
+ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+
+# Resource limits (higher for whisper model)
+LimitNOFILE=65535
+MemoryMax=8G
+
+# Restart policy
+Restart=on-failure
 RestartSec=30
+
+# Timeouts (longer for transcription jobs)
+TimeoutStartSec=60
+TimeoutStopSec=120
 
 [Install]
 WantedBy=multi-user.target

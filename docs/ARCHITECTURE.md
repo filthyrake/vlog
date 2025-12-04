@@ -66,12 +66,15 @@ Internal-only API for video management:
 - Video upload (multipart form data)
 - Video metadata editing
 - Category management (CRUD)
-- Video deletion with file cleanup
+- Video soft-delete (moves to archive) and restore
+- Video re-upload (replace source file)
 - Failed transcoding retry
 - Manual transcription triggers
 - Analytics dashboard data
 
 **Security Note:** This API should NOT be exposed publicly.
+
+**Rate Limiting:** Both APIs implement rate limiting via slowapi with configurable limits per endpoint.
 
 ### 3. Transcoding Worker
 
@@ -138,17 +141,21 @@ Background process for automatic captioning:
 /mnt/nas/vlog-storage/
 ├── uploads/           # Temporary upload storage
 │   └── {video_id}.mp4
-└── videos/            # HLS output
-    └── {slug}/
-        ├── master.m3u8      # Adaptive bitrate playlist
-        ├── 2160p.m3u8       # Quality-specific playlist
-        ├── 2160p_0000.ts    # Video segments
-        ├── 2160p_0001.ts
-        ├── 1080p.m3u8
-        ├── 1080p_0000.ts
-        ├── thumbnail.jpg
-        └── captions.vtt     # WebVTT subtitles
+├── videos/            # HLS output
+│   └── {slug}/
+│       ├── master.m3u8      # Adaptive bitrate playlist
+│       ├── 2160p.m3u8       # Quality-specific playlist
+│       ├── 2160p_0000.ts    # Video segments
+│       ├── 2160p_0001.ts
+│       ├── 1080p.m3u8
+│       ├── 1080p_0000.ts
+│       ├── thumbnail.jpg
+│       └── captions.vtt     # WebVTT subtitles
+└── archive/           # Soft-deleted videos
+    └── {slug}/        # Same structure as videos/
 ```
+
+**Soft-Delete Flow:** When a video is deleted, its files are moved from `videos/` to `archive/`. Archived videos can be restored via the API. Permanent deletion occurs after the configured retention period.
 
 ## Data Flow
 
@@ -200,6 +207,7 @@ Video ready → Transcription worker polls
 | ASGI Server | Uvicorn |
 | Database | SQLite + SQLAlchemy |
 | Async DB Access | aiosqlite, databases |
+| Rate Limiting | slowapi (memory or Redis) |
 | Video Processing | ffmpeg, ffprobe |
 | Transcription | faster-whisper |
 | File Monitoring | watchdog (inotify) |
@@ -210,15 +218,20 @@ Video ready → Transcription worker polls
 
 ## Configuration
 
-All configuration is centralized in `config.py`:
+All configuration is centralized in `config.py`. Every setting supports environment variable override with `VLOG_` prefix:
 
-- **Paths** - Storage locations, database path
+- **Paths** - Storage locations, database path, archive directory
 - **Ports** - Service ports (9000, 9001)
 - **Quality Presets** - Bitrate ladder (2160p → 360p)
 - **HLS Settings** - Segment duration
 - **Checkpoint Settings** - Interval, stale timeout, retry attempts
-- **Transcription Settings** - Model, language, compute type
+- **FFmpeg Timeouts** - Prevent stuck transcoding jobs
+- **Transcription Settings** - Model, language, compute type, timeouts
 - **Worker Settings** - Filesystem watcher, polling intervals
+- **Archive Settings** - Retention period for soft-deleted videos
+- **Rate Limiting** - Per-endpoint limits, storage backend (memory/Redis)
+- **CORS** - Allowed origins for public and admin APIs
+- **Upload Limits** - Maximum file size, chunk size
 
 ## Scalability Considerations
 

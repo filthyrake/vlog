@@ -9,6 +9,8 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 - **Auto-Transcription** - Automatic subtitles using faster-whisper (WebVTT captions)
 - **Event-Driven Processing** - Instant video detection via inotify (no polling delay)
 - **Crash Recovery** - Checkpoint-based resumable transcoding
+- **Soft-Delete** - Deleted videos go to archive with configurable retention period
+- **Rate Limiting** - Configurable per-endpoint rate limits (memory or Redis storage)
 - **Modern UI** - Clean, responsive Alpine.js + Tailwind CSS frontend
 - **Playback Analytics** - Track views, watch time, completion rates
 - **CLI + Web Upload** - Upload via command line or web interface
@@ -101,8 +103,9 @@ vlog/
 ├── cli/
 │   ├── __init__.py
 │   └── main.py           # Command-line tool
+├── systemd/              # Systemd service files
 ├── docs/                 # Documentation
-├── config.py             # Central configuration
+├── config.py             # Central configuration (env var support)
 ├── vlog.db               # SQLite database (local)
 └── start.sh              # Development startup script
 ```
@@ -113,13 +116,15 @@ vlog/
 /mnt/nas/vlog-storage/
 ├── uploads/              # Temporary upload storage
 │   └── {video_id}.mp4
-└── videos/               # HLS output
-    └── {slug}/
-        ├── master.m3u8   # Adaptive bitrate playlist
-        ├── 1080p.m3u8    # Quality-specific playlist
-        ├── 1080p_0000.ts # Video segments
-        ├── thumbnail.jpg
-        └── captions.vtt  # WebVTT subtitles
+├── videos/               # HLS output
+│   └── {slug}/
+│       ├── master.m3u8   # Adaptive bitrate playlist
+│       ├── 1080p.m3u8    # Quality-specific playlist
+│       ├── 1080p_0000.ts # Video segments
+│       ├── thumbnail.jpg
+│       └── captions.vtt  # WebVTT subtitles
+└── archive/              # Soft-deleted videos (moved here)
+    └── {slug}/           # Same structure as videos/
 ```
 
 ## Quality Presets
@@ -166,22 +171,30 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full production setup including
 
 ## Configuration
 
-Edit `config.py` to customize:
+All settings can be configured via environment variables (prefix: `VLOG_`) or by editing `config.py`:
 
-```python
+```bash
 # Storage paths
-NAS_STORAGE = Path("/mnt/nas/vlog-storage")
+VLOG_STORAGE_PATH=/mnt/nas/vlog-storage
 
 # Server ports
-PUBLIC_PORT = 9000
-ADMIN_PORT = 9001
+VLOG_PUBLIC_PORT=9000
+VLOG_ADMIN_PORT=9001
 
 # Transcription
-WHISPER_MODEL = "medium"  # tiny, base, small, medium, large-v3
-TRANSCRIPTION_ENABLED = True
+VLOG_WHISPER_MODEL=medium  # tiny, base, small, medium, large-v3
+VLOG_TRANSCRIPTION_ENABLED=true
+
+# Rate limiting
+VLOG_RATE_LIMIT_ENABLED=true
+VLOG_RATE_LIMIT_PUBLIC_DEFAULT=100/minute
+VLOG_RATE_LIMIT_STORAGE_URL=memory://  # or redis://localhost:6379
+
+# Soft-delete retention
+VLOG_ARCHIVE_RETENTION_DAYS=30
 
 # Worker mode
-WORKER_USE_FILESYSTEM_WATCHER = True  # inotify vs polling
+VLOG_WORKER_USE_FILESYSTEM_WATCHER=true  # inotify vs polling
 ```
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all options.
@@ -234,6 +247,7 @@ pip show faster-whisper
 - **Video Processing:** ffmpeg, ffprobe
 - **Transcription:** faster-whisper
 - **File Monitoring:** watchdog (inotify)
+- **Rate Limiting:** slowapi (memory or Redis)
 - **Frontend:** Alpine.js + Tailwind CSS v4
 - **Video Player:** hls.js
 - **Process Management:** systemd
