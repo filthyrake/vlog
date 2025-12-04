@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from config import (
     JOB_STALE_TIMEOUT,
     KEEP_COMPLETED_QUALITIES,
     MAX_RETRY_ATTEMPTS,
+    PROGRESS_UPDATE_INTERVAL,
     QUALITY_PRESETS,
     UPLOADS_DIR,
     VIDEOS_DIR,
@@ -65,6 +67,59 @@ MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 # Error message truncation limits for logging
 MAX_ERROR_SUMMARY_LENGTH = 100  # Characters per quality in total failure summary
 MAX_ERROR_DETAIL_LENGTH = 200   # Characters per quality in partial failure details
+
+
+class ProgressTracker:
+    """
+    Rate-limits progress updates to prevent database overload during transcoding.
+    Only writes to database if enough time has passed since the last update.
+    """
+
+    def __init__(self, min_interval: float = PROGRESS_UPDATE_INTERVAL):
+        self.min_interval = min_interval
+        self.last_update_time: float = 0
+        self.last_job_progress: int = -1
+        self.last_quality_progress: dict = {}  # quality_name -> progress
+
+    async def update_job(self, job_id: int, progress: int) -> bool:
+        """
+        Update job progress if enough time has passed.
+        Returns True if update was written, False if rate-limited.
+        """
+        now = time.time()
+
+        # Always update if progress is 100 (completion) or significantly changed
+        if progress == 100 or (now - self.last_update_time >= self.min_interval):
+            if progress != self.last_job_progress:
+                await update_job_progress(job_id, progress)
+                self.last_update_time = now
+                self.last_job_progress = progress
+                return True
+        return False
+
+    async def update_quality(self, job_id: int, quality_name: str, progress: int) -> bool:
+        """
+        Update quality progress if enough time has passed.
+        Returns True if update was written, False if rate-limited.
+        """
+        now = time.time()
+
+        last_progress = self.last_quality_progress.get(quality_name, -1)
+
+        # Always update if progress is 100 (completion) or enough time passed
+        if progress == 100 or (now - self.last_update_time >= self.min_interval):
+            if progress != last_progress:
+                await update_quality_progress(job_id, quality_name, progress)
+                self.last_update_time = now
+                self.last_quality_progress[quality_name] = progress
+                return True
+        return False
+
+    async def flush(self, job_id: int, progress: int):
+        """Force write the final progress value."""
+        if progress != self.last_job_progress:
+            await update_job_progress(job_id, progress)
+            self.last_job_progress = progress
 
 
 def calculate_ffmpeg_timeout(duration: float) -> float:
@@ -1084,6 +1139,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
         failed_qualities = []
         total_qualities = len(qualities) + 1  # +1 for original
 
+        # Create progress tracker for rate-limited database updates
+        progress_tracker = ProgressTracker()
+
         # ----------------------------------------------------------------
         # Step 3a: Create "original" quality (remux without re-encoding)
         # ----------------------------------------------------------------
@@ -1113,10 +1171,10 @@ async def process_video_resumable(video_id: int, video_slug: str):
             await update_quality_status(job_id, "original", QualityStatus.IN_PROGRESS)
 
             async def original_progress_cb(progress: int):
-                await update_quality_progress(job_id, "original", progress)
+                await progress_tracker.update_quality(job_id, "original", progress)
                 # Original is first, so its progress is direct
                 overall = int(progress / total_qualities)
-                await update_job_progress(job_id, overall)
+                await progress_tracker.update_job(job_id, overall)
 
             try:
                 success, error_detail, quality_info = await create_original_quality(
@@ -1210,12 +1268,12 @@ async def process_video_resumable(video_id: int, video_slug: str):
             await update_quality_status(job_id, quality_name, QualityStatus.IN_PROGRESS)
 
             async def progress_cb(progress: int, q_idx=quality_idx, q_name=quality_name):
-                await update_quality_progress(job_id, q_name, progress)
+                await progress_tracker.update_quality(job_id, q_name, progress)
                 # Update overall progress (original is done, so start from quality_idx)
                 base_progress = int((q_idx / total_qualities) * 100)
                 quality_contribution = int((progress / 100) * (100 / total_qualities))
                 overall = base_progress + quality_contribution
-                await update_job_progress(job_id, overall)
+                await progress_tracker.update_job(job_id, overall)
 
             try:
                 success, error_detail = await transcode_quality_with_progress(
@@ -1252,6 +1310,132 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 print(f"    {quality_name}: Error - {e}")
 
             await checkpoint(job_id)
+
+        # ----------------------------------------------------------------
+        # Step 3c: Re-verify all qualities are complete before finalizing
+        # This catches any qualities that were reset mid-flight or missed
+        # ----------------------------------------------------------------
+        max_verification_passes = 3
+        for verification_pass in range(max_verification_passes):
+            # Check for any incomplete qualities
+            incomplete_qualities = []
+            for quality in all_qualities_for_tracking:
+                quality_name = quality["name"]
+                # Skip if already in successful list
+                if any(sq["name"] == quality_name for sq in successful_qualities):
+                    continue
+                # Skip if already in failed list
+                if any(fq["name"] == quality_name for fq in failed_qualities):
+                    continue
+
+                # Check database status
+                status = await get_quality_status(job_id, quality_name)
+                if status and status["status"] != QualityStatus.COMPLETED:
+                    incomplete_qualities.append(quality)
+
+            if not incomplete_qualities:
+                break
+
+            print(f"  Verification pass {verification_pass + 1}: Found {len(incomplete_qualities)} incomplete qualities")
+
+            for quality in incomplete_qualities:
+                quality_name = quality["name"]
+
+                # Check for shutdown
+                if shutdown_requested:
+                    print("  Shutdown requested, resetting video to pending...")
+                    await reset_video_to_pending(video_id)
+                    return False
+
+                # Check if playlist file is actually complete on disk
+                playlist_path = output_dir / f"{quality_name}.m3u8"
+                if is_hls_playlist_complete(playlist_path):
+                    print(f"    {quality_name}: Found complete playlist on disk, marking complete...")
+                    await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
+                    # Add to successful qualities
+                    if quality_name == "original":
+                        successful_qualities.append({
+                            "name": "original",
+                            "width": info["width"],
+                            "height": info["height"],
+                            "bitrate": "0k",
+                            "is_original": True,
+                        })
+                    else:
+                        first_segment = output_dir / f"{quality_name}_0000.ts"
+                        if first_segment.exists():
+                            actual_width, actual_height = get_output_dimensions(first_segment)
+                        else:
+                            actual_width = int(quality["height"] * 16 / 9)
+                            if actual_width % 2 != 0:
+                                actual_width += 1
+                            actual_height = quality["height"]
+                        successful_qualities.append({
+                            "name": quality_name,
+                            "width": actual_width,
+                            "height": actual_height,
+                            "bitrate": quality["bitrate"],
+                        })
+                    continue
+
+                # Need to transcode this quality
+                print(f"    {quality_name}: Re-processing...")
+                await update_quality_status(job_id, quality_name, QualityStatus.IN_PROGRESS)
+
+                try:
+                    if quality_name == "original":
+                        success, error_detail, quality_info = await create_original_quality(
+                            source_file, output_dir, info["duration"], None
+                        )
+                        if success:
+                            await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
+                            successful_qualities.append({
+                                "name": "original",
+                                "width": info["width"],
+                                "height": info["height"],
+                                "bitrate": "0k",
+                                "bitrate_bps": quality_info["bitrate_bps"] if quality_info else 0,
+                                "is_original": True,
+                            })
+                            print(f"    {quality_name}: Done")
+                        else:
+                            error_msg = error_detail or "Remux failed"
+                            await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
+                            failed_qualities.append({"name": "original", "error": error_msg})
+                            print(f"    {quality_name}: Failed")
+                    else:
+                        success, error_detail = await transcode_quality_with_progress(
+                            source_file, output_dir, quality, info["duration"], None
+                        )
+                        if success:
+                            await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
+                            first_segment = output_dir / f"{quality_name}_0000.ts"
+                            if first_segment.exists():
+                                actual_width, actual_height = get_output_dimensions(first_segment)
+                            else:
+                                actual_width = int(quality["height"] * 16 / 9)
+                                if actual_width % 2 != 0:
+                                    actual_width += 1
+                                actual_height = quality["height"]
+                            successful_qualities.append({
+                                "name": quality_name,
+                                "width": actual_width,
+                                "height": actual_height,
+                                "bitrate": quality["bitrate"],
+                            })
+                            print(f"    {quality_name}: Done")
+                        else:
+                            error_msg = error_detail or "Transcoding failed"
+                            await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
+                            failed_qualities.append({"name": quality_name, "error": error_msg})
+                            print(f"    {quality_name}: Failed")
+                except Exception as e:
+                    error_msg = str(e)
+                    await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
+                    failed_qualities.append({"name": quality_name, "error": error_msg})
+                    print(f"    {quality_name}: Error - {e}")
+
+                await checkpoint(job_id)
 
         # Report results
         if not successful_qualities:

@@ -94,7 +94,12 @@
                         }
 
                         this.category = await catRes.json();
-                        this.videos = await videosRes.json();
+                        if (videosRes.ok) {
+                            this.videos = await videosRes.json();
+                        } else {
+                            console.error('Failed to load videos:', videosRes.status);
+                            this.videos = [];
+                        }
                         document.title = `${this.category.name} - Damen's VLog`;
                     } catch (e) {
                         console.error('Failed to load category:', e);

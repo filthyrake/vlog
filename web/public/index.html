@@ -117,9 +117,13 @@
                 async loadCategories() {
                     try {
                         const res = await fetch('/api/categories');
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
                         this.categories = await res.json();
                     } catch (e) {
                         console.error('Failed to load categories:', e);
+                        this.categories = [];
                     }
                 },
 
@@ -134,9 +138,13 @@
                             url += `search=${encodeURIComponent(this.searchQuery)}&`;
                         }
                         const res = await fetch(url);
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
                         this.videos = await res.json();
                     } catch (e) {
                         console.error('Failed to load videos:', e);
+                        this.videos = [];
                     } finally {
                         this.loading = false;
                     }
