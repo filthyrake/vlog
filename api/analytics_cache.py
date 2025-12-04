@@ -10,8 +10,9 @@ class AnalyticsCache:
     """
     Simple in-memory cache with TTL (Time To Live) for analytics data.
     
-    Thread-safe for async FastAPI usage since Python's GIL ensures
-    dict operations are atomic for simple get/set operations.
+    Note: Designed for single-process FastAPI deployment. For multi-worker
+    deployments, each worker maintains its own cache. Consider using Redis
+    or similar for shared caching across multiple processes/servers.
     """
 
     def __init__(self, ttl_seconds: int = 60, enabled: bool = True):
