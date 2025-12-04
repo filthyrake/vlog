@@ -451,7 +451,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
     query = sa.text("""
         SELECT c.*, COUNT(v.id) as video_count
         FROM categories c
-        LEFT JOIN videos v ON v.category_id = c.id AND v.status = 'ready'
+        LEFT JOIN videos v ON v.category_id = c.id AND v.status = 'ready' AND v.deleted_at IS NULL
         GROUP BY c.id
         ORDER BY c.name
     """)
