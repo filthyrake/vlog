@@ -113,3 +113,14 @@ _trusted_proxies_env = os.getenv("VLOG_TRUSTED_PROXIES", "")
 TRUSTED_PROXIES = set(
     ip.strip() for ip in _trusted_proxies_env.split(",") if ip.strip()
 )
+
+# Analytics Caching Configuration
+# Set to "0" or "false" to disable analytics caching
+ANALYTICS_CACHE_ENABLED = os.getenv("VLOG_ANALYTICS_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
+
+# Cache TTL in seconds (default: 60 seconds)
+ANALYTICS_CACHE_TTL = int(os.getenv("VLOG_ANALYTICS_CACHE_TTL", "60"))
+
+# Client-side cache max-age in seconds (default: 60 seconds)
+# This controls the Cache-Control header sent to clients
+ANALYTICS_CLIENT_CACHE_MAX_AGE = int(os.getenv("VLOG_ANALYTICS_CLIENT_CACHE_MAX_AGE", "60"))
