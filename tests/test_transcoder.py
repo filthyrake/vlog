@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from config import (
+    FFMPEG_TIMEOUT_BASE_MULTIPLIER,
     FFMPEG_TIMEOUT_MAXIMUM,
     FFMPEG_TIMEOUT_MINIMUM,
-    FFMPEG_TIMEOUT_MULTIPLIER,
+    FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS,
     MAX_RETRY_ATTEMPTS,
     QUALITY_PRESETS,
 )
@@ -171,19 +172,20 @@ class TestCalculateFfmpegTimeout:
     def test_minimum_timeout(self):
         """Test short videos get minimum timeout."""
         # 10 second video * multiplier might be less than minimum
-        timeout = calculate_ffmpeg_timeout(10)
+        timeout = calculate_ffmpeg_timeout(10, 1080)
         assert timeout >= FFMPEG_TIMEOUT_MINIMUM
 
     def test_maximum_timeout(self):
         """Test very long videos are capped at maximum."""
         # 10 hour video would exceed max timeout
-        timeout = calculate_ffmpeg_timeout(36000)
+        timeout = calculate_ffmpeg_timeout(36000, 2160)
         assert timeout <= FFMPEG_TIMEOUT_MAXIMUM
 
-    def test_normal_duration(self):
-        """Test normal video duration."""
+    def test_normal_duration_default_resolution(self):
+        """Test normal video duration with default resolution (1080p)."""
         duration = 600  # 10 minutes
-        expected = duration * FFMPEG_TIMEOUT_MULTIPLIER
+        res_mult = FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS.get(1080, 2.0)
+        expected = duration * FFMPEG_TIMEOUT_BASE_MULTIPLIER * res_mult
         timeout = calculate_ffmpeg_timeout(duration)
 
         # Should be multiplier * duration, clamped to min/max
@@ -194,17 +196,36 @@ class TestCalculateFfmpegTimeout:
         else:
             assert timeout == expected
 
-    def test_boundary_minimum(self):
-        """Test duration at minimum boundary."""
-        # Calculate duration that would result exactly in minimum
-        boundary_duration = FFMPEG_TIMEOUT_MINIMUM / FFMPEG_TIMEOUT_MULTIPLIER
-        timeout = calculate_ffmpeg_timeout(boundary_duration)
-        assert timeout == FFMPEG_TIMEOUT_MINIMUM
+    def test_resolution_scaling(self):
+        """Test that higher resolutions get longer timeouts."""
+        duration = 600  # 10 minutes - short enough to avoid hitting max cap
+        timeout_360p = calculate_ffmpeg_timeout(duration, 360)
+        timeout_1080p = calculate_ffmpeg_timeout(duration, 1080)
+        timeout_2160p = calculate_ffmpeg_timeout(duration, 2160)
+
+        # Higher resolutions should have longer timeouts
+        assert timeout_360p < timeout_1080p < timeout_2160p
+
+    def test_all_resolutions_covered(self):
+        """Test all quality presets have timeout multipliers."""
+        for preset in QUALITY_PRESETS:
+            height = preset["height"]
+            assert height in FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS, (
+                f"Missing timeout multiplier for {height}p"
+            )
 
     def test_zero_duration(self):
         """Test zero duration gets minimum timeout."""
-        timeout = calculate_ffmpeg_timeout(0)
+        timeout = calculate_ffmpeg_timeout(0, 1080)
         assert timeout == FFMPEG_TIMEOUT_MINIMUM
+
+    def test_unknown_resolution_uses_default(self):
+        """Test unknown resolution uses default multiplier."""
+        duration = 600
+        timeout = calculate_ffmpeg_timeout(duration, 999)  # Non-standard height
+        # Should use default multiplier of 2.0
+        expected = duration * FFMPEG_TIMEOUT_BASE_MULTIPLIER * 2.0
+        assert timeout == max(FFMPEG_TIMEOUT_MINIMUM, min(expected, FFMPEG_TIMEOUT_MAXIMUM))
 
 
 class TestGenerateMasterPlaylist:
@@ -345,7 +366,10 @@ class TestConfigConstants:
         """Test timeout configuration is sensible."""
         assert FFMPEG_TIMEOUT_MINIMUM > 0
         assert FFMPEG_TIMEOUT_MAXIMUM > FFMPEG_TIMEOUT_MINIMUM
-        assert FFMPEG_TIMEOUT_MULTIPLIER > 0
+        assert FFMPEG_TIMEOUT_BASE_MULTIPLIER > 0
+        # All resolution multipliers should be positive
+        for height, mult in FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS.items():
+            assert mult > 0, f"Invalid multiplier for {height}p"
 
     def test_max_duration(self):
         """Test max duration is reasonable."""

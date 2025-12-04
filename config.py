@@ -47,9 +47,21 @@ CLEANUP_PARTIAL_ON_FAILURE = os.getenv("VLOG_CLEANUP_PARTIAL_ON_FAILURE", "true"
 KEEP_COMPLETED_QUALITIES = os.getenv("VLOG_KEEP_COMPLETED_QUALITIES", "true").lower() == "true"
 
 # FFmpeg timeout settings (prevents stuck transcoding jobs)
-FFMPEG_TIMEOUT_MULTIPLIER = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MULTIPLIER", "3"))
+# Base multiplier applied to video duration (scaled by resolution)
+FFMPEG_TIMEOUT_BASE_MULTIPLIER = float(os.getenv("VLOG_FFMPEG_TIMEOUT_BASE_MULTIPLIER", "2.0"))
 FFMPEG_TIMEOUT_MINIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MINIMUM", "300"))
-FFMPEG_TIMEOUT_MAXIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MAXIMUM", "3600"))
+FFMPEG_TIMEOUT_MAXIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MAXIMUM", "14400"))  # 4 hours
+
+# Per-resolution timeout multipliers (applied on top of base multiplier)
+# Lower resolutions encode faster, higher resolutions need more time
+FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS = {
+    360: 1.0,   # 360p: fast encode
+    480: 1.25,
+    720: 1.5,
+    1080: 2.0,
+    1440: 2.5,
+    2160: 3.5,  # 4K: slowest encode
+}
 
 # Transcription settings
 WHISPER_MODEL = os.getenv("VLOG_WHISPER_MODEL", "medium")
