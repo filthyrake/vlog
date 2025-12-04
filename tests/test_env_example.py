@@ -75,9 +75,8 @@ def test_env_example_no_undefined_vars():
     # Check for extra variables (might be deprecated or test-only)
     extra_vars = example_vars - all_expected_vars
     
-    # VLOG_TEST_MODE is used directly via os.environ.get, not os.getenv,
-    # so it's not caught by the pattern but is still a valid configuration option
-    allowed_extra_vars = {"VLOG_TEST_MODE"}
+    # No exemptions needed - all variables should be used in code
+    allowed_extra_vars = set()
     unexpected_extra_vars = extra_vars - allowed_extra_vars
     
     assert not unexpected_extra_vars, (
