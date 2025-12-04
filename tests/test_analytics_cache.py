@@ -196,8 +196,6 @@ class TestAnalyticsCache:
 
     def test_cache_key_generation_consistency(self):
         """Test that cache keys are consistent for the same parameters."""
-        cache = AnalyticsCache()
-
         # Simulate cache key generation for analytics endpoints
         params1 = {"limit": 50, "offset": 0, "sort_by": "views", "period": "all"}
         key1 = f"analytics_videos:{params1['limit']}:{params1['offset']}:{params1['sort_by']}:{params1['period']}"
