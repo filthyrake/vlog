@@ -78,10 +78,11 @@ UPLOAD_CHUNK_SIZE = int(os.getenv("VLOG_UPLOAD_CHUNK_SIZE", str(1024 * 1024)))  
 _cors_origins_env = os.getenv("VLOG_CORS_ORIGINS", "")
 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
 
-# For admin API, defaults to same-machine origins only (9000 and 9001)
+# For admin API - internal only, not exposed externally
+# Defaults to allow all origins since it's behind firewall/not public
 _admin_cors_env = os.getenv("VLOG_ADMIN_CORS_ORIGINS", "")
 ADMIN_CORS_ALLOWED_ORIGINS = (
     [origin.strip() for origin in _admin_cors_env.split(",") if origin.strip()]
     if _admin_cors_env
-    else [f"http://localhost:{PUBLIC_PORT}", f"http://localhost:{ADMIN_PORT}"]
+    else ["*"]  # Admin is internal-only, allow all origins by default
 )

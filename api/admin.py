@@ -139,14 +139,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Allow CORS for admin UI (restricted to configured origins)
-# Defaults to localhost ports 9000 and 9001 for same-machine access
+# Allow CORS for admin UI (internal-only, not exposed externally)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ADMIN_CORS_ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=True if ADMIN_CORS_ALLOWED_ORIGINS != ["*"] else False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Serve video files for preview
