@@ -2,6 +2,7 @@
 Tests for the CLI module error handling and response validation.
 """
 import os
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -168,16 +169,9 @@ class TestValidateFile:
         real_stat = test_file.stat()
 
         # Mock Path.stat to return a stat result with large size
-        from pathlib import Path
         mock_stat = mock.Mock()
-        # Copy all attributes from real stat
-        for attr in dir(real_stat):
-            if not attr.startswith('_'):
-                try:
-                    setattr(mock_stat, attr, getattr(real_stat, attr))
-                except AttributeError:
-                    pass
-        # Override size to be 11GB
+        # Copy specific stat attributes needed by validate_file
+        mock_stat.st_mode = real_stat.st_mode
         mock_stat.st_size = 11 * 1024 * 1024 * 1024  # 11GB
 
         with mock.patch.object(Path, 'stat', return_value=mock_stat):
