@@ -251,7 +251,7 @@ class TestVideoManagementHTTP:
             data={"title": "   "},
         )
         assert response.status_code == 400
-        assert "cannot be empty" in response.json()["detail"]
+        assert "required" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_soft_delete_video(self, admin_client, sample_video, test_storage):
