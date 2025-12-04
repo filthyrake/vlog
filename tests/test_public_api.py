@@ -176,10 +176,20 @@ class TestAnalyticsEndpoints:
         assert result["max_position"] == 100.0
 
     @pytest.mark.asyncio
-    async def test_end_playback_session(self, test_database, sample_playback_session):
+    async def test_end_playback_session(self, test_database, sample_video):
         """Test ending a playback session."""
-        session_token = sample_playback_session["session_token"]
+        import uuid
+
+        session_token = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
+
+        await test_database.execute(
+            playback_sessions.insert().values(
+                video_id=sample_video["id"],
+                session_token=session_token,
+                started_at=now,
+            )
+        )
 
         await test_database.execute(
             playback_sessions.update()
@@ -195,6 +205,68 @@ class TestAnalyticsEndpoints:
         )
         assert result["ended_at"] is not None
         assert result["completed"] is True
+
+    @pytest.mark.asyncio
+    async def test_session_validation_accepts_ready_video(self, test_database, sample_video):
+        """Test that session validation accepts ready videos."""
+        from api.enums import VideoStatus
+
+        # Verify the video can be found with the validation query
+        video = await test_database.fetch_one(
+            videos.select().where(
+                videos.c.id == sample_video["id"],
+                videos.c.status == VideoStatus.READY,
+                videos.c.deleted_at.is_(None),
+            )
+        )
+        assert video is not None
+        assert video["id"] == sample_video["id"]
+        assert video["status"] == VideoStatus.READY
+
+    @pytest.mark.asyncio
+    async def test_session_validation_rejects_nonexistent_video(self, test_database):
+        """Test that session validation rejects non-existent videos."""
+        from api.enums import VideoStatus
+
+        # Verify the video cannot be found with the validation query
+        video = await test_database.fetch_one(
+            videos.select().where(
+                videos.c.id == 99999,
+                videos.c.status == VideoStatus.READY,
+                videos.c.deleted_at.is_(None),
+            )
+        )
+        assert video is None
+
+    @pytest.mark.asyncio
+    async def test_session_validation_rejects_pending_video(self, test_database, sample_pending_video):
+        """Test that session validation rejects pending videos."""
+        from api.enums import VideoStatus
+
+        # Verify the video cannot be found with the validation query
+        video = await test_database.fetch_one(
+            videos.select().where(
+                videos.c.id == sample_pending_video["id"],
+                videos.c.status == VideoStatus.READY,
+                videos.c.deleted_at.is_(None),
+            )
+        )
+        assert video is None
+
+    @pytest.mark.asyncio
+    async def test_session_validation_rejects_deleted_video(self, test_database, sample_deleted_video):
+        """Test that session validation rejects soft-deleted videos."""
+        from api.enums import VideoStatus
+
+        # Verify the video cannot be found with the validation query
+        video = await test_database.fetch_one(
+            videos.select().where(
+                videos.c.id == sample_deleted_video["id"],
+                videos.c.status == VideoStatus.READY,
+                videos.c.deleted_at.is_(None),
+            )
+        )
+        assert video is None
 
 
 class TestTranscriptionEndpoints:
