@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
+
 import sqlalchemy as sa
 from databases import Database
-from datetime import datetime, timezone
 
 from config import DATABASE_PATH
 
@@ -48,6 +49,7 @@ def set_sqlite_pragmas_sync(dbapi_conn, connection_record):
     cursor.execute("PRAGMA cache_size=-64000")
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
+
 
 categories = sa.Table(
     "categories",
@@ -151,7 +153,9 @@ quality_progress = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("job_id", sa.Integer, sa.ForeignKey("transcoding_jobs.id", ondelete="CASCADE"), nullable=False),
     sa.Column("quality", sa.String(10), nullable=False),  # 2160p, 1080p, etc.
-    sa.Column("status", sa.String(20), nullable=False, default="pending"),  # pending, in_progress, completed, failed, skipped
+    sa.Column(
+        "status", sa.String(20), nullable=False, default="pending"
+    ),  # pending, in_progress, completed, failed, skipped
     sa.Column("segments_total", sa.Integer, nullable=True),
     sa.Column("segments_completed", sa.Integer, default=0),
     sa.Column("progress_percent", sa.Integer, default=0),
@@ -189,6 +193,7 @@ def create_tables():
     engine = sa.create_engine(DATABASE_URL)
     # Configure pragmas on each connection
     from sqlalchemy import event
+
     event.listen(engine, "connect", set_sqlite_pragmas_sync)
     metadata.create_all(engine)
     engine.dispose()

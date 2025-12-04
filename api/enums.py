@@ -2,11 +2,13 @@
 Centralized enums for status values used throughout the application.
 Using str-based enums for SQLite/database compatibility.
 """
+
 from enum import Enum
 
 
 class VideoStatus(str, Enum):
     """Status values for video processing."""
+
     PENDING = "pending"
     PROCESSING = "processing"
     READY = "ready"
@@ -15,6 +17,7 @@ class VideoStatus(str, Enum):
 
 class TranscriptionStatus(str, Enum):
     """Status values for transcription processing."""
+
     NONE = "none"
     PENDING = "pending"
     PROCESSING = "processing"
@@ -24,6 +27,7 @@ class TranscriptionStatus(str, Enum):
 
 class QualityStatus(str, Enum):
     """Status values for per-quality transcoding progress."""
+
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -33,6 +37,7 @@ class QualityStatus(str, Enum):
 
 class TranscodingStep(str, Enum):
     """Processing step names for transcoding jobs."""
+
     PROBE = "probe"
     THUMBNAIL = "thumbnail"
     TRANSCODE = "transcode"

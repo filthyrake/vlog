@@ -1,12 +1,14 @@
 """
 Tests for the public API endpoints.
 """
-import pytest
-from datetime import datetime, timezone
-import uuid
 
-from api.database import videos, categories, video_qualities, playback_sessions, transcriptions
-from api.enums import VideoStatus, TranscriptionStatus
+import uuid
+from datetime import datetime, timezone
+
+import pytest
+
+from api.database import categories, playback_sessions, transcriptions, video_qualities, videos
+from api.enums import TranscriptionStatus, VideoStatus
 
 
 class TestHealthEndpoint:
@@ -26,17 +28,13 @@ class TestVideosEndpoints:
     @pytest.mark.asyncio
     async def test_list_videos_empty(self, test_database):
         """Test listing videos when database is empty."""
-        result = await test_database.fetch_all(
-            videos.select().where(videos.c.status == VideoStatus.READY)
-        )
+        result = await test_database.fetch_all(videos.select().where(videos.c.status == VideoStatus.READY))
         assert result == []
 
     @pytest.mark.asyncio
     async def test_list_videos_with_data(self, test_database, sample_video):
         """Test listing videos returns ready videos."""
-        result = await test_database.fetch_all(
-            videos.select().where(videos.c.status == VideoStatus.READY)
-        )
+        result = await test_database.fetch_all(videos.select().where(videos.c.status == VideoStatus.READY))
         assert len(result) == 1
         assert result[0]["slug"] == "test-video"
 
@@ -54,9 +52,7 @@ class TestVideosEndpoints:
             )
         )
 
-        result = await test_database.fetch_all(
-            videos.select().where(videos.c.status == VideoStatus.READY)
-        )
+        result = await test_database.fetch_all(videos.select().where(videos.c.status == VideoStatus.READY))
         assert len(result) == 0
 
     @pytest.mark.asyncio
@@ -74,19 +70,14 @@ class TestVideosEndpoints:
         )
 
         result = await test_database.fetch_all(
-            videos.select().where(
-                (videos.c.status == VideoStatus.READY) &
-                (videos.c.deleted_at.is_(None))
-            )
+            videos.select().where((videos.c.status == VideoStatus.READY) & (videos.c.deleted_at.is_(None)))
         )
         assert len(result) == 0
 
     @pytest.mark.asyncio
     async def test_get_video_by_slug(self, test_database, sample_video):
         """Test getting a video by slug."""
-        result = await test_database.fetch_one(
-            videos.select().where(videos.c.slug == "test-video")
-        )
+        result = await test_database.fetch_one(videos.select().where(videos.c.slug == "test-video"))
         assert result is not None
         assert result["title"] == "Test Video"
         assert result["duration"] == 120.5
@@ -94,9 +85,7 @@ class TestVideosEndpoints:
     @pytest.mark.asyncio
     async def test_get_video_not_found(self, test_database):
         """Test getting non-existent video."""
-        result = await test_database.fetch_one(
-            videos.select().where(videos.c.slug == "nonexistent")
-        )
+        result = await test_database.fetch_one(videos.select().where(videos.c.slug == "nonexistent"))
         assert result is None
 
     @pytest.mark.asyncio
@@ -131,18 +120,14 @@ class TestCategoriesEndpoints:
     @pytest.mark.asyncio
     async def test_get_category_by_slug(self, test_database, sample_category):
         """Test getting category by slug."""
-        result = await test_database.fetch_one(
-            categories.select().where(categories.c.slug == "test-category")
-        )
+        result = await test_database.fetch_one(categories.select().where(categories.c.slug == "test-category"))
         assert result is not None
         assert result["name"] == "Test Category"
 
     @pytest.mark.asyncio
     async def test_get_category_not_found(self, test_database):
         """Test getting non-existent category."""
-        result = await test_database.fetch_one(
-            categories.select().where(categories.c.slug == "nonexistent")
-        )
+        result = await test_database.fetch_one(categories.select().where(categories.c.slug == "nonexistent"))
         assert result is None
 
 
@@ -164,9 +149,7 @@ class TestAnalyticsEndpoints:
         )
 
         result = await test_database.fetch_one(
-            playback_sessions.select().where(
-                playback_sessions.c.session_token == session_token
-            )
+            playback_sessions.select().where(playback_sessions.c.session_token == session_token)
         )
         assert result is not None
         assert result["video_id"] == sample_video["id"]
@@ -187,9 +170,7 @@ class TestAnalyticsEndpoints:
         )
 
         result = await test_database.fetch_one(
-            playback_sessions.select().where(
-                playback_sessions.c.session_token == session_token
-            )
+            playback_sessions.select().where(playback_sessions.c.session_token == session_token)
         )
         assert result["duration_watched"] == 90.0
         assert result["max_position"] == 100.0
@@ -210,9 +191,7 @@ class TestAnalyticsEndpoints:
         )
 
         result = await test_database.fetch_one(
-            playback_sessions.select().where(
-                playback_sessions.c.session_token == session_token
-            )
+            playback_sessions.select().where(playback_sessions.c.session_token == session_token)
         )
         assert result["ended_at"] is not None
         assert result["completed"] is True
@@ -225,9 +204,7 @@ class TestTranscriptionEndpoints:
     async def test_get_transcript_none(self, test_database, sample_video):
         """Test getting transcript when none exists."""
         result = await test_database.fetch_one(
-            transcriptions.select().where(
-                transcriptions.c.video_id == sample_video["id"]
-            )
+            transcriptions.select().where(transcriptions.c.video_id == sample_video["id"])
         )
         assert result is None
 
@@ -250,9 +227,7 @@ class TestTranscriptionEndpoints:
             )
         )
 
-        result = await test_database.fetch_one(
-            transcriptions.select().where(transcriptions.c.video_id == video_id)
-        )
+        result = await test_database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
         assert result["status"] == TranscriptionStatus.COMPLETED
         assert result["language"] == "en"
         assert result["word_count"] == 7
@@ -268,9 +243,7 @@ class TestVideoFiltering:
 
         query = (
             sa.select(videos)
-            .select_from(
-                videos.outerjoin(categories, videos.c.category_id == categories.c.id)
-            )
+            .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
             .where(categories.c.slug == "test-category")
             .where(videos.c.status == VideoStatus.READY)
         )
@@ -286,9 +259,7 @@ class TestVideoFiltering:
 
         query = (
             sa.select(videos)
-            .select_from(
-                videos.outerjoin(categories, videos.c.category_id == categories.c.id)
-            )
+            .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
             .where(categories.c.slug == "nonexistent")
         )
 
@@ -299,11 +270,7 @@ class TestVideoFiltering:
     async def test_search_videos_by_title(self, test_database, sample_video):
         """Test searching videos by title."""
         search_term = "%Test%"
-        query = (
-            videos.select()
-            .where(videos.c.title.ilike(search_term))
-            .where(videos.c.status == VideoStatus.READY)
-        )
+        query = videos.select().where(videos.c.title.ilike(search_term)).where(videos.c.status == VideoStatus.READY)
 
         result = await test_database.fetch_all(query)
         assert len(result) == 1
@@ -313,10 +280,7 @@ class TestVideoFiltering:
     async def test_search_videos_no_match(self, test_database, sample_video):
         """Test searching videos with no matches."""
         search_term = "%nonexistent%"
-        query = (
-            videos.select()
-            .where(videos.c.title.ilike(search_term))
-        )
+        query = videos.select().where(videos.c.title.ilike(search_term))
 
         result = await test_database.fetch_all(query)
         assert len(result) == 0
@@ -342,11 +306,7 @@ class TestPagination:
                 )
             )
 
-        query = (
-            videos.select()
-            .where(videos.c.status == VideoStatus.READY)
-            .limit(5)
-        )
+        query = videos.select().where(videos.c.status == VideoStatus.READY).limit(5)
 
         result = await test_database.fetch_all(query)
         assert len(result) == 5
@@ -369,11 +329,7 @@ class TestPagination:
             )
 
         query = (
-            videos.select()
-            .where(videos.c.status == VideoStatus.READY)
-            .order_by(videos.c.created_at)
-            .offset(5)
-            .limit(5)
+            videos.select().where(videos.c.status == VideoStatus.READY).order_by(videos.c.created_at).offset(5).limit(5)
         )
 
         result = await test_database.fetch_all(query)

@@ -1,7 +1,8 @@
 import math
-from pydantic import BaseModel, Field, validator
 from datetime import datetime
 from typing import List, Optional, Set
+
+from pydantic import BaseModel, Field, validator
 
 # Maximum position value (24 hours in seconds)
 MAX_POSITION_SECONDS = 86400
@@ -9,15 +10,106 @@ MAX_POSITION_SECONDS = 86400
 # Whisper-supported language codes (ISO 639-1)
 # Full list from OpenAI Whisper documentation
 WHISPER_LANGUAGES: Set[str] = {
-    "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs",
-    "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi",
-    "fo", "fr", "gl", "gu", "ha", "haw", "he", "hi", "hr", "ht", "hu", "hy",
-    "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb",
-    "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt",
-    "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru",
-    "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw",
-    "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi",
-    "yi", "yo", "zh", "yue",
+    "af",
+    "am",
+    "ar",
+    "as",
+    "az",
+    "ba",
+    "be",
+    "bg",
+    "bn",
+    "bo",
+    "br",
+    "bs",
+    "ca",
+    "cs",
+    "cy",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "et",
+    "eu",
+    "fa",
+    "fi",
+    "fo",
+    "fr",
+    "gl",
+    "gu",
+    "ha",
+    "haw",
+    "he",
+    "hi",
+    "hr",
+    "ht",
+    "hu",
+    "hy",
+    "id",
+    "is",
+    "it",
+    "ja",
+    "jw",
+    "ka",
+    "kk",
+    "km",
+    "kn",
+    "ko",
+    "la",
+    "lb",
+    "ln",
+    "lo",
+    "lt",
+    "lv",
+    "mg",
+    "mi",
+    "mk",
+    "ml",
+    "mn",
+    "mr",
+    "ms",
+    "mt",
+    "my",
+    "ne",
+    "nl",
+    "nn",
+    "no",
+    "oc",
+    "pa",
+    "pl",
+    "ps",
+    "pt",
+    "ro",
+    "ru",
+    "sa",
+    "sd",
+    "si",
+    "sk",
+    "sl",
+    "sn",
+    "so",
+    "sq",
+    "sr",
+    "su",
+    "sv",
+    "sw",
+    "ta",
+    "te",
+    "tg",
+    "th",
+    "tk",
+    "tl",
+    "tr",
+    "tt",
+    "uk",
+    "ur",
+    "uz",
+    "vi",
+    "yi",
+    "yo",
+    "zh",
+    "yue",
 }
 
 
@@ -96,14 +188,14 @@ class PlaybackHeartbeat(BaseModel):
     quality: Optional[str] = None
     playing: bool = True
 
-    @validator('position')
+    @validator("position")
     def validate_position(cls, v):
         if not math.isfinite(v):
-            raise ValueError('position must be a finite number')
+            raise ValueError("position must be a finite number")
         if v < 0:
-            raise ValueError('position must be non-negative')
+            raise ValueError("position must be non-negative")
         if v > MAX_POSITION_SECONDS:
-            raise ValueError(f'position exceeds maximum allowed value ({MAX_POSITION_SECONDS}s)')
+            raise ValueError(f"position exceeds maximum allowed value ({MAX_POSITION_SECONDS}s)")
         return v
 
 
@@ -112,14 +204,14 @@ class PlaybackEnd(BaseModel):
     position: float
     completed: bool = False
 
-    @validator('position')
+    @validator("position")
     def validate_position(cls, v):
         if not math.isfinite(v):
-            raise ValueError('position must be a finite number')
+            raise ValueError("position must be a finite number")
         if v < 0:
-            raise ValueError('position must be non-negative')
+            raise ValueError("position must be non-negative")
         if v > MAX_POSITION_SECONDS:
-            raise ValueError(f'position exceeds maximum allowed value ({MAX_POSITION_SECONDS}s)')
+            raise ValueError(f"position exceeds maximum allowed value ({MAX_POSITION_SECONDS}s)")
         return v
 
 
@@ -227,7 +319,7 @@ class TranscriptionResponse(BaseModel):
 class TranscriptionTrigger(BaseModel):
     language: Optional[str] = Field(default=None, description="ISO 639-1 language code")
 
-    @validator('language')
+    @validator("language")
     def validate_language(cls, v):
         if v is not None:
             v = v.lower().strip()

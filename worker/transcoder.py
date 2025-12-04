@@ -5,6 +5,7 @@ Monitors the uploads directory for new videos and transcodes them to HLS.
 Uses filesystem watching (inotify) for event-driven processing instead of polling.
 Supports crash recovery and per-quality progress tracking.
 """
+
 import asyncio
 import json
 import math
@@ -43,6 +44,7 @@ if WORKER_USE_FILESYSTEM_WATCHER:
     try:
         from watchdog.events import FileSystemEventHandler
         from watchdog.observers import Observer
+
         WATCHDOG_AVAILABLE = True
     except ImportError:
         print("Warning: watchdog not installed. Falling back to polling mode.")
@@ -65,7 +67,7 @@ MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 
 # Error message truncation limits for logging
 MAX_ERROR_SUMMARY_LENGTH = 100  # Characters per quality in total failure summary
-MAX_ERROR_DETAIL_LENGTH = 200   # Characters per quality in partial failure details
+MAX_ERROR_DETAIL_LENGTH = 200  # Characters per quality in partial failure details
 
 
 class ProgressTracker:
@@ -138,7 +140,7 @@ def calculate_ffmpeg_timeout(duration: float) -> float:
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     global shutdown_requested
-    sig_name = signal.strsignal(sig) if hasattr(signal, 'strsignal') else str(sig)
+    sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
     print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
     shutdown_requested = True
 
@@ -183,13 +185,14 @@ def validate_duration(duration: Any) -> float:
 # Filesystem Watcher (Event-Driven Processing)
 # ============================================================================
 
+
 class UploadEventHandler(FileSystemEventHandler):
     """
     Handles filesystem events in the uploads directory.
     Sets an asyncio event when new video files are detected.
     """
 
-    VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.webm', '.mov', '.avi'}
+    VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 
     def __init__(self, loop: asyncio.AbstractEventLoop, event: asyncio.Event):
         super().__init__()
@@ -204,9 +207,11 @@ class UploadEventHandler(FileSystemEventHandler):
 
     def _trigger_event(self):
         """Thread-safe way to set the asyncio event from the watchdog thread."""
+
         def set_event():
             if not self.event.is_set():
                 self.event.set()
+
         self.loop.call_soon_threadsafe(set_event)
 
     def _schedule_trigger(self):
@@ -275,7 +280,7 @@ def stop_filesystem_watcher(observer: Optional[Observer]):
             # Clean up the event handler
             for handler_list in observer._handlers.values():
                 for handler in handler_list:
-                    if hasattr(handler, 'cleanup'):
+                    if hasattr(handler, "cleanup"):
                         handler.cleanup()
         except Exception as e:
             print(f"  Warning: Error stopping filesystem watcher: {e}")
@@ -294,22 +299,12 @@ async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
     Raises:
         RuntimeError: If ffprobe fails or times out
     """
-    cmd = [
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", "-show_streams", str(input_path)
-    ]
+    cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(input_path)]
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
 
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout
-        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         process.kill()
         await process.wait()
@@ -318,7 +313,7 @@ async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
     if process.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {stderr.decode('utf-8', errors='ignore')}")
 
-    data = json.loads(stdout.decode('utf-8', errors='ignore'))
+    data = json.loads(stdout.decode("utf-8", errors="ignore"))
 
     # Find video stream
     video_stream = None
@@ -358,27 +353,29 @@ async def get_output_dimensions(segment_path: Path, timeout: float = 10.0) -> Tu
         Tuple of (width, height), or (0, 0) on failure
     """
     cmd = [
-        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
-        "-of", "json", str(segment_path)
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "json",
+        str(segment_path),
     ]
 
     try:
         process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
 
-        stdout, _ = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout
-        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
 
         if process.returncode != 0:
             return (0, 0)
 
-        data = json.loads(stdout.decode('utf-8', errors='ignore'))
+        data = json.loads(stdout.decode("utf-8", errors="ignore"))
         streams = data.get("streams", [])
         if not streams:
             return (0, 0)
@@ -418,24 +415,23 @@ async def generate_thumbnail(input_path: Path, output_path: Path, timestamp: flo
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg", "-y", "-i", str(input_path),
-        "-ss", str(timestamp),
-        "-vframes", "1",
-        "-vf", "scale=640:-1",
-        str(output_path)
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-ss",
+        str(timestamp),
+        "-vframes",
+        "1",
+        "-vf",
+        "scale=640:-1",
+        str(output_path),
     ]
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
 
     try:
-        _, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout
-        )
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         process.kill()
         await process.wait()
@@ -450,7 +446,7 @@ async def transcode_quality_with_progress(
     output_dir: Path,
     quality: dict,
     duration: float,
-    progress_callback: Optional[Callable[[int], None]] = None
+    progress_callback: Optional[Callable[[int], None]] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking and timeout.
@@ -470,26 +466,50 @@ async def transcode_quality_with_progress(
 
     # Calculate timeout based on video duration
     timeout = calculate_ffmpeg_timeout(duration)
-    print(f"      Timeout set to {timeout:.0f}s ({timeout/60:.1f} min)")
+    print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min)")
 
     cmd = [
-        "ffmpeg", "-y", "-i", str(input_path),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-        "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{int(bitrate.replace('k', '')) * 2}k",
-        "-vf", scale_filter,
-        "-c:a", "aac", "-b:a", audio_bitrate, "-ac", "2",
-        "-hls_time", str(HLS_SEGMENT_DURATION),
-        "-hls_list_size", "0",
-        "-hls_segment_filename", str(output_dir / segment_pattern),
-        "-progress", "pipe:1",  # Output progress to stdout
-        "-f", "hls",
-        str(output_dir / playlist_name)
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "23",
+        "-b:v",
+        bitrate,
+        "-maxrate",
+        bitrate,
+        "-bufsize",
+        f"{int(bitrate.replace('k', '')) * 2}k",
+        "-vf",
+        scale_filter,
+        "-c:a",
+        "aac",
+        "-b:a",
+        audio_bitrate,
+        "-ac",
+        "2",
+        "-hls_time",
+        str(HLS_SEGMENT_DURATION),
+        "-hls_list_size",
+        "0",
+        "-hls_segment_filename",
+        str(output_dir / segment_pattern),
+        "-progress",
+        "pipe:1",  # Output progress to stdout
+        "-f",
+        "hls",
+        str(output_dir / playlist_name),
     ]
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL  # Don't capture stderr - it fills pipe and blocks ffmpeg
+        stderr=asyncio.subprocess.DEVNULL,  # Don't capture stderr - it fills pipe and blocks ffmpeg
     )
 
     last_progress_update = 0
@@ -504,12 +524,12 @@ async def transcode_quality_with_progress(
             if not line:
                 break
 
-            line_str = line.decode('utf-8', errors='ignore').strip()
+            line_str = line.decode("utf-8", errors="ignore").strip()
 
             # Parse time from progress output (format: out_time_ms=123456789)
-            if line_str.startswith('out_time_ms='):
+            if line_str.startswith("out_time_ms="):
                 try:
-                    time_ms = int(line_str.split('=')[1])
+                    time_ms = int(line_str.split("=")[1])
                     current_seconds = time_ms / 1000000.0
                     if duration > 0:
                         progress = min(100, int(current_seconds / duration * 100))
@@ -573,7 +593,7 @@ async def transcode_quality_with_progress(
 
     if process.returncode != 0:
         stderr = await process.stderr.read()
-        error_msg = stderr.decode('utf-8', errors='ignore')
+        error_msg = stderr.decode("utf-8", errors="ignore")
         print(f"  ERROR: Failed to transcode {name}")
         print(f"  Full error output: {error_msg}")
         return False, error_msg
@@ -582,10 +602,7 @@ async def transcode_quality_with_progress(
 
 
 async def create_original_quality(
-    input_path: Path,
-    output_dir: Path,
-    duration: float,
-    progress_callback: Optional[Callable[[int], None]] = None
+    input_path: Path, output_dir: Path, duration: float, progress_callback: Optional[Callable[[int], None]] = None
 ) -> Tuple[bool, Optional[str], Optional[dict]]:
     """
     Create 'original' quality by remuxing source to HLS without re-encoding.
@@ -601,25 +618,35 @@ async def create_original_quality(
     # Calculate timeout based on duration (remuxing is much faster than transcoding)
     timeout = calculate_ffmpeg_timeout(duration) / 3  # Remux is ~3x faster
     timeout = max(FFMPEG_TIMEOUT_MINIMUM, timeout)
-    print(f"      Timeout set to {timeout:.0f}s ({timeout/60:.1f} min) for remux")
+    print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for remux")
 
     # Use copy codec to remux without re-encoding
     cmd = [
-        "ffmpeg", "-y", "-i", str(input_path),
-        "-c:v", "copy",  # Copy video stream as-is
-        "-c:a", "copy",  # Copy audio stream as-is
-        "-hls_time", str(HLS_SEGMENT_DURATION),
-        "-hls_list_size", "0",
-        "-hls_segment_filename", str(output_dir / segment_pattern),
-        "-progress", "pipe:1",
-        "-f", "hls",
-        str(output_dir / playlist_name)
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-c:v",
+        "copy",  # Copy video stream as-is
+        "-c:a",
+        "copy",  # Copy audio stream as-is
+        "-hls_time",
+        str(HLS_SEGMENT_DURATION),
+        "-hls_list_size",
+        "0",
+        "-hls_segment_filename",
+        str(output_dir / segment_pattern),
+        "-progress",
+        "pipe:1",
+        "-f",
+        "hls",
+        str(output_dir / playlist_name),
     ]
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL  # Don't capture stderr - it fills pipe and blocks ffmpeg
+        stderr=asyncio.subprocess.DEVNULL,  # Don't capture stderr - it fills pipe and blocks ffmpeg
     )
 
     last_progress_update = 0
@@ -632,10 +659,10 @@ async def create_original_quality(
             line = await process.stdout.readline()
             if not line:
                 break
-            line_str = line.decode('utf-8', errors='ignore').strip()
-            if line_str.startswith('out_time_ms='):
+            line_str = line.decode("utf-8", errors="ignore").strip()
+            if line_str.startswith("out_time_ms="):
                 try:
-                    time_ms = int(line_str.split('=')[1])
+                    time_ms = int(line_str.split("=")[1])
                     current_seconds = time_ms / 1000000.0
                     if duration > 0:
                         progress = min(100, int(current_seconds / duration * 100))
@@ -696,7 +723,7 @@ async def create_original_quality(
 
     if process.returncode != 0:
         stderr = await process.stderr.read()
-        error_msg = stderr.decode('utf-8', errors='ignore')
+        error_msg = stderr.decode("utf-8", errors="ignore")
         print("  ERROR: Failed to create original quality")
         return False, error_msg, None
 
@@ -734,24 +761,30 @@ def generate_master_playlist(output_dir: Path, completed_qualities: List[dict]):
         else:
             bandwidth = int(quality["bitrate"].replace("k", "")) * 1000
 
-        qualities_with_bandwidth.append({
-            "name": name,
-            "width": width,
-            "height": height,
-            "bandwidth": bandwidth,
-        })
+        qualities_with_bandwidth.append(
+            {
+                "name": name,
+                "width": width,
+                "height": height,
+                "bandwidth": bandwidth,
+            }
+        )
 
     # Sort by bandwidth descending (highest quality first)
     qualities_with_bandwidth.sort(key=lambda q: q["bandwidth"], reverse=True)
 
     for quality in qualities_with_bandwidth:
-        master_content += f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},RESOLUTION={quality["width"]}x{quality["height"]}\n'
-        master_content += f'{quality["name"]}.m3u8\n'
+        master_content += (
+            f"#EXT-X-STREAM-INF:BANDWIDTH={quality['bandwidth']},RESOLUTION={quality['width']}x{quality['height']}\n"
+        )
+        master_content += f"{quality['name']}.m3u8\n"
 
     (output_dir / "master.m3u8").write_text(master_content)
 
 
-async def cleanup_partial_output(video_slug: str, keep_completed_qualities: bool = True, completed_quality_names: Optional[List[str]] = None):
+async def cleanup_partial_output(
+    video_slug: str, keep_completed_qualities: bool = True, completed_quality_names: Optional[List[str]] = None
+):
     """Clean up partial transcoding output."""
     output_dir = VIDEOS_DIR / video_slug
 
@@ -767,7 +800,7 @@ async def cleanup_partial_output(video_slug: str, keep_completed_qualities: bool
     # Selective cleanup - keep completed quality files
     for file in output_dir.iterdir():
         # Match quality files like "1080p.m3u8", "1080p_0001.ts", "original.m3u8", "original_0001.ts"
-        quality_match = re.match(r'(\d+p|original)(_\d+\.ts|\.m3u8)$', file.name)
+        quality_match = re.match(r"(\d+p|original)(_\d+\.ts|\.m3u8)$", file.name)
         if quality_match:
             quality = quality_match.group(1)
             if quality not in completed_quality_names:
@@ -782,6 +815,7 @@ async def cleanup_partial_output(video_slug: str, keep_completed_qualities: bool
 # ============================================================================
 # Job Management Functions
 # ============================================================================
+
 
 async def get_or_create_job(video_id: int) -> dict:
     """Get existing job or create a new one for the video."""
@@ -871,18 +905,12 @@ async def mark_job_failed(job_id: int, error: str, final: bool = False):
     if final:
         values["completed_at"] = datetime.now(timezone.utc)
 
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job_id)
-        .values(**values)
-    )
+    await database.execute(transcoding_jobs.update().where(transcoding_jobs.c.id == job_id).values(**values))
 
 
 async def reset_job_for_retry(job_id: int):
     """Reset a job for retry, incrementing attempt number."""
-    job = await database.fetch_one(
-        transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-    )
+    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
     if not job:
         return
@@ -906,14 +934,14 @@ async def reset_job_for_retry(job_id: int):
 # Quality Progress Functions
 # ============================================================================
 
+
 async def init_quality_progress(job_id: int, qualities: List[dict]):
     """Initialize progress records for all qualities."""
     for quality in qualities:
         # Check if record already exists
         existing = await database.fetch_one(
             quality_progress.select().where(
-                (quality_progress.c.job_id == job_id) &
-                (quality_progress.c.quality == quality["name"])
+                (quality_progress.c.job_id == job_id) & (quality_progress.c.quality == quality["name"])
             )
         )
 
@@ -932,19 +960,13 @@ async def get_quality_status(job_id: int, quality_name: str) -> Optional[dict]:
     """Get the progress status for a specific quality."""
     row = await database.fetch_one(
         quality_progress.select().where(
-            (quality_progress.c.job_id == job_id) &
-            (quality_progress.c.quality == quality_name)
+            (quality_progress.c.job_id == job_id) & (quality_progress.c.quality == quality_name)
         )
     )
     return dict(row) if row else None
 
 
-async def update_quality_status(
-    job_id: int,
-    quality_name: str,
-    status: str,
-    error_message: Optional[str] = None
-):
+async def update_quality_status(job_id: int, quality_name: str, status: str, error_message: Optional[str] = None):
     """Update quality transcoding status."""
     values = {
         "status": status,
@@ -960,10 +982,7 @@ async def update_quality_status(
 
     await database.execute(
         quality_progress.update()
-        .where(
-            (quality_progress.c.job_id == job_id) &
-            (quality_progress.c.quality == quality_name)
-        )
+        .where((quality_progress.c.job_id == job_id) & (quality_progress.c.quality == quality_name))
         .values(**values)
     )
 
@@ -972,10 +991,7 @@ async def update_quality_progress(job_id: int, quality_name: str, progress: int)
     """Update quality transcoding progress percentage."""
     await database.execute(
         quality_progress.update()
-        .where(
-            (quality_progress.c.job_id == job_id) &
-            (quality_progress.c.quality == quality_name)
-        )
+        .where((quality_progress.c.job_id == job_id) & (quality_progress.c.quality == quality_name))
         .values(progress_percent=progress)
     )
 
@@ -984,8 +1000,7 @@ async def get_completed_qualities(job_id: int) -> List[str]:
     """Get list of completed quality names for a job."""
     rows = await database.fetch_all(
         quality_progress.select().where(
-            (quality_progress.c.job_id == job_id) &
-            (quality_progress.c.status == QualityStatus.COMPLETED)
+            (quality_progress.c.job_id == job_id) & (quality_progress.c.status == QualityStatus.COMPLETED)
         )
     )
     return [row["quality"] for row in rows]
@@ -994,6 +1009,7 @@ async def get_completed_qualities(job_id: int) -> List[str]:
 # ============================================================================
 # Crash Recovery
 # ============================================================================
+
 
 async def recover_interrupted_jobs():
     """
@@ -1007,16 +1023,14 @@ async def recover_interrupted_jobs():
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
-            transcoding_jobs.c.completed_at.is_(None) &
-            transcoding_jobs.c.last_checkpoint.isnot(None) &
-            (transcoding_jobs.c.last_checkpoint < stale_threshold)
+            transcoding_jobs.c.completed_at.is_(None)
+            & transcoding_jobs.c.last_checkpoint.isnot(None)
+            & (transcoding_jobs.c.last_checkpoint < stale_threshold)
         )
     )
 
     for job in stale_jobs:
-        video = await database.fetch_one(
-            videos.select().where(videos.c.id == job["video_id"])
-        )
+        video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
 
         if not video:
             continue
@@ -1029,10 +1043,9 @@ async def recover_interrupted_jobs():
             async with database.transaction():
                 await mark_job_failed(job["id"], "Max retry attempts exceeded", final=True)
                 await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(
-                        status=VideoStatus.FAILED,
-                        error_message="Max retry attempts exceeded"
-                    )
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(status=VideoStatus.FAILED, error_message="Max retry attempts exceeded")
                 )
         else:
             # Reset for retry - use transaction to ensure consistency
@@ -1041,18 +1054,14 @@ async def recover_interrupted_jobs():
                 await reset_job_for_retry(job["id"])
                 # Also reset the video status to pending so it gets picked up
                 await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(
-                        status=VideoStatus.PENDING
-                    )
+                    videos.update().where(videos.c.id == job["video_id"]).values(status=VideoStatus.PENDING)
                 )
 
             # Optionally clean up partial output
             if CLEANUP_PARTIAL_ON_FAILURE:
                 completed = await get_completed_qualities(job["id"])
                 await cleanup_partial_output(
-                    video["slug"],
-                    keep_completed_qualities=KEEP_COMPLETED_QUALITIES,
-                    completed_quality_names=completed
+                    video["slug"], keep_completed_qualities=KEEP_COMPLETED_QUALITIES, completed_quality_names=completed
                 )
 
     if stale_jobs:
@@ -1065,11 +1074,10 @@ async def recover_interrupted_jobs():
 # Main Processing with Checkpoints
 # ============================================================================
 
+
 async def reset_video_to_pending(video_id: int):
     """Reset a video status back to pending (for graceful shutdown/retry)."""
-    await database.execute(
-        videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PENDING)
-    )
+    await database.execute(videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PENDING))
 
 
 async def process_video_resumable(video_id: int, video_slug: str):
@@ -1094,10 +1102,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
     if not source_file:
         await database.execute(
-            videos.update().where(videos.c.id == video_id).values(
-                status=VideoStatus.FAILED,
-                error_message="Source file not found"
-            )
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(status=VideoStatus.FAILED, error_message="Source file not found")
         )
         return False
 
@@ -1106,11 +1113,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
     job_id = job["id"]
 
     # Always mark video as processing when we start/resume
-    await database.execute(
-        videos.update().where(videos.c.id == video_id).values(
-            status=VideoStatus.PROCESSING
-        )
-    )
+    await database.execute(videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PROCESSING))
 
     try:
         # ----------------------------------------------------------------
@@ -1129,10 +1132,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 # Mark as final failure immediately
                 await mark_job_failed(job_id, error_msg, final=True)
                 await database.execute(
-                    videos.update().where(videos.c.id == video_id).values(
-                        status=VideoStatus.FAILED,
-                        error_message=error_msg[:500]
-                    )
+                    videos.update()
+                    .where(videos.c.id == video_id)
+                    .values(status=VideoStatus.FAILED, error_message=error_msg[:500])
                 )
                 return False
 
@@ -1140,7 +1142,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
             # Update video metadata
             await database.execute(
-                videos.update().where(videos.c.id == video_id).values(
+                videos.update()
+                .where(videos.c.id == video_id)
+                .values(
                     status=VideoStatus.PROCESSING,
                     duration=info["duration"],
                     source_width=info["width"],
@@ -1156,9 +1160,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 return False
         else:
             # Load existing video info
-            video_row = await database.fetch_one(
-                videos.select().where(videos.c.id == video_id)
-            )
+            video_row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
             info = {
                 "width": video_row["source_width"],
                 "height": video_row["source_height"],
@@ -1222,23 +1224,27 @@ async def process_video_resumable(video_id: int, video_slug: str):
         if original_status and original_status["status"] == QualityStatus.COMPLETED:
             print("    original: Already completed, skipping...")
             # Add to successful with source dimensions
-            successful_qualities.append({
-                "name": "original",
-                "width": info["width"],
-                "height": info["height"],
-                "bitrate": "0k",  # Will be calculated from file size
-                "is_original": True,
-            })
+            successful_qualities.append(
+                {
+                    "name": "original",
+                    "width": info["width"],
+                    "height": info["height"],
+                    "bitrate": "0k",  # Will be calculated from file size
+                    "is_original": True,
+                }
+            )
         elif is_hls_playlist_complete(output_dir / "original.m3u8"):
             print("    original: Found complete playlist, marking complete...")
             await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
-            successful_qualities.append({
-                "name": "original",
-                "width": info["width"],
-                "height": info["height"],
-                "bitrate": "0k",
-                "is_original": True,
-            })
+            successful_qualities.append(
+                {
+                    "name": "original",
+                    "width": info["width"],
+                    "height": info["height"],
+                    "bitrate": "0k",
+                    "is_original": True,
+                }
+            )
         else:
             print("    original: Remuxing source to HLS (no re-encoding)...")
             await update_quality_status(job_id, "original", QualityStatus.IN_PROGRESS)
@@ -1256,14 +1262,16 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
                 if success:
                     await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
-                    successful_qualities.append({
-                        "name": "original",
-                        "width": info["width"],
-                        "height": info["height"],
-                        "bitrate": "0k",
-                        "bitrate_bps": quality_info["bitrate_bps"] if quality_info else 0,
-                        "is_original": True,
-                    })
+                    successful_qualities.append(
+                        {
+                            "name": "original",
+                            "width": info["width"],
+                            "height": info["height"],
+                            "bitrate": "0k",
+                            "bitrate_bps": quality_info["bitrate_bps"] if quality_info else 0,
+                            "is_original": True,
+                        }
+                    )
                     print(f"    original: Done ({info['width']}x{info['height']})")
                 else:
                     error_msg = error_detail or "Remux failed"
@@ -1306,12 +1314,14 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     if actual_width % 2 != 0:
                         actual_width += 1
                     actual_height = quality["height"]
-                successful_qualities.append({
-                    "name": quality_name,
-                    "width": actual_width,
-                    "height": actual_height,
-                    "bitrate": quality["bitrate"],
-                })
+                successful_qualities.append(
+                    {
+                        "name": quality_name,
+                        "width": actual_width,
+                        "height": actual_height,
+                        "bitrate": quality["bitrate"],
+                    }
+                )
                 continue
 
             # Check if playlist file is complete (from previous attempt)
@@ -1328,12 +1338,14 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     if actual_width % 2 != 0:
                         actual_width += 1
                     actual_height = quality["height"]
-                successful_qualities.append({
-                    "name": quality_name,
-                    "width": actual_width,
-                    "height": actual_height,
-                    "bitrate": quality["bitrate"],
-                })
+                successful_qualities.append(
+                    {
+                        "name": quality_name,
+                        "width": actual_width,
+                        "height": actual_height,
+                        "bitrate": quality["bitrate"],
+                    }
+                )
                 continue
 
             # Transcode this quality
@@ -1364,12 +1376,14 @@ async def process_video_resumable(video_id: int, video_slug: str):
                         if actual_width % 2 != 0:
                             actual_width += 1
                         actual_height = quality["height"]
-                    successful_qualities.append({
-                        "name": quality_name,
-                        "width": actual_width,
-                        "height": actual_height,
-                        "bitrate": quality["bitrate"],
-                    })
+                    successful_qualities.append(
+                        {
+                            "name": quality_name,
+                            "width": actual_width,
+                            "height": actual_height,
+                            "bitrate": quality["bitrate"],
+                        }
+                    )
                     print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
                 else:
                     error_msg = error_detail or "Transcoding process returned non-zero exit code"
@@ -1409,7 +1423,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
             if not incomplete_qualities:
                 break
 
-            print(f"  Verification pass {verification_pass + 1}: Found {len(incomplete_qualities)} incomplete qualities")
+            print(
+                f"  Verification pass {verification_pass + 1}: Found {len(incomplete_qualities)} incomplete qualities"
+            )
 
             for quality in incomplete_qualities:
                 quality_name = quality["name"]
@@ -1427,13 +1443,15 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                     # Add to successful qualities
                     if quality_name == "original":
-                        successful_qualities.append({
-                            "name": "original",
-                            "width": info["width"],
-                            "height": info["height"],
-                            "bitrate": "0k",
-                            "is_original": True,
-                        })
+                        successful_qualities.append(
+                            {
+                                "name": "original",
+                                "width": info["width"],
+                                "height": info["height"],
+                                "bitrate": "0k",
+                                "is_original": True,
+                            }
+                        )
                     else:
                         first_segment = output_dir / f"{quality_name}_0000.ts"
                         if first_segment.exists():
@@ -1443,12 +1461,14 @@ async def process_video_resumable(video_id: int, video_slug: str):
                             if actual_width % 2 != 0:
                                 actual_width += 1
                             actual_height = quality["height"]
-                        successful_qualities.append({
-                            "name": quality_name,
-                            "width": actual_width,
-                            "height": actual_height,
-                            "bitrate": quality["bitrate"],
-                        })
+                        successful_qualities.append(
+                            {
+                                "name": quality_name,
+                                "width": actual_width,
+                                "height": actual_height,
+                                "bitrate": quality["bitrate"],
+                            }
+                        )
                     continue
 
                 # Need to transcode this quality
@@ -1462,14 +1482,16 @@ async def process_video_resumable(video_id: int, video_slug: str):
                         )
                         if success:
                             await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
-                            successful_qualities.append({
-                                "name": "original",
-                                "width": info["width"],
-                                "height": info["height"],
-                                "bitrate": "0k",
-                                "bitrate_bps": quality_info["bitrate_bps"] if quality_info else 0,
-                                "is_original": True,
-                            })
+                            successful_qualities.append(
+                                {
+                                    "name": "original",
+                                    "width": info["width"],
+                                    "height": info["height"],
+                                    "bitrate": "0k",
+                                    "bitrate_bps": quality_info["bitrate_bps"] if quality_info else 0,
+                                    "is_original": True,
+                                }
+                            )
                             print(f"    {quality_name}: Done")
                         else:
                             error_msg = error_detail or "Remux failed"
@@ -1490,12 +1512,14 @@ async def process_video_resumable(video_id: int, video_slug: str):
                                 if actual_width % 2 != 0:
                                     actual_width += 1
                                 actual_height = quality["height"]
-                            successful_qualities.append({
-                                "name": quality_name,
-                                "width": actual_width,
-                                "height": actual_height,
-                                "bitrate": quality["bitrate"],
-                            })
+                            successful_qualities.append(
+                                {
+                                    "name": quality_name,
+                                    "width": actual_width,
+                                    "height": actual_height,
+                                    "bitrate": quality["bitrate"],
+                                }
+                            )
                             print(f"    {quality_name}: Done")
                         else:
                             error_msg = error_detail or "Transcoding failed"
@@ -1513,13 +1537,17 @@ async def process_video_resumable(video_id: int, video_slug: str):
         # Report results
         if not successful_qualities:
             # All quality variants failed
-            failed_summary = ", ".join([f"{q['name']}: {q['error'][:MAX_ERROR_SUMMARY_LENGTH]}" for q in failed_qualities])
+            failed_summary = ", ".join(
+                [f"{q['name']}: {q['error'][:MAX_ERROR_SUMMARY_LENGTH]}" for q in failed_qualities]
+            )
             error_message = f"All {len(failed_qualities)} quality variant(s) failed. Details: {failed_summary}"
             print(f"  FAILURE: {error_message}")
             raise RuntimeError(error_message)
         elif failed_qualities:
             # Partial success - some qualities failed
-            print(f"  WARNING: Partial transcoding success - {len(successful_qualities)}/{total_qualities} quality variants completed")
+            print(
+                f"  WARNING: Partial transcoding success - {len(successful_qualities)}/{total_qualities} quality variants completed"
+            )
             print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
                 print(f"    - {failed['name']}: {failed['error'][:MAX_ERROR_DETAIL_LENGTH]}")
@@ -1543,8 +1571,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Check if quality record already exists
             existing = await database.fetch_one(
                 video_qualities.select().where(
-                    (video_qualities.c.video_id == video_id) &
-                    (video_qualities.c.quality == q["name"])
+                    (video_qualities.c.video_id == video_id) & (video_qualities.c.quality == q["name"])
                 )
             )
 
@@ -1561,7 +1588,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
         # Mark video as ready
         await database.execute(
-            videos.update().where(videos.c.id == video_id).values(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(
                 status=VideoStatus.READY,
                 published_at=datetime.now(timezone.utc),
             )
@@ -1579,15 +1608,15 @@ async def process_video_resumable(video_id: int, video_slug: str):
         print(f"  Error: {e}")
 
         # Check if we should retry
-        job = await database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
         if job and job["attempt_number"] < job["max_attempts"]:
             # Will be retried on next worker restart or stale job check
             await mark_job_failed(job_id, str(e), final=False)
             await database.execute(
-                videos.update().where(videos.c.id == video_id).values(
+                videos.update()
+                .where(videos.c.id == video_id)
+                .values(
                     status=VideoStatus.FAILED,
                     error_message=f"Attempt {job['attempt_number']} failed: {str(e)[:400]}",
                 )
@@ -1596,7 +1625,9 @@ async def process_video_resumable(video_id: int, video_slug: str):
             # Final failure - mark job as completed (finished, even though failed)
             await mark_job_failed(job_id, str(e), final=True)
             await database.execute(
-                videos.update().where(videos.c.id == video_id).values(
+                videos.update()
+                .where(videos.c.id == video_id)
+                .values(
                     status=VideoStatus.FAILED,
                     error_message=str(e)[:500],
                 )
@@ -1614,17 +1645,15 @@ async def check_stale_jobs():
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
-            transcoding_jobs.c.completed_at.is_(None) &
-            transcoding_jobs.c.last_checkpoint.isnot(None) &
-            (transcoding_jobs.c.last_checkpoint < stale_threshold) &
-            (transcoding_jobs.c.worker_id != WORKER_ID)  # Not our own jobs
+            transcoding_jobs.c.completed_at.is_(None)
+            & transcoding_jobs.c.last_checkpoint.isnot(None)
+            & (transcoding_jobs.c.last_checkpoint < stale_threshold)
+            & (transcoding_jobs.c.worker_id != WORKER_ID)  # Not our own jobs
         )
     )
 
     for job in stale_jobs:
-        video = await database.fetch_one(
-            videos.select().where(videos.c.id == job["video_id"])
-        )
+        video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
 
         if not video:
             continue
@@ -1634,19 +1663,16 @@ async def check_stale_jobs():
             async with database.transaction():
                 await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)", final=True)
                 await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(
-                        status=VideoStatus.FAILED,
-                        error_message="Max retry attempts exceeded"
-                    )
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(status=VideoStatus.FAILED, error_message="Max retry attempts exceeded")
                 )
         else:
             print(f"Found stale job for '{video['slug']}', resetting for retry")
             async with database.transaction():
                 await reset_job_for_retry(job["id"])
                 await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(
-                        status=VideoStatus.PENDING
-                    )
+                    videos.update().where(videos.c.id == job["video_id"]).values(status=VideoStatus.PENDING)
                 )
 
 
@@ -1716,7 +1742,10 @@ async def worker_loop():
                     print(f"Failed to process: {video['slug']}")
 
             # Periodic stale job check
-            if not shutdown_requested and (datetime.now(timezone.utc) - last_stale_check).total_seconds() > stale_check_interval:
+            if (
+                not shutdown_requested
+                and (datetime.now(timezone.utc) - last_stale_check).total_seconds() > stale_check_interval
+            ):
                 await check_stale_jobs()
                 last_stale_check = datetime.now(timezone.utc)
 
@@ -1725,10 +1754,7 @@ async def worker_loop():
                 if use_event_driven:
                     # Event-driven: wait for filesystem event OR fallback timeout
                     try:
-                        await asyncio.wait_for(
-                            new_upload_event.wait(),
-                            timeout=WORKER_FALLBACK_POLL_INTERVAL
-                        )
+                        await asyncio.wait_for(new_upload_event.wait(), timeout=WORKER_FALLBACK_POLL_INTERVAL)
                         # Event was set - new file detected
                         new_upload_event.clear()
                     except asyncio.TimeoutError:
@@ -1751,8 +1777,7 @@ async def worker_loop():
         try:
             # Find incomplete jobs for this worker
             jobs_query = transcoding_jobs.select().where(
-                (transcoding_jobs.c.worker_id == WORKER_ID) &
-                (transcoding_jobs.c.completed_at.is_(None))
+                (transcoding_jobs.c.worker_id == WORKER_ID) & (transcoding_jobs.c.completed_at.is_(None))
             )
             jobs = await database.fetch_all(jobs_query)
 
@@ -1762,26 +1787,17 @@ async def worker_loop():
                 job_id = job["id"]
 
                 # Reset video status to pending (only if still processing)
-                video = await database.fetch_one(
-                    videos.select().where(videos.c.id == video_id)
-                )
+                video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
                 if video and video["status"] == VideoStatus.PROCESSING:
                     await database.execute(
-                        videos.update()
-                        .where(videos.c.id == video_id)
-                        .values(status=VideoStatus.PENDING)
+                        videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PENDING)
                     )
 
                 # Reset job status so it can be picked up again
                 await database.execute(
                     transcoding_jobs.update()
                     .where(transcoding_jobs.c.id == job_id)
-                    .values(
-                        status="pending",
-                        started_at=None,
-                        current_step=None,
-                        worker_id=None
-                    )
+                    .values(status="pending", started_at=None, current_step=None, worker_id=None)
                 )
 
                 # Reset quality_progress records that were in_progress

@@ -1,20 +1,34 @@
 """
 Tests for Pydantic schema validation.
 """
-import pytest
+
 from datetime import datetime, timezone
+
+import pytest
 from pydantic import ValidationError
 
 from api.schemas import (
-    CategoryCreate, CategoryResponse,
-    VideoCreate, VideoResponse, VideoListResponse, VideoQualityResponse,
-    PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd,
-    AnalyticsOverview, VideoAnalyticsSummary,
-    QualityBreakdown, DailyViews,
-    TrendDataPoint, TrendsResponse,
-    QualityProgressResponse, TranscodingProgressResponse,
-    TranscriptionResponse, TranscriptionTrigger, TranscriptionUpdate,
     WHISPER_LANGUAGES,
+    AnalyticsOverview,
+    CategoryCreate,
+    CategoryResponse,
+    DailyViews,
+    PlaybackEnd,
+    PlaybackHeartbeat,
+    PlaybackSessionCreate,
+    QualityBreakdown,
+    QualityProgressResponse,
+    TranscodingProgressResponse,
+    TranscriptionResponse,
+    TranscriptionTrigger,
+    TranscriptionUpdate,
+    TrendDataPoint,
+    TrendsResponse,
+    VideoAnalyticsSummary,
+    VideoCreate,
+    VideoListResponse,
+    VideoQualityResponse,
+    VideoResponse,
 )
 
 

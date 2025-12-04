@@ -1,11 +1,21 @@
 """
 Tests for the admin API endpoints.
 """
-import pytest
+
 from datetime import datetime, timezone
 
-from api.database import videos, categories, video_qualities, playback_sessions, transcriptions, transcoding_jobs, quality_progress
-from api.enums import VideoStatus, TranscriptionStatus
+import pytest
+
+from api.database import (
+    categories,
+    playback_sessions,
+    quality_progress,
+    transcoding_jobs,
+    transcriptions,
+    video_qualities,
+    videos,
+)
+from api.enums import TranscriptionStatus, VideoStatus
 
 
 class TestCategoryManagement:
@@ -26,9 +36,7 @@ class TestCategoryManagement:
 
         assert result > 0
 
-        category = await test_database.fetch_one(
-            categories.select().where(categories.c.id == result)
-        )
+        category = await test_database.fetch_one(categories.select().where(categories.c.id == result))
         assert category["name"] == "New Category"
         assert category["slug"] == "new-category"
 
@@ -49,13 +57,9 @@ class TestCategoryManagement:
         """Test deleting a category."""
         category_id = sample_category["id"]
 
-        await test_database.execute(
-            categories.delete().where(categories.c.id == category_id)
-        )
+        await test_database.execute(categories.delete().where(categories.c.id == category_id))
 
-        result = await test_database.fetch_one(
-            categories.select().where(categories.c.id == category_id)
-        )
+        result = await test_database.fetch_one(categories.select().where(categories.c.id == category_id))
         assert result is None
 
     @pytest.mark.asyncio
@@ -65,21 +69,13 @@ class TestCategoryManagement:
         video_id = sample_video["id"]
 
         # First unassign videos from category
-        await test_database.execute(
-            videos.update()
-            .where(videos.c.category_id == category_id)
-            .values(category_id=None)
-        )
+        await test_database.execute(videos.update().where(videos.c.category_id == category_id).values(category_id=None))
 
         # Then delete category
-        await test_database.execute(
-            categories.delete().where(categories.c.id == category_id)
-        )
+        await test_database.execute(categories.delete().where(categories.c.id == category_id))
 
         # Verify video still exists but without category
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video is not None
         assert video["category_id"] is None
 
@@ -103,9 +99,7 @@ class TestVideoManagement:
                 )
             )
 
-        result = await test_database.fetch_all(
-            videos.select().where(videos.c.deleted_at.is_(None))
-        )
+        result = await test_database.fetch_all(videos.select().where(videos.c.deleted_at.is_(None)))
         assert len(result) == 4
 
     @pytest.mark.asyncio
@@ -122,9 +116,7 @@ class TestVideoManagement:
             )
         )
 
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["title"] == "Updated Title"
         assert video["description"] == "Updated description"
 
@@ -142,15 +134,9 @@ class TestVideoManagement:
             )
         )
 
-        await test_database.execute(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(category_id=new_category_id)
-        )
+        await test_database.execute(videos.update().where(videos.c.id == video_id).values(category_id=new_category_id))
 
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["category_id"] == new_category_id
 
     @pytest.mark.asyncio
@@ -159,15 +145,9 @@ class TestVideoManagement:
         video_id = sample_video["id"]
         now = datetime.now(timezone.utc)
 
-        await test_database.execute(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(deleted_at=now)
-        )
+        await test_database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=now))
 
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["deleted_at"] is not None
 
     @pytest.mark.asyncio
@@ -177,21 +157,13 @@ class TestVideoManagement:
 
         # First soft-delete
         await test_database.execute(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(deleted_at=datetime.now(timezone.utc))
+            videos.update().where(videos.c.id == video_id).values(deleted_at=datetime.now(timezone.utc))
         )
 
         # Then restore
-        await test_database.execute(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(deleted_at=None)
-        )
+        await test_database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
 
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["deleted_at"] is None
 
     @pytest.mark.asyncio
@@ -200,25 +172,15 @@ class TestVideoManagement:
         video_id = sample_video_with_qualities["id"]
 
         # Delete related records first (respecting foreign keys)
-        await test_database.execute(
-            video_qualities.delete().where(video_qualities.c.video_id == video_id)
-        )
-        await test_database.execute(
-            playback_sessions.delete().where(playback_sessions.c.video_id == video_id)
-        )
-        await test_database.execute(
-            transcriptions.delete().where(transcriptions.c.video_id == video_id)
-        )
+        await test_database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
+        await test_database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
+        await test_database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
 
         # Delete the video
-        await test_database.execute(
-            videos.delete().where(videos.c.id == video_id)
-        )
+        await test_database.execute(videos.delete().where(videos.c.id == video_id))
 
         # Verify everything is gone
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video is None
 
         qualities = await test_database.fetch_all(
@@ -255,9 +217,7 @@ class TestVideoRetry:
             )
         )
 
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["status"] == VideoStatus.PENDING
         assert video["error_message"] is None
 
@@ -277,9 +237,7 @@ class TestTranscriptionManagement:
             )
         )
 
-        result = await test_database.fetch_one(
-            transcriptions.select().where(transcriptions.c.video_id == video_id)
-        )
+        result = await test_database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
         assert result["status"] == TranscriptionStatus.PENDING
 
     @pytest.mark.asyncio
@@ -307,9 +265,7 @@ class TestTranscriptionManagement:
             )
         )
 
-        result = await test_database.fetch_one(
-            transcriptions.select().where(transcriptions.c.video_id == video_id)
-        )
+        result = await test_database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
         assert result["transcript_text"] == new_text
         assert result["word_count"] == 6
 
@@ -325,13 +281,9 @@ class TestTranscriptionManagement:
             )
         )
 
-        await test_database.execute(
-            transcriptions.delete().where(transcriptions.c.video_id == video_id)
-        )
+        await test_database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
 
-        result = await test_database.fetch_one(
-            transcriptions.select().where(transcriptions.c.video_id == video_id)
-        )
+        result = await test_database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
         assert result is None
 
 
@@ -343,9 +295,7 @@ class TestAnalyticsAdmin:
         """Test counting total views."""
         import sqlalchemy as sa
 
-        count = await test_database.fetch_val(
-            sa.select(sa.func.count()).select_from(playback_sessions)
-        )
+        count = await test_database.fetch_val(sa.select(sa.func.count()).select_from(playback_sessions))
         assert count == 1
 
     @pytest.mark.asyncio
@@ -354,16 +304,16 @@ class TestAnalyticsAdmin:
         import sqlalchemy as sa
 
         total = await test_database.fetch_val(
-            sa.select(sa.func.sum(playback_sessions.c.duration_watched))
-            .select_from(playback_sessions)
+            sa.select(sa.func.sum(playback_sessions.c.duration_watched)).select_from(playback_sessions)
         )
         assert total == 60.0  # From sample_playback_session fixture
 
     @pytest.mark.asyncio
     async def test_count_completed_sessions(self, test_database, sample_video):
         """Test counting completed sessions."""
-        import sqlalchemy as sa
         import uuid
+
+        import sqlalchemy as sa
 
         # Create a completed session
         await test_database.execute(
@@ -376,9 +326,7 @@ class TestAnalyticsAdmin:
         )
 
         count = await test_database.fetch_val(
-            sa.select(sa.func.count())
-            .select_from(playback_sessions)
-            .where(playback_sessions.c.completed.is_(True))
+            sa.select(sa.func.count()).select_from(playback_sessions).where(playback_sessions.c.completed.is_(True))
         )
         assert count == 1
 
@@ -405,9 +353,7 @@ class TestTranscodingJobs:
             )
         )
 
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["video_id"] == video_id
         assert job["current_step"] == "probe"
 
@@ -435,9 +381,7 @@ class TestTranscodingJobs:
             )
         )
 
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["progress_percent"] == 50
 
     @pytest.mark.asyncio
@@ -466,9 +410,7 @@ class TestTranscodingJobs:
                 )
             )
 
-        result = await test_database.fetch_all(
-            quality_progress.select().where(quality_progress.c.job_id == job_id)
-        )
+        result = await test_database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job_id))
         assert len(result) == 3
 
 
@@ -502,9 +444,7 @@ class TestArchivedVideos:
             )
         )
 
-        result = await test_database.fetch_all(
-            videos.select().where(videos.c.deleted_at.isnot(None))
-        )
+        result = await test_database.fetch_all(videos.select().where(videos.c.deleted_at.isnot(None)))
         assert len(result) == 3
 
     @pytest.mark.asyncio
@@ -535,10 +475,7 @@ class TestArchivedVideos:
 
         # Public query excludes deleted
         result = await test_database.fetch_all(
-            videos.select().where(
-                (videos.c.status == VideoStatus.READY) &
-                (videos.c.deleted_at.is_(None))
-            )
+            videos.select().where((videos.c.status == VideoStatus.READY) & (videos.c.deleted_at.is_(None)))
         )
         assert len(result) == 1
         assert result[0]["slug"] == "active"

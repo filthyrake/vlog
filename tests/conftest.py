@@ -2,9 +2,9 @@
 Pytest fixtures for VLog tests.
 Provides test database, test clients, and sample data.
 """
+
 import asyncio
 import os
-import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,10 +20,13 @@ os.environ["VLOG_TEST_MODE"] = "1"
 
 # Import config and override paths for testing
 from api.database import (  # noqa: E402
-    metadata, categories, videos, video_qualities, playback_sessions
+    categories,
+    metadata,
+    playback_sessions,
+    video_qualities,
+    videos,
 )
 from api.enums import VideoStatus  # noqa: E402
-
 
 # Test database path
 TEST_DB_PATH = Path(_test_temp_dir) / "test_vlog.db"
@@ -196,6 +199,7 @@ async def sample_pending_video(test_database: Database, sample_category: dict) -
 async def sample_playback_session(test_database: Database, sample_video: dict) -> dict:
     """Create a sample playback session for testing."""
     import uuid
+
     now = datetime.now(timezone.utc)
     session_token = str(uuid.uuid4())
 
@@ -224,6 +228,7 @@ async def sample_playback_session(test_database: Database, sample_video: dict) -
 # Test Client Fixtures (require patching config)
 # ============================================================================
 
+
 @pytest.fixture(scope="function")
 def public_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
     """
@@ -234,6 +239,7 @@ def public_client(test_database: Database, test_storage: dict, test_db_path: Pat
 
     # Patch config before importing app
     import config
+
     monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
     monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
@@ -241,6 +247,7 @@ def public_client(test_database: Database, test_storage: dict, test_db_path: Pat
 
     # Patch database in api.database
     import api.database
+
     monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
     monkeypatch.setattr(api.database, "database", test_database)
 
@@ -262,6 +269,7 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
 
     # Patch config before importing app
     import config
+
     monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
     monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
@@ -269,6 +277,7 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
 
     # Patch database in api.database
     import api.database
+
     monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
     monkeypatch.setattr(api.database, "database", test_database)
 
