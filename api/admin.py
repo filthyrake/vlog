@@ -64,6 +64,7 @@ from config import (
     RATE_LIMIT_ADMIN_UPLOAD,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
+    TRUSTED_PROXIES,
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
@@ -72,18 +73,23 @@ from config import (
 
 def _get_real_ip(request: Request) -> str:
     """
-    Get the real client IP address, respecting X-Forwarded-For header.
-    Handles reverse proxy setups (nginx, traefik, etc).
-    """
-    # Check for forwarded headers (common proxy setups)
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
-        # The first one is the original client
-        return forwarded.split(",")[0].strip()
+    Get the real client IP address, respecting X-Forwarded-For header only from trusted proxies.
 
-    # Fall back to direct client IP
-    return get_remote_address(request)
+    Security: X-Forwarded-For is only trusted when the direct client IP is in TRUSTED_PROXIES.
+    This prevents attackers from spoofing the header to bypass rate limiting.
+    Configure VLOG_TRUSTED_PROXIES with your proxy IPs (e.g., "127.0.0.1,10.0.0.1").
+    """
+    client_ip = get_remote_address(request)
+
+    # Only trust X-Forwarded-For if request came from a trusted proxy
+    if TRUSTED_PROXIES and client_ip in TRUSTED_PROXIES:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
+            # The first one is the original client
+            return forwarded.split(",")[0].strip()
+
+    return client_ip
 
 
 # Initialize rate limiter for admin API
@@ -594,28 +600,42 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
 
     else:
         # SOFT DELETE - move to archive
-        video_dir = VIDEOS_DIR / row["slug"]
-        archive_video_dir = ARCHIVE_DIR / row["slug"]
-
-        # Move video files to archive
-        if video_dir.exists():
-            # Ensure archive parent exists
-            archive_video_dir.parent.mkdir(parents=True, exist_ok=True)
-            # Move the directory
-            shutil.move(str(video_dir), str(archive_video_dir))
-
-        # Move source file to archive if still in uploads
-        for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
-            upload_file = UPLOADS_DIR / f"{video_id}{ext}"
-            if upload_file.exists():
-                archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
-                archive_upload.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(upload_file), str(archive_upload))
-
-        # Mark as deleted in database
+        # Update database FIRST to avoid inconsistent state if file ops fail
         await database.execute(
             videos.update().where(videos.c.id == video_id).values(deleted_at=datetime.now(timezone.utc))
         )
+
+        video_dir = VIDEOS_DIR / row["slug"]
+        archive_video_dir = ARCHIVE_DIR / row["slug"]
+        moved_files = []  # Track what we moved for rollback
+
+        try:
+            # Move video files to archive
+            if video_dir.exists():
+                archive_video_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(video_dir), str(archive_video_dir))
+                moved_files.append(("dir", archive_video_dir, video_dir))
+
+            # Move source file to archive if still in uploads
+            for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+                upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+                if upload_file.exists():
+                    archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
+                    archive_upload.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(upload_file), str(archive_upload))
+                    moved_files.append(("file", archive_upload, upload_file))
+        except Exception as e:
+            # Rollback: restore files that were moved
+            for item_type, src, dst in reversed(moved_files):
+                try:
+                    shutil.move(str(src), str(dst))
+                except Exception:
+                    pass  # Best effort rollback
+            # Rollback database change
+            await database.execute(
+                videos.update().where(videos.c.id == video_id).values(deleted_at=None)
+            )
+            raise HTTPException(status_code=500, detail=f"Failed to archive files: {e}")
 
         return {"status": "ok", "message": "Video moved to archive"}
 
@@ -631,22 +651,41 @@ async def restore_video(request: Request, video_id: int):
     if not row["deleted_at"]:
         raise HTTPException(status_code=400, detail="Video is not deleted")
 
-    # Move files back from archive
+    # Store original deleted_at for potential rollback
+    original_deleted_at = row["deleted_at"]
+
+    # Update database FIRST to avoid inconsistent state if file ops fail
+    await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
+
     archive_video_dir = ARCHIVE_DIR / row["slug"]
     video_dir = VIDEOS_DIR / row["slug"]
+    moved_files = []  # Track what we moved for rollback
 
-    if archive_video_dir.exists():
-        shutil.move(str(archive_video_dir), str(video_dir))
+    try:
+        # Move video files back from archive
+        if archive_video_dir.exists():
+            shutil.move(str(archive_video_dir), str(video_dir))
+            moved_files.append(("dir", video_dir, archive_video_dir))
 
-    # Move source file back if archived
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
-        archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
-        if archive_upload.exists():
-            upload_file = UPLOADS_DIR / f"{video_id}{ext}"
-            shutil.move(str(archive_upload), str(upload_file))
-
-    # Clear deleted_at
-    await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
+        # Move source file back if archived
+        for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+            archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
+            if archive_upload.exists():
+                upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+                shutil.move(str(archive_upload), str(upload_file))
+                moved_files.append(("file", upload_file, archive_upload))
+    except Exception as e:
+        # Rollback: restore files that were moved
+        for item_type, src, dst in reversed(moved_files):
+            try:
+                shutil.move(str(src), str(dst))
+            except Exception:
+                pass  # Best effort rollback
+        # Rollback database change
+        await database.execute(
+            videos.update().where(videos.c.id == video_id).values(deleted_at=original_deleted_at)
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to restore files: {e}")
 
     return {"status": "ok", "message": "Video restored from archive"}
 
