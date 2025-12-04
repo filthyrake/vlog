@@ -13,10 +13,11 @@ def extract_env_vars_from_config():
     content = config_path.read_text()
     
     # Find all os.getenv("VLOG_...") and os.environ.get("VLOG_...") calls
-    pattern = r'os\.(getenv|environ\.get)\(["\']VLOG_([A-Z_]+)["\']'
+    # Explicitly match both quote types
+    pattern = r'os\.(?:getenv|environ\.get)\(["\']VLOG_([A-Z_]+)["\']'
     matches = re.findall(pattern, content)
     
-    return set(f"VLOG_{var}" for _, var in matches)
+    return set(f"VLOG_{var}" for var in matches)
 
 
 def extract_env_vars_from_cli():
@@ -37,7 +38,8 @@ def extract_env_vars_from_example():
     content = example_path.read_text()
     
     # Find all VLOG_ variable declarations (both commented and uncommented)
-    pattern = r'^#?\s*VLOG_([A-Z_]+)='
+    # Pattern matches actual variable assignments, not comments containing examples
+    pattern = r'^\s*#?\s*VLOG_([A-Z_]+)\s*='
     matches = re.findall(pattern, content, re.MULTILINE)
     
     return set(f"VLOG_{var}" for var in matches)
@@ -73,7 +75,8 @@ def test_env_example_no_undefined_vars():
     # Check for extra variables (might be deprecated or test-only)
     extra_vars = example_vars - all_expected_vars
     
-    # VLOG_TEST_MODE is used directly via os.environ.get, not os.getenv, so it's expected
+    # VLOG_TEST_MODE is used directly via os.environ.get, not os.getenv,
+    # so it's not caught by the pattern but is still a valid configuration option
     allowed_extra_vars = {"VLOG_TEST_MODE"}
     unexpected_extra_vars = extra_vars - allowed_extra_vars
     
