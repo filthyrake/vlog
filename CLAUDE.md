@@ -39,8 +39,14 @@ vlog list
 vlog categories --create "Name"
 vlog download "https://youtube.com/..." -c "Category"
 
-# Database initialization
-python api/database.py
+# Database migrations (using Alembic)
+python api/database.py              # Apply all pending migrations
+python api/database.py stamp 001    # Mark existing DB as migrated (for upgrades)
+alembic current                     # Show current migration revision
+alembic upgrade head                # Apply all migrations
+alembic downgrade -1                # Rollback one migration
+alembic revision -m "description"   # Create new migration manually
+alembic revision --autogenerate -m "description"  # Auto-generate from model changes
 
 # Testing
 VLOG_TEST_MODE=1 pytest                    # Run all tests
@@ -72,6 +78,10 @@ web/
 
 cli/
 └── main.py       # Argparse CLI, talks to admin API via httpx
+
+migrations/
+├── env.py        # Alembic environment config (loads from config.py)
+└── versions/     # Migration scripts (001_initial_schema.py, etc.)
 ```
 
 ### Key Flows
@@ -90,6 +100,8 @@ cli/
 
 **Rate limiting**: Configurable per-endpoint rate limits using slowapi. Supports memory or Redis storage.
 
+**Database migrations**: Schema changes are managed by Alembic. New databases get all tables via `python api/database.py`. Existing databases being upgraded should first run `python api/database.py stamp 001` to mark current state, then future migrations apply normally.
+
 ### Database Schema
 
 Core tables: `categories`, `videos` (with `deleted_at` for soft-delete), `video_qualities`
@@ -100,6 +112,7 @@ Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
 ## Important Configuration
 
 - `pyproject.toml`: Package configuration with dependencies and CLI entry point
+- `alembic.ini`: Database migration config (URL set dynamically from config.py)
 - `config.py`: Central config for paths, ports, quality presets, worker settings, transcription options
   - All settings support environment variable overrides (prefix: `VLOG_`)
   - Rate limiting: `VLOG_RATE_LIMIT_ENABLED`, `VLOG_RATE_LIMIT_PUBLIC_DEFAULT`, etc.

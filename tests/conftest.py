@@ -318,6 +318,8 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
 
     monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
     monkeypatch.setattr(api.database, "database", test_database)
+    # Patch create_tables to no-op since test_database fixture already created tables
+    monkeypatch.setattr(api.database, "create_tables", lambda: None)
 
     # Force reload the admin module to pick up the patched database
     if "api.admin" in sys.modules:
@@ -328,6 +330,8 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
     from api.admin import app
 
     monkeypatch.setattr(api.admin, "database", test_database)
+    # Also patch create_tables in admin module (after reload)
+    monkeypatch.setattr(api.admin, "create_tables", lambda: None)
 
     # Create test client without lifespan
     with TestClient(app, raise_server_exceptions=True) as client:
