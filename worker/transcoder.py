@@ -648,10 +648,8 @@ async def transcode_quality_with_progress(
         return False, f"Transcoding timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
 
     if process.returncode != 0:
-        stderr = await process.stderr.read()
-        error_msg = stderr.decode("utf-8", errors="ignore")
-        print(f"  ERROR: Failed to transcode {name}")
-        print(f"  Full error output: {error_msg}")
+        error_msg = f"FFmpeg exited with code {process.returncode}"
+        print(f"  ERROR: Failed to transcode {name}: {error_msg}")
         return False, error_msg
 
     return True, None
@@ -778,9 +776,8 @@ async def create_original_quality(
         return False, f"Remux timed out after {elapsed:.0f} seconds", None
 
     if process.returncode != 0:
-        stderr = await process.stderr.read()
-        error_msg = stderr.decode("utf-8", errors="ignore")
-        print("  ERROR: Failed to create original quality")
+        error_msg = f"FFmpeg remux exited with code {process.returncode}"
+        print(f"  ERROR: Failed to create original quality: {error_msg}")
         return False, error_msg, None
 
     # Get the actual bitrate from the source for master playlist
