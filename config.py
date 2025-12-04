@@ -1,13 +1,13 @@
 import os
 from pathlib import Path
 
-# Paths
+# Paths - configurable via environment variables
 BASE_DIR = Path(__file__).parent
-NAS_STORAGE = Path("/mnt/nas/vlog-storage")
-VIDEOS_DIR = NAS_STORAGE / "videos"
-UPLOADS_DIR = NAS_STORAGE / "uploads"
-ARCHIVE_DIR = NAS_STORAGE / "archive"  # Soft-deleted videos go here
-DATABASE_PATH = BASE_DIR / "vlog.db"  # Keep DB local for performance
+NAS_STORAGE = Path(os.getenv("VLOG_STORAGE_PATH", "/mnt/nas/vlog-storage"))
+VIDEOS_DIR = NAS_STORAGE / os.getenv("VLOG_VIDEOS_SUBDIR", "videos")
+UPLOADS_DIR = NAS_STORAGE / os.getenv("VLOG_UPLOADS_SUBDIR", "uploads")
+ARCHIVE_DIR = NAS_STORAGE / os.getenv("VLOG_ARCHIVE_SUBDIR", "archive")
+DATABASE_PATH = Path(os.getenv("VLOG_DATABASE_PATH", str(BASE_DIR / "vlog.db")))
 
 # Ensure directories exist (skip in test/CI environments)
 if not os.environ.get("VLOG_TEST_MODE"):
@@ -19,11 +19,11 @@ if not os.environ.get("VLOG_TEST_MODE"):
         pass  # CI environment without NAS access
 
 # Soft-delete settings
-ARCHIVE_RETENTION_DAYS = 30  # Days to keep archived videos before permanent deletion
+ARCHIVE_RETENTION_DAYS = int(os.getenv("VLOG_ARCHIVE_RETENTION_DAYS", "30"))
 
 # Server ports
-PUBLIC_PORT = 9000
-ADMIN_PORT = 9001
+PUBLIC_PORT = int(os.getenv("VLOG_PUBLIC_PORT", "9000"))
+ADMIN_PORT = int(os.getenv("VLOG_ADMIN_PORT", "9001"))
 
 # Transcoding quality presets (YouTube-style)
 QUALITY_PRESETS = [
@@ -36,31 +36,31 @@ QUALITY_PRESETS = [
 ]
 
 # HLS settings
-HLS_SEGMENT_DURATION = 6  # seconds
+HLS_SEGMENT_DURATION = int(os.getenv("VLOG_HLS_SEGMENT_DURATION", "6"))
 
 # Checkpoint/resumable transcoding settings
-CHECKPOINT_INTERVAL = 30          # seconds between checkpoint updates
-JOB_STALE_TIMEOUT = 1800          # seconds (30 min) before job considered stale
-MAX_RETRY_ATTEMPTS = 3
-RETRY_BACKOFF_BASE = 60           # seconds, doubles each retry
-CLEANUP_PARTIAL_ON_FAILURE = True
-KEEP_COMPLETED_QUALITIES = True   # on retry, don't re-transcode completed qualities
+CHECKPOINT_INTERVAL = int(os.getenv("VLOG_CHECKPOINT_INTERVAL", "30"))
+JOB_STALE_TIMEOUT = int(os.getenv("VLOG_JOB_STALE_TIMEOUT", "1800"))
+MAX_RETRY_ATTEMPTS = int(os.getenv("VLOG_MAX_RETRY_ATTEMPTS", "3"))
+RETRY_BACKOFF_BASE = int(os.getenv("VLOG_RETRY_BACKOFF_BASE", "60"))
+CLEANUP_PARTIAL_ON_FAILURE = os.getenv("VLOG_CLEANUP_PARTIAL_ON_FAILURE", "true").lower() == "true"
+KEEP_COMPLETED_QUALITIES = os.getenv("VLOG_KEEP_COMPLETED_QUALITIES", "true").lower() == "true"
 
 # FFmpeg timeout settings (prevents stuck transcoding jobs)
-FFMPEG_TIMEOUT_MULTIPLIER = 3     # timeout = video_duration * multiplier
-FFMPEG_TIMEOUT_MINIMUM = 300      # minimum timeout in seconds (5 minutes)
-FFMPEG_TIMEOUT_MAXIMUM = 3600     # maximum timeout in seconds (1 hour)
+FFMPEG_TIMEOUT_MULTIPLIER = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MULTIPLIER", "3"))
+FFMPEG_TIMEOUT_MINIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MINIMUM", "300"))
+FFMPEG_TIMEOUT_MAXIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MAXIMUM", "3600"))
 
 # Transcription settings
-WHISPER_MODEL = "medium"           # tiny, base, small, medium, large-v3
-TRANSCRIPTION_ENABLED = True       # Enable/disable auto-transcription
-TRANSCRIPTION_LANGUAGE = None      # None for auto-detect, or "en", "es", etc.
-TRANSCRIPTION_ON_UPLOAD = True     # Auto-transcribe new uploads
-TRANSCRIPTION_COMPUTE_TYPE = "int8"  # float16, int8, int8_float16 (for faster-whisper)
-TRANSCRIPTION_TIMEOUT = 3600       # Timeout for Whisper transcription (seconds, default 1 hour)
-AUDIO_EXTRACTION_TIMEOUT = 300     # Timeout for audio extraction with ffmpeg (seconds, default 5 minutes)
+WHISPER_MODEL = os.getenv("VLOG_WHISPER_MODEL", "medium")
+TRANSCRIPTION_ENABLED = os.getenv("VLOG_TRANSCRIPTION_ENABLED", "true").lower() == "true"
+TRANSCRIPTION_LANGUAGE = os.getenv("VLOG_TRANSCRIPTION_LANGUAGE", None) or None
+TRANSCRIPTION_ON_UPLOAD = os.getenv("VLOG_TRANSCRIPTION_ON_UPLOAD", "true").lower() == "true"
+TRANSCRIPTION_COMPUTE_TYPE = os.getenv("VLOG_TRANSCRIPTION_COMPUTE_TYPE", "int8")
+TRANSCRIPTION_TIMEOUT = int(os.getenv("VLOG_TRANSCRIPTION_TIMEOUT", "3600"))
+AUDIO_EXTRACTION_TIMEOUT = int(os.getenv("VLOG_AUDIO_EXTRACTION_TIMEOUT", "300"))
 
 # Worker settings (event-driven processing)
-WORKER_USE_FILESYSTEM_WATCHER = True  # Use inotify-based watching instead of polling
-WORKER_FALLBACK_POLL_INTERVAL = 60    # Fallback poll interval in seconds (safety net)
-WORKER_DEBOUNCE_DELAY = 1.0           # Seconds to wait after file event before processing
+WORKER_USE_FILESYSTEM_WATCHER = os.getenv("VLOG_WORKER_USE_FILESYSTEM_WATCHER", "true").lower() == "true"
+WORKER_FALLBACK_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_FALLBACK_POLL_INTERVAL", "60"))
+WORKER_DEBOUNCE_DELAY = float(os.getenv("VLOG_WORKER_DEBOUNCE_DELAY", "1.0"))
