@@ -1131,8 +1131,8 @@ async def analytics_videos(
         # Set Cache-Control header for client-side caching
         response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
         # Reconstruct response models from cached data
-        videos = [VideoAnalyticsSummary(**v) for v in cached_data["videos"]]
-        return VideoAnalyticsListResponse(videos=videos, total_count=cached_data["total_count"])
+        cached_videos = [VideoAnalyticsSummary(**v) for v in cached_data["videos"]]
+        return VideoAnalyticsListResponse(videos=cached_videos, total_count=cached_data["total_count"])
 
     # Cache miss - compute fresh data
     now = datetime.now(timezone.utc)
@@ -1180,7 +1180,7 @@ async def analytics_videos(
     if period_filter:
         params["period_filter"] = period_filter.isoformat()
 
-    rows = await database.fetch_all(sa.text(base_query), params)
+    rows = await database.fetch_all(sa.text(base_query).bindparams(**params))
 
     # Get total count
     count_result = await database.fetch_val(
@@ -1264,7 +1264,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         FROM playback_sessions
         WHERE video_id = :video_id
     """
-    stats = await database.fetch_one(sa.text(stats_query), {"video_id": video_id, "duration": video["duration"] or 1})
+    stats = await database.fetch_one(sa.text(stats_query).bindparams(video_id=video_id, duration=video["duration"] or 1))
 
     # Quality breakdown
     quality_query = """
@@ -1276,7 +1276,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         GROUP BY quality_used
         ORDER BY percentage DESC
     """
-    quality_rows = await database.fetch_all(sa.text(quality_query), {"video_id": video_id})
+    quality_rows = await database.fetch_all(sa.text(quality_query).bindparams(video_id=video_id))
 
     quality_breakdown = (
         [QualityBreakdown(quality=q["quality"], percentage=round(q["percentage"], 2)) for q in quality_rows]
@@ -1295,7 +1295,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         GROUP BY DATE(started_at)
         ORDER BY date
     """
-    views_rows = await database.fetch_all(sa.text(views_query), {"video_id": video_id})
+    views_rows = await database.fetch_all(sa.text(views_query).bindparams(video_id=video_id))
 
     views_over_time = [DailyViews(date=str(v["date"]), views=v["views"]) for v in views_rows] if views_rows else []
 
@@ -1367,7 +1367,7 @@ async def analytics_trends(
     if video_id:
         params["video_id"] = video_id
 
-    rows = await database.fetch_all(sa.text(base_query), params)
+    rows = await database.fetch_all(sa.text(base_query).bindparams(**params))
 
     data = [
         TrendDataPoint(
