@@ -189,16 +189,66 @@ transcriptions = sa.Table(
 
 
 def create_tables():
-    """Create all tables in the database with optimized SQLite settings."""
-    engine = sa.create_engine(DATABASE_URL)
-    # Configure pragmas on each connection
-    from sqlalchemy import event
+    """
+    Create/update database schema using Alembic migrations.
 
-    event.listen(engine, "connect", set_sqlite_pragmas_sync)
-    metadata.create_all(engine)
-    engine.dispose()
+    This function runs any pending migrations to bring the database up to date.
+    For new databases, this creates all tables. For existing databases, it
+    applies any new schema changes.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    # Get the alembic config from the project root
+    from config import BASE_DIR
+
+    alembic_cfg = Config(str(BASE_DIR / "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", str(BASE_DIR / "migrations"))
+    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+
+    # Run migrations to head
+    command.upgrade(alembic_cfg, "head")
+
+
+def stamp_database(revision: str = "head"):
+    """
+    Stamp an existing database with a migration revision without running migrations.
+
+    Use this for existing databases that already have the schema but weren't
+    using Alembic migrations yet. Example: stamp_database("001")
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    from config import BASE_DIR
+
+    alembic_cfg = Config(str(BASE_DIR / "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", str(BASE_DIR / "migrations"))
+    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+
+    command.stamp(alembic_cfg, revision)
+
+
+def get_current_revision():
+    """Get the current migration revision of the database."""
+    import sqlalchemy as sa
+    from alembic.runtime.migration import MigrationContext
+
+    engine = sa.create_engine(DATABASE_URL)
+    with engine.connect() as conn:
+        context = MigrationContext.configure(conn)
+        return context.get_current_revision()
 
 
 if __name__ == "__main__":
-    create_tables()
-    print("Database tables created successfully!")
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "stamp":
+        # Stamp existing database: python api/database.py stamp [revision]
+        revision = sys.argv[2] if len(sys.argv) > 2 else "head"
+        stamp_database(revision)
+        print(f"Database stamped at revision: {revision}")
+    else:
+        # Run migrations
+        create_tables()
+        print("Database migrations applied successfully!")
