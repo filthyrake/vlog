@@ -15,6 +15,9 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from slugify import slugify
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -57,10 +60,49 @@ from config import (
     ADMIN_PORT,
     ARCHIVE_DIR,
     MAX_UPLOAD_SIZE,
+    RATE_LIMIT_ADMIN_DEFAULT,
+    RATE_LIMIT_ADMIN_UPLOAD,
+    RATE_LIMIT_ENABLED,
+    RATE_LIMIT_STORAGE_URL,
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
 )
+
+
+def _get_real_ip(request: Request) -> str:
+    """
+    Get the real client IP address, respecting X-Forwarded-For header.
+    Handles reverse proxy setups (nginx, traefik, etc).
+    """
+    # Check for forwarded headers (common proxy setups)
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
+        # The first one is the original client
+        return forwarded.split(",")[0].strip()
+
+    # Fall back to direct client IP
+    return get_remote_address(request)
+
+
+# Initialize rate limiter for admin API
+limiter = Limiter(
+    key_func=_get_real_ip,
+    storage_uri=RATE_LIMIT_STORAGE_URL if RATE_LIMIT_ENABLED else None,
+    enabled=RATE_LIMIT_ENABLED,
+)
+
+
+def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Handle rate limit exceeded errors with a proper JSON response."""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Rate limit exceeded",
+            "error": str(exc.detail),
+        },
+    )
 
 # Allowed video file extensions
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
@@ -117,6 +159,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="VLog Admin", description="Video management API", lifespan=lifespan)
+
+# Register rate limiter with the app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -197,7 +243,8 @@ async def health_check():
 
 
 @app.get("/api/categories")
-async def list_categories() -> List[CategoryResponse]:
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_categories(request: Request) -> List[CategoryResponse]:
     """List all categories."""
     query = sa.text("""
         SELECT c.*, COUNT(v.id) as video_count
@@ -222,7 +269,8 @@ async def list_categories() -> List[CategoryResponse]:
 
 
 @app.post("/api/categories")
-async def create_category(data: CategoryCreate) -> CategoryResponse:
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_category(request: Request, data: CategoryCreate) -> CategoryResponse:
     """Create a new category."""
     slug = slugify(data.name)
 
@@ -250,7 +298,8 @@ async def create_category(data: CategoryCreate) -> CategoryResponse:
 
 
 @app.delete("/api/categories/{category_id}")
-async def delete_category(category_id: int):
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_category(request: Request, category_id: int):
     """Delete a category."""
     # Verify category exists
     existing = await database.fetch_one(categories.select().where(categories.c.id == category_id))
@@ -270,7 +319,9 @@ async def delete_category(category_id: int):
 
 
 @app.get("/api/videos")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_all_videos(
+    request: Request,
     status: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=500, description="Max items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
@@ -320,7 +371,8 @@ async def list_all_videos(
 
 
 @app.get("/api/videos/{video_id}")
-async def get_video(video_id: int) -> VideoResponse:
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_video(request: Request, video_id: int) -> VideoResponse:
     """Get video details."""
     query = (
         sa.select(
@@ -368,7 +420,9 @@ async def get_video(video_id: int) -> VideoResponse:
 
 
 @app.post("/api/videos")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
 async def upload_video(
+    request: Request,
     file: UploadFile = File(...),
     title: str = Form(...),
     description: str = Form(""),
@@ -443,7 +497,9 @@ async def upload_video(
 
 
 @app.put("/api/videos/{video_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_video(
+    request: Request,
     video_id: int,
     title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
@@ -483,7 +539,8 @@ async def update_video(
 
 
 @app.delete("/api/videos/{video_id}")
-async def delete_video(video_id: int, permanent: bool = False):
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_video(request: Request, video_id: int, permanent: bool = False):
     """
     Soft-delete a video (moves to archive) or permanently delete if permanent=True.
 
@@ -564,7 +621,8 @@ async def delete_video(video_id: int, permanent: bool = False):
 
 
 @app.post("/api/videos/{video_id}/restore")
-async def restore_video(video_id: int):
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def restore_video(request: Request, video_id: int):
     """Restore a soft-deleted video from archive."""
     row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not row:
@@ -594,7 +652,8 @@ async def restore_video(video_id: int):
 
 
 @app.get("/api/videos/archived")
-async def list_archived_videos():
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_archived_videos(request: Request):
     """List all soft-deleted videos in archive."""
     query = videos.select().where(videos.c.deleted_at.is_not(None)).order_by(videos.c.deleted_at.desc())
     rows = await database.fetch_all(query)
@@ -614,7 +673,8 @@ async def list_archived_videos():
 
 
 @app.post("/api/videos/{video_id}/retry")
-async def retry_video(video_id: int):
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def retry_video(request: Request, video_id: int):
     """Retry processing a failed video."""
     row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not row:
@@ -647,7 +707,9 @@ async def retry_video(video_id: int):
 
 
 @app.post("/api/videos/{video_id}/re-upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
 async def re_upload_video(
+    request: Request,
     video_id: int,
     file: UploadFile = File(...),
 ):
@@ -744,7 +806,8 @@ async def re_upload_video(
 
 
 @app.get("/api/videos/{video_id}/progress")
-async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_video_progress(request: Request, video_id: int) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
 
@@ -805,7 +868,8 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
 
 
 @app.get("/api/videos/{video_id}/transcript")
-async def get_video_transcript(video_id: int) -> TranscriptionResponse:
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_video_transcript(request: Request, video_id: int) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
     # Get video
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
@@ -836,7 +900,8 @@ async def get_video_transcript(video_id: int) -> TranscriptionResponse:
 
 
 @app.post("/api/videos/{video_id}/transcribe")
-async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None):
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def trigger_transcription(request: Request, video_id: int, data: TranscriptionTrigger = None):
     """Manually trigger transcription for a video."""
     # Get video
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
@@ -884,7 +949,8 @@ async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None
 
 
 @app.put("/api/videos/{video_id}/transcript")
-async def update_transcript(video_id: int, data: TranscriptionUpdate):
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_transcript(request: Request, video_id: int, data: TranscriptionUpdate):
     """Manually edit/correct transcript text and regenerate VTT."""
     # Get video
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
@@ -912,7 +978,8 @@ async def update_transcript(video_id: int, data: TranscriptionUpdate):
 
 
 @app.delete("/api/videos/{video_id}/transcript")
-async def delete_transcript(video_id: int):
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_transcript(request: Request, video_id: int):
     """Delete transcription and VTT file for a video."""
     # Get video
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
@@ -940,7 +1007,8 @@ async def delete_transcript(video_id: int):
 
 
 @app.get("/api/analytics/overview")
-async def analytics_overview() -> AnalyticsOverview:
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def analytics_overview(request: Request) -> AnalyticsOverview:
     """Get global analytics overview."""
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1029,7 +1097,9 @@ async def analytics_overview() -> AnalyticsOverview:
 
 
 @app.get("/api/analytics/videos")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_videos(
+    request: Request,
     limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
     sort_by: str = "views",
@@ -1112,7 +1182,8 @@ async def analytics_videos(
 
 
 @app.get("/api/analytics/videos/{video_id}")
-async def analytics_video_detail(video_id: int) -> VideoAnalyticsDetail:
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def analytics_video_detail(request: Request, video_id: int) -> VideoAnalyticsDetail:
     """Get detailed analytics for a specific video."""
     # Get video info
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
@@ -1182,7 +1253,9 @@ async def analytics_video_detail(video_id: int) -> VideoAnalyticsDetail:
 
 
 @app.get("/api/analytics/trends")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_trends(
+    request: Request,
     period: str = "30d",
     video_id: Optional[int] = None,
 ) -> TrendsResponse:

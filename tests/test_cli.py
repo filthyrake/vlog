@@ -260,19 +260,508 @@ class TestAPIBaseConfiguration:
             importlib.reload(cli.main)
 
 
-class TestHTTPErrorHandling:
-    """Test HTTP error scenarios in CLI commands."""
+class TestCmdList:
+    """Test the cmd_list command."""
 
-    @pytest.mark.skip(reason="Integration test - to be implemented")
-    def test_connect_error_handling(self):
-        """Test that ConnectError is handled gracefully."""
-        # This is more of an integration test and would be tested
-        # by mocking httpx calls in the actual command functions
-        pass
+    def test_list_videos_success(self, capsys):
+        """Test listing videos successfully."""
+        from cli.main import cmd_list
 
-    @pytest.mark.skip(reason="Integration test - to be implemented")
-    def test_timeout_error_handling(self):
-        """Test that TimeoutException is handled gracefully."""
-        # This is more of an integration test and would be tested
-        # by mocking httpx calls in the actual command functions
-        pass
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = [
+            {
+                "id": 1,
+                "title": "Test Video",
+                "slug": "test-video",
+                "status": "ready",
+                "category_name": "Test Cat",
+            },
+            {
+                "id": 2,
+                "title": "Another Video with a Very Long Title That Will Be Truncated",
+                "slug": "another-video",
+                "status": "processing",
+                "category_name": None,
+            },
+        ]
+
+        args = mock.Mock()
+        args.status = None
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            cmd_list(args)
+
+        captured = capsys.readouterr()
+        assert "Test Video" in captured.out
+        assert "ready" in captured.out
+        assert "Another Video" in captured.out
+        assert "processing" in captured.out
+
+    def test_list_videos_empty(self, capsys):
+        """Test listing videos when none exist."""
+        from cli.main import cmd_list
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = []
+
+        args = mock.Mock()
+        args.status = None
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            cmd_list(args)
+
+        captured = capsys.readouterr()
+        assert "No videos found" in captured.out
+
+    def test_list_videos_with_status_filter(self):
+        """Test listing videos with status filter."""
+        from cli.main import cmd_list
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = []
+
+        args = mock.Mock()
+        args.status = "pending"
+
+        with mock.patch("httpx.get", return_value=mock_response) as mock_get:
+            cmd_list(args)
+            # Verify the status filter is passed
+            call_args = mock_get.call_args
+            assert call_args[1]["params"]["status"] == "pending"
+
+    def test_list_videos_connection_error(self, capsys):
+        """Test handling of connection errors in list command."""
+
+        import httpx
+
+        from cli.main import cmd_list
+
+        args = mock.Mock()
+        args.status = None
+
+        with mock.patch("httpx.get", side_effect=httpx.ConnectError("Connection refused")):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_list(args)
+            assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "Could not connect" in captured.out
+
+    def test_list_videos_timeout(self, capsys):
+        """Test handling of timeout errors in list command."""
+        import httpx
+
+        from cli.main import cmd_list
+
+        args = mock.Mock()
+        args.status = None
+
+        with mock.patch("httpx.get", side_effect=httpx.TimeoutException("Timeout")):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_list(args)
+            assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "timed out" in captured.out
+
+    def test_list_videos_api_error(self, capsys):
+        """Test handling of API errors in list command."""
+        from cli.main import cmd_list
+
+        mock_response = mock.Mock()
+        mock_response.is_success = False
+        mock_response.status_code = 500
+        mock_response.json.return_value = {"detail": "Internal server error"}
+        mock_response.text = '{"detail": "Internal server error"}'
+
+        args = mock.Mock()
+        args.status = None
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_list(args)
+            assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "Internal server error" in captured.out
+
+
+class TestCmdCategories:
+    """Test the cmd_categories command."""
+
+    def test_list_categories_success(self, capsys):
+        """Test listing categories successfully."""
+        from cli.main import cmd_categories
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = [
+            {"id": 1, "name": "Movies", "slug": "movies", "video_count": 10},
+            {"id": 2, "name": "TV Shows", "slug": "tv-shows", "video_count": 5},
+        ]
+
+        args = mock.Mock()
+        args.create = None
+        args.description = None
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            cmd_categories(args)
+
+        captured = capsys.readouterr()
+        assert "Movies" in captured.out
+        assert "TV Shows" in captured.out
+        assert "movies" in captured.out
+        assert "10" in captured.out
+
+    def test_list_categories_empty(self, capsys):
+        """Test listing categories when none exist."""
+        from cli.main import cmd_categories
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = []
+
+        args = mock.Mock()
+        args.create = None
+        args.description = None
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            cmd_categories(args)
+
+        captured = capsys.readouterr()
+        assert "No categories found" in captured.out
+
+    def test_create_category_success(self, capsys):
+        """Test creating a category successfully."""
+        from cli.main import cmd_categories
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "id": 1,
+            "name": "New Category",
+            "slug": "new-category",
+        }
+
+        args = mock.Mock()
+        args.create = "New Category"
+        args.description = "A test category"
+
+        with mock.patch("httpx.post", return_value=mock_response):
+            cmd_categories(args)
+
+        captured = capsys.readouterr()
+        assert "Created category" in captured.out
+        assert "New Category" in captured.out
+        assert "new-category" in captured.out
+
+
+class TestCmdDelete:
+    """Test the cmd_delete command."""
+
+    def test_delete_video_success(self, capsys):
+        """Test deleting a video successfully."""
+        from cli.main import cmd_delete
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {"status": "ok"}
+
+        args = mock.Mock()
+        args.video_id = 1
+
+        with mock.patch("httpx.delete", return_value=mock_response):
+            cmd_delete(args)
+
+        captured = capsys.readouterr()
+        assert "Video 1 deleted" in captured.out
+
+    def test_delete_video_not_found(self, capsys):
+        """Test deleting a non-existent video."""
+        from cli.main import cmd_delete
+
+        mock_response = mock.Mock()
+        mock_response.is_success = False
+        mock_response.status_code = 404
+        mock_response.json.return_value = {"detail": "Video not found"}
+        mock_response.text = '{"detail": "Video not found"}'
+
+        args = mock.Mock()
+        args.video_id = 999
+
+        with mock.patch("httpx.delete", return_value=mock_response):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_delete(args)
+            assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "Video not found" in captured.out
+
+
+class TestCmdUpload:
+    """Test the cmd_upload command."""
+
+    def test_upload_file_not_found(self, capsys, tmp_path):
+        """Test upload with non-existent file."""
+        from cli.main import cmd_upload
+
+        args = mock.Mock()
+        args.file = str(tmp_path / "nonexistent.mp4")
+        args.title = "Test"
+        args.description = ""
+        args.category = None
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_upload(args)
+        assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "File not found" in captured.out
+
+    def test_upload_success(self, capsys, tmp_path):
+        """Test successful upload."""
+        from cli.main import cmd_upload
+
+        # Create a test file
+        test_file = tmp_path / "test_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        args = mock.Mock()
+        args.file = str(test_file)
+        args.title = "Test Video"
+        args.description = "A test video"
+        args.category = None
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "video_id": 1,
+            "slug": "test-video",
+        }
+
+        # Mock the httpx.Client context manager
+        mock_client = mock.Mock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("httpx.Client", return_value=mock_client):
+            cmd_upload(args)
+
+        captured = capsys.readouterr()
+        assert "Success" in captured.out
+        assert "test-video" in captured.out
+
+    def test_upload_with_category_lookup(self, capsys, tmp_path):
+        """Test upload with category lookup."""
+        from cli.main import cmd_upload
+
+        # Create a test file
+        test_file = tmp_path / "test_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        args = mock.Mock()
+        args.file = str(test_file)
+        args.title = "Test Video"
+        args.description = ""
+        args.category = "Movies"
+
+        # Mock category lookup
+        mock_cat_response = mock.Mock()
+        mock_cat_response.is_success = True
+        mock_cat_response.json.return_value = [
+            {"id": 1, "name": "Movies", "slug": "movies"},
+        ]
+
+        # Mock upload
+        mock_upload_response = mock.Mock()
+        mock_upload_response.is_success = True
+        mock_upload_response.json.return_value = {
+            "video_id": 1,
+            "slug": "test-video",
+        }
+
+        mock_client = mock.Mock()
+        mock_client.post.return_value = mock_upload_response
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("httpx.get", return_value=mock_cat_response):
+            with mock.patch("httpx.Client", return_value=mock_client):
+                cmd_upload(args)
+
+        captured = capsys.readouterr()
+        assert "Success" in captured.out
+
+    def test_upload_category_not_found(self, capsys, tmp_path):
+        """Test upload with non-existent category."""
+        from cli.main import cmd_upload
+
+        # Create a test file
+        test_file = tmp_path / "test_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        args = mock.Mock()
+        args.file = str(test_file)
+        args.title = "Test Video"
+        args.description = ""
+        args.category = "NonExistent"
+
+        # Mock category lookup returning empty
+        mock_cat_response = mock.Mock()
+        mock_cat_response.is_success = True
+        mock_cat_response.json.return_value = [
+            {"id": 1, "name": "Movies", "slug": "movies"},
+        ]
+
+        # Mock upload
+        mock_upload_response = mock.Mock()
+        mock_upload_response.is_success = True
+        mock_upload_response.json.return_value = {
+            "video_id": 1,
+            "slug": "test-video",
+        }
+
+        mock_client = mock.Mock()
+        mock_client.post.return_value = mock_upload_response
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("httpx.get", return_value=mock_cat_response):
+            with mock.patch("httpx.Client", return_value=mock_client):
+                cmd_upload(args)
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.out
+        assert "not found" in captured.out
+        assert "Success" in captured.out  # Upload should still succeed
+
+
+class TestCmdDownload:
+    """Test the cmd_download command."""
+
+    def test_download_ytdlp_not_found(self, capsys):
+        """Test download when yt-dlp is not installed."""
+
+        from cli.main import cmd_download
+
+        args = mock.Mock()
+        args.url = "https://youtube.com/watch?v=test"
+        args.title = None
+        args.description = ""
+        args.category = None
+
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("yt-dlp not found")):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_download(args)
+            assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "yt-dlp is not installed" in captured.out
+
+    def test_download_timeout(self, capsys, tmp_path):
+        """Test download timeout handling."""
+        import subprocess
+
+        from cli.main import cmd_download
+
+        args = mock.Mock()
+        args.url = "https://youtube.com/watch?v=test"
+        args.title = None
+        args.description = ""
+        args.category = None
+
+        # First call for version check
+        version_result = mock.Mock()
+        version_result.returncode = 0
+
+        # Use side_effect to return different results for different calls
+        def run_side_effect(*args, **kwargs):
+            if "--version" in args[0]:
+                return version_result
+            raise subprocess.TimeoutExpired(args[0], 3600)
+
+        with mock.patch("subprocess.run", side_effect=run_side_effect):
+            with mock.patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+                mock_tmpdir.return_value.__enter__ = mock.Mock(return_value=str(tmp_path))
+                mock_tmpdir.return_value.__exit__ = mock.Mock(return_value=False)
+                with pytest.raises(SystemExit) as exc_info:
+                    cmd_download(args)
+                assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "timed out" in captured.out
+
+
+class TestMainParser:
+    """Test the main argument parser."""
+
+    def test_upload_command_parser(self):
+        """Test upload command argument parsing."""
+        import sys
+
+        from cli.main import main
+
+        # Test help works
+        with mock.patch.object(sys, "argv", ["vlog", "upload", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+    def test_list_command_parser(self):
+        """Test list command argument parsing."""
+        import sys
+
+        from cli.main import main
+
+        with mock.patch.object(sys, "argv", ["vlog", "list", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+    def test_categories_command_parser(self):
+        """Test categories command argument parsing."""
+        import sys
+
+        from cli.main import main
+
+        with mock.patch.object(sys, "argv", ["vlog", "categories", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+    def test_delete_command_parser(self):
+        """Test delete command argument parsing."""
+        import sys
+
+        from cli.main import main
+
+        with mock.patch.object(sys, "argv", ["vlog", "delete", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+    def test_download_command_parser(self):
+        """Test download command argument parsing."""
+        import sys
+
+        from cli.main import main
+
+        with mock.patch.object(sys, "argv", ["vlog", "download", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+    def test_missing_command_fails(self):
+        """Test that missing command shows help."""
+        import sys
+
+        from cli.main import main
+
+        with mock.patch.object(sys, "argv", ["vlog"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 2  # argparse error code
