@@ -166,7 +166,6 @@ class TestValidateFile:
 
         # We can't easily create an 11GB file in tests, so we'll mock the stat call
         # at the os level instead of the pathlib level
-        import os
         original_stat = os.stat
 
         def mock_stat(path, *args, **kwargs):
