@@ -17,3 +17,6 @@ faster-whisper>=1.0.0
 
 # Filesystem watching (event-driven transcoding)
 watchdog>=3.0.0
+
+# Rate limiting
+slowapi>=0.1.9

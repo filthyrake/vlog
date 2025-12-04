@@ -14,6 +14,9 @@ from fastapi import Cookie, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.database import (
@@ -43,7 +46,53 @@ from api.schemas import (
     VideoQualityResponse,
     VideoResponse,
 )
-from config import CORS_ALLOWED_ORIGINS, PUBLIC_PORT, UPLOADS_DIR, VIDEOS_DIR
+from config import (
+    CORS_ALLOWED_ORIGINS,
+    PUBLIC_PORT,
+    RATE_LIMIT_ENABLED,
+    RATE_LIMIT_PUBLIC_ANALYTICS,
+    RATE_LIMIT_PUBLIC_DEFAULT,
+    RATE_LIMIT_PUBLIC_VIDEOS_LIST,
+    RATE_LIMIT_STORAGE_URL,
+    UPLOADS_DIR,
+    VIDEOS_DIR,
+)
+
+
+def _get_real_ip(request: Request) -> str:
+    """
+    Get the real client IP address, respecting X-Forwarded-For header.
+    Handles reverse proxy setups (nginx, traefik, etc).
+    """
+    # Check for forwarded headers (common proxy setups)
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
+        # The first one is the original client
+        return forwarded.split(",")[0].strip()
+
+    # Fall back to direct client IP
+    return get_remote_address(request)
+
+
+# Initialize rate limiter
+# Uses in-memory storage by default, can be configured to use Redis
+limiter = Limiter(
+    key_func=_get_real_ip,
+    storage_uri=RATE_LIMIT_STORAGE_URL if RATE_LIMIT_ENABLED else None,
+    enabled=RATE_LIMIT_ENABLED,
+)
+
+
+def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Handle rate limit exceeded errors with a proper JSON response."""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Rate limit exceeded",
+            "error": str(exc.detail),
+        },
+    )
 
 
 @asynccontextmanager
@@ -56,6 +105,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="VLog", description="Self-hosted video platform", lifespan=lifespan)
+
+# Register rate limiter with the app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -164,7 +217,9 @@ async def category_page(slug: str):
 
 
 @app.get("/api/videos")
+@limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_videos(
+    request: Request,
     category: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
@@ -225,7 +280,8 @@ async def list_videos(
 
 
 @app.get("/api/videos/{slug}")
-async def get_video(slug: str) -> VideoResponse:
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video(request: Request, slug: str) -> VideoResponse:
     """Get a single video by slug."""
     query = (
         sa.select(
@@ -291,7 +347,8 @@ async def get_video(slug: str) -> VideoResponse:
 
 
 @app.get("/api/videos/{slug}/progress")
-async def get_video_progress(slug: str) -> TranscodingProgressResponse:
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video_progress(request: Request, slug: str) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
     # Get video by slug
     video_query = videos.select().where(videos.c.slug == slug)
@@ -353,7 +410,8 @@ async def get_video_progress(slug: str) -> TranscodingProgressResponse:
 
 
 @app.get("/api/videos/{slug}/transcript")
-async def get_transcript(slug: str) -> TranscriptionResponse:
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
     # Get video by slug
     video_query = videos.select().where(videos.c.slug == slug)
@@ -387,7 +445,8 @@ async def get_transcript(slug: str) -> TranscriptionResponse:
 
 
 @app.get("/api/categories")
-async def list_categories() -> List[CategoryResponse]:
+@limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
+async def list_categories(request: Request) -> List[CategoryResponse]:
     """List all categories with video counts."""
     query = sa.text("""
         SELECT c.*, COUNT(v.id) as video_count
@@ -413,7 +472,8 @@ async def list_categories() -> List[CategoryResponse]:
 
 
 @app.get("/api/categories/{slug}")
-async def get_category(slug: str) -> CategoryResponse:
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_category(request: Request, slug: str) -> CategoryResponse:
     """Get a single category by slug."""
     query = categories.select().where(categories.c.slug == slug)
     row = await database.fetch_one(query)
@@ -448,7 +508,9 @@ async def get_category(slug: str) -> CategoryResponse:
 
 
 @app.post("/api/analytics/session")
+@limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
 async def start_analytics_session(
+    request: Request,
     data: PlaybackSessionCreate,
     response: Response,
     vlog_viewer: Optional[str] = Cookie(default=None),
@@ -507,7 +569,8 @@ async def start_analytics_session(
 
 
 @app.post("/api/analytics/heartbeat")
-async def analytics_heartbeat(data: PlaybackHeartbeat):
+@limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
+async def analytics_heartbeat(request: Request, data: PlaybackHeartbeat):
     """Update playback session with current progress."""
     # Find the session
     query = playback_sessions.select().where(playback_sessions.c.session_token == data.session_token)
@@ -543,7 +606,8 @@ async def analytics_heartbeat(data: PlaybackHeartbeat):
 
 
 @app.post("/api/analytics/end")
-async def end_analytics_session(data: PlaybackEnd):
+@limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
+async def end_analytics_session(request: Request, data: PlaybackEnd):
     """End a playback session."""
     # Find the session
     query = playback_sessions.select().where(playback_sessions.c.session_token == data.session_token)

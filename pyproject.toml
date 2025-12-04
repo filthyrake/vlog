@@ -20,6 +20,7 @@ dependencies = [
     "httpx>=0.25.0",
     "faster-whisper>=1.0.0",
     "watchdog>=3.0.0",
+    "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]

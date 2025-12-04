@@ -86,3 +86,21 @@ ADMIN_CORS_ALLOWED_ORIGINS = (
     if _admin_cors_env
     else ["*"]  # Admin is internal-only, allow all origins by default
 )
+
+# Rate Limiting Configuration
+# Set to "0" or "false" to disable rate limiting entirely
+RATE_LIMIT_ENABLED = os.getenv("VLOG_RATE_LIMIT_ENABLED", "true").lower() not in ("false", "0", "no")
+
+# Default rate limits (format: "count/period" where period is second, minute, hour, day)
+# Public API limits (more restrictive, exposed externally)
+RATE_LIMIT_PUBLIC_DEFAULT = os.getenv("VLOG_RATE_LIMIT_PUBLIC_DEFAULT", "100/minute")
+RATE_LIMIT_PUBLIC_VIDEOS_LIST = os.getenv("VLOG_RATE_LIMIT_PUBLIC_VIDEOS_LIST", "60/minute")
+RATE_LIMIT_PUBLIC_ANALYTICS = os.getenv("VLOG_RATE_LIMIT_PUBLIC_ANALYTICS", "120/minute")
+
+# Admin API limits (more permissive, internal only)
+RATE_LIMIT_ADMIN_DEFAULT = os.getenv("VLOG_RATE_LIMIT_ADMIN_DEFAULT", "200/minute")
+RATE_LIMIT_ADMIN_UPLOAD = os.getenv("VLOG_RATE_LIMIT_ADMIN_UPLOAD", "10/hour")
+
+# Storage backend for rate limiting
+# Options: "memory" (default, per-process), or a Redis URL like "redis://localhost:6379"
+RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
