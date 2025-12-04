@@ -71,3 +71,17 @@ PROGRESS_UPDATE_INTERVAL = float(os.getenv("VLOG_PROGRESS_UPDATE_INTERVAL", "5.0
 # Upload size limits (default 100GB - reasonable for 4K video)
 MAX_UPLOAD_SIZE = int(os.getenv("VLOG_MAX_UPLOAD_SIZE", str(100 * 1024 * 1024 * 1024)))  # 100 GB
 UPLOAD_CHUNK_SIZE = int(os.getenv("VLOG_UPLOAD_CHUNK_SIZE", str(1024 * 1024)))  # 1 MB chunks
+
+# CORS Configuration
+# Set VLOG_CORS_ORIGINS to comma-separated origins, or leave empty/unset to allow same-origin only
+# Example: VLOG_CORS_ORIGINS=http://localhost:9000,http://localhost:9001,https://example.com
+_cors_origins_env = os.getenv("VLOG_CORS_ORIGINS", "")
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
+
+# For admin API, defaults to same-machine origins only (9000 and 9001)
+_admin_cors_env = os.getenv("VLOG_ADMIN_CORS_ORIGINS", "")
+ADMIN_CORS_ALLOWED_ORIGINS = (
+    [origin.strip() for origin in _admin_cors_env.split(",") if origin.strip()]
+    if _admin_cors_env
+    else [f"http://localhost:{PUBLIC_PORT}", f"http://localhost:{ADMIN_PORT}"]
+)

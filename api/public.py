@@ -43,7 +43,7 @@ from api.schemas import (
     VideoQualityResponse,
     VideoResponse,
 )
-from config import PUBLIC_PORT, UPLOADS_DIR, VIDEOS_DIR
+from config import CORS_ALLOWED_ORIGINS, PUBLIC_PORT, UPLOADS_DIR, VIDEOS_DIR
 
 
 @asynccontextmanager
@@ -79,12 +79,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS middleware for HLS playback and analytics
+# If CORS_ALLOWED_ORIGINS is empty, allow same-origin only (no CORS headers)
+# Note: allow_credentials=True requires specific origins, not wildcards
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ALLOWED_ORIGINS if CORS_ALLOWED_ORIGINS else [],
+    allow_credentials=bool(CORS_ALLOWED_ORIGINS),  # Only enable with explicit origins
     allow_methods=["GET", "HEAD", "OPTIONS", "POST"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
     expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
 )
 
