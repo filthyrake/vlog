@@ -45,7 +45,7 @@ def safe_json_response(response, default_error="Request failed"):
         # Try to extract error detail from response
         try:
             detail = response.json().get("detail", response.text)
-        except Exception:
+        except (ValueError, httpx.ResponseNotRead):
             # If JSON parsing fails, use raw text or default
             detail = response.text[:200] if response.text else default_error
         raise CLIError(f"API error ({response.status_code}): {detail}")
@@ -53,7 +53,7 @@ def safe_json_response(response, default_error="Request failed"):
     # Try to parse JSON from successful response
     try:
         return response.json()
-    except Exception:
+    except (ValueError, httpx.ResponseNotRead):
         raise CLIError(f"Invalid JSON response: {response.text[:100]}")
 
 
@@ -63,6 +63,9 @@ def validate_file(file_path):
 
     Args:
         file_path: Path object pointing to the file
+
+    Returns:
+        int: File size in bytes
 
     Raises:
         CLIError: If file doesn't exist, isn't readable, or is empty
@@ -119,7 +122,7 @@ def cmd_upload(args):
                         data["category_id"] = cat_match["id"]
                     else:
                         print(f"Warning: Category '{args.category}' not found, uploading without category")
-                except CLIError as e:
+                except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
                     print(f"Warning: Could not fetch categories: {e}")
                     print("Uploading without category")
 
@@ -314,7 +317,7 @@ def cmd_download(args):
                             if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
                                 data["category_id"] = cat["id"]
                                 break
-                    except CLIError as e:
+                    except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
                         print(f"Warning: Could not fetch categories: {e}")
                         print("Uploading without category")
 

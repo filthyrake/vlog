@@ -107,8 +107,8 @@ class TestSafeJsonResponse:
 
         with pytest.raises(CLIError) as exc_info:
             safe_json_response(mock_response)
-        # Should be truncated to 200 chars
-        assert len(str(exc_info.value).split(": ", 1)[1]) <= 200
+        # Should be truncated to exactly 200 chars
+        assert len(str(exc_info.value).split(": ", 1)[1]) == 200
 
 
 class TestValidateFile:
@@ -164,22 +164,23 @@ class TestValidateFile:
         test_file = tmp_path / "large.mp4"
         test_file.write_bytes(b"x")
 
-        # We can't easily create an 11GB file in tests, so we'll mock the stat call
-        # at the os level instead of the pathlib level
-        original_stat = os.stat
+        # Get real stat to copy attributes from
+        real_stat = test_file.stat()
 
-        def mock_stat(path, *args, **kwargs):
-            result = original_stat(path, *args, **kwargs)
-            # Return a mock stat result with large size
-            mock_result = mock.Mock()
-            for attr in ['st_mode', 'st_ino', 'st_dev', 'st_nlink', 'st_uid',
-                         'st_gid', 'st_atime', 'st_mtime', 'st_ctime']:
-                if hasattr(result, attr):
-                    setattr(mock_result, attr, getattr(result, attr))
-            mock_result.st_size = 11 * 1024 * 1024 * 1024  # 11GB
-            return mock_result
+        # Mock Path.stat to return a stat result with large size
+        from pathlib import Path
+        mock_stat = mock.Mock()
+        # Copy all attributes from real stat
+        for attr in dir(real_stat):
+            if not attr.startswith('_'):
+                try:
+                    setattr(mock_stat, attr, getattr(real_stat, attr))
+                except AttributeError:
+                    pass
+        # Override size to be 11GB
+        mock_stat.st_size = 11 * 1024 * 1024 * 1024  # 11GB
 
-        with mock.patch('os.stat', side_effect=mock_stat):
+        with mock.patch.object(Path, 'stat', return_value=mock_stat):
             file_size = validate_file(test_file)
             captured = capsys.readouterr()
             assert "Warning: Large file detected" in captured.out
@@ -204,14 +205,18 @@ class TestTimeoutConfiguration:
 
     def test_api_timeout_env_var(self):
         """Test that API timeout can be configured via environment variable."""
-        with mock.patch.dict(os.environ, {"VLOG_API_TIMEOUT": "60"}):
-            # Reload the module to pick up new env var
-            import importlib
+        import importlib
 
-            import cli.main
+        import cli.main
+
+        try:
+            with mock.patch.dict(os.environ, {"VLOG_API_TIMEOUT": "60"}):
+                importlib.reload(cli.main)
+                from cli.main import DEFAULT_API_TIMEOUT
+                assert DEFAULT_API_TIMEOUT == 60
+        finally:
+            # Restore original state
             importlib.reload(cli.main)
-            from cli.main import DEFAULT_API_TIMEOUT
-            assert DEFAULT_API_TIMEOUT == 60
 
 
 class TestAPIBaseConfiguration:
@@ -225,34 +230,46 @@ class TestAPIBaseConfiguration:
 
     def test_api_base_env_var(self):
         """Test that API_BASE can be configured via environment variable."""
-        with mock.patch.dict(os.environ, {"VLOG_ADMIN_API_URL": "http://example.com:8080"}):
-            import importlib
+        import importlib
 
-            import cli.main
+        import cli.main
+
+        try:
+            with mock.patch.dict(os.environ, {"VLOG_ADMIN_API_URL": "http://example.com:8080"}):
+                importlib.reload(cli.main)
+                from cli.main import API_BASE
+                assert API_BASE == "http://example.com:8080/api"
+        finally:
+            # Restore original state
             importlib.reload(cli.main)
-            from cli.main import API_BASE
-            assert API_BASE == "http://example.com:8080/api"
 
     def test_api_base_strips_trailing_slash(self):
         """Test that trailing slashes are handled correctly."""
-        with mock.patch.dict(os.environ, {"VLOG_ADMIN_API_URL": "http://example.com:8080/"}):
-            import importlib
+        import importlib
 
-            import cli.main
+        import cli.main
+
+        try:
+            with mock.patch.dict(os.environ, {"VLOG_ADMIN_API_URL": "http://example.com:8080/"}):
+                importlib.reload(cli.main)
+                from cli.main import API_BASE
+                assert API_BASE == "http://example.com:8080/api"
+        finally:
+            # Restore original state
             importlib.reload(cli.main)
-            from cli.main import API_BASE
-            assert API_BASE == "http://example.com:8080/api"
 
 
 class TestHTTPErrorHandling:
     """Test HTTP error scenarios in CLI commands."""
 
+    @pytest.mark.skip(reason="Integration test - to be implemented")
     def test_connect_error_handling(self):
         """Test that ConnectError is handled gracefully."""
         # This is more of an integration test and would be tested
         # by mocking httpx calls in the actual command functions
         pass
 
+    @pytest.mark.skip(reason="Integration test - to be implemented")
     def test_timeout_error_handling(self):
         """Test that TimeoutException is handled gracefully."""
         # This is more of an integration test and would be tested
