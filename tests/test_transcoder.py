@@ -2,22 +2,24 @@
 Tests for transcoder utility functions.
 Tests pure functions that don't require ffmpeg.
 """
-import pytest
+
 from pathlib import Path
 
+import pytest
+
 from config import (
-    QUALITY_PRESETS,
-    FFMPEG_TIMEOUT_MINIMUM,
     FFMPEG_TIMEOUT_MAXIMUM,
+    FFMPEG_TIMEOUT_MINIMUM,
     FFMPEG_TIMEOUT_MULTIPLIER,
     MAX_RETRY_ATTEMPTS,
+    QUALITY_PRESETS,
 )
 from worker.transcoder import (
-    validate_duration,
-    get_applicable_qualities,
+    MAX_DURATION_SECONDS,
     calculate_ffmpeg_timeout,
     generate_master_playlist,
-    MAX_DURATION_SECONDS,
+    get_applicable_qualities,
+    validate_duration,
 )
 
 
@@ -61,13 +63,13 @@ class TestValidateDuration:
     def test_nan_duration_fails(self):
         """Test NaN duration raises ValueError."""
         with pytest.raises(ValueError) as exc_info:
-            validate_duration(float('nan'))
+            validate_duration(float("nan"))
         assert "invalid duration value" in str(exc_info.value).lower()
 
     def test_inf_duration_fails(self):
         """Test infinite duration raises ValueError."""
         with pytest.raises(ValueError) as exc_info:
-            validate_duration(float('inf'))
+            validate_duration(float("inf"))
         assert "invalid duration value" in str(exc_info.value).lower()
 
     def test_duration_too_long_fails(self):
@@ -254,12 +256,12 @@ class TestGenerateMasterPlaylist:
         generate_master_playlist(tmp_path, qualities)
 
         content = (tmp_path / "master.m3u8").read_text()
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         # Find quality references in order
         quality_order = []
         for line in lines:
-            if line.endswith('.m3u8'):
+            if line.endswith(".m3u8"):
                 quality_order.append(line)
 
         # Should be sorted by bandwidth descending
@@ -268,7 +270,14 @@ class TestGenerateMasterPlaylist:
     def test_original_quality_with_bitrate_bps(self, tmp_path: Path):
         """Test original quality uses bitrate_bps field."""
         qualities = [
-            {"name": "original", "width": 3840, "height": 2160, "bitrate": "0k", "bitrate_bps": 15000000, "is_original": True},
+            {
+                "name": "original",
+                "width": 3840,
+                "height": 2160,
+                "bitrate": "0k",
+                "bitrate_bps": 15000000,
+                "is_original": True,
+            },
             {"name": "1080p", "width": 1920, "height": 1080, "bitrate": "5000k"},
         ]
 
@@ -286,7 +295,7 @@ class TestGenerateMasterPlaylist:
         assert "#EXTM3U" in content
         assert "#EXT-X-VERSION:3" in content
         # No quality entries
-        assert ".m3u8" not in content.split('\n')[2]  # After header
+        assert ".m3u8" not in content.split("\n")[2]  # After header
 
 
 class TestQualityPresets:

@@ -1,6 +1,7 @@
 """
 Tests for the CLI module error handling and response validation.
 """
+
 import os
 from pathlib import Path
 from unittest import mock
@@ -174,7 +175,7 @@ class TestValidateFile:
         mock_stat.st_mode = real_stat.st_mode
         mock_stat.st_size = 11 * 1024 * 1024 * 1024  # 11GB
 
-        with mock.patch.object(Path, 'stat', return_value=mock_stat):
+        with mock.patch.object(Path, "stat", return_value=mock_stat):
             file_size = validate_file(test_file)
             captured = capsys.readouterr()
             assert "Warning: Large file detected" in captured.out
@@ -188,12 +189,14 @@ class TestTimeoutConfiguration:
     def test_default_api_timeout_is_set(self):
         """Test that DEFAULT_API_TIMEOUT is configured."""
         from cli.main import DEFAULT_API_TIMEOUT
+
         assert DEFAULT_API_TIMEOUT > 0
         assert DEFAULT_API_TIMEOUT == 30  # Default value
 
     def test_download_timeout_is_set(self):
         """Test that DOWNLOAD_TIMEOUT is configured."""
         from cli.main import DOWNLOAD_TIMEOUT
+
         assert DOWNLOAD_TIMEOUT > 0
         assert DOWNLOAD_TIMEOUT == 3600  # Default value
 
@@ -207,6 +210,7 @@ class TestTimeoutConfiguration:
             with mock.patch.dict(os.environ, {"VLOG_API_TIMEOUT": "60"}):
                 importlib.reload(cli.main)
                 from cli.main import DEFAULT_API_TIMEOUT
+
                 assert DEFAULT_API_TIMEOUT == 60
         finally:
             # Restore original state
@@ -219,6 +223,7 @@ class TestAPIBaseConfiguration:
     def test_default_api_base(self):
         """Test that API_BASE uses default localhost."""
         from cli.main import API_BASE
+
         assert "localhost" in API_BASE or "127.0.0.1" in API_BASE
         assert "/api" in API_BASE
 
@@ -232,6 +237,7 @@ class TestAPIBaseConfiguration:
             with mock.patch.dict(os.environ, {"VLOG_ADMIN_API_URL": "http://example.com:8080"}):
                 importlib.reload(cli.main)
                 from cli.main import API_BASE
+
                 assert API_BASE == "http://example.com:8080/api"
         finally:
             # Restore original state
@@ -247,6 +253,7 @@ class TestAPIBaseConfiguration:
             with mock.patch.dict(os.environ, {"VLOG_ADMIN_API_URL": "http://example.com:8080/"}):
                 importlib.reload(cli.main)
                 from cli.main import API_BASE
+
                 assert API_BASE == "http://example.com:8080/api"
         finally:
             # Restore original state

@@ -2,20 +2,57 @@
 Admin API - handles uploads and video management.
 Runs on port 9001 (not exposed externally).
 """
-from typing import List, Optional
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from pathlib import Path
-from datetime import datetime, timezone
-from slugify import slugify
-from sqlite3 import IntegrityError
-import shutil
 
-from config import VIDEOS_DIR, UPLOADS_DIR, ARCHIVE_DIR, ADMIN_PORT
+import shutil
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from sqlite3 import IntegrityError
+from typing import List, Optional
+
+import sqlalchemy as sa
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from slugify import slugify
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from api.database import (
+    categories,
+    configure_sqlite_pragmas,
+    create_tables,
+    database,
+    playback_sessions,
+    quality_progress,
+    transcoding_jobs,
+    transcriptions,
+    video_qualities,
+    videos,
+)
+from api.enums import TranscriptionStatus, VideoStatus
+from api.errors import sanitize_error_message, sanitize_progress_error
+from api.schemas import (
+    AnalyticsOverview,
+    CategoryCreate,
+    CategoryResponse,
+    DailyViews,
+    QualityBreakdown,
+    QualityProgressResponse,
+    TranscodingProgressResponse,
+    TranscriptionResponse,
+    TranscriptionTrigger,
+    TranscriptionUpdate,
+    TrendDataPoint,
+    TrendsResponse,
+    VideoAnalyticsDetail,
+    VideoAnalyticsListResponse,
+    VideoAnalyticsSummary,
+    VideoListResponse,
+    VideoQualityResponse,
+    VideoResponse,
+)
+from config import ADMIN_PORT, ARCHIVE_DIR, UPLOADS_DIR, VIDEOS_DIR
 
 # Allowed video file extensions
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
@@ -23,19 +60,6 @@ ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 # Input length limits
 MAX_TITLE_LENGTH = 255
 MAX_DESCRIPTION_LENGTH = 5000
-from api.database import database, videos, categories, video_qualities, viewers, playback_sessions, transcriptions, transcoding_jobs, quality_progress, create_tables, configure_sqlite_pragmas
-from api.enums import VideoStatus, TranscriptionStatus
-from api.schemas import (
-    VideoResponse, VideoListResponse, CategoryResponse, CategoryCreate,
-    VideoQualityResponse, AnalyticsOverview, VideoAnalyticsSummary,
-    VideoAnalyticsListResponse, VideoAnalyticsDetail, QualityBreakdown,
-    DailyViews, TrendsResponse, TrendDataPoint,
-    TranscriptionResponse, TranscriptionTrigger, TranscriptionUpdate,
-    TranscodingProgressResponse, QualityProgressResponse,
-)
-from api.errors import sanitize_error_message, sanitize_progress_error
-import sqlalchemy as sa
-from datetime import timedelta
 
 
 @asynccontextmanager
@@ -121,11 +145,12 @@ async def health_check():
         content={
             "status": "healthy" if healthy else "unhealthy",
             "checks": checks,
-        }
+        },
     )
 
 
 # ============ Categories ============
+
 
 @app.get("/api/categories")
 async def list_categories() -> List[CategoryResponse]:
@@ -158,9 +183,7 @@ async def create_category(data: CategoryCreate) -> CategoryResponse:
     slug = slugify(data.name)
 
     # Check for duplicate slug
-    existing = await database.fetch_one(
-        categories.select().where(categories.c.slug == slug)
-    )
+    existing = await database.fetch_one(categories.select().where(categories.c.slug == slug))
     if existing:
         raise HTTPException(status_code=400, detail="Category with this name already exists")
 
@@ -186,14 +209,13 @@ async def create_category(data: CategoryCreate) -> CategoryResponse:
 async def delete_category(category_id: int):
     """Delete a category."""
     # Set videos in this category to uncategorized
-    await database.execute(
-        videos.update().where(videos.c.category_id == category_id).values(category_id=None)
-    )
+    await database.execute(videos.update().where(videos.c.category_id == category_id).values(category_id=None))
     await database.execute(categories.delete().where(categories.c.id == category_id))
     return {"status": "ok"}
 
 
 # ============ Videos ============
+
 
 @app.get("/api/videos")
 async def list_all_videos(
@@ -216,7 +238,7 @@ async def list_all_videos(
             categories.c.name.label("category_name"),
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
-        .where(videos.c.deleted_at == None)  # Exclude soft-deleted videos
+        .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
         .order_by(videos.c.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -261,9 +283,7 @@ async def get_video(video_id: int) -> VideoResponse:
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    quality_rows = await database.fetch_all(
-        video_qualities.select().where(video_qualities.c.video_id == video_id)
-    )
+    quality_rows = await database.fetch_all(video_qualities.select().where(video_qualities.c.video_id == video_id))
 
     qualities = [
         VideoQualityResponse(
@@ -310,7 +330,7 @@ async def upload_video(
     if file_ext not in ALLOWED_VIDEO_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
+            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}",
         )
 
     # Validate input lengths
@@ -389,14 +409,9 @@ async def update_video(
     if category_id is not None:
         if category_id > 0:
             # Validate category exists
-            existing_category = await database.fetch_one(
-                categories.select().where(categories.c.id == category_id)
-            )
+            existing_category = await database.fetch_one(categories.select().where(categories.c.id == category_id))
             if not existing_category:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Category with ID {category_id} does not exist"
-                )
+                raise HTTPException(status_code=400, detail=f"Category with ID {category_id} does not exist")
             update_data["category_id"] = category_id
         else:
             # category_id <= 0 means uncategorize
@@ -412,9 +427,7 @@ async def update_video(
                 raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM)")
 
     if update_data:
-        await database.execute(
-            videos.update().where(videos.c.id == video_id).values(**update_data)
-        )
+        await database.execute(videos.update().where(videos.c.id == video_id).values(**update_data))
 
     return {"status": "ok"}
 
@@ -459,25 +472,13 @@ async def delete_video(video_id: int, permanent: bool = False):
 
         # Delete ALL related records (fix orphaned records issue)
         # First get the job ID for quality_progress cleanup
-        job = await database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-        )
+        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         if job:
-            await database.execute(
-                quality_progress.delete().where(quality_progress.c.job_id == job["id"])
-            )
-        await database.execute(
-            transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id)
-        )
-        await database.execute(
-            playback_sessions.delete().where(playback_sessions.c.video_id == video_id)
-        )
-        await database.execute(
-            transcriptions.delete().where(transcriptions.c.video_id == video_id)
-        )
-        await database.execute(
-            video_qualities.delete().where(video_qualities.c.video_id == video_id)
-        )
+            await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+        await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
+        await database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
+        await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+        await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
 
         # Delete video record
         await database.execute(videos.delete().where(videos.c.id == video_id))
@@ -506,9 +507,7 @@ async def delete_video(video_id: int, permanent: bool = False):
 
         # Mark as deleted in database
         await database.execute(
-            videos.update().where(videos.c.id == video_id).values(
-                deleted_at=datetime.now(timezone.utc)
-            )
+            videos.update().where(videos.c.id == video_id).values(deleted_at=datetime.now(timezone.utc))
         )
 
         return {"status": "ok", "message": "Video moved to archive"}
@@ -539,11 +538,7 @@ async def restore_video(video_id: int):
             shutil.move(str(archive_upload), str(upload_file))
 
     # Clear deleted_at
-    await database.execute(
-        videos.update().where(videos.c.id == video_id).values(
-            deleted_at=None
-        )
-    )
+    await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
 
     return {"status": "ok", "message": "Video restored from archive"}
 
@@ -551,11 +546,7 @@ async def restore_video(video_id: int):
 @app.get("/api/videos/archived")
 async def list_archived_videos():
     """List all soft-deleted videos in archive."""
-    query = (
-        videos.select()
-        .where(videos.c.deleted_at != None)
-        .order_by(videos.c.deleted_at.desc())
-    )
+    query = videos.select().where(videos.c.deleted_at.is_not(None)).order_by(videos.c.deleted_at.desc())
     rows = await database.fetch_all(query)
 
     return {
@@ -594,7 +585,9 @@ async def retry_video(video_id: int):
 
     # Reset status to pending
     await database.execute(
-        videos.update().where(videos.c.id == video_id).values(
+        videos.update()
+        .where(videos.c.id == video_id)
+        .values(
             status=VideoStatus.PENDING,
             error_message=None,
         )
@@ -624,7 +617,7 @@ async def re_upload_video(
     if file_ext not in ALLOWED_VIDEO_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
+            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}",
         )
 
     # Get video info
@@ -661,27 +654,17 @@ async def re_upload_video(
             upload_file.unlink()
 
     # 3. Delete transcoding job and quality_progress
-    job = await database.fetch_one(
-        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-    )
+    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
     if job:
-        await database.execute(
-            quality_progress.delete().where(quality_progress.c.job_id == job["id"])
-        )
-    await database.execute(
-        transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id)
-    )
+        await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+    await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
 
     # 4. Delete transcriptions
     # Also delete VTT file if it exists (should already be deleted above, but be thorough)
-    await database.execute(
-        transcriptions.delete().where(transcriptions.c.video_id == video_id)
-    )
+    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
 
     # 5. Delete video_qualities
-    await database.execute(
-        video_qualities.delete().where(video_qualities.c.video_id == video_id)
-    )
+    await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
 
     # === UPLOAD NEW FILE === (file_ext already validated above)
 
@@ -693,7 +676,9 @@ async def re_upload_video(
     # === RESET VIDEO STATE ===
 
     await database.execute(
-        videos.update().where(videos.c.id == video_id).values(
+        videos.update()
+        .where(videos.c.id == video_id)
+        .values(
             status=VideoStatus.PENDING,
             duration=0,
             source_width=0,
@@ -723,7 +708,9 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
         return TranscodingProgressResponse(
             status=video["status"],
             progress_percent=100 if video["status"] == VideoStatus.READY else 0,
-            last_error=sanitize_progress_error(video["error_message"]) if video["status"] == VideoStatus.FAILED else None,
+            last_error=sanitize_progress_error(video["error_message"])
+            if video["status"] == VideoStatus.FAILED
+            else None,
         )
 
     # If pending, return basic pending status
@@ -734,9 +721,7 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
         )
 
     # Get job info for processing videos
-    job = await database.fetch_one(
-        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-    )
+    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
 
     if not job:
         return TranscodingProgressResponse(
@@ -745,9 +730,7 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
         )
 
     # Get quality progress
-    quality_rows = await database.fetch_all(
-        quality_progress.select().where(quality_progress.c.job_id == job["id"])
-    )
+    quality_rows = await database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job["id"]))
 
     qualities = [
         QualityProgressResponse(
@@ -772,6 +755,7 @@ async def get_video_progress(video_id: int) -> TranscodingProgressResponse:
 
 # ============ Transcription ============
 
+
 @app.get("/api/videos/{video_id}/transcript")
 async def get_video_transcript(video_id: int) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
@@ -781,9 +765,7 @@ async def get_video_transcript(video_id: int) -> TranscriptionResponse:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get transcription record
-    transcription = await database.fetch_one(
-        transcriptions.select().where(transcriptions.c.video_id == video_id)
-    )
+    transcription = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if not transcription:
         return TranscriptionResponse(status=TranscriptionStatus.NONE)
@@ -817,9 +799,7 @@ async def trigger_transcription(video_id: int, data: TranscriptionTrigger = None
         raise HTTPException(status_code=400, detail="Video must be ready before transcription")
 
     # Check if transcription already exists
-    existing = await database.fetch_one(
-        transcriptions.select().where(transcriptions.c.video_id == video_id)
-    )
+    existing = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if existing:
         if existing["status"] == TranscriptionStatus.PROCESSING:
@@ -864,9 +844,7 @@ async def update_transcript(video_id: int, data: TranscriptionUpdate):
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get transcription
-    transcription = await database.fetch_one(
-        transcriptions.select().where(transcriptions.c.video_id == video_id)
-    )
+    transcription = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if not transcription:
         raise HTTPException(status_code=404, detail="No transcription found for this video")
@@ -894,9 +872,7 @@ async def delete_transcript(video_id: int):
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get transcription
-    transcription = await database.fetch_one(
-        transcriptions.select().where(transcriptions.c.video_id == video_id)
-    )
+    transcription = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if not transcription:
         raise HTTPException(status_code=404, detail="No transcription found for this video")
@@ -907,14 +883,13 @@ async def delete_transcript(video_id: int):
         vtt_path.unlink()
 
     # Delete transcription record
-    await database.execute(
-        transcriptions.delete().where(transcriptions.c.video_id == video_id)
-    )
+    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
 
     return {"status": "ok", "message": "Transcription deleted"}
 
 
 # ============ Analytics ============
+
 
 @app.get("/api/analytics/overview")
 async def analytics_overview() -> AnalyticsOverview:
@@ -925,58 +900,73 @@ async def analytics_overview() -> AnalyticsOverview:
     month_start = today_start - timedelta(days=30)
 
     # Total views
-    total_views = await database.fetch_val(
-        sa.select(sa.func.count()).select_from(playback_sessions)
-    ) or 0
+    total_views = await database.fetch_val(sa.select(sa.func.count()).select_from(playback_sessions)) or 0
 
     # Unique viewers
-    unique_viewers = await database.fetch_val(
-        sa.select(sa.func.count(sa.distinct(playback_sessions.c.viewer_id)))
-        .select_from(playback_sessions)
-        .where(playback_sessions.c.viewer_id.isnot(None))
-    ) or 0
+    unique_viewers = (
+        await database.fetch_val(
+            sa.select(sa.func.count(sa.distinct(playback_sessions.c.viewer_id)))
+            .select_from(playback_sessions)
+            .where(playback_sessions.c.viewer_id.isnot(None))
+        )
+        or 0
+    )
 
     # Total watch time
-    total_watch_seconds = await database.fetch_val(
-        sa.select(sa.func.sum(playback_sessions.c.duration_watched))
-        .select_from(playback_sessions)
-    ) or 0
+    total_watch_seconds = (
+        await database.fetch_val(
+            sa.select(sa.func.sum(playback_sessions.c.duration_watched)).select_from(playback_sessions)
+        )
+        or 0
+    )
     total_watch_time_hours = total_watch_seconds / 3600
 
     # Completion rate
-    completed_count = await database.fetch_val(
-        sa.select(sa.func.count())
-        .select_from(playback_sessions)
-        .where(playback_sessions.c.completed == True)
-    ) or 0
+    completed_count = (
+        await database.fetch_val(
+            sa.select(sa.func.count()).select_from(playback_sessions).where(playback_sessions.c.completed.is_(True))
+        )
+        or 0
+    )
     completion_rate = completed_count / total_views if total_views > 0 else 0
 
     # Average watch duration
-    avg_watch = await database.fetch_val(
-        sa.select(sa.func.avg(playback_sessions.c.duration_watched))
-        .select_from(playback_sessions)
-    ) or 0
+    avg_watch = (
+        await database.fetch_val(
+            sa.select(sa.func.avg(playback_sessions.c.duration_watched)).select_from(playback_sessions)
+        )
+        or 0
+    )
 
     # Views today
-    views_today = await database.fetch_val(
-        sa.select(sa.func.count())
-        .select_from(playback_sessions)
-        .where(playback_sessions.c.started_at >= today_start)
-    ) or 0
+    views_today = (
+        await database.fetch_val(
+            sa.select(sa.func.count())
+            .select_from(playback_sessions)
+            .where(playback_sessions.c.started_at >= today_start)
+        )
+        or 0
+    )
 
     # Views this week
-    views_week = await database.fetch_val(
-        sa.select(sa.func.count())
-        .select_from(playback_sessions)
-        .where(playback_sessions.c.started_at >= week_start)
-    ) or 0
+    views_week = (
+        await database.fetch_val(
+            sa.select(sa.func.count())
+            .select_from(playback_sessions)
+            .where(playback_sessions.c.started_at >= week_start)
+        )
+        or 0
+    )
 
     # Views this month
-    views_month = await database.fetch_val(
-        sa.select(sa.func.count())
-        .select_from(playback_sessions)
-        .where(playback_sessions.c.started_at >= month_start)
-    ) or 0
+    views_month = (
+        await database.fetch_val(
+            sa.select(sa.func.count())
+            .select_from(playback_sessions)
+            .where(playback_sessions.c.started_at >= month_start)
+        )
+        or 0
+    )
 
     return AnalyticsOverview(
         total_views=total_views,
@@ -1052,18 +1042,20 @@ async def analytics_videos(
 
     video_stats = []
     for row in rows:
-        video_stats.append(VideoAnalyticsSummary(
-            video_id=row["video_id"],
-            title=row["title"],
-            slug=row["slug"],
-            thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg",
-            total_views=row["total_views"] or 0,
-            unique_viewers=row["unique_viewers"] or 0,
-            total_watch_time_seconds=row["total_watch_time_seconds"] or 0,
-            avg_watch_duration_seconds=round(row["avg_watch_duration_seconds"] or 0, 1),
-            completion_rate=round(row["completion_rate"] or 0, 2),
-            peak_quality=row["peak_quality"],
-        ))
+        video_stats.append(
+            VideoAnalyticsSummary(
+                video_id=row["video_id"],
+                title=row["title"],
+                slug=row["slug"],
+                thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg",
+                total_views=row["total_views"] or 0,
+                unique_viewers=row["unique_viewers"] or 0,
+                total_watch_time_seconds=row["total_watch_time_seconds"] or 0,
+                avg_watch_duration_seconds=round(row["avg_watch_duration_seconds"] or 0, 1),
+                completion_rate=round(row["completion_rate"] or 0, 2),
+                peak_quality=row["peak_quality"],
+            )
+        )
 
     return VideoAnalyticsListResponse(
         videos=video_stats,
@@ -1075,9 +1067,7 @@ async def analytics_videos(
 async def analytics_video_detail(video_id: int) -> VideoAnalyticsDetail:
     """Get detailed analytics for a specific video."""
     # Get video info
-    video = await database.fetch_one(
-        videos.select().where(videos.c.id == video_id)
-    )
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1093,10 +1083,7 @@ async def analytics_video_detail(video_id: int) -> VideoAnalyticsDetail:
         FROM playback_sessions
         WHERE video_id = :video_id
     """
-    stats = await database.fetch_one(
-        sa.text(stats_query),
-        {"video_id": video_id, "duration": video["duration"] or 1}
-    )
+    stats = await database.fetch_one(sa.text(stats_query), {"video_id": video_id, "duration": video["duration"] or 1})
 
     # Quality breakdown
     quality_query = """
@@ -1108,15 +1095,13 @@ async def analytics_video_detail(video_id: int) -> VideoAnalyticsDetail:
         GROUP BY quality_used
         ORDER BY percentage DESC
     """
-    quality_rows = await database.fetch_all(
-        sa.text(quality_query),
-        {"video_id": video_id}
-    )
+    quality_rows = await database.fetch_all(sa.text(quality_query), {"video_id": video_id})
 
-    quality_breakdown = [
-        QualityBreakdown(quality=q["quality"], percentage=round(q["percentage"], 2))
-        for q in quality_rows
-    ] if quality_rows else []
+    quality_breakdown = (
+        [QualityBreakdown(quality=q["quality"], percentage=round(q["percentage"], 2)) for q in quality_rows]
+        if quality_rows
+        else []
+    )
 
     # Views over time (last 30 days)
     views_query = """
@@ -1129,15 +1114,9 @@ async def analytics_video_detail(video_id: int) -> VideoAnalyticsDetail:
         GROUP BY DATE(started_at)
         ORDER BY date
     """
-    views_rows = await database.fetch_all(
-        sa.text(views_query),
-        {"video_id": video_id}
-    )
+    views_rows = await database.fetch_all(sa.text(views_query), {"video_id": video_id})
 
-    views_over_time = [
-        DailyViews(date=str(v["date"]), views=v["views"])
-        for v in views_rows
-    ] if views_rows else []
+    views_over_time = [DailyViews(date=str(v["date"]), views=v["views"]) for v in views_rows] if views_rows else []
 
     return VideoAnalyticsDetail(
         video_id=video_id,
@@ -1201,4 +1180,5 @@ async def analytics_trends(
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=ADMIN_PORT)

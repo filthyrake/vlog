@@ -4,6 +4,7 @@ Error handling utilities for sanitizing error messages.
 Prevents internal implementation details from being exposed to API clients
 while still logging detailed errors for debugging.
 """
+
 import logging
 import re
 from typing import Optional
@@ -12,19 +13,19 @@ logger = logging.getLogger(__name__)
 
 # Patterns that indicate internal details
 INTERNAL_PATTERNS = [
-    r'/home/\w+/',           # Home directory paths
-    r'/mnt/\w+/',            # Mount paths
-    r'/tmp/\w+',             # Temp paths
-    r'/var/\w+/',            # Var paths
-    r'line \d+',             # Line numbers in stack traces
-    r'File "[^"]+\.py"',     # Python file paths
-    r'ffmpeg:.*\.mp4',       # FFmpeg with file paths
-    r'ffprobe:.*\.mp4',      # FFprobe with file paths
-    r'Permission denied',    # System errors
-    r'No such file or directory',  # System errors with paths
-    r'UNIQUE constraint failed',   # Database internals
-    r'sqlite3?\.',           # SQLite details
-    r'Error: .+\.py:\d+',    # Python error traces
+    r"/home/\w+/",  # Home directory paths
+    r"/mnt/\w+/",  # Mount paths
+    r"/tmp/\w+",  # Temp paths
+    r"/var/\w+/",  # Var paths
+    r"line \d+",  # Line numbers in stack traces
+    r'File "[^"]+\.py"',  # Python file paths
+    r"ffmpeg:.*\.mp4",  # FFmpeg with file paths
+    r"ffprobe:.*\.mp4",  # FFprobe with file paths
+    r"Permission denied",  # System errors
+    r"No such file or directory",  # System errors with paths
+    r"UNIQUE constraint failed",  # Database internals
+    r"sqlite3?\.",  # SQLite details
+    r"Error: .+\.py:\d+",  # Python error traces
 ]
 
 # Generic user-friendly messages for common error types
@@ -42,11 +43,7 @@ ERROR_MESSAGES = {
 }
 
 
-def sanitize_error_message(
-    error: Optional[str],
-    log_original: bool = True,
-    context: str = ""
-) -> Optional[str]:
+def sanitize_error_message(error: Optional[str], log_original: bool = True, context: str = "") -> Optional[str]:
     """
     Sanitize an error message for safe display to API clients.
 
@@ -63,7 +60,7 @@ def sanitize_error_message(
 
     # Log the original error for debugging
     if log_original and error:
-        log_msg = f"Original error"
+        log_msg = "Original error"
         if context:
             log_msg += f" ({context})"
         log_msg += f": {error}"

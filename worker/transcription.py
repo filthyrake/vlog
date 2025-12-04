@@ -3,28 +3,28 @@
 Video transcription worker using faster-whisper.
 Monitors the database for videos needing transcription and generates WebVTT captions.
 """
+
 import asyncio
 import os
 import subprocess
-import sys
 import tempfile
 import time
-from pathlib import Path
 from datetime import datetime
-from typing import Optional, List
+from pathlib import Path
+from typing import List, Optional
 
+from api.database import configure_sqlite_pragmas, database, transcriptions
+from api.enums import TranscriptionStatus
 from config import (
-    VIDEOS_DIR,
-    UPLOADS_DIR,
-    WHISPER_MODEL,
+    AUDIO_EXTRACTION_TIMEOUT,
+    TRANSCRIPTION_COMPUTE_TYPE,
     TRANSCRIPTION_ENABLED,
     TRANSCRIPTION_LANGUAGE,
-    TRANSCRIPTION_COMPUTE_TYPE,
     TRANSCRIPTION_TIMEOUT,
-    AUDIO_EXTRACTION_TIMEOUT,
+    UPLOADS_DIR,
+    VIDEOS_DIR,
+    WHISPER_MODEL,
 )
-from api.database import database, videos, transcriptions, configure_sqlite_pragmas
-from api.enums import VideoStatus, TranscriptionStatus
 
 
 def format_timestamp(seconds: float) -> str:
@@ -72,7 +72,7 @@ class TranscriptionWorker:
                 compute_type=TRANSCRIPTION_COMPUTE_TYPE,
             )
             self.model_loaded = True
-            print(f"Model loaded successfully")
+            print("Model loaded successfully")
         except Exception as e:
             print(f"Failed to load model: {e}")
             raise
@@ -103,11 +103,13 @@ class TranscriptionWorker:
         full_text_parts = []
 
         for segment in segments:
-            segment_list.append({
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment.text,
-            })
+            segment_list.append(
+                {
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                }
+            )
             full_text_parts.append(segment.text.strip())
 
         full_text = " ".join(full_text_parts)
@@ -142,11 +144,7 @@ async def get_or_create_transcription(video_id: int) -> dict:
 async def update_transcription_status(transcription_id: int, status: str, **kwargs):
     """Update transcription status and optional fields."""
     values = {"status": status, **kwargs}
-    await database.execute(
-        transcriptions.update()
-        .where(transcriptions.c.id == transcription_id)
-        .values(**values)
-    )
+    await database.execute(transcriptions.update().where(transcriptions.c.id == transcription_id).values(**values))
 
 
 async def get_videos_needing_transcription() -> List[dict]:
@@ -165,6 +163,7 @@ async def get_videos_needing_transcription() -> List[dict]:
         ORDER BY v.published_at DESC
     """
     import sqlalchemy as sa
+
     rows = await database.fetch_all(sa.text(query))
     return [dict(row) for row in rows]
 
@@ -173,7 +172,7 @@ def _extract_quality(filename_stem: str) -> int:
     """
     Extract quality number from filename like '1080p' or '720p'.
     Returns 0 if no valid quality found.
-    
+
     Examples:
         '1080p' -> 1080
         '720p' -> 720
@@ -182,7 +181,7 @@ def _extract_quality(filename_stem: str) -> int:
     """
     try:
         # Only parse if ends with 'p' and the rest is all digits
-        if filename_stem.endswith('p') and len(filename_stem) > 1:
+        if filename_stem.endswith("p") and len(filename_stem) > 1:
             quality_str = filename_stem[:-1]
             if quality_str.isdigit():
                 return int(quality_str)
@@ -194,54 +193,54 @@ def _extract_quality(filename_stem: str) -> int:
 def find_audio_source(video_id: int, video_slug: str) -> Path:
     """
     Find the best audio source for transcription.
-    
+
     Priority:
     1. Original upload file (best quality, most reliable)
     2. Highest quality HLS playlist (fallback)
-    
+
     Args:
         video_id: Database ID of the video
         video_slug: URL slug of the video
-        
+
     Returns:
         Path to audio source file
-        
+
     Raises:
         ValueError: If no audio source found
     """
     # Try 1: Find original upload file (preferred)
     # The transcoder saves uploads as {video_id}{extension}
-    for ext in ['.mp4', '.mkv', '.webm', '.mov', '.avi']:
+    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
         source = UPLOADS_DIR / f"{video_id}{ext}"
         if source.exists() and source.stat().st_size > 0:
             return source
-    
+
     # Try 2: Fall back to highest quality HLS playlist
     video_dir = VIDEOS_DIR / video_slug
-    
+
     if not video_dir.exists():
         raise ValueError(f"Video directory not found: {video_dir}")
-    
+
     # Find all quality playlists (e.g., "1080p.m3u8", "720p.m3u8")
     playlists = sorted(
         video_dir.glob("*p.m3u8"),
         key=lambda p: _extract_quality(p.stem),
-        reverse=True  # Highest quality first
+        reverse=True,  # Highest quality first
     )
-    
+
     if not playlists:
         raise ValueError(
             f"No audio source found for video {video_slug} (ID: {video_id}). "
             f"Upload file missing and no HLS playlists available."
         )
-    
+
     # Validate that the best playlist is readable
     best_playlist = playlists[0]
     if not best_playlist.exists():
         raise ValueError(f"Best quality playlist disappeared: {best_playlist}")
     if best_playlist.stat().st_size == 0:
         raise ValueError(f"Best quality playlist is empty: {best_playlist}")
-    
+
     return best_playlist
 
 
@@ -249,46 +248,41 @@ def extract_audio_to_wav(source_path: Path, output_path: Path) -> None:
     """
     Extract audio from video/HLS source to WAV file using ffmpeg.
     This provides more reliable input for Whisper than streaming from HLS.
-    
+
     Args:
         source_path: Source video or HLS playlist
         output_path: Output WAV file path
-        
+
     Raises:
         RuntimeError: If extraction fails
     """
     # Validate paths exist/are writable
     if not source_path.exists():
         raise RuntimeError(f"Source file does not exist: {source_path}")
-    
+
     # Convert paths to strings (subprocess accepts str or Path)
     cmd = [
-        'ffmpeg',
-        '-i', str(source_path),
-        '-vn',  # No video
-        '-acodec', 'pcm_s16le',  # PCM 16-bit WAV
-        '-ar', '16000',  # 16kHz sample rate (Whisper's preferred rate)
-        '-ac', '1',  # Mono
-        '-y',  # Overwrite output file
-        str(output_path)
+        "ffmpeg",
+        "-i",
+        str(source_path),
+        "-vn",  # No video
+        "-acodec",
+        "pcm_s16le",  # PCM 16-bit WAV
+        "-ar",
+        "16000",  # 16kHz sample rate (Whisper's preferred rate)
+        "-ac",
+        "1",  # Mono
+        "-y",  # Overwrite output file
+        str(output_path),
     ]
-    
+
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=AUDIO_EXTRACTION_TIMEOUT
-        )
-        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=AUDIO_EXTRACTION_TIMEOUT)
+
         if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg audio extraction failed: {result.stderr}"
-            )
+            raise RuntimeError(f"ffmpeg audio extraction failed: {result.stderr}")
     except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"Audio extraction timed out after {AUDIO_EXTRACTION_TIMEOUT} seconds"
-        )
+        raise RuntimeError(f"Audio extraction timed out after {AUDIO_EXTRACTION_TIMEOUT} seconds")
     except FileNotFoundError:
         raise RuntimeError("ffmpeg not found - required for audio extraction")
 
@@ -323,33 +317,28 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         # Extract audio to temporary WAV file for reliable processing
         # This avoids potential issues with streaming HLS or complex video formats
         # Use mkstemp for explicit control over file creation and cleanup
-        fd, temp_wav_path = tempfile.mkstemp(suffix='.wav', prefix='vlog_transcribe_')
+        fd, temp_wav_path = tempfile.mkstemp(suffix=".wav", prefix="vlog_transcribe_")
         temp_wav = Path(temp_wav_path)  # Assign before close
         os.close(fd)  # Close file descriptor, we'll use the path
-        
-        print(f"  Extracting audio to WAV...")
+
+        print("  Extracting audio to WAV...")
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            extract_audio_to_wav,
-            audio_source,
-            temp_wav
-        )
-        
+        await loop.run_in_executor(None, extract_audio_to_wav, audio_source, temp_wav)
+
         if not temp_wav.exists() or temp_wav.stat().st_size == 0:
             raise RuntimeError("Audio extraction produced empty file")
 
         # Run transcription with timeout (this is CPU-intensive and blocking)
         # We run it in the default executor to not block the event loop
-        print(f"  Running Whisper transcription...")
+        print("  Running Whisper transcription...")
         result = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
                 worker.transcribe,
                 temp_wav,
-                None  # language
+                None,  # language
             ),
-            timeout=TRANSCRIPTION_TIMEOUT
+            timeout=TRANSCRIPTION_TIMEOUT,
         )
 
         # Generate WebVTT

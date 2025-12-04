@@ -41,6 +41,16 @@ vlog download "https://youtube.com/..." -c "Category"
 
 # Database initialization
 python api/database.py
+
+# Testing
+VLOG_TEST_MODE=1 pytest                    # Run all tests
+VLOG_TEST_MODE=1 pytest tests/test_public_api.py  # Run single test file
+VLOG_TEST_MODE=1 pytest -k "test_list"     # Run tests matching pattern
+VLOG_TEST_MODE=1 pytest --cov=api --cov=worker    # With coverage
+
+# Linting
+VLOG_TEST_MODE=1 ruff check api/ worker/ cli/ tests/ config.py
+ruff format api/ worker/ cli/ tests/ config.py   # Auto-format
 ```
 
 ## Architecture
@@ -93,6 +103,13 @@ Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
 ## Python Version Note
 
 Uses Python 3.9 - avoid `str | None` union syntax, use `Optional[str]` from typing instead.
+
+## Testing Notes
+
+- Set `VLOG_TEST_MODE=1` to skip NAS directory creation (required for tests/CI)
+- Tests use pytest-asyncio with function-scoped async fixtures
+- Test clients patch `config` and `api.database` to use temp directories
+- CI runs tests and ruff linting on push/PR to main (see `.github/workflows/tests.yml`)
 
 ## Package Structure
 

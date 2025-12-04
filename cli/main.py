@@ -2,6 +2,7 @@
 """
 VLog CLI - Command line interface for video management.
 """
+
 import argparse
 import os
 import sys
@@ -24,6 +25,7 @@ API_BASE = os.getenv("VLOG_ADMIN_API_URL", _default_api_url).rstrip("/") + "/api
 
 class CLIError(Exception):
     """Custom exception for CLI errors."""
+
     pass
 
 
@@ -191,7 +193,7 @@ def cmd_categories(args):
             response = httpx.post(
                 f"{API_BASE}/categories",
                 json={"name": args.create, "description": args.description or ""},
-                timeout=DEFAULT_API_TIMEOUT
+                timeout=DEFAULT_API_TIMEOUT,
             )
             cat = safe_json_response(response)
             print(f"Created category: {cat['name']} (slug: {cat['slug']})")
@@ -266,10 +268,13 @@ def cmd_download(args):
 
             cmd = [
                 "yt-dlp",
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--merge-output-format", "mp4",
-                "-o", output_template,
-                args.url
+                "-f",
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                output_template,
+                args.url,
             ]
 
             try:
@@ -345,10 +350,7 @@ def cmd_download(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="vlog",
-        description="VLog CLI - Manage your video library"
-    )
+    parser = argparse.ArgumentParser(prog="vlog", description="VLog CLI - Manage your video library")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Upload command
@@ -361,7 +363,9 @@ def main():
 
     # List command
     list_parser = subparsers.add_parser("list", help="List videos")
-    list_parser.add_argument("-s", "--status", choices=["pending", "processing", "ready", "failed"], help="Filter by status")
+    list_parser.add_argument(
+        "-s", "--status", choices=["pending", "processing", "ready", "failed"], help="Filter by status"
+    )
     list_parser.set_defaults(func=cmd_list)
 
     # Categories command

@@ -2,27 +2,48 @@
 Public API - serves the video browsing interface.
 Runs on port 9000.
 """
-from typing import List, Optional
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Response, Query, Request, Cookie
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from pathlib import Path
 
-from config import VIDEOS_DIR, UPLOADS_DIR, PUBLIC_PORT
-from api.database import database, videos, categories, video_qualities, playback_sessions, viewers, transcoding_jobs, quality_progress, transcriptions, configure_sqlite_pragmas
-from api.enums import VideoStatus, TranscriptionStatus
-from api.schemas import (
-    VideoResponse, VideoListResponse, CategoryResponse, VideoQualityResponse,
-    PlaybackSessionCreate, PlaybackHeartbeat, PlaybackEnd, PlaybackSessionResponse,
-    TranscodingProgressResponse, QualityProgressResponse, TranscriptionResponse,
-)
-from api.errors import sanitize_error_message, sanitize_progress_error
-import sqlalchemy as sa
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Optional
+
+import sqlalchemy as sa
+from fastapi import Cookie, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from api.database import (
+    categories,
+    configure_sqlite_pragmas,
+    database,
+    playback_sessions,
+    quality_progress,
+    transcoding_jobs,
+    transcriptions,
+    video_qualities,
+    videos,
+    viewers,
+)
+from api.enums import TranscriptionStatus, VideoStatus
+from api.errors import sanitize_error_message, sanitize_progress_error
+from api.schemas import (
+    CategoryResponse,
+    PlaybackEnd,
+    PlaybackHeartbeat,
+    PlaybackSessionCreate,
+    PlaybackSessionResponse,
+    QualityProgressResponse,
+    TranscodingProgressResponse,
+    TranscriptionResponse,
+    VideoListResponse,
+    VideoQualityResponse,
+    VideoResponse,
+)
+from config import PUBLIC_PORT, UPLOADS_DIR, VIDEOS_DIR
 
 
 @asynccontextmanager
@@ -73,11 +94,11 @@ class HLSStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope) -> Response:
         response = await super().get_response(path, scope)
         # Fix MIME types and cache headers for HLS
-        if path.endswith('.ts'):
+        if path.endswith(".ts"):
             # CRITICAL: .ts files are MPEG Transport Stream, not TypeScript/Qt Linguist
             response.headers["Content-Type"] = "video/mp2t"
             response.headers["Cache-Control"] = "public, max-age=31536000"
-        elif path.endswith('.m3u8'):
+        elif path.endswith(".m3u8"):
             response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
             response.headers["Cache-Control"] = "no-cache"
         return response
@@ -124,7 +145,7 @@ async def health_check():
         content={
             "status": "healthy" if healthy else "unhealthy",
             "checks": checks,
-        }
+        },
     )
 
 
@@ -163,7 +184,7 @@ async def list_videos(
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .where(videos.c.status == VideoStatus.READY)
-        .where(videos.c.deleted_at == None)  # Exclude soft-deleted videos
+        .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
         .order_by(videos.c.published_at.desc())
         .limit(limit)
         .offset(offset)
@@ -282,7 +303,9 @@ async def get_video_progress(slug: str) -> TranscodingProgressResponse:
         return TranscodingProgressResponse(
             status=video["status"],
             progress_percent=100 if video["status"] == VideoStatus.READY else 0,
-            last_error=sanitize_progress_error(video["error_message"]) if video["status"] == VideoStatus.FAILED else None,
+            last_error=sanitize_progress_error(video["error_message"])
+            if video["status"] == VideoStatus.FAILED
+            else None,
         )
 
     # If pending, return basic pending status
@@ -396,11 +419,13 @@ async def get_category(slug: str) -> CategoryResponse:
         raise HTTPException(status_code=404, detail="Category not found")
 
     # Get video count (exclude soft-deleted)
-    count_query = sa.select(sa.func.count()).select_from(videos).where(
-        sa.and_(
-            videos.c.category_id == row["id"],
-            videos.c.status == VideoStatus.READY,
-            videos.c.deleted_at == None
+    count_query = (
+        sa.select(sa.func.count())
+        .select_from(videos)
+        .where(
+            sa.and_(
+                videos.c.category_id == row["id"], videos.c.status == VideoStatus.READY, videos.c.deleted_at.is_(None)
+            )
         )
     )
     count = await database.fetch_val(count_query)
@@ -418,6 +443,7 @@ async def get_category(slug: str) -> CategoryResponse:
 # ============================================================================
 # Analytics Endpoints
 # ============================================================================
+
 
 @app.post("/api/analytics/session")
 async def start_analytics_session(
@@ -437,16 +463,12 @@ async def start_analytics_session(
     # Get or create viewer from cookie
     if vlog_viewer:
         # Look up existing viewer
-        viewer = await database.fetch_one(
-            viewers.select().where(viewers.c.session_id == vlog_viewer)
-        )
+        viewer = await database.fetch_one(viewers.select().where(viewers.c.session_id == vlog_viewer))
         if viewer:
             viewer_id = viewer["id"]
             # Update last_seen timestamp
             await database.execute(
-                viewers.update()
-                .where(viewers.c.id == viewer_id)
-                .values(last_seen=datetime.now(timezone.utc))
+                viewers.update().where(viewers.c.id == viewer_id).values(last_seen=datetime.now(timezone.utc))
             )
 
     # If no valid viewer cookie, create new viewer
@@ -486,9 +508,7 @@ async def start_analytics_session(
 async def analytics_heartbeat(data: PlaybackHeartbeat):
     """Update playback session with current progress."""
     # Find the session
-    query = playback_sessions.select().where(
-        playback_sessions.c.session_token == data.session_token
-    )
+    query = playback_sessions.select().where(playback_sessions.c.session_token == data.session_token)
     session = await database.fetch_one(query)
 
     if not session:
@@ -524,9 +544,7 @@ async def analytics_heartbeat(data: PlaybackHeartbeat):
 async def end_analytics_session(data: PlaybackEnd):
     """End a playback session."""
     # Find the session
-    query = playback_sessions.select().where(
-        playback_sessions.c.session_token == data.session_token
-    )
+    query = playback_sessions.select().where(playback_sessions.c.session_token == data.session_token)
     session = await database.fetch_one(query)
 
     if not session:
@@ -560,4 +578,5 @@ async def end_analytics_session(data: PlaybackEnd):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=PUBLIC_PORT)
