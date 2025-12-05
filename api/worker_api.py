@@ -677,19 +677,22 @@ async def upload_hls(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save uploaded tar.gz to temp file using streaming writes to avoid memory exhaustion
-    # Create temp file path
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-
-    # Stream file contents to disk in chunks
+    tmp_path = None
     try:
+        # Create temp file path
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        # Stream file contents to disk in chunks
         async with aiofiles.open(tmp_path, "wb") as f:
             while chunk := await file.read(1024 * 1024):  # 1MB chunks
                 await f.write(chunk)
     except Exception as e:
         # Cleanup temp file on error
-        tmp_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        logger.error(f"Failed to save upload for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
         with tarfile.open(tmp_path, "r:gz") as tar:

@@ -10,6 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import aiofiles
 import pytest
 
 from api.database import transcoding_jobs
@@ -124,8 +125,6 @@ class TestHLSUploadStreaming:
         )
 
         # Mock aiofiles.open to raise an exception to simulate upload failure
-        import aiofiles
-
         async def failing_open(*args, **kwargs):
             raise IOError("Simulated disk write failure")
 
@@ -149,7 +148,7 @@ class TestHLSUploadStreaming:
         )
 
         assert response.status_code == 500
-        assert "Failed to save upload" in response.json()["detail"]
+        assert response.json()["detail"] == "Failed to save upload"
 
     @pytest.mark.asyncio
     async def test_upload_hls_rejects_symlinks(
