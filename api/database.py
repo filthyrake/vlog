@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import sqlalchemy as sa
 from databases import Database
 
-from config import DATABASE_PATH
+from config import DATABASE_PATH, DATABASE_POOL_MAX_SIZE, DATABASE_POOL_MIN_SIZE
 
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
@@ -13,7 +13,13 @@ SQLITE_TIMEOUT = 30.0
 
 # Note: SQLite per-connection pragmas are configured in configure_sqlite_pragmas()
 # The timeout kwarg is passed to aiosqlite/sqlite3 and sets the connection busy_timeout
-database = Database(DATABASE_URL, timeout=SQLITE_TIMEOUT)
+# Pool size configuration helps manage concurrent reads (writes are serialized by SQLite)
+database = Database(
+    DATABASE_URL,
+    timeout=SQLITE_TIMEOUT,
+    min_size=DATABASE_POOL_MIN_SIZE,
+    max_size=DATABASE_POOL_MAX_SIZE,
+)
 metadata = sa.MetaData()
 
 
@@ -99,6 +105,7 @@ video_qualities = sa.Table(
     sa.Column("width", sa.Integer),
     sa.Column("height", sa.Integer),
     sa.Column("bitrate", sa.Integer),  # kbps
+    sa.Index("ix_video_qualities_video_id", "video_id"),
 )
 
 # Analytics: unique viewers (cookie-based)
@@ -126,6 +133,7 @@ playback_sessions = sa.Table(
     sa.Column("quality_used", sa.String(10), nullable=True),  # primary quality
     sa.Column("completed", sa.Boolean, default=False),  # watched >= 90%
     sa.Index("ix_playback_sessions_video_id", "video_id"),
+    sa.Index("ix_playback_sessions_viewer_id", "viewer_id"),
     sa.Index("ix_playback_sessions_started_at", "started_at"),
 )
 
@@ -151,6 +159,7 @@ transcoding_jobs = sa.Table(
     sa.Column("max_attempts", sa.Integer, default=3),
     # Error tracking
     sa.Column("last_error", sa.Text, nullable=True),
+    sa.Index("ix_transcoding_jobs_video_id", "video_id"),
     sa.Index("ix_transcoding_jobs_claim_expires", "claim_expires_at"),
 )
 
@@ -170,6 +179,7 @@ quality_progress = sa.Table(
     sa.Column("started_at", sa.DateTime, nullable=True),
     sa.Column("completed_at", sa.DateTime, nullable=True),
     sa.Column("error_message", sa.Text, nullable=True),
+    sa.Index("ix_quality_progress_job_id", "job_id"),
     sa.UniqueConstraint("job_id", "quality", name="uq_job_quality"),
 )
 
