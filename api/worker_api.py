@@ -129,7 +129,7 @@ async def check_stale_jobs():
                             claimed_at=None,
                             claim_expires_at=None,
                             worker_id=None,
-                            current_step="released",
+                            current_step=None,
                         )
                     )
 
@@ -186,6 +186,10 @@ async def lifespan(app: FastAPI):
     except asyncio.TimeoutError:
         logger.warning("Stale job checker did not stop in time, cancelling...")
         stale_job_task.cancel()
+        try:
+            await stale_job_task
+        except asyncio.CancelledError:
+            pass  # Expected when cancelling
 
     # Shutdown - release claimed jobs that haven't been completed
     logger.info("Worker API shutting down - releasing claimed jobs...")
@@ -385,7 +389,7 @@ def worker_has_gpu(worker: dict) -> bool:
             if caps.get("hwaccel_enabled"):
                 return True
         except (json.JSONDecodeError, TypeError):
-            pass
+            pass  # Malformed JSON, try metadata instead
 
     # Fall back to checking metadata.capabilities (set via heartbeat)
     if worker.get("metadata"):
@@ -395,7 +399,7 @@ def worker_has_gpu(worker: dict) -> bool:
             if capabilities.get("hwaccel_enabled"):
                 return True
         except (json.JSONDecodeError, TypeError):
-            pass
+            pass  # Malformed JSON, assume no GPU
 
     return False
 

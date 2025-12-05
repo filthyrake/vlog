@@ -697,6 +697,85 @@ class TestJobClaiming:
         assert claim_response.json()["job_id"] is not None
 
 
+class TestStaleJobDetection:
+    """Tests for stale job detection when workers go offline."""
+
+    @pytest.mark.asyncio
+    async def test_stale_job_released_when_worker_offline(self, worker_client, test_database, sample_pending_video):
+        """Test that stale jobs are released when workers go offline."""
+        import asyncio
+
+        from api.worker_api import check_stale_jobs
+
+        # Register a worker
+        response = worker_client.post(
+            "/api/worker/register",
+            json={"worker_name": "stale-test-worker"},
+        )
+        assert response.status_code == 200
+        worker_data = response.json()
+
+        # Create and claim a job
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=worker_data["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+                current_step="transcode",
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Update video status to processing
+        await test_database.execute(
+            videos.update()
+            .where(videos.c.id == sample_pending_video["id"])
+            .values(status="processing")
+        )
+
+        # Simulate worker going offline by setting old heartbeat
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        await test_database.execute(
+            workers.update()
+            .where(workers.c.worker_id == worker_data["worker_id"])
+            .values(last_heartbeat=old_time, status="active")
+        )
+
+        # Mock the shutdown event and run stale job check once
+        from api import worker_api
+        original_event = worker_api._shutdown_event
+        worker_api._shutdown_event = asyncio.Event()
+        worker_api._shutdown_event.set()  # Set immediately so it only runs once
+
+        # Run the check (will exit after first iteration due to shutdown event)
+        await check_stale_jobs()
+
+        # Restore original event
+        worker_api._shutdown_event = original_event
+
+        # Verify worker is marked offline
+        worker_record = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == worker_data["worker_id"])
+        )
+        assert worker_record["status"] == "offline"
+
+        # Verify job is released
+        job_record = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert job_record["claimed_at"] is None
+        assert job_record["worker_id"] is None
+        assert job_record["current_step"] is None
+
+        # Verify video status reset to pending
+        video_record = await test_database.fetch_one(
+            videos.select().where(videos.c.id == sample_pending_video["id"])
+        )
+        assert video_record["status"] == "pending"
+
+
 class TestProgressUpdates:
     """Tests for progress update endpoint."""
 
