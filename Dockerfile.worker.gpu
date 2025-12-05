@@ -8,7 +8,7 @@
 # =============================================================================
 # Stage 1: Build FFmpeg with hardware encoder support
 # =============================================================================
-FROM nvidia/cuda:12.2-devel-ubuntu22.04 AS ffmpeg-builder
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS ffmpeg-builder
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,6 +39,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libva-dev \
     vainfo \
     && rm -rf /var/lib/apt/lists/*
+
+# Install NVIDIA codec headers (ffnvcodec) for NVENC/CUDA support
+# Use version n12.1.14.0 for compatibility with FFmpeg 6.1 and CUDA 12.x
+WORKDIR /tmp
+RUN git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git && \
+    cd nv-codec-headers && \
+    git checkout n12.1.14.0 && \
+    make && \
+    make install
 
 # Build FFmpeg from source with hardware encoders
 WORKDIR /tmp/ffmpeg
@@ -81,16 +90,16 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
 # =============================================================================
 # Stage 2: Runtime image with GPU support
 # =============================================================================
-FROM nvidia/cuda:12.2-runtime-ubuntu22.04
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
 
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Python 3.9
-    python3.9 \
-    python3.9-venv \
+    # Python 3.10 (Ubuntu 22.04 default)
+    python3 \
+    python3-venv \
     python3-pip \
     # FFmpeg runtime libraries
     libx264-163 \
@@ -151,8 +160,8 @@ RUN pip3 install --no-cache-dir \
     httpx>=0.25.0 \
     watchdog>=3.0.0
 
-# Install the package itself
-RUN pip3 install --no-cache-dir -e .
+# Install the package itself (non-editable for container)
+RUN pip3 install --no-cache-dir .
 
 # Change ownership to non-root user
 RUN chown -R vlog:vlog /app
