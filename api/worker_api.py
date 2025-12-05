@@ -175,7 +175,7 @@ async def register_worker(data: WorkerRegisterRequest):
 
     # Validate and serialize capabilities
     capabilities_json = None
-    if data.capabilities:
+    if data.capabilities:  # None check before accessing model_dump()
         capabilities_json = json.dumps(data.capabilities.model_dump())
         if len(capabilities_json) > 10000:  # 10KB limit
             raise HTTPException(
@@ -185,7 +185,7 @@ async def register_worker(data: WorkerRegisterRequest):
 
     # Validate and serialize metadata
     metadata_json = None
-    if data.metadata:
+    if data.metadata:  # None check before accessing model_dump()
         metadata_json = json.dumps(data.metadata.model_dump())
         if len(metadata_json) > 10000:  # 10KB limit
             raise HTTPException(
