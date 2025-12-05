@@ -59,6 +59,7 @@ from config import (
     RATE_LIMIT_PUBLIC_DEFAULT,
     RATE_LIMIT_PUBLIC_VIDEOS_LIST,
     RATE_LIMIT_STORAGE_URL,
+    SECURE_COOKIES,
     VIDEOS_DIR,
 )
 
@@ -512,6 +513,7 @@ async def start_analytics_session(
             max_age=365 * 24 * 60 * 60,  # 1 year
             httponly=True,
             samesite="lax",
+            secure=SECURE_COOKIES,
         )
 
     # Create playback session linked to viewer
