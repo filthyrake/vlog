@@ -152,6 +152,35 @@ class TestVideoUploadHTTP:
             )
             assert response.status_code == 200, f"Failed for extension {ext}"
 
+    @pytest.mark.asyncio
+    async def test_upload_cleanup_on_file_save_failure(self, admin_client, test_database, test_storage, monkeypatch):
+        """Test that database record is cleaned up when file save fails."""
+        # Get initial video count
+        initial_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
+
+        # Mock save_upload_with_size_limit to raise an exception
+        async def mock_save_upload(*args, **kwargs):
+            raise Exception("Simulated disk I/O error")
+
+        # Import the admin module to patch it
+        import api.admin
+
+        # Patch the function in the admin module
+        monkeypatch.setattr(api.admin, "save_upload_with_size_limit", mock_save_upload)
+
+        # Attempt upload which should fail and raise exception (due to raise_server_exceptions=True)
+        file_content = b"fake video content"
+        with pytest.raises(Exception, match="Simulated disk I/O error"):
+            admin_client.post(
+                "/api/videos",
+                files={"file": ("test.mp4", io.BytesIO(file_content), "video/mp4")},
+                data={"title": "Test Upload Failure", "description": "Should fail and cleanup"},
+            )
+
+        # Verify no orphan record was created - count should be the same
+        final_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
+        assert final_count == initial_count, "Database record was not cleaned up after upload failure"
+
 
 class TestVideoManagementHTTP:
     """HTTP-level tests for video management endpoints."""
