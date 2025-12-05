@@ -263,24 +263,18 @@ class TestProgressUpdates:
         now = datetime.now(timezone.utc)
         expired_time = now - timedelta(minutes=5)  # Claim expired 5 minutes ago
 
-    async def test_progress_update_with_metadata(
-        self, worker_client, registered_worker, test_database, sample_pending_video
-    ):
-        """Test progress update can save video metadata."""
-        # Create and claim a job
         job_id = await test_database.execute(
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
                 worker_id=registered_worker["worker_id"],
                 claimed_at=now - timedelta(minutes=35),  # Claimed 35 minutes ago
                 claim_expires_at=expired_time,  # Expired
-                claimed_at=datetime.now(timezone.utc),
                 attempt_number=1,
                 max_attempts=3,
             )
         )
 
-        # Update progress with metadata after probing
+        # Try to update progress - should fail with 409
         response = worker_client.post(
             f"/api/worker/{job_id}/progress",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
@@ -293,18 +287,28 @@ class TestProgressUpdates:
         assert "expired" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_progress_update_extends_valid_claim(
+    async def test_progress_update_with_metadata(
         self, worker_client, registered_worker, test_database, sample_pending_video
     ):
-        """Test that progress updates extend valid (non-expired) claims."""
-        from datetime import timedelta
+        """Test progress update can save video metadata."""
+        # Create and claim a job
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
 
-        # Create a job with a valid claim (expires in the future)
-        now = datetime.now(timezone.utc)
-        future_expiry = now + timedelta(minutes=25)  # Still 25 minutes left
-
+        # Update progress with metadata after probing
+        response = worker_client.post(
+            f"/api/worker/{job_id}/progress",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
                 "current_step": "probe",
-                "progress_percent": 8,
+                "progress_percent": 10,
                 "duration": 120.5,
                 "source_width": 1920,
                 "source_height": 1080,
