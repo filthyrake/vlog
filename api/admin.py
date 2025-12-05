@@ -78,6 +78,7 @@ from config import (
     RATE_LIMIT_ADMIN_UPLOAD,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
+    SUPPORTED_VIDEO_EXTENSIONS,
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
@@ -96,8 +97,8 @@ limiter = Limiter(
 # Initialize analytics cache
 analytics_cache = AnalyticsCache(ttl_seconds=ANALYTICS_CACHE_TTL, enabled=ANALYTICS_CACHE_ENABLED)
 
-# Allowed video file extensions
-ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+# Use centralized video extensions from config
+ALLOWED_VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
 
 # Input length limits
 MAX_TITLE_LENGTH = 255
@@ -629,7 +630,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
             shutil.rmtree(archive_dir)
 
         # Delete source file from uploads if still there
-        for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+        for ext in SUPPORTED_VIDEO_EXTENSIONS:
             upload_file = UPLOADS_DIR / f"{video_id}{ext}"
             if upload_file.exists():
                 upload_file.unlink()
@@ -655,7 +656,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
                 moved_files.append(("dir", archive_video_dir, video_dir))
 
             # Move source file to archive if still in uploads
-            for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+            for ext in SUPPORTED_VIDEO_EXTENSIONS:
                 upload_file = UPLOADS_DIR / f"{video_id}{ext}"
                 if upload_file.exists():
                     archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
@@ -704,7 +705,7 @@ async def restore_video(request: Request, video_id: int):
             moved_files.append(("dir", video_dir, archive_video_dir))
 
         # Move source file back if archived
-        for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+        for ext in SUPPORTED_VIDEO_EXTENSIONS:
             archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
             if archive_upload.exists():
                 upload_file = UPLOADS_DIR / f"{video_id}{ext}"
@@ -737,7 +738,7 @@ async def retry_video(request: Request, video_id: int):
 
     # Check if source file exists
     source_exists = False
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         if (UPLOADS_DIR / f"{video_id}{ext}").exists():
             source_exists = True
             break
@@ -812,7 +813,7 @@ async def re_upload_video(
         video_dir.mkdir(parents=True, exist_ok=True)
 
     # 2. Delete old source file from uploads
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         upload_file = UPLOADS_DIR / f"{video_id}{ext}"
         if upload_file.exists():
             upload_file.unlink()
@@ -1012,7 +1013,7 @@ async def retranscode_video(
 
     # Check if source file exists
     source_file = None
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         candidate = UPLOADS_DIR / f"{video_id}{ext}"
         if candidate.exists():
             source_file = candidate

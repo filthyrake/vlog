@@ -46,6 +46,7 @@ from config import (
     MAX_RETRY_ATTEMPTS,
     PROGRESS_UPDATE_INTERVAL,
     QUALITY_PRESETS,
+    SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
     WORKER_DEBOUNCE_DELAY,
@@ -212,7 +213,7 @@ class UploadEventHandler(FileSystemEventHandler):
     Sets an asyncio event when new video files are detected.
     """
 
-    VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+    VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
 
     def __init__(self, loop: asyncio.AbstractEventLoop, event: asyncio.Event):
         super().__init__()
@@ -1211,7 +1212,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
     # Find the source file
     source_file = None
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         candidate = UPLOADS_DIR / f"{video_id}{ext}"
         if candidate.exists():
             source_file = candidate
@@ -1849,7 +1850,7 @@ async def cleanup_expired_archives():
                 shutil.rmtree(archive_dir)
 
             # Delete source file from uploads if still there
-            for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+            for ext in SUPPORTED_VIDEO_EXTENSIONS:
                 upload_file = UPLOADS_DIR / f"{video_id}{ext}"
                 if upload_file.exists():
                     upload_file.unlink()

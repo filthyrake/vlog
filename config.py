@@ -1,6 +1,10 @@
 import os
 from pathlib import Path
 
+# Supported video file extensions (centralized to avoid duplication)
+SUPPORTED_VIDEO_EXTENSIONS = frozenset([".mp4", ".mkv", ".webm", ".mov", ".avi"])
+SUPPORTED_VIDEO_EXTENSIONS_STR = ", ".join(sorted(SUPPORTED_VIDEO_EXTENSIONS))
+
 # Paths - configurable via environment variables
 BASE_DIR = Path(__file__).parent
 NAS_STORAGE = Path(os.getenv("VLOG_STORAGE_PATH", "/mnt/nas/vlog-storage"))
