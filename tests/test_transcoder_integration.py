@@ -263,36 +263,63 @@ class TestTranscodingJobDatabase:
         """Test that get_or_create_job handles race condition gracefully."""
         # Local imports are necessary here for proper module patching
         # Importing at module level would prevent patching the database instance
+        from sqlite3 import IntegrityError
         from unittest.mock import patch
 
         import worker.transcoder as transcoder_module
 
-        # Temporarily patch the database in the transcoder module to use our test database
+        # First, create a job that already exists in the database
+        # This simulates another worker having already created the job
+        now = datetime.now(timezone.utc)
+        existing_job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="other-worker",
+                current_step=None,
+                progress_percent=0,
+                started_at=now,
+                last_checkpoint=now,
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Now test that get_or_create_job handles IntegrityError when trying to insert
+        # We'll mock the database.execute to raise IntegrityError on INSERT attempt
+        original_execute = integration_database.execute
+        call_count = 0
+
+        async def mock_execute(query):
+            nonlocal call_count
+            call_count += 1
+            # Check if this is an INSERT into transcoding_jobs
+            query_str = str(query)
+            if "INSERT INTO transcoding_jobs" in query_str:
+                # Simulate the race condition: another worker already inserted
+                raise IntegrityError("UNIQUE constraint failed: transcoding_jobs.video_id")
+            # For other queries (like SELECT), use the original execute
+            return await original_execute(query)
+
+        # Patch the database in the transcoder module to use our test database
         with patch.object(transcoder_module, "database", integration_database):
-            with patch.object(transcoder_module, "WORKER_ID", "test-worker-race-1"):
-                # First worker creates the job
-                job1 = await transcoder_module.get_or_create_job(integration_video["id"])
-                assert job1 is not None
-                assert job1["video_id"] == integration_video["id"]
-                assert job1["worker_id"] == "test-worker-race-1"
-                job1_id = job1["id"]
+            with patch.object(transcoder_module, "WORKER_ID", "test-worker"):
+                # Mock execute to force IntegrityError on INSERT
+                with patch.object(integration_database, "execute", side_effect=mock_execute):
+                    # This should catch the IntegrityError and fetch the existing job
+                    job = await transcoder_module.get_or_create_job(integration_video["id"])
 
-            # Simulate second worker trying to create the same job
-            with patch.object(transcoder_module, "WORKER_ID", "test-worker-race-2"):
-                # This should return the existing job, not create a duplicate
-                job2 = await transcoder_module.get_or_create_job(integration_video["id"])
-                assert job2 is not None
-                assert job2["id"] == job1_id  # Same job ID
-                assert job2["video_id"] == integration_video["id"]
-                # Worker ID should be from first worker who created it
-                assert job2["worker_id"] == "test-worker-race-1"
+                    # Verify it returned the existing job, not a new one
+                    assert job is not None
+                    assert job["id"] == existing_job_id
+                    assert job["video_id"] == integration_video["id"]
+                    assert job["worker_id"] == "other-worker"  # From the pre-existing job
 
-        # Verify only one job exists in the database
+        # Verify only one job exists in the database (no duplicate was created)
         all_jobs = await integration_database.fetch_all(
             transcoding_jobs.select().where(transcoding_jobs.c.video_id == integration_video["id"])
         )
         assert len(all_jobs) == 1
-        assert all_jobs[0]["id"] == job1_id
+        assert all_jobs[0]["id"] == existing_job_id
 
 
 class TestVideoStatusTransitions:
