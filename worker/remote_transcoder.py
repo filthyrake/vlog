@@ -202,14 +202,18 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             # Define progress callback that updates the API
             last_update_time = [0.0]  # Use list to allow mutation in closure
 
-            async def update_quality_progress(pct: int):
+            # Use default arguments to capture loop variables by value, not reference
+            # (classic Python late binding closure fix)
+            async def update_quality_progress(
+                pct: int, qidx: int = quality_idx, qname: str = quality_name
+            ):
                 import time
 
                 now = time.time()
                 # Only update every 5 seconds to avoid flooding the API
                 if now - last_update_time[0] >= 5.0:
-                    quality_progress_list[quality_idx] = {
-                        "name": quality_name,
+                    quality_progress_list[qidx] = {
+                        "name": qname,
                         "status": "in_progress",
                         "progress": pct,
                     }
