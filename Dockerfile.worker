@@ -4,7 +4,7 @@
 # Build: docker build -f Dockerfile.worker -t vlog-worker .
 # Run: docker run -e VLOG_WORKER_API_KEY=<key> -e VLOG_WORKER_API_URL=http://host:9002 vlog-worker
 
-FROM python:3.9-slim
+FROM python:3.14-slim
 
 # Install FFmpeg and other dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
