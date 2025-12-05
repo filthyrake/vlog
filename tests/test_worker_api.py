@@ -344,11 +344,12 @@ class TestGracefulShutdown:
         from api.worker_api import lifespan
 
         # Create a claimed job
+        now = datetime.now(timezone.utc)
         job_id = await test_database.execute(
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
-                claimed_at=datetime.now(timezone.utc),
-                claim_expires_at=datetime.now(timezone.utc),
+                claimed_at=now,
+                claim_expires_at=now,
                 worker_id=registered_worker["worker_id"],
                 current_step="processing",
                 attempt_number=1,
@@ -416,14 +417,14 @@ class TestGracefulShutdown:
         from api.worker_api import lifespan
 
         # Create a completed job
-        completed_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
         job_id = await test_database.execute(
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
-                claimed_at=datetime.now(timezone.utc),
-                claim_expires_at=datetime.now(timezone.utc),
+                claimed_at=now,
+                claim_expires_at=now,
                 worker_id=registered_worker["worker_id"],
-                completed_at=completed_at,
+                completed_at=now,
                 current_step="finalize",
                 progress_percent=100,
                 attempt_number=1,
