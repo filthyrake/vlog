@@ -8,7 +8,7 @@
 # =============================================================================
 # Stage 1: Build FFmpeg with hardware encoder support
 # =============================================================================
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS ffmpeg-builder
+FROM nvidia/cuda:13.0.2-devel-ubuntu22.04 AS ffmpeg-builder
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -90,7 +90,7 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
 # =============================================================================
 # Stage 2: Runtime image with GPU support
 # =============================================================================
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.2-runtime-ubuntu22.04
 
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
