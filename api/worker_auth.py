@@ -53,7 +53,7 @@ async def verify_worker_key(api_key: Optional[str] = Security(api_key_header)) -
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     # Use timing-safe comparison to prevent timing attacks on the hash
-    if not hmac.compare_digest(key_hash.encode(), key_record["key_hash"].encode()):
+    if not hmac.compare_digest(key_hash, key_record["key_hash"]):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     # Check expiration (handle both timezone-aware and naive datetimes from SQLite)
