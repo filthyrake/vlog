@@ -165,6 +165,125 @@ class WorkerAPIClient:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
 
+    async def upload_quality(
+        self,
+        video_id: int,
+        quality_name: str,
+        output_dir: Path,
+    ) -> dict:
+        """
+        Upload a single quality's HLS files after transcoding completes.
+
+        Args:
+            video_id: The video ID
+            quality_name: Quality name (e.g., "original", "2160p", "1080p")
+            output_dir: Directory containing HLS files
+
+        Returns:
+            Server response
+        """
+        # Create tar.gz of just this quality's files
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            with tarfile.open(tmp_path, "w:gz") as tar:
+                # Add playlist file
+                playlist = output_dir / f"{quality_name}.m3u8"
+                if playlist.exists():
+                    tar.add(playlist, arcname=playlist.name)
+
+                # Add segment files
+                for segment in output_dir.glob(f"{quality_name}_*.ts"):
+                    tar.add(segment, arcname=segment.name)
+
+            file_size = tmp_path.stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+
+            # Dynamic timeout: 5 min base + 1 min per 100MB
+            upload_timeout = max(300, 300 + (file_size // (100 * 1024 * 1024)) * 60)
+            upload_timeout = min(upload_timeout, 3600)  # Cap at 1 hour
+
+            # Upload using multipart form
+            client = await self._get_client()
+            url = f"{self.base_url}/api/worker/upload/{video_id}/quality/{quality_name}"
+
+            with open(tmp_path, "rb") as f:
+                files = {"file": ("quality.tar.gz", f, "application/gzip")}
+                resp = await client.post(
+                    url,
+                    files=files,
+                    headers=self.headers,
+                    timeout=upload_timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as e:
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            raise WorkerAPIError(e.response.status_code, detail)
+        except httpx.TimeoutException as e:
+            raise WorkerAPIError(
+                0,
+                f"Upload timeout for {quality_name} ({file_size_mb:.1f}MB): {e}",
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    async def upload_finalize(
+        self,
+        video_id: int,
+        output_dir: Path,
+    ) -> dict:
+        """
+        Upload final files (master.m3u8 and thumbnail.jpg) after all qualities uploaded.
+
+        Args:
+            video_id: The video ID
+            output_dir: Directory containing the files
+
+        Returns:
+            Server response
+        """
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            with tarfile.open(tmp_path, "w:gz") as tar:
+                # Add master playlist
+                master = output_dir / "master.m3u8"
+                if master.exists():
+                    tar.add(master, arcname=master.name)
+
+                # Add thumbnail
+                thumb = output_dir / "thumbnail.jpg"
+                if thumb.exists():
+                    tar.add(thumb, arcname=thumb.name)
+
+            client = await self._get_client()
+            url = f"{self.base_url}/api/worker/upload/{video_id}/finalize"
+
+            with open(tmp_path, "rb") as f:
+                files = {"file": ("finalize.tar.gz", f, "application/gzip")}
+                resp = await client.post(
+                    url,
+                    files=files,
+                    headers=self.headers,
+                    timeout=60,  # Small files, short timeout
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as e:
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            raise WorkerAPIError(e.response.status_code, detail)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     async def upload_hls(
         self,
         video_id: int,
