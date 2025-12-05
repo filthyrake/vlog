@@ -2,7 +2,7 @@ import math
 from datetime import datetime
 from typing import List, Optional, Set
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 # Maximum position value (24 hours in seconds)
 MAX_POSITION_SECONDS = 86400
@@ -188,8 +188,9 @@ class PlaybackHeartbeat(BaseModel):
     quality: Optional[str] = None
     playing: bool = True
 
-    @validator("position")
-    def validate_position(cls, v):
+    @field_validator("position")
+    @classmethod
+    def validate_position(cls, v: float) -> float:
         if not math.isfinite(v):
             raise ValueError("position must be a finite number")
         if v < 0:
@@ -204,8 +205,9 @@ class PlaybackEnd(BaseModel):
     position: float
     completed: bool = False
 
-    @validator("position")
-    def validate_position(cls, v):
+    @field_validator("position")
+    @classmethod
+    def validate_position(cls, v: float) -> float:
         if not math.isfinite(v):
             raise ValueError("position must be a finite number")
         if v < 0:
@@ -319,8 +321,9 @@ class TranscriptionResponse(BaseModel):
 class TranscriptionTrigger(BaseModel):
     language: Optional[str] = Field(default=None, description="ISO 639-1 language code")
 
-    @validator("language")
-    def validate_language(cls, v):
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
             v = v.lower().strip()
             if v not in WHISPER_LANGUAGES:
@@ -333,10 +336,11 @@ class TranscriptionUpdate(BaseModel):
 
 
 class RetranscodeRequest(BaseModel):
-    qualities: List[str] = Field(..., min_items=1)
+    qualities: List[str] = Field(..., min_length=1)
 
-    @validator("qualities")
-    def validate_qualities(cls, v):
+    @field_validator("qualities")
+    @classmethod
+    def validate_qualities(cls, v: List[str]) -> List[str]:
         valid_qualities = {"all", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p"}
         for q in v:
             if q not in valid_qualities:

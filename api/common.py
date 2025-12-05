@@ -4,6 +4,9 @@ Common utilities shared between public and admin APIs.
 This module contains shared code to avoid duplication (DRY principle).
 """
 
+import asyncio
+import uuid
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
@@ -12,6 +15,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.database import database
 from config import TRUSTED_PROXIES, UPLOADS_DIR, VIDEOS_DIR
+
+# Timeout for storage health check (seconds)
+STORAGE_CHECK_TIMEOUT = 5
 
 
 def get_real_ip(request: Request) -> str:
@@ -64,6 +70,29 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSO
     )
 
 
+def _check_storage_sync() -> bool:
+    """
+    Synchronous storage check that verifies both existence and writability.
+
+    This runs in a thread pool to avoid blocking the event loop, and includes
+    a write test to detect read-only mounts, permission issues, or full disks.
+    """
+    try:
+        # Check directories exist
+        if not VIDEOS_DIR.exists() or not UPLOADS_DIR.exists():
+            return False
+
+        # Test write capability by creating and removing a temp file
+        # Use uploads dir since that's where new files arrive
+        test_file = UPLOADS_DIR / f".health_check_{uuid.uuid4().hex}"
+        test_file.write_text("health check")
+        test_file.unlink()
+
+        return True
+    except (IOError, OSError, PermissionError):
+        return False
+
+
 async def check_health() -> dict:
     """
     Perform health checks for database and storage.
@@ -85,9 +114,17 @@ async def check_health() -> dict:
     except Exception:
         pass
 
-    # Check storage accessibility (NAS mount)
+    # Check storage accessibility (NAS mount) with timeout
+    # Uses a timeout to detect stale NFS mounts that would otherwise hang
     try:
-        checks["storage"] = VIDEOS_DIR.exists() and UPLOADS_DIR.exists()
+        loop = asyncio.get_running_loop()
+        checks["storage"] = await asyncio.wait_for(
+            loop.run_in_executor(None, _check_storage_sync),
+            timeout=STORAGE_CHECK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        # Storage check timed out - likely a stale mount
+        checks["storage"] = False
     except Exception:
         pass
 

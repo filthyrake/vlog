@@ -3,6 +3,7 @@ Admin API - handles uploads and video management.
 Runs on port 9001 (not exposed externally).
 """
 
+import logging
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -82,6 +83,8 @@ from config import (
     VIDEOS_DIR,
 )
 
+logger = logging.getLogger(__name__)
+
 # Initialize rate limiter for admin API
 limiter = Limiter(
     key_func=get_real_ip,
@@ -137,6 +140,13 @@ async def save_upload_with_size_limit(file: UploadFile, upload_path: Path, max_s
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
+    # Warn about in-memory rate limiting limitations
+    if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
+        logger.warning(
+            "Rate limiting is using in-memory storage. "
+            "For production deployments with multiple instances, configure Redis: "
+            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379"
+        )
     create_tables()
     await database.connect()
     await configure_sqlite_pragmas()

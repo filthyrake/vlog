@@ -3,6 +3,7 @@ Public API - serves the video browsing interface.
 Runs on port 9000.
 """
 
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -61,6 +62,8 @@ from config import (
     VIDEOS_DIR,
 )
 
+logger = logging.getLogger(__name__)
+
 # Initialize rate limiter
 # Uses in-memory storage by default, can be configured to use Redis
 limiter = Limiter(
@@ -73,6 +76,13 @@ limiter = Limiter(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
+    # Warn about in-memory rate limiting limitations
+    if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
+        logger.warning(
+            "Rate limiting is using in-memory storage. "
+            "For production deployments with multiple instances, configure Redis: "
+            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379"
+        )
     await database.connect()
     await configure_sqlite_pragmas()
     yield
