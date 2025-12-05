@@ -713,11 +713,23 @@ async def upload_hls(
     output_dir = VIDEOS_DIR / video["slug"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save uploaded tar.gz to temp file
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = Path(tmp.name)
+    # Save uploaded tar.gz to temp file using streaming writes to avoid memory exhaustion
+    tmp_path = None
+    try:
+        # Create temp file path
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        # Stream file contents to disk in chunks
+        with open(tmp_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):  # 1MB chunks
+                f.write(chunk)
+    except Exception as e:
+        # Cleanup temp file on error
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        logger.error(f"Failed to save upload for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
         with tarfile.open(tmp_path, "r:gz") as tar:
