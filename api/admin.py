@@ -488,8 +488,8 @@ async def upload_video(
 
         # Create output directory
         (VIDEOS_DIR / slug).mkdir(parents=True, exist_ok=True)
-    except Exception:
-        # Clean up orphan database record
+    except (HTTPException, OSError, IOError):
+        # Clean up orphan database record on upload failure or filesystem errors
         await database.execute(videos.delete().where(videos.c.id == video_id))
         raise
 
