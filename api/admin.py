@@ -463,6 +463,9 @@ async def upload_video(
                 category_id=category_id if category_id else None,
                 status=VideoStatus.PENDING,
                 created_at=datetime.now(timezone.utc),
+                duration=0,
+                source_width=0,
+                source_height=0,
             )
             video_id = await database.execute(query)
         except IntegrityError:
