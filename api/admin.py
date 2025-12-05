@@ -807,6 +807,17 @@ async def re_upload_video(
             )
         )
 
+        # Create new transcoding job for remote workers to claim
+        await database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                current_step="pending",
+                progress_percent=0,
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
     # === UPLOAD NEW FILE === (file_ext already validated above)
     # Done after transaction so DB state is consistent even if upload fails
     upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
