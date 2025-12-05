@@ -189,7 +189,7 @@
                                                         <template x-for="q in progressData[video.id].qualities" :key="q.name">
                                                             <span
                                                                 :class="{
-                                                                    'bg-green-500/20 text-green-400': q.status === 'completed',
+                                                                    'bg-green-500/20 text-green-400': q.status === 'completed' || q.status === 'uploaded',
                                                                     'bg-yellow-500/20 text-yellow-400': q.status === 'in_progress',
                                                                     'bg-dark-700 text-dark-400': q.status === 'pending'
                                                                 }"

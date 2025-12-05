@@ -167,7 +167,7 @@ class ClaimJobResponse(BaseModel):
 # Progress updates
 class QualityProgressUpdate(BaseModel):
     name: str
-    status: str = Field(pattern="^(pending|in_progress|completed|failed|skipped)$")
+    status: str = Field(pattern="^(pending|in_progress|completed|uploaded|failed|skipped)$")
     progress: int = Field(ge=0, le=100)
 
 

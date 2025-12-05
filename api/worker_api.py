@@ -636,6 +636,218 @@ async def download_source(
     )
 
 
+@app.post("/api/worker/upload/{video_id}/quality/{quality_name}", response_model=StatusResponse)
+async def upload_quality(
+    video_id: int,
+    quality_name: str,
+    file: UploadFile = File(...),
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Upload a single quality's HLS files (tar.gz of playlist + segments).
+
+    Called after each quality finishes transcoding. This allows:
+    - Incremental upload as qualities complete
+    - Reduced disk space on worker (delete after upload)
+    - Partial progress saved if worker crashes
+    - Server can start serving partial content earlier
+
+    Expected files in archive:
+    - {quality_name}.m3u8 (quality playlist)
+    - {quality_name}_XXXX.ts (segments)
+    """
+    job = await database.fetch_one(
+        transcoding_jobs.select()
+        .where(transcoding_jobs.c.video_id == video_id)
+        .where(transcoding_jobs.c.worker_id == worker["worker_id"])
+    )
+    if not job:
+        raise HTTPException(status_code=403, detail="Not your job or job not found")
+
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    output_dir = VIDEOS_DIR / video["slug"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save uploaded tar.gz to temp file using streaming writes
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        with open(tmp_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+    except Exception as e:
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        logger.error(f"Failed to save quality upload for video {video_id}/{quality_name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save upload")
+
+    try:
+        with tarfile.open(tmp_path, "r:gz") as tar:
+            output_dir_resolved = output_dir.resolve()
+            extracted_count = 0
+            extracted_size = 0
+
+            for member in tar.getmembers():
+                extracted_count += 1
+                if extracted_count > MAX_HLS_ARCHIVE_FILES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Archive contains too many files (limit: {MAX_HLS_ARCHIVE_FILES})",
+                    )
+
+                if member.isfile() and member.size > MAX_HLS_SINGLE_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File too large: {member.name} ({member.size} bytes)",
+                    )
+
+                extracted_size += member.size
+                if extracted_size > MAX_HLS_ARCHIVE_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Archive too large (limit: {MAX_HLS_ARCHIVE_SIZE} bytes)",
+                    )
+
+                if member.issym() or member.islnk():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid archive: symlinks not allowed ({member.name})",
+                    )
+
+                if not (member.isfile() or member.isdir()):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid archive: unsupported file type ({member.name})",
+                    )
+
+                # Validate file belongs to this quality
+                if member.isfile():
+                    valid_extensions = (".m3u8", ".ts", ".jpg", ".vtt")
+                    if not member.name.endswith(valid_extensions):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid file type: {member.name}",
+                        )
+
+                member_path = output_dir / member.name
+                try:
+                    if member_path.exists():
+                        dest_resolved = member_path.resolve()
+                    else:
+                        dest_resolved = member_path.parent.resolve() / member_path.name
+                except (ValueError, OSError) as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid path {member.name}: {e}",
+                    )
+
+                try:
+                    dest_resolved.relative_to(output_dir_resolved)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Path traversal detected ({member.name})",
+                    )
+
+                tar.extract(member, output_dir)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    # Update quality_progress to mark as uploaded
+    await database.execute(
+        quality_progress.update()
+        .where(quality_progress.c.job_id == job["id"])
+        .where(quality_progress.c.quality == quality_name)
+        .values(status="uploaded")
+    )
+
+    logger.info(f"Quality {quality_name} uploaded for video {video['slug']}")
+    return StatusResponse(status="ok", message=f"Quality {quality_name} uploaded successfully")
+
+
+@app.post("/api/worker/upload/{video_id}/finalize", response_model=StatusResponse)
+async def upload_finalize(
+    video_id: int,
+    file: UploadFile = File(...),
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Upload final files after all qualities: master.m3u8 and thumbnail.jpg.
+
+    Called after all quality uploads complete.
+    """
+    job = await database.fetch_one(
+        transcoding_jobs.select()
+        .where(transcoding_jobs.c.video_id == video_id)
+        .where(transcoding_jobs.c.worker_id == worker["worker_id"])
+    )
+    if not job:
+        raise HTTPException(status_code=403, detail="Not your job or job not found")
+
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    output_dir = VIDEOS_DIR / video["slug"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        with open(tmp_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+    except Exception as e:
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        logger.error(f"Failed to save finalize upload for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save upload")
+
+    try:
+        with tarfile.open(tmp_path, "r:gz") as tar:
+            output_dir_resolved = output_dir.resolve()
+
+            for member in tar.getmembers():
+                if member.issym() or member.islnk():
+                    raise HTTPException(status_code=400, detail="Symlinks not allowed")
+
+                if member.isfile():
+                    # Only allow master.m3u8 and thumbnail.jpg
+                    if member.name not in ("master.m3u8", "thumbnail.jpg"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Unexpected file in finalize: {member.name}",
+                        )
+
+                member_path = output_dir / member.name
+                try:
+                    if member_path.exists():
+                        dest_resolved = member_path.resolve()
+                    else:
+                        dest_resolved = member_path.parent.resolve() / member_path.name
+                except (ValueError, OSError) as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid path: {e}")
+
+                try:
+                    dest_resolved.relative_to(output_dir_resolved)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Path traversal detected")
+
+                tar.extract(member, output_dir)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    logger.info(f"Finalize files uploaded for video {video['slug']}")
+    return StatusResponse(status="ok", message="Finalize files uploaded successfully")
+
+
 @app.post("/api/worker/upload/{video_id}", response_model=StatusResponse)
 async def upload_hls(
     video_id: int,
@@ -646,6 +858,9 @@ async def upload_hls(
     Upload HLS output files (tar.gz archive of video directory).
 
     Worker packages: master.m3u8, quality playlists, .ts segments, thumbnail.jpg
+
+    DEPRECATED: Use /upload/{video_id}/quality/{name} for incremental uploads.
+    This endpoint remains for backwards compatibility.
     """
     job = await database.fetch_one(
         transcoding_jobs.select()

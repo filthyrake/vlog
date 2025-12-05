@@ -177,8 +177,25 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     "bitrate": bitrate_bps // 1000,  # Convert to kbps
                 }
             )
-            quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
             print("    original: Done")
+
+            # Upload original quality immediately
+            print("    original: Uploading...")
+            try:
+                await client.upload_quality(video_id, "original", output_dir)
+                quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
+                print("    original: Uploaded")
+
+                # Delete local files to free disk space
+                playlist_file = output_dir / "original.m3u8"
+                if playlist_file.exists():
+                    playlist_file.unlink()
+                for segment in output_dir.glob("original_*.ts"):
+                    segment.unlink()
+                print("    original: Local files cleaned up")
+            except WorkerAPIError as e:
+                quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
+                print(f"    original: Upload failed - {e.message}")
         else:
             quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
             failed_qualities.append("original")
@@ -258,8 +275,26 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "bitrate": int(quality["bitrate"].replace("k", "")),
                     }
                 )
-                quality_progress_list[quality_idx] = {"name": quality_name, "status": "completed", "progress": 100}
                 print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
+
+                # Upload this quality immediately to free disk space
+                print(f"    {quality_name}: Uploading...")
+                try:
+                    await client.upload_quality(video_id, quality_name, output_dir)
+                    quality_progress_list[quality_idx] = {"name": quality_name, "status": "uploaded", "progress": 100}
+                    print(f"    {quality_name}: Uploaded")
+
+                    # Delete local files to free disk space
+                    playlist_file = output_dir / f"{quality_name}.m3u8"
+                    if playlist_file.exists():
+                        playlist_file.unlink()
+                    for segment in output_dir.glob(f"{quality_name}_*.ts"):
+                        segment.unlink()
+                    print(f"    {quality_name}: Local files cleaned up")
+                except WorkerAPIError as e:
+                    # Upload failed - keep files, mark as completed (not uploaded)
+                    quality_progress_list[quality_idx] = {"name": quality_name, "status": "completed", "progress": 100}
+                    print(f"    {quality_name}: Upload failed - {e.message}")
             else:
                 quality_progress_list[quality_idx] = {"name": quality_name, "status": "failed", "progress": 0}
                 failed_qualities.append(quality_name)
@@ -289,29 +324,12 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
         generate_master_playlist(output_dir, master_qualities)
 
-        # Upload HLS files
-        print("  Uploading HLS files...")
+        # Upload finalize files (master.m3u8 + thumbnail.jpg)
+        # Quality files were already uploaded incrementally after each transcode
+        print("  Uploading master playlist and thumbnail...")
         await client.update_progress(job_id, "upload", 98, quality_progress_list)
-
-        # Define upload progress callback to extend claim during long uploads
-        async def upload_progress(bytes_sent: int, total_bytes: int):
-            """Called periodically during upload to extend the job claim."""
-            pct = int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0
-            # Map upload progress (0-100%) to overall progress (98-99%)
-            # 100% is reserved for job completion
-            overall_pct = 98 if pct < 100 else 99
-            mb_sent = bytes_sent / (1024 * 1024)
-            mb_total = total_bytes / (1024 * 1024)
-            print(f"    Uploading: {mb_sent:.1f}/{mb_total:.1f} MB ({pct}%)")
-            try:
-                await client.update_progress(job_id, "upload", overall_pct, quality_progress_list)
-            except WorkerAPIError as e:
-                if e.status_code == 409:
-                    # Claim expired during upload
-                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                raise
-
-        await client.upload_hls(video_id, output_dir, progress_callback=upload_progress)
+        await client.upload_finalize(video_id, output_dir)
+        print("  Finalize files uploaded")
 
         # Complete job
         print("  Marking job complete...")
