@@ -68,11 +68,13 @@ def signal_handler(sig, frame):
     shutdown_requested = True
 
 
-async def heartbeat_loop(client: WorkerAPIClient):
+async def heartbeat_loop(client: WorkerAPIClient, state: dict):
     """Background task to send periodic heartbeats."""
     while not shutdown_requested:
+        # Determine status based on whether we're processing a job
+        status = "busy" if state.get("processing_job") else "idle"
         try:
-            await client.heartbeat(status="active")
+            await client.heartbeat(status=status)
         except WorkerAPIError as e:
             print(f"Heartbeat failed: {e.message}")
         except Exception as e:
@@ -121,6 +123,16 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         source_width = info["width"]
         source_height = info["height"]
         print(f"    Source: {source_width}x{source_height}, {duration:.1f}s, codec={info['codec']}")
+
+        # Update video metadata immediately after probing to prevent data loss if worker crashes
+        await client.update_progress(
+            job_id,
+            "probe",
+            8,
+            duration=duration,
+            source_width=source_width,
+            source_height=source_height,
+        )
 
         # Generate thumbnail
         print("  Generating thumbnail...")
@@ -373,14 +385,17 @@ async def worker_loop():
 
     # Verify connection with initial heartbeat (include capabilities)
     try:
-        await client.heartbeat(metadata={"capabilities": worker_caps})
+        await client.heartbeat(status="idle", metadata={"capabilities": worker_caps})
         print("  Connected to Worker API")
     except WorkerAPIError as e:
         print(f"ERROR: Failed to connect to Worker API: {e.message}")
         sys.exit(1)
 
+    # Create worker state for tracking job status
+    worker_state = {"processing_job": None}
+
     # Start heartbeat background task
-    heartbeat_task = asyncio.create_task(heartbeat_loop(client))
+    heartbeat_task = asyncio.create_task(heartbeat_loop(client, worker_state))
 
     jobs_processed = 0
     jobs_failed = 0
@@ -392,7 +407,14 @@ async def worker_loop():
                 result = await client.claim_job()
 
                 if result.get("job_id"):
+                    # Mark that we're processing a job
+                    worker_state["processing_job"] = result.get("job_id")
+
                     success = await process_job(client, result)
+
+                    # Clear the processing state
+                    worker_state["processing_job"] = None
+
                     if success:
                         jobs_processed += 1
                     else:
@@ -403,9 +425,13 @@ async def worker_loop():
 
             except WorkerAPIError as e:
                 print(f"API error in worker loop: {e.message}")
+                # Clear processing state on error
+                worker_state["processing_job"] = None
                 await asyncio.sleep(WORKER_POLL_INTERVAL)
             except Exception as e:
                 print(f"Error in worker loop: {e}")
+                # Clear processing state on error
+                worker_state["processing_job"] = None
                 await asyncio.sleep(WORKER_POLL_INTERVAL)
 
     finally:

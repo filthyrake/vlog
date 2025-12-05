@@ -218,15 +218,17 @@ async def detect_nvidia_gpu() -> Optional[GPUCapabilities]:
 
     for encoder_name, codec in nvenc_encoders.items():
         if encoder_name in available:
-            info = EncoderInfo(
-                name=encoder_name,
-                codec=codec,
-                hwaccel_type=HWAccelType.NVIDIA,
-                is_hardware=True,
-            )
-            if codec not in caps.encoders:
-                caps.encoders[codec] = []
-            caps.encoders[codec].append(info)
+            # Verify encoder actually works with a quick test
+            if await _test_nvenc_encoder(encoder_name):
+                info = EncoderInfo(
+                    name=encoder_name,
+                    codec=codec,
+                    hwaccel_type=HWAccelType.NVIDIA,
+                    is_hardware=True,
+                )
+                if codec not in caps.encoders:
+                    caps.encoders[codec] = []
+                caps.encoders[codec].append(info)
 
     caps.supports_h264 = VideoCodec.H264 in caps.encoders
     caps.supports_hevc = VideoCodec.HEVC in caps.encoders
@@ -341,6 +343,30 @@ async def _test_vaapi_encoder(encoder_name: str, device_path: str) -> bool:
         "color=black:s=64x64:d=0.1",
         "-vf",
         "format=nv12,hwupload",
+        "-c:v",
+        encoder_name,
+        "-f",
+        "null",
+        "-",
+    ]
+
+    returncode, _, _ = await _run_command(cmd, timeout=15.0)
+    return returncode == 0
+
+
+async def _test_nvenc_encoder(encoder_name: str) -> bool:
+    """Test if an NVENC encoder actually works (not just listed)."""
+    # Quick encode test with null output
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-y",
+        "-hwaccel",
+        "cuda",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=black:s=64x64:d=0.1",
         "-c:v",
         encoder_name,
         "-f",

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from api.database import transcoding_jobs, videos
+from api.database import transcoding_jobs, videos, workers
 
 
 class TestWorkerRegistration:
@@ -78,6 +78,78 @@ class TestWorkerHeartbeat:
             json={"status": "active"},
         )
         assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_idle_status(self, worker_client, registered_worker, test_database):
+        """Test heartbeat with idle status."""
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle"},
+        )
+        assert response.status_code == 200
+
+        # Verify the status was actually stored in the database
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_busy_status(self, worker_client, registered_worker, test_database):
+        """Test heartbeat with busy status."""
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "busy"},
+        )
+        assert response.status_code == 200
+
+        # Verify the status was actually stored in the database
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "busy"
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_status_transition(self, worker_client, registered_worker, test_database):
+        """Test status transitions from idle to busy to idle."""
+
+        # Start with idle
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle"},
+        )
+        assert response.status_code == 200
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "idle"
+
+        # Transition to busy
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "busy"},
+        )
+        assert response.status_code == 200
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "busy"
+
+        # Return to idle
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle"},
+        )
+        assert response.status_code == 200
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "idle"
 
 
 class TestJobClaiming:
@@ -191,17 +263,24 @@ class TestProgressUpdates:
         now = datetime.now(timezone.utc)
         expired_time = now - timedelta(minutes=5)  # Claim expired 5 minutes ago
 
+    async def test_progress_update_with_metadata(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test progress update can save video metadata."""
+        # Create and claim a job
         job_id = await test_database.execute(
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
                 worker_id=registered_worker["worker_id"],
                 claimed_at=now - timedelta(minutes=35),  # Claimed 35 minutes ago
                 claim_expires_at=expired_time,  # Expired
+                claimed_at=datetime.now(timezone.utc),
                 attempt_number=1,
                 max_attempts=3,
             )
         )
 
+        # Update progress with metadata after probing
         response = worker_client.post(
             f"/api/worker/{job_id}/progress",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
@@ -224,17 +303,99 @@ class TestProgressUpdates:
         now = datetime.now(timezone.utc)
         future_expiry = now + timedelta(minutes=25)  # Still 25 minutes left
 
+                "current_step": "probe",
+                "progress_percent": 8,
+                "duration": 120.5,
+                "source_width": 1920,
+                "source_height": 1080,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+
+        # Verify metadata was saved to video table
+        video = await test_database.fetch_one(
+            videos.select().where(videos.c.id == sample_pending_video["id"])
+        )
+        assert video["duration"] == 120.5
+        assert video["source_width"] == 1920
+        assert video["source_height"] == 1080
+
+    @pytest.mark.asyncio
+    async def test_progress_update_metadata_persists_after_failure(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test metadata persists even if worker crashes after probe."""
+        # Create and claim a job
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Worker probes and updates metadata
+        worker_client.post(
+            f"/api/worker/{job_id}/progress",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "current_step": "probe",
+                "progress_percent": 8,
+                "duration": 180.0,
+                "source_width": 3840,
+                "source_height": 2160,
+            },
+        )
+
+        # Simulate worker crash - verify metadata was saved
+        video = await test_database.fetch_one(
+            videos.select().where(videos.c.id == sample_pending_video["id"])
+        )
+        assert video["duration"] == 180.0
+        assert video["source_width"] == 3840
+        assert video["source_height"] == 2160
+
+        # Job can be reclaimed by another worker and metadata is still there
+        await test_database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job_id)
+            .values(claimed_at=None, claim_expires_at=None)
+        )
+
+        # Reclaim the job
+        response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+        claim_data = response.json()
+        assert claim_data["video_duration"] == 180.0
+        assert claim_data["source_width"] == 3840
+        assert claim_data["source_height"] == 2160
+
+    @pytest.mark.asyncio
+    async def test_progress_update_metadata_validation(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that metadata validation works correctly."""
+        # Create and claim a job
         job_id = await test_database.execute(
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
                 worker_id=registered_worker["worker_id"],
                 claimed_at=now - timedelta(minutes=5),  # Claimed 5 minutes ago
                 claim_expires_at=future_expiry,  # Still valid
+                claimed_at=datetime.now(timezone.utc),
                 attempt_number=1,
                 max_attempts=3,
             )
         )
 
+        # Test invalid duration (negative)
         response = worker_client.post(
             f"/api/worker/{job_id}/progress",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
@@ -258,6 +419,36 @@ class TestProgressUpdates:
         if new_expiry.tzinfo is None:
             new_expiry = new_expiry.replace(tzinfo=timezone.utc)
         assert new_expiry > future_expiry
+                "current_step": "probe",
+                "progress_percent": 8,
+                "duration": -10.0,
+            },
+        )
+        assert response.status_code == 422  # Validation error
+
+        # Test invalid width (zero)
+        response = worker_client.post(
+            f"/api/worker/{job_id}/progress",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "current_step": "probe",
+                "progress_percent": 8,
+                "source_width": 0,
+            },
+        )
+        assert response.status_code == 422  # Validation error
+
+        # Test invalid height (negative)
+        response = worker_client.post(
+            f"/api/worker/{job_id}/progress",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "current_step": "probe",
+                "progress_percent": 8,
+                "source_height": -100,
+            },
+        )
+        assert response.status_code == 422  # Validation error
 
 
 class TestJobCompletion:
