@@ -599,3 +599,130 @@ class TestHealthCheck:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
+
+
+class TestGracefulShutdown:
+    """Tests for graceful shutdown behavior."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_releases_claimed_jobs(
+        self, test_database, registered_worker, sample_pending_video
+    ):
+        """Test that shutdown releases claimed jobs."""
+        from fastapi import FastAPI
+
+        from api.worker_api import lifespan
+
+        # Create a claimed job
+        now = datetime.now(timezone.utc)
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                claimed_at=now,
+                claim_expires_at=now,
+                worker_id=registered_worker["worker_id"],
+                current_step="processing",
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Set video to processing
+        await test_database.execute(
+            videos.update()
+            .where(videos.c.id == sample_pending_video["id"])
+            .values(status="processing")
+        )
+
+        # Update worker's current job
+        worker_record = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        await test_database.execute(
+            workers.update()
+            .where(workers.c.id == worker_record["id"])
+            .values(current_job_id=job_id)
+        )
+
+        # Verify job is claimed
+        job = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert job["claimed_at"] is not None
+        assert job["worker_id"] == registered_worker["worker_id"]
+
+        # Disconnect test database temporarily
+        await test_database.disconnect()
+
+        # Simulate shutdown by running lifespan which will connect/disconnect its own connection
+        app = FastAPI()
+        async with lifespan(app):
+            pass  # The shutdown logic runs when exiting the context
+
+        # Reconnect test database for subsequent assertions
+        await test_database.connect()
+
+        # Verify job claim was released
+        job_after = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert job_after["claimed_at"] is None
+        assert job_after["claim_expires_at"] is None
+        assert job_after["worker_id"] is None
+        assert job_after["current_step"] is None
+
+        # Verify video status was reset to pending
+        video_after = await test_database.fetch_one(
+            videos.select().where(videos.c.id == sample_pending_video["id"])
+        )
+        assert video_after["status"] == "pending"
+
+        # Verify worker's current_job_id was cleared
+        worker_after = await test_database.fetch_one(
+            workers.select().where(workers.c.id == worker_record["id"])
+        )
+        assert worker_after["current_job_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_shutdown_ignores_completed_jobs(
+        self, test_database, registered_worker, sample_pending_video
+    ):
+        """Test that shutdown does not affect completed jobs."""
+        from fastapi import FastAPI
+
+        from api.worker_api import lifespan
+
+        # Create a completed job
+        now = datetime.now(timezone.utc)
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                claimed_at=now,
+                claim_expires_at=now,
+                worker_id=registered_worker["worker_id"],
+                completed_at=now,
+                current_step="finalize",
+                progress_percent=100,
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Disconnect test database temporarily
+        await test_database.disconnect()
+
+        # Simulate shutdown by running lifespan which will connect/disconnect its own connection
+        app = FastAPI()
+        async with lifespan(app):
+            pass
+
+        # Reconnect test database for subsequent assertions
+        await test_database.connect()
+
+        # Verify completed job was not modified
+        job_after = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert job_after["claimed_at"] is not None  # Should still be set
+        assert job_after["completed_at"] is not None  # Should still be set
+        assert job_after["worker_id"] == registered_worker["worker_id"]
