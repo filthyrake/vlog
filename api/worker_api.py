@@ -352,12 +352,11 @@ async def update_progress(
         if data.source_height is not None:
             video_updates["source_height"] = data.source_height
 
-        if video_updates:
-            await database.execute(
-                videos.update()
-                .where(videos.c.id == job["video_id"])
-                .values(**video_updates)
-            )
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == job["video_id"])
+            .values(**video_updates)
+        )
 
     return ProgressUpdateResponse(status="ok", claim_expires_at=new_expiry)
 

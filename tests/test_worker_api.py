@@ -275,6 +275,58 @@ class TestProgressUpdates:
         assert claim_data["source_width"] == 3840
         assert claim_data["source_height"] == 2160
 
+    @pytest.mark.asyncio
+    async def test_progress_update_metadata_validation(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that metadata validation works correctly."""
+        # Create and claim a job
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Test invalid duration (negative)
+        response = worker_client.post(
+            f"/api/worker/{job_id}/progress",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "current_step": "probe",
+                "progress_percent": 8,
+                "duration": -10.0,
+            },
+        )
+        assert response.status_code == 422  # Validation error
+
+        # Test invalid width (zero)
+        response = worker_client.post(
+            f"/api/worker/{job_id}/progress",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "current_step": "probe",
+                "progress_percent": 8,
+                "source_width": 0,
+            },
+        )
+        assert response.status_code == 422  # Validation error
+
+        # Test invalid height (negative)
+        response = worker_client.post(
+            f"/api/worker/{job_id}/progress",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "current_step": "probe",
+                "progress_percent": 8,
+                "source_height": -100,
+            },
+        )
+        assert response.status_code == 422  # Validation error
+
 
 class TestJobCompletion:
     """Tests for job completion endpoint."""
