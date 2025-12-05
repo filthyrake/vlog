@@ -5,6 +5,7 @@ This module contains shared code to avoid duplication (DRY principle).
 """
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -17,6 +18,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.database import database
 from config import TRUSTED_PROXIES, UPLOADS_DIR, VIDEOS_DIR
+
+logger = logging.getLogger(__name__)
 
 # Timeout for storage health check (seconds)
 STORAGE_CHECK_TIMEOUT = 5
@@ -146,8 +149,8 @@ async def check_health() -> dict:
     try:
         await database.fetch_one("SELECT 1")
         checks["database"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Database health check failed: {e}")
 
     # Check storage accessibility (NAS mount) with timeout
     # Uses a timeout to detect stale NFS mounts that would otherwise hang
@@ -159,9 +162,10 @@ async def check_health() -> dict:
         )
     except asyncio.TimeoutError:
         # Storage check timed out - likely a stale mount
+        logger.warning("Storage health check timed out - possible stale NFS mount")
         checks["storage"] = False
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Storage health check failed: {e}")
 
     healthy = all(checks.values())
     return {

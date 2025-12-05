@@ -157,7 +157,7 @@ async def check_stale_jobs():
         try:
             await _detect_and_release_stale_jobs()
         except Exception as e:
-            logger.error(f"Error in stale job checker: {e}")
+            logger.exception(f"Error in stale job checker: {e}")
 
         # Wait for the next check interval or shutdown
         try:
@@ -243,7 +243,7 @@ async def lifespan(app: FastAPI):
         await database.execute(workers.update().where(workers.c.current_job_id.isnot(None)).values(current_job_id=None))
 
     except Exception as e:
-        logger.error(f"Error during shutdown cleanup: {e}")
+        logger.exception(f"Error during shutdown cleanup: {e}")
 
     # Close database connection
     await database.disconnect()
