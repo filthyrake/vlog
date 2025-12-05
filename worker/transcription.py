@@ -17,6 +17,7 @@ from api.database import configure_sqlite_pragmas, database, transcriptions
 from api.enums import TranscriptionStatus
 from config import (
     AUDIO_EXTRACTION_TIMEOUT,
+    SUPPORTED_VIDEO_EXTENSIONS,
     TRANSCRIPTION_COMPUTE_TYPE,
     TRANSCRIPTION_ENABLED,
     TRANSCRIPTION_LANGUAGE,
@@ -210,7 +211,7 @@ def find_audio_source(video_id: int, video_slug: str) -> Path:
     """
     # Try 1: Find original upload file (preferred)
     # The transcoder saves uploads as {video_id}{extension}
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         source = UPLOADS_DIR / f"{video_id}{ext}"
         if source.exists() and source.stat().st_size > 0:
             return source

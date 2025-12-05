@@ -98,6 +98,20 @@ class TestAuthenticationEdgeCases:
         assert response.status_code == 403
         assert "disabled" in response.json()["detail"].lower()
 
+    def test_wrong_api_key_with_matching_prefix(self, worker_client, registered_worker):
+        """Test that an API key with correct prefix but wrong hash is rejected."""
+        # Create a fake key with same prefix but different suffix
+        real_key = registered_worker["api_key"]
+        fake_key = real_key[:8] + "wrong_suffix_here_12345"
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"X-Worker-API-Key": fake_key},
+        )
+        assert response.status_code == 401
+        assert "Invalid API key" in response.json()["detail"]
+
     @pytest.mark.asyncio
     async def test_api_key_last_used_updated(self, worker_client, test_database, registered_worker):
         """Test that last_used_at is updated on successful authentication."""
