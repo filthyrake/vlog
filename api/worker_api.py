@@ -167,7 +167,7 @@ async def worker_heartbeat(
 
     update_values = {
         "last_heartbeat": now,
-        "status": "active",
+        "status": data.status,
     }
     if data.metadata:
         update_values["metadata"] = json.dumps(data.metadata)
@@ -353,6 +353,22 @@ async def update_progress(
                         progress_percent=qp.progress,
                     )
                 )
+
+    # Update video metadata if provided (prevents data loss if worker crashes after probing)
+    if data.duration is not None or data.source_width is not None or data.source_height is not None:
+        video_updates = {}
+        if data.duration is not None:
+            video_updates["duration"] = data.duration
+        if data.source_width is not None:
+            video_updates["source_width"] = data.source_width
+        if data.source_height is not None:
+            video_updates["source_height"] = data.source_height
+
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == job["video_id"])
+            .values(**video_updates)
+        )
 
     return ProgressUpdateResponse(status="ok", claim_expires_at=new_expiry)
 

@@ -513,6 +513,17 @@ async def upload_video(
         # Log but don't fail the upload - transcoder will get this info later
         logging.warning(f"Failed to probe video {video_id}: {e}")
 
+    # Create transcoding job for remote workers to claim
+    await database.execute(
+        transcoding_jobs.insert().values(
+            video_id=video_id,
+            current_step="pending",
+            progress_percent=0,
+            attempt_number=1,
+            max_attempts=3,
+        )
+    )
+
     return {
         "status": "ok",
         "video_id": video_id,
