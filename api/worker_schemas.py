@@ -50,7 +50,7 @@ class WorkerCapabilities(BaseModel):
     )
     supported_codecs: List[str] = Field(
         default=["h264"],
-        max_length=10,
+        max_length=10,  # Max 10 codecs in the list
         description="List of supported codecs (h264, hevc, av1)"
     )
     encoders: Dict[str, List[str]] = Field(

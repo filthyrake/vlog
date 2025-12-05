@@ -8,8 +8,6 @@ Tests the security features that prevent:
 """
 
 
-
-
 class TestWorkerCapabilitiesValidation:
     """Tests for WorkerCapabilities schema validation."""
 
