@@ -394,17 +394,23 @@ async def get_output_dimensions(segment_path: Path, timeout: float = 10.0) -> Tu
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
 
         if process.returncode != 0:
+            print(f"      Warning: ffprobe failed for {segment_path.name} (exit code {process.returncode})")
             return (0, 0)
 
         data = json.loads(stdout.decode("utf-8", errors="ignore"))
         streams = data.get("streams", [])
         if not streams:
+            print(f"      Warning: No video streams found in {segment_path.name}")
             return (0, 0)
         stream = streams[0]
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
         return (width, height)
-    except (asyncio.TimeoutError, json.JSONDecodeError, ValueError, KeyError):
+    except asyncio.TimeoutError:
+        print(f"      Warning: ffprobe timed out for {segment_path.name} after {timeout}s")
+        return (0, 0)
+    except (json.JSONDecodeError, ValueError, KeyError) as e:
+        print(f"      Warning: Failed to parse dimensions from {segment_path.name}: {e}")
         return (0, 0)
 
 
