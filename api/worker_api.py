@@ -167,7 +167,7 @@ async def worker_heartbeat(
 
     update_values = {
         "last_heartbeat": now,
-        "status": "active",
+        "status": data.status,
     }
     if data.metadata:
         update_values["metadata"] = json.dumps(data.metadata)
