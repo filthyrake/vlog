@@ -20,7 +20,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-import aiofiles
 import sqlalchemy as sa
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -684,9 +683,9 @@ async def upload_hls(
             tmp_path = Path(tmp.name)
 
         # Stream file contents to disk in chunks
-        async with aiofiles.open(tmp_path, "wb") as f:
+        with open(tmp_path, "wb") as f:
             while chunk := await file.read(1024 * 1024):  # 1MB chunks
-                await f.write(chunk)
+                f.write(chunk)
     except Exception as e:
         # Cleanup temp file on error
         if tmp_path:
