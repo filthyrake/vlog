@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import aiofiles
 import sqlalchemy as sa
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -675,11 +676,20 @@ async def upload_hls(
     output_dir = VIDEOS_DIR / video["slug"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save uploaded tar.gz to temp file
+    # Save uploaded tar.gz to temp file using streaming writes to avoid memory exhaustion
+    # Create temp file path
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-        content = await file.read()
-        tmp.write(content)
         tmp_path = Path(tmp.name)
+
+    # Stream file contents to disk in chunks
+    try:
+        async with aiofiles.open(tmp_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):  # 1MB chunks
+                await f.write(chunk)
+    except Exception as e:
+        # Cleanup temp file on error
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}")
 
     try:
         with tarfile.open(tmp_path, "r:gz") as tar:
