@@ -5,6 +5,7 @@ Ensures that datetime comparisons work correctly with timezone-naive values
 from SQLite, preventing stale job detection issues across different timezones.
 """
 
+import zoneinfo
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -42,8 +43,6 @@ class TestEnsureUtc:
 
     def test_non_utc_datetime_converted(self):
         """Test that non-UTC timezone-aware datetime is converted to UTC."""
-        import zoneinfo
-
         # Create a datetime in US Eastern time (UTC-5 or UTC-4 depending on DST)
         eastern = zoneinfo.ZoneInfo("America/New_York")
         eastern_dt = datetime(2024, 1, 1, 12, 0, 0, tzinfo=eastern)

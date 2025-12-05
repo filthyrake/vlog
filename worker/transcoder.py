@@ -1129,7 +1129,10 @@ async def recover_interrupted_jobs():
     )
 
     for job in stale_jobs:
-        # Ensure timezone-aware comparison for stale detection
+        # Double-check staleness with timezone normalization as a safety measure.
+        # SQLite stores datetimes as naive values, and while the SQL comparison
+        # usually works, this ensures we handle edge cases where timezone info
+        # might affect the comparison (e.g., DST transitions, server timezone changes).
         last_checkpoint = ensure_utc(job["last_checkpoint"])
         if last_checkpoint >= stale_threshold:
             # Not actually stale after timezone normalization
@@ -1758,7 +1761,10 @@ async def check_stale_jobs():
     )
 
     for job in stale_jobs:
-        # Ensure timezone-aware comparison for stale detection
+        # Double-check staleness with timezone normalization as a safety measure.
+        # SQLite stores datetimes as naive values, and while the SQL comparison
+        # usually works, this ensures we handle edge cases where timezone info
+        # might affect the comparison (e.g., DST transitions, server timezone changes).
         last_checkpoint = ensure_utc(job["last_checkpoint"])
         if last_checkpoint >= stale_threshold:
             # Not actually stale after timezone normalization
