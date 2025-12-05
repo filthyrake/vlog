@@ -10,7 +10,6 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-import aiofiles
 import pytest
 
 from api.database import transcoding_jobs
@@ -124,11 +123,20 @@ class TestHLSUploadStreaming:
             )
         )
 
-        # Mock aiofiles.open to raise an exception to simulate upload failure
-        async def failing_open(*args, **kwargs):
-            raise IOError("Simulated disk write failure")
+        # Track temp directory before upload to verify cleanup
+        import os
+        temp_dir = tempfile.gettempdir()
+        before_files = set(os.listdir(temp_dir))
 
-        monkeypatch.setattr(aiofiles, "open", failing_open)
+        # Mock open to raise an exception to simulate upload failure
+        original_open = open
+
+        def failing_open(*args, **kwargs):
+            if args and isinstance(args[0], Path) and str(args[0]).endswith('.tar.gz'):
+                raise IOError("Simulated disk write failure")
+            return original_open(*args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", failing_open)
 
         # Create minimal tar.gz data
         tar_buffer = io.BytesIO()
@@ -149,6 +157,13 @@ class TestHLSUploadStreaming:
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to save upload"
+
+        # Verify temp files were cleaned up
+        after_files = set(os.listdir(temp_dir))
+        new_files = after_files - before_files
+        # Filter for .tar.gz files
+        leftover_tar_files = [f for f in new_files if f.endswith('.tar.gz')]
+        assert len(leftover_tar_files) == 0, f"Temp files not cleaned up: {leftover_tar_files}"
 
     @pytest.mark.asyncio
     async def test_upload_hls_rejects_symlinks(
