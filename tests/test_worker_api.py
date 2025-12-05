@@ -594,6 +594,108 @@ class TestJobClaiming:
         response = worker_client.post("/api/worker/claim")
         assert response.status_code == 401
 
+    @pytest.mark.asyncio
+    async def test_cpu_worker_waits_for_gpu_worker(self, worker_client, test_database, sample_pending_video):
+        """Test that CPU workers yield to idle GPU workers."""
+        # Create a transcoding job
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Register a CPU worker (no GPU)
+        cpu_response = worker_client.post(
+            "/api/worker/register",
+            json={
+                "worker_name": "cpu-worker",
+                "capabilities": {
+                    "hwaccel_enabled": False,
+                    "hwaccel_type": "none",
+                    "supported_codecs": ["h264"],
+                },
+            },
+        )
+        assert cpu_response.status_code == 200
+        cpu_worker = cpu_response.json()
+
+        # Register a GPU worker
+        gpu_response = worker_client.post(
+            "/api/worker/register",
+            json={
+                "worker_name": "gpu-worker",
+                "capabilities": {
+                    "hwaccel_enabled": True,
+                    "hwaccel_type": "nvidia",
+                    "gpu_name": "Test GPU",
+                    "supported_codecs": ["h264", "hevc"],
+                },
+            },
+        )
+        assert gpu_response.status_code == 200
+        gpu_worker = gpu_response.json()
+
+        # Mark GPU worker as idle (simulate heartbeat)
+        await test_database.execute(
+            workers.update()
+            .where(workers.c.worker_id == gpu_worker["worker_id"])
+            .values(status="idle")
+        )
+
+        # CPU worker tries to claim - should wait because GPU worker is idle
+        claim_response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": cpu_worker["api_key"]},
+        )
+        assert claim_response.status_code == 200
+        assert claim_response.json()["message"] == "Waiting for GPU workers"
+        assert claim_response.json()["job_id"] is None
+
+        # GPU worker claims - should succeed
+        gpu_claim_response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": gpu_worker["api_key"]},
+        )
+        assert gpu_claim_response.status_code == 200
+        assert gpu_claim_response.json()["job_id"] is not None
+
+    @pytest.mark.asyncio
+    async def test_cpu_worker_claims_when_no_gpu_available(self, worker_client, test_database, sample_pending_video):
+        """Test that CPU workers can claim when no GPU workers are idle."""
+        # Create a transcoding job
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Register a CPU worker
+        cpu_response = worker_client.post(
+            "/api/worker/register",
+            json={
+                "worker_name": "cpu-worker-solo",
+                "capabilities": {
+                    "hwaccel_enabled": False,
+                    "hwaccel_type": "none",
+                    "supported_codecs": ["h264"],
+                },
+            },
+        )
+        assert cpu_response.status_code == 200
+        cpu_worker = cpu_response.json()
+
+        # CPU worker tries to claim - should succeed (no GPU workers)
+        claim_response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": cpu_worker["api_key"]},
+        )
+        assert claim_response.status_code == 200
+        assert claim_response.json()["job_id"] is not None
+
 
 class TestProgressUpdates:
     """Tests for progress update endpoint."""

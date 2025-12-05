@@ -10,6 +10,7 @@ Provides endpoints for:
 Run with: uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
 """
 
+import asyncio
 import json
 import logging
 import secrets
@@ -59,6 +60,7 @@ from config import (
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
+    STALE_JOB_CHECK_INTERVAL,
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
@@ -69,16 +71,121 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# Global flag to signal background task to stop
+_shutdown_event: Optional[asyncio.Event] = None
+
+
+async def check_stale_jobs():
+    """
+    Background task to detect and release stale jobs from offline workers.
+
+    Runs periodically to:
+    1. Find workers that haven't sent heartbeats recently
+    2. Mark them as offline
+    3. Release any jobs they had claimed
+    4. Reset video status back to pending so jobs can be reclaimed
+    """
+    global _shutdown_event
+    logger.info(f"Stale job checker started (interval: {STALE_JOB_CHECK_INTERVAL}s)")
+
+    while not _shutdown_event.is_set():
+        try:
+            now = datetime.now(timezone.utc)
+            offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
+
+            # Find workers that are not already offline but haven't sent heartbeat
+            stale_workers = await database.fetch_all(
+                workers.select()
+                .where(workers.c.status != "offline")
+                .where(workers.c.last_heartbeat < offline_threshold)
+            )
+
+            for worker in stale_workers:
+                worker_name = worker["worker_name"] or worker["worker_id"][:8]
+                logger.warning(f"Worker '{worker_name}' went offline (no heartbeat since {worker['last_heartbeat']})")
+
+                # Mark worker as offline
+                await database.execute(
+                    workers.update()
+                    .where(workers.c.id == worker["id"])
+                    .values(status="offline", current_job_id=None)
+                )
+
+                # Find and release any jobs claimed by this worker
+                stale_jobs = await database.fetch_all(
+                    transcoding_jobs.select()
+                    .where(transcoding_jobs.c.worker_id == worker["worker_id"])
+                    .where(transcoding_jobs.c.completed_at.is_(None))
+                )
+
+                for job in stale_jobs:
+                    logger.info(f"Releasing stale job {job['id']} from offline worker '{worker_name}'")
+
+                    # Release the job claim
+                    await database.execute(
+                        transcoding_jobs.update()
+                        .where(transcoding_jobs.c.id == job["id"])
+                        .values(
+                            claimed_at=None,
+                            claim_expires_at=None,
+                            worker_id=None,
+                            current_step="released",
+                        )
+                    )
+
+                    # Reset video status back to pending so it can be reclaimed
+                    video = await database.fetch_one(
+                        videos.select().where(videos.c.id == job["video_id"])
+                    )
+                    if video and video["status"] == "processing":
+                        await database.execute(
+                            videos.update()
+                            .where(videos.c.id == job["video_id"])
+                            .values(status="pending")
+                        )
+                        logger.info(f"Reset video {job['video_id']} status to pending")
+
+        except Exception as e:
+            logger.error(f"Error in stale job checker: {e}")
+
+        # Wait for the next check interval or shutdown
+        try:
+            await asyncio.wait_for(
+                _shutdown_event.wait(),
+                timeout=STALE_JOB_CHECK_INTERVAL
+            )
+            # If we get here, shutdown was requested
+            break
+        except asyncio.TimeoutError:
+            # Normal timeout, continue checking
+            pass
+
+    logger.info("Stale job checker stopped")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage database connection lifecycle and graceful shutdown."""
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+
     # Startup
     await database.connect()
     await configure_sqlite_pragmas()
     logger.info("Worker API started - database connected")
 
+    # Start background task for stale job detection
+    stale_job_task = asyncio.create_task(check_stale_jobs())
+
     yield
+
+    # Signal background task to stop
+    _shutdown_event.set()
+    try:
+        await asyncio.wait_for(stale_job_task, timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.warning("Stale job checker did not stop in time, cancelling...")
+        stale_job_task.cancel()
 
     # Shutdown - release claimed jobs that haven't been completed
     logger.info("Worker API shutting down - releasing claimed jobs...")
@@ -269,6 +376,30 @@ async def worker_heartbeat(
 # =============================================================================
 
 
+def worker_has_gpu(worker: dict) -> bool:
+    """Check if a worker has GPU acceleration enabled based on capabilities or metadata."""
+    # First check the capabilities column (set at registration)
+    if worker.get("capabilities"):
+        try:
+            caps = json.loads(worker["capabilities"]) if isinstance(worker["capabilities"], str) else worker["capabilities"]
+            if caps.get("hwaccel_enabled"):
+                return True
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Fall back to checking metadata.capabilities (set via heartbeat)
+    if worker.get("metadata"):
+        try:
+            metadata = json.loads(worker["metadata"]) if isinstance(worker["metadata"], str) else worker["metadata"]
+            capabilities = metadata.get("capabilities", {})
+            if capabilities.get("hwaccel_enabled"):
+                return True
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return False
+
+
 @app.post("/api/worker/claim", response_model=ClaimJobResponse)
 async def claim_job(worker: dict = Depends(verify_worker_key)):
     """
@@ -276,10 +407,30 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
 
     Uses database transaction for distributed safety.
     Claims expire after WORKER_CLAIM_DURATION_MINUTES (extended on progress updates).
+
+    GPU workers have priority over CPU workers. If a CPU worker requests a job
+    but idle GPU workers are available, the CPU worker will be told to wait.
     """
     now = datetime.now(timezone.utc)
     claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
     expires_at = now + claim_duration
+
+    # Check worker priority - GPU workers get priority over CPU workers
+    requesting_worker_has_gpu = worker_has_gpu(worker)
+
+    if not requesting_worker_has_gpu:
+        # This is a CPU worker - check if any GPU workers are idle
+        idle_gpu_workers = await database.fetch_all(
+            workers.select()
+            .where(workers.c.status == "idle")
+            .where(workers.c.id != worker["id"])  # Exclude self
+        )
+
+        # Check if any idle workers have GPU
+        for idle_worker in idle_gpu_workers:
+            if worker_has_gpu(dict(idle_worker)):
+                # GPU worker is available, CPU worker should wait
+                return ClaimJobResponse(message="Waiting for GPU workers")
 
     # Store job data in mutable container for the transaction
     claim_result = {"job": None}

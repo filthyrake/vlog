@@ -105,6 +105,9 @@ WORKER_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_POLL_INTERVAL", "10"))
 WORKER_WORK_DIR = Path(os.getenv("VLOG_WORKER_WORK_DIR", "/tmp/vlog-worker"))
 WORKER_OFFLINE_THRESHOLD_MINUTES = int(os.getenv("VLOG_WORKER_OFFLINE_THRESHOLD", "2"))
 
+# How often to check for stale jobs from offline workers (in seconds)
+STALE_JOB_CHECK_INTERVAL = int(os.getenv("VLOG_STALE_JOB_CHECK_INTERVAL", "60"))
+
 # Progress update rate limiting (prevents database overload during transcoding)
 PROGRESS_UPDATE_INTERVAL = float(os.getenv("VLOG_PROGRESS_UPDATE_INTERVAL", "5.0"))
 
