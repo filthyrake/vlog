@@ -185,6 +185,51 @@ Whisper transcription tracking and output.
 - `completed` - Successfully completed
 - `failed` - Transcription failed
 
+### workers
+
+Registered remote transcoding workers.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| worker_id | VARCHAR(36) | UNIQUE, NOT NULL | UUID identifier |
+| worker_name | VARCHAR(100) | NOT NULL | Display name |
+| worker_type | VARCHAR(20) | DEFAULT 'remote' | Worker type (local/remote) |
+| status | VARCHAR(20) | DEFAULT 'idle' | Current status |
+| registered_at | DATETIME | DEFAULT now | Registration time |
+| last_heartbeat | DATETIME | NULLABLE | Last heartbeat received |
+| current_job_id | INTEGER | FK(transcoding_jobs.id) | Currently assigned job |
+| capabilities | TEXT | NULLABLE | JSON capabilities metadata |
+
+**Status Values:**
+- `idle` - Ready for work
+- `active` - Currently processing
+- `offline` - No recent heartbeat
+- `revoked` - API key revoked
+
+**Indexes:**
+- `ix_workers_worker_id` - Worker UUID lookup
+- `ix_workers_status` - Status filtering
+
+### worker_api_keys
+
+API keys for worker authentication (SHA-256 hashed).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| worker_id | INTEGER | FK(workers.id) CASCADE | Parent worker |
+| key_prefix | VARCHAR(8) | NOT NULL, INDEX | First 8 chars for lookup |
+| key_hash | VARCHAR(64) | NOT NULL | SHA-256 hash of full key |
+| created_at | DATETIME | DEFAULT now | Key creation time |
+| revoked_at | DATETIME | NULLABLE | Revocation time (NULL = active) |
+
+**Security Design:**
+- Full API key is only shown once at registration
+- Key is stored as SHA-256 hash
+- Prefix enables efficient lookup without full scan
+- Revoked keys remain in table for audit trail
+
 ---
 
 ## Entity Relationships
@@ -198,6 +243,9 @@ videos (1) ───────────────────────
 videos (1) ─────────────────────────────── (1) transcriptions
                                                 │
 transcoding_jobs (1) ──────────────────── (N) quality_progress
+transcoding_jobs (N) ──────────────────── (1) workers
+                                                │
+workers (1) ───────────────────────────── (N) worker_api_keys
                                                 │
 viewers (1) ────────────────────────────── (N) playback_sessions
 ```
@@ -213,6 +261,8 @@ viewers (1) ──────────────────────�
 | videos | transcoding_jobs | CASCADE |
 | videos | transcriptions | CASCADE |
 | transcoding_jobs | quality_progress | CASCADE |
+| workers | worker_api_keys | CASCADE |
+| workers | transcoding_jobs.worker_id | SET NULL |
 | viewers | playback_sessions | SET NULL |
 | categories | videos | SET NULL (handled in app) |
 

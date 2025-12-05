@@ -263,12 +263,48 @@ TimeoutStopSec=120
 WantedBy=multi-user.target
 ```
 
+#### vlog-worker-api.service
+
+```ini
+[Unit]
+Description=VLog Worker API
+After=network.target
+Requires=network.target
+
+[Service]
+Type=simple
+User=damen
+Group=damen
+WorkingDirectory=/home/damen/vlog
+ExecStart=/home/damen/vlog/venv/bin/python -m uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
+
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+
+# Allowed paths
+ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+
+# Resource limits
+LimitNOFILE=65535
+MemoryMax=2G
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
 #### vlog.target
 
 ```ini
 [Unit]
 Description=VLog Video Platform
-Wants=vlog-public.service vlog-admin.service vlog-worker.service vlog-transcription.service
+Wants=vlog-public.service vlog-admin.service vlog-worker.service vlog-transcription.service vlog-worker-api.service
 
 [Install]
 WantedBy=multi-user.target
@@ -347,10 +383,161 @@ server {
 # Public site
 sudo firewall-cmd --permanent --add-port=9000/tcp
 
+# Worker API (for remote workers)
+sudo firewall-cmd --permanent --add-port=9002/tcp
+
 # Admin (only if needed externally - NOT recommended)
 # sudo firewall-cmd --permanent --add-port=9001/tcp
 
 sudo firewall-cmd --reload
+```
+
+---
+
+## Kubernetes Distributed Transcoding
+
+For horizontal scaling, deploy containerized workers to Kubernetes.
+
+### 1. Build Worker Docker Image
+
+```bash
+cd /home/damen/vlog
+
+# Build the image
+docker build -f Dockerfile.worker -t vlog-worker:latest .
+
+# For k3s with containerd, import directly
+docker save vlog-worker:latest | sudo k3s ctr images import -
+
+# For multi-node clusters, import on each node or use a registry
+docker save vlog-worker:latest | ssh node2 'sudo k3s ctr images import -'
+```
+
+### 2. Register Workers and Get API Keys
+
+```bash
+# Register a worker via CLI
+vlog worker register --name "k8s-worker-1"
+# Output: API Key: vlog_xxxxxxxx...
+# Save this key - it cannot be retrieved again!
+
+# Or via curl
+curl -X POST http://localhost:9002/api/worker/register \
+  -H "Content-Type: application/json" \
+  -d '{"worker_name": "k8s-worker-1", "worker_type": "remote"}'
+```
+
+### 3. Create Kubernetes Resources
+
+```bash
+# Create namespace
+kubectl apply -f k8s/namespace.yaml
+
+# Create secret with API key
+kubectl create secret generic vlog-worker-secret -n vlog \
+  --from-literal=api-key='YOUR_API_KEY_HERE'
+
+# Create configmap with API URL
+kubectl create configmap vlog-worker-config -n vlog \
+  --from-literal=api-url='http://YOUR_SERVER_IP:9002'
+
+# Deploy workers
+kubectl apply -f k8s/deployment.yaml
+```
+
+### 4. Example Kubernetes Manifests
+
+**k8s/namespace.yaml:**
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vlog
+```
+
+**k8s/deployment.yaml:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vlog-worker
+  namespace: vlog
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vlog-worker
+  template:
+    metadata:
+      labels:
+        app: vlog-worker
+    spec:
+      containers:
+      - name: worker
+        image: vlog-worker:latest
+        imagePullPolicy: Never
+        env:
+        - name: VLOG_WORKER_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: vlog-worker-config
+              key: api-url
+        - name: VLOG_WORKER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vlog-worker-secret
+              key: api-key
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "4"
+```
+
+### 5. Monitor Workers
+
+```bash
+# Check worker status via CLI
+vlog worker status
+
+# View worker logs
+kubectl logs -n vlog -l app=vlog-worker -f
+
+# List registered workers
+vlog worker list
+
+# Check job status
+kubectl exec -n vlog deployment/vlog-worker -- ps aux
+```
+
+### 6. Scaling
+
+```bash
+# Scale workers manually
+kubectl scale deployment/vlog-worker -n vlog --replicas=4
+
+# Or use HPA for auto-scaling
+kubectl autoscale deployment/vlog-worker -n vlog \
+  --min=1 --max=10 --cpu-percent=70
+```
+
+### 7. Troubleshooting Workers
+
+```bash
+# Check if workers are connecting
+vlog worker status
+
+# View detailed logs
+kubectl logs -n vlog -l app=vlog-worker --tail=100
+
+# Check for pending jobs
+sqlite3 /home/damen/vlog/vlog.db "SELECT id, video_id, current_step, worker_id FROM transcoding_jobs WHERE completed_at IS NULL"
+
+# Reset stuck jobs
+sqlite3 /home/damen/vlog/vlog.db "UPDATE transcoding_jobs SET worker_id = NULL WHERE completed_at IS NULL"
+sqlite3 /home/damen/vlog/vlog.db "UPDATE videos SET status = 'pending' WHERE status = 'processing'"
 ```
 
 ---
@@ -366,6 +553,7 @@ sudo setsebool -P httpd_can_network_connect 1
 # Allow Python to bind to ports
 sudo semanage port -a -t http_port_t -p tcp 9000
 sudo semanage port -a -t http_port_t -p tcp 9001
+sudo semanage port -a -t http_port_t -p tcp 9002
 ```
 
 ---
@@ -468,13 +656,19 @@ sudo systemctl restart vlog.target
 
 ```bash
 # Public API
-curl -s http://localhost:9000/api/videos | jq '.[:1]'
+curl -s http://localhost:9000/health
 
 # Admin API
-curl -s http://localhost:9001/api/categories | jq '.'
+curl -s http://localhost:9001/health
 
-# Worker (check if processing)
-sudo systemctl status vlog-worker
+# Worker API
+curl -s http://localhost:9002/api/health
+
+# Check all services
+sudo systemctl status vlog-public vlog-admin vlog-worker vlog-worker-api vlog-transcription
+
+# Check remote workers
+vlog worker status
 ```
 
 ### Resource Monitoring
