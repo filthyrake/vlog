@@ -105,6 +105,9 @@ class WorkerAPIClient:
         step: str,
         percent: int,
         qualities: Optional[List[dict]] = None,
+        duration: Optional[float] = None,
+        source_width: Optional[int] = None,
+        source_height: Optional[int] = None,
     ) -> dict:
         """
         Update job progress.
@@ -114,6 +117,9 @@ class WorkerAPIClient:
             step: Current step (download, probe, thumbnail, transcode, etc.)
             percent: Progress percentage (0-100)
             qualities: Optional list of quality progress dicts
+            duration: Optional video duration in seconds
+            source_width: Optional source video width
+            source_height: Optional source video height
 
         Returns:
             Server response with extended claim_expires_at
@@ -124,6 +130,12 @@ class WorkerAPIClient:
         }
         if qualities:
             data["quality_progress"] = qualities
+        if duration is not None:
+            data["duration"] = duration
+        if source_width is not None:
+            data["source_width"] = source_width
+        if source_height is not None:
+            data["source_height"] = source_height
         return await self._request("POST", f"/api/worker/{job_id}/progress", json=data)
 
     async def download_source(self, video_id: int, dest_path: Path) -> None:

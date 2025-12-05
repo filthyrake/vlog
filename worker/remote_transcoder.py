@@ -113,6 +113,16 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         source_height = info["height"]
         print(f"    Source: {source_width}x{source_height}, {duration:.1f}s, codec={info['codec']}")
 
+        # Update video metadata immediately after probing to prevent data loss if worker crashes
+        await client.update_progress(
+            job_id,
+            "probe",
+            8,
+            duration=duration,
+            source_width=source_width,
+            source_height=source_height,
+        )
+
         # Generate thumbnail
         print("  Generating thumbnail...")
         await client.update_progress(job_id, "thumbnail", 10)
