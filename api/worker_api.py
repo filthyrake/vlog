@@ -59,6 +59,7 @@ from config import (
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
+    SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
     WORKER_API_PORT,
@@ -342,7 +343,7 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
 
     # Find source filename
     source_filename = None
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         candidate = UPLOADS_DIR / f"{job['video_id']}{ext}"
         if candidate.exists():
             source_filename = candidate.name
@@ -620,7 +621,7 @@ async def download_source(
 
     # Find source file
     source_file: Optional[Path] = None
-    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         candidate = UPLOADS_DIR / f"{video_id}{ext}"
         if candidate.exists():
             source_file = candidate

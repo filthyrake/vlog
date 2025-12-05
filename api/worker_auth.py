@@ -1,6 +1,7 @@
 """Authentication middleware for Worker API."""
 
 import hashlib
+import hmac
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -41,15 +42,18 @@ async def verify_worker_key(api_key: Optional[str] = Security(api_key_header)) -
     prefix = get_key_prefix(api_key)
     key_hash = hash_api_key(api_key)
 
-    # Query database for matching key
+    # Query database for matching key by prefix (non-revoked keys only)
     key_record = await database.fetch_one(
         worker_api_keys.select()
         .where(worker_api_keys.c.key_prefix == prefix)
-        .where(worker_api_keys.c.key_hash == key_hash)
         .where(worker_api_keys.c.revoked_at.is_(None))
     )
 
     if not key_record:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Use timing-safe comparison to prevent timing attacks on the hash
+    if not hmac.compare_digest(key_hash.encode(), key_record["key_hash"].encode()):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     # Check expiration (handle both timezone-aware and naive datetimes from SQLite)
