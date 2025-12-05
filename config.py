@@ -9,12 +9,6 @@ UPLOADS_DIR = NAS_STORAGE / os.getenv("VLOG_UPLOADS_SUBDIR", "uploads")
 ARCHIVE_DIR = NAS_STORAGE / os.getenv("VLOG_ARCHIVE_SUBDIR", "archive")
 DATABASE_PATH = Path(os.getenv("VLOG_DATABASE_PATH", str(BASE_DIR / "vlog.db")))
 
-# Database connection pool settings
-# SQLite handles concurrent reads well but serializes writes
-# These settings control the async connection pool
-DATABASE_POOL_MIN_SIZE = int(os.getenv("VLOG_DATABASE_POOL_MIN_SIZE", "1"))
-DATABASE_POOL_MAX_SIZE = int(os.getenv("VLOG_DATABASE_POOL_MAX_SIZE", "10"))
-
 # Ensure directories exist (skip in test/CI environments)
 if not os.environ.get("VLOG_TEST_MODE"):
     try:

@@ -297,8 +297,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         async def upload_progress(bytes_sent: int, total_bytes: int):
             """Called periodically during upload to extend the job claim."""
             pct = int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0
-            # Map upload progress to 98-99% range (100% reserved for completion)
-            overall_pct = 98 + min(pct // 100, 1)  # 98% during upload, 99% near end
+            # Map upload progress (0-100%) to overall progress (98-99%)
+            # 100% is reserved for job completion
+            overall_pct = 98 if pct < 100 else 99
             mb_sent = bytes_sent / (1024 * 1024)
             mb_total = total_bytes / (1024 * 1024)
             print(f"    Uploading: {mb_sent:.1f}/{mb_total:.1f} MB ({pct}%)")
