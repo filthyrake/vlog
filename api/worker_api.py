@@ -306,8 +306,20 @@ async def update_progress(
     if job["worker_id"] != worker["worker_id"]:
         raise HTTPException(status_code=403, detail="Not your job")
 
-    # Extend claim on progress update
+    # Check if claim has already expired
     now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        # Handle both timezone-aware and naive datetimes from SQLite
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(
+                status_code=409,
+                detail="Claim expired - job may have been reassigned",
+            )
+
+    # Extend claim on progress update
     new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
 
     await database.execute(
