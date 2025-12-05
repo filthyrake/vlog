@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # GPU and Hardware Acceleration Capabilities
@@ -32,20 +32,25 @@ class GPUInfo(BaseModel):
 
 class WorkerCapabilities(BaseModel):
     """Detailed worker capabilities including GPU and encoding support."""
+    model_config = ConfigDict(extra="forbid")  # Reject unknown fields
+
     hwaccel_enabled: bool = Field(
         default=False,
         description="Whether hardware acceleration is available"
     )
     hwaccel_type: str = Field(
         default="none",
+        max_length=20,
         description="Hardware acceleration type: nvidia, intel, or none"
     )
     gpu_name: Optional[str] = Field(
         default=None,
+        max_length=200,
         description="GPU device name"
     )
     supported_codecs: List[str] = Field(
         default=["h264"],
+        max_length=10,
         description="List of supported codecs (h264, hevc, av1)"
     )
     encoders: Dict[str, List[str]] = Field(
@@ -54,35 +59,103 @@ class WorkerCapabilities(BaseModel):
     )
     max_concurrent_encode_sessions: int = Field(
         default=1,
+        ge=1,
+        le=100,
         description="Maximum concurrent encoding sessions (NVIDIA consumer GPUs: 3-5)"
     )
     ffmpeg_version: Optional[str] = Field(
         default=None,
+        max_length=100,
         description="FFmpeg version string"
     )
     driver_version: Optional[str] = Field(
         default=None,
+        max_length=100,
         description="GPU driver version"
     )
     cuda_version: Optional[str] = Field(
         default=None,
+        max_length=100,
         description="CUDA version (NVIDIA only)"
     )
     vaapi_device: Optional[str] = Field(
         default=None,
+        max_length=200,
         description="VAAPI device path (Intel only)"
     )
+
+    @field_validator('supported_codecs')
+    @classmethod
+    def validate_codec_list(cls, v):
+        """Ensure each codec name is reasonable length."""
+        if v:
+            for codec in v:
+                if len(codec) > 20:
+                    raise ValueError(f"Codec name too long: {codec}")
+        return v
+
+    @field_validator('encoders')
+    @classmethod
+    def validate_encoders(cls, v):
+        """Ensure encoder names and codec keys are reasonable length."""
+        if v:
+            for codec, encoder_list in v.items():
+                if len(codec) > 20:
+                    raise ValueError(f"Codec key too long: {codec}")
+                if len(encoder_list) > 20:
+                    raise ValueError(f"Too many encoders for codec {codec}")
+                for encoder in encoder_list:
+                    if len(encoder) > 50:
+                        raise ValueError(f"Encoder name too long: {encoder}")
+        return v
+
+
+class WorkerMetadata(BaseModel):
+    """Worker metadata for Kubernetes pod info, etc."""
+    model_config = ConfigDict(extra="forbid")  # Reject unknown fields
+
+    # Kubernetes pod information
+    pod_name: Optional[str] = Field(default=None, max_length=253)
+    pod_namespace: Optional[str] = Field(default=None, max_length=253)
+    pod_uid: Optional[str] = Field(default=None, max_length=36)
+    node_name: Optional[str] = Field(default=None, max_length=253)
+
+    # Container information
+    container_name: Optional[str] = Field(default=None, max_length=253)
+    container_image: Optional[str] = Field(default=None, max_length=500)
+
+    # Cloud/environment info
+    cloud_provider: Optional[str] = Field(default=None, max_length=50)
+    region: Optional[str] = Field(default=None, max_length=100)
+    availability_zone: Optional[str] = Field(default=None, max_length=100)
+
+    # Custom labels/annotations (limited to prevent abuse)
+    labels: Optional[Dict[str, str]] = Field(default=None)
+
+    @field_validator('labels')
+    @classmethod
+    def validate_labels(cls, v):
+        """Ensure labels dict is reasonable size."""
+        if v:
+            if len(v) > 50:
+                raise ValueError("Too many labels (max 50)")
+            for key, value in v.items():
+                if len(key) > 253:
+                    raise ValueError(f"Label key too long: {key}")
+                if len(value) > 500:
+                    raise ValueError(f"Label value too long for key {key}")
+        return v
 
 
 # Worker registration
 class WorkerRegisterRequest(BaseModel):
     worker_name: Optional[str] = Field(default=None, max_length=100)
     worker_type: str = Field(default="remote", pattern="^(local|remote)$")
-    capabilities: Optional[Dict] = Field(
+    capabilities: Optional[WorkerCapabilities] = Field(
         default=None,
-        description="Worker capabilities as JSON (e.g., max_resolution, gpu)"
+        description="Worker capabilities including GPU and encoding support"
     )
-    metadata: Optional[Dict] = Field(
+    metadata: Optional[WorkerMetadata] = Field(
         default=None,
         description="Worker metadata (e.g., kubernetes pod info)"
     )
@@ -97,7 +170,22 @@ class WorkerRegisterResponse(BaseModel):
 # Heartbeat
 class HeartbeatRequest(BaseModel):
     status: str = Field(default="active", pattern="^(active|busy|idle)$")
-    metadata: Optional[Dict] = None
+    metadata: Optional[Dict] = Field(
+        default=None,
+        description="Optional metadata dict containing 'capabilities' key with WorkerCapabilities"
+    )
+
+    @field_validator('metadata')
+    @classmethod
+    def validate_metadata_dict(cls, v):
+        """Validate metadata dict contains valid capabilities if present."""
+        if v and "capabilities" in v:
+            # Validate capabilities structure
+            try:
+                WorkerCapabilities(**v["capabilities"])
+            except Exception as e:
+                raise ValueError(f"Invalid capabilities in metadata: {e}")
+        return v
 
 
 class HeartbeatResponse(BaseModel):

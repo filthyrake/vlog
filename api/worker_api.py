@@ -159,6 +159,11 @@ async def register_worker(data: WorkerRegisterRequest):
     Register a new transcoding worker and generate API key.
 
     The API key is only returned once at registration - store it securely.
+
+    Validates:
+    - Worker capabilities schema (GPU, encoders, codecs)
+    - Worker metadata schema (Kubernetes pod info, etc.)
+    - JSON size limits (10KB max per field)
     """
     worker_id = str(uuid.uuid4())
     api_key = secrets.token_urlsafe(32)  # 256-bit key
@@ -167,6 +172,26 @@ async def register_worker(data: WorkerRegisterRequest):
     now = datetime.now(timezone.utc)
 
     worker_name = data.worker_name or f"worker-{worker_id[:8]}"
+
+    # Validate and serialize capabilities
+    capabilities_json = None
+    if data.capabilities:
+        capabilities_json = json.dumps(data.capabilities.model_dump())
+        if len(capabilities_json) > 10000:  # 10KB limit
+            raise HTTPException(
+                status_code=400,
+                detail="Capabilities JSON too large (max 10KB)"
+            )
+
+    # Validate and serialize metadata
+    metadata_json = None
+    if data.metadata:
+        metadata_json = json.dumps(data.metadata.model_dump())
+        if len(metadata_json) > 10000:  # 10KB limit
+            raise HTTPException(
+                status_code=400,
+                detail="Metadata JSON too large (max 10KB)"
+            )
 
     # Track worker_db_id in a mutable container for the transaction
     result = {"worker_db_id": None}
@@ -183,8 +208,8 @@ async def register_worker(data: WorkerRegisterRequest):
                     registered_at=now,
                     last_heartbeat=now,
                     status="active",
-                    capabilities=json.dumps(data.capabilities) if data.capabilities else None,
-                    metadata=json.dumps(data.metadata) if data.metadata else None,
+                    capabilities=capabilities_json,
+                    metadata=metadata_json,
                 )
             )
 
@@ -223,15 +248,28 @@ async def worker_heartbeat(
     data: HeartbeatRequest,
     worker: dict = Depends(verify_worker_key),
 ):
-    """Update worker heartbeat timestamp."""
+    """
+    Update worker heartbeat timestamp.
+
+    Validates metadata.capabilities if provided to ensure workers don't store
+    arbitrarily large or malicious JSON blobs.
+    """
     now = datetime.now(timezone.utc)
 
     update_values = {
         "last_heartbeat": now,
         "status": data.status,
     }
+
+    # Validate and serialize metadata with size limit
     if data.metadata:
-        update_values["metadata"] = json.dumps(data.metadata)
+        metadata_json = json.dumps(data.metadata)
+        if len(metadata_json) > 10000:  # 10KB limit
+            raise HTTPException(
+                status_code=400,
+                detail="Metadata JSON too large (max 10KB)"
+            )
+        update_values["metadata"] = metadata_json
 
     await database.execute(
         workers.update()
