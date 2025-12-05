@@ -258,6 +258,41 @@ class TestTranscodingJobDatabase:
         assert len(completed_qualities) == 1
         assert completed_qualities[0]["quality"] == "1080p"
 
+    @pytest.mark.asyncio
+    async def test_get_or_create_job_race_condition(self, integration_database, integration_video):
+        """Test that get_or_create_job handles race condition gracefully."""
+        # Import here to avoid circular imports and to use the patched database
+        from unittest.mock import patch
+
+        import worker.transcoder as transcoder_module
+
+        # Temporarily patch the database in the transcoder module to use our test database
+        with patch.object(transcoder_module, "database", integration_database):
+            with patch.object(transcoder_module, "WORKER_ID", "test-worker-race-1"):
+                # First worker creates the job
+                job1 = await transcoder_module.get_or_create_job(integration_video["id"])
+                assert job1 is not None
+                assert job1["video_id"] == integration_video["id"]
+                assert job1["worker_id"] == "test-worker-race-1"
+                job1_id = job1["id"]
+
+            # Simulate second worker trying to create the same job
+            with patch.object(transcoder_module, "WORKER_ID", "test-worker-race-2"):
+                # This should return the existing job, not create a duplicate
+                job2 = await transcoder_module.get_or_create_job(integration_video["id"])
+                assert job2 is not None
+                assert job2["id"] == job1_id  # Same job ID
+                assert job2["video_id"] == integration_video["id"]
+                # Worker ID should be from first worker who created it
+                assert job2["worker_id"] == "test-worker-race-1"
+
+        # Verify only one job exists in the database
+        all_jobs = await integration_database.fetch_all(
+            transcoding_jobs.select().where(transcoding_jobs.c.video_id == integration_video["id"])
+        )
+        assert len(all_jobs) == 1
+        assert all_jobs[0]["id"] == job1_id
+
 
 class TestVideoStatusTransitions:
     """Tests for video status transitions during transcoding."""

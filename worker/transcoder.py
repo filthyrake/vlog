@@ -17,6 +17,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from sqlite3 import IntegrityError
 from typing import Any, Callable, List, Optional, Tuple
 
 from api.database import (
@@ -924,22 +925,30 @@ async def get_or_create_job(video_id: int) -> dict:
     if job:
         return dict(job)
 
-    # Create new job
-    result = await database.execute(
-        transcoding_jobs.insert().values(
-            video_id=video_id,
-            worker_id=WORKER_ID,
-            current_step=None,
-            progress_percent=0,
-            started_at=datetime.now(timezone.utc),
-            last_checkpoint=datetime.now(timezone.utc),
-            attempt_number=1,
-            max_attempts=MAX_RETRY_ATTEMPTS,
+    # Create new job - handle race condition where another worker created it first
+    try:
+        result = await database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                worker_id=WORKER_ID,
+                current_step=None,
+                progress_percent=0,
+                started_at=datetime.now(timezone.utc),
+                last_checkpoint=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=MAX_RETRY_ATTEMPTS,
+            )
         )
-    )
 
-    query = transcoding_jobs.select().where(transcoding_jobs.c.id == result)
-    return dict(await database.fetch_one(query))
+        query = transcoding_jobs.select().where(transcoding_jobs.c.id == result)
+        return dict(await database.fetch_one(query))
+    except IntegrityError:
+        # Another worker created it first, fetch the existing job
+        job = await database.fetch_one(query)
+        if job:
+            return dict(job)
+        # Re-raise if still not found (shouldn't happen but handle defensively)
+        raise
 
 
 async def update_job_step(job_id: int, step: str):
