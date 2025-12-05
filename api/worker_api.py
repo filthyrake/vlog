@@ -10,6 +10,7 @@ Provides endpoints for:
 Run with: uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
 """
 import json
+import logging
 import secrets
 import tarfile
 import tempfile
@@ -60,14 +61,73 @@ from config import (
     WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage database connection lifecycle."""
+    """Manage database connection lifecycle and graceful shutdown."""
+    # Startup
     await database.connect()
     await configure_sqlite_pragmas()
+    logger.info("Worker API started - database connected")
+
     yield
+
+    # Shutdown - release claimed jobs that haven't been completed
+    logger.info("Worker API shutting down - releasing claimed jobs...")
+    try:
+        # Find all jobs that are still claimed but not completed
+        claimed_jobs = await database.fetch_all(
+            transcoding_jobs.select()
+            .where(transcoding_jobs.c.claimed_at.isnot(None))
+            .where(transcoding_jobs.c.completed_at.is_(None))
+        )
+
+        if claimed_jobs:
+            logger.info(f"Found {len(claimed_jobs)} claimed jobs to release")
+
+            for job in claimed_jobs:
+                # Release the job claim
+                await database.execute(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job["id"])
+                    .values(
+                        claimed_at=None,
+                        claim_expires_at=None,
+                        worker_id=None,
+                        current_step=None,
+                    )
+                )
+
+                # Reset video status back to pending if it was processing
+                video = await database.fetch_one(
+                    videos.select().where(videos.c.id == job["video_id"])
+                )
+                if video and video["status"] == "processing":
+                    await database.execute(
+                        videos.update()
+                        .where(videos.c.id == job["video_id"])
+                        .values(status="pending")
+                    )
+
+            logger.info(f"Released {len(claimed_jobs)} claimed job(s)")
+        else:
+            logger.info("No claimed jobs to release")
+
+        # Clear current_job_id from all workers
+        await database.execute(
+            workers.update()
+            .where(workers.c.current_job_id.isnot(None))
+            .values(current_job_id=None)
+        )
+
+    except Exception as e:
+        logger.error(f"Error during shutdown cleanup: {e}")
+
+    # Close database connection
     await database.disconnect()
+    logger.info("Worker API shutdown complete")
 
 
 app = FastAPI(
