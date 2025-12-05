@@ -287,11 +287,8 @@ class TestTranscodingJobDatabase:
         # Now test that get_or_create_job handles IntegrityError when trying to insert
         # We'll mock the database.execute to raise IntegrityError on INSERT attempt
         original_execute = integration_database.execute
-        call_count = 0
 
         async def mock_execute(query):
-            nonlocal call_count
-            call_count += 1
             # Check if this is an INSERT into transcoding_jobs
             query_str = str(query)
             if "INSERT INTO transcoding_jobs" in query_str:
