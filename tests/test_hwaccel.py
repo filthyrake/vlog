@@ -1,21 +1,23 @@
 """Tests for hardware acceleration detection and encoder selection."""
-import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
+
+import pytest
 
 from worker.hwaccel import (
-    HWAccelType,
-    VideoCodec,
-    GPUCapabilities,
     EncoderInfo,
     EncoderSelection,
-    detect_nvidia_gpu,
-    detect_intel_vaapi,
-    detect_gpu_capabilities,
-    select_encoder,
-    build_transcode_command,
-    get_worker_capabilities,
+    GPUCapabilities,
+    HWAccelType,
+    VideoCodec,
     _get_nvidia_session_limit,
+    _test_nvenc_encoder,
+    _test_vaapi_encoder,
+    build_transcode_command,
+    detect_gpu_capabilities,
+    detect_nvidia_gpu,
+    get_worker_capabilities,
+    select_encoder,
 )
 
 
@@ -253,6 +255,63 @@ class TestGPUDetection:
     """Tests for GPU detection functions."""
 
     @pytest.mark.asyncio
+    async def test_nvenc_encoder_validation_success(self):
+        """Test NVENC encoder validation when encoder works."""
+        with patch("worker.hwaccel._run_command") as mock_run:
+            # Mock successful encode test
+            mock_run.return_value = (0, "", "")
+
+            result = await _test_nvenc_encoder("h264_nvenc")
+
+            assert result is True
+            # Verify correct command was called
+            args = mock_run.call_args[0][0]
+            assert "ffmpeg" in args
+            assert "-hwaccel" in args
+            assert "cuda" in args
+            assert "h264_nvenc" in args
+            assert "-f" in args and "null" in args
+
+    @pytest.mark.asyncio
+    async def test_nvenc_encoder_validation_failure(self):
+        """Test NVENC encoder validation when encoder fails."""
+        with patch("worker.hwaccel._run_command") as mock_run:
+            # Mock failed encode test
+            mock_run.return_value = (1, "", "NVENC encoder initialization failed")
+
+            result = await _test_nvenc_encoder("h264_nvenc")
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_vaapi_encoder_validation_success(self):
+        """Test VAAPI encoder validation when encoder works."""
+        with patch("worker.hwaccel._run_command") as mock_run:
+            # Mock successful encode test
+            mock_run.return_value = (0, "", "")
+
+            result = await _test_vaapi_encoder("h264_vaapi", "/dev/dri/renderD128")
+
+            assert result is True
+            # Verify correct command was called
+            args = mock_run.call_args[0][0]
+            assert "ffmpeg" in args
+            assert "-vaapi_device" in args
+            assert "/dev/dri/renderD128" in args
+            assert "h264_vaapi" in args
+
+    @pytest.mark.asyncio
+    async def test_vaapi_encoder_validation_failure(self):
+        """Test VAAPI encoder validation when encoder fails."""
+        with patch("worker.hwaccel._run_command") as mock_run:
+            # Mock failed encode test
+            mock_run.return_value = (1, "", "VAAPI encoder initialization failed")
+
+            result = await _test_vaapi_encoder("h264_vaapi", "/dev/dri/renderD128")
+
+            assert result is False
+
+    @pytest.mark.asyncio
     async def test_detect_nvidia_gpu_available(self):
         """Test NVIDIA GPU detection when nvidia-smi is available."""
         with patch("worker.hwaccel._run_command") as mock_run:
@@ -264,7 +323,11 @@ class TestGPUDetection:
                     else:
                         return 0, "CUDA Version: 12.2\n", ""
                 elif "ffmpeg" in cmd[0]:
-                    return 0, " V..... h264_nvenc\n V..... hevc_nvenc\n", ""
+                    if "-encoders" in cmd:
+                        return 0, " V..... h264_nvenc\n V..... hevc_nvenc\n", ""
+                    else:
+                        # Mock successful encoder tests
+                        return 0, "", ""
                 return -1, "", "Not found"
 
             mock_run.side_effect = mock_command
@@ -275,6 +338,33 @@ class TestGPUDetection:
             assert caps.hwaccel_type == HWAccelType.NVIDIA
             assert "RTX 3090" in caps.device_name
             assert caps.max_concurrent_sessions == 3  # RTX 3090 limit
+
+    @pytest.mark.asyncio
+    async def test_detect_nvidia_gpu_encoder_test_failure(self):
+        """Test NVIDIA GPU detection when encoders are listed but don't work."""
+        with patch("worker.hwaccel._run_command") as mock_run:
+            # Mock nvidia-smi responses
+            async def mock_command(cmd, timeout=10.0):
+                if "nvidia-smi" in cmd[0]:
+                    if "--query-gpu=name,driver_version" in cmd:
+                        return 0, "NVIDIA GeForce RTX 3090, 535.154.05\n", ""
+                    else:
+                        return 0, "CUDA Version: 12.2\n", ""
+                elif "ffmpeg" in cmd[0]:
+                    if "-encoders" in cmd:
+                        # Encoders are listed
+                        return 0, " V..... h264_nvenc\n V..... hevc_nvenc\n", ""
+                    else:
+                        # But encoder tests fail (e.g., missing CUDA libraries)
+                        return 1, "", "NVENC encoder initialization failed"
+                return -1, "", "Not found"
+
+            mock_run.side_effect = mock_command
+
+            caps = await detect_nvidia_gpu()
+
+            # Should return None since no working encoders
+            assert caps is None
 
     @pytest.mark.asyncio
     async def test_detect_nvidia_gpu_not_available(self):
