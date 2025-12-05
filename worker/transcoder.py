@@ -940,10 +940,10 @@ async def get_or_create_job(video_id: int) -> dict:
             )
         )
 
-        query = transcoding_jobs.select().where(transcoding_jobs.c.id == result)
-        return dict(await database.fetch_one(query))
+        job_query = transcoding_jobs.select().where(transcoding_jobs.c.id == result)
+        return dict(await database.fetch_one(job_query))
     except IntegrityError:
-        # Another worker created it first, fetch the existing job
+        # Another worker created it first, fetch the existing job by video_id
         job = await database.fetch_one(query)
         if job:
             return dict(job)
