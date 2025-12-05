@@ -1,0 +1,104 @@
+# Docker Compose for GPU-Accelerated Worker Testing
+#
+# Usage:
+#   # NVIDIA GPU testing
+#   docker compose -f docker-compose.gpu.yaml --profile nvidia up --build
+#
+#   # Intel Arc GPU testing
+#   docker compose -f docker-compose.gpu.yaml --profile intel up --build
+#
+#   # CPU-only testing (with GPU image)
+#   docker compose -f docker-compose.gpu.yaml --profile cpu up --build
+#
+# Prerequisites:
+#   - For NVIDIA: nvidia-container-toolkit installed
+#   - For Intel: /dev/dri accessible
+#   - VLOG_WORKER_API_KEY environment variable set
+
+services:
+  # NVIDIA GPU worker
+  worker-nvidia:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker.gpu
+    environment:
+      - VLOG_WORKER_API_URL=${VLOG_WORKER_API_URL:-http://host.docker.internal:9002}
+      - VLOG_WORKER_API_KEY=${VLOG_WORKER_API_KEY}
+      - VLOG_WORKER_HEARTBEAT_INTERVAL=${VLOG_WORKER_HEARTBEAT_INTERVAL:-30}
+      - VLOG_WORKER_POLL_INTERVAL=${VLOG_WORKER_POLL_INTERVAL:-10}
+      - VLOG_HWACCEL_TYPE=nvidia
+      - VLOG_HWACCEL_PREFERRED_CODEC=${VLOG_HWACCEL_PREFERRED_CODEC:-h264}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - worker-data-nvidia:/tmp/vlog-worker
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, video, compute]
+    restart: unless-stopped
+    profiles:
+      - nvidia
+
+  # Intel Arc GPU worker
+  worker-intel:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker.gpu
+    environment:
+      - VLOG_WORKER_API_URL=${VLOG_WORKER_API_URL:-http://host.docker.internal:9002}
+      - VLOG_WORKER_API_KEY=${VLOG_WORKER_API_KEY}
+      - VLOG_WORKER_HEARTBEAT_INTERVAL=${VLOG_WORKER_HEARTBEAT_INTERVAL:-30}
+      - VLOG_WORKER_POLL_INTERVAL=${VLOG_WORKER_POLL_INTERVAL:-10}
+      - VLOG_HWACCEL_TYPE=intel
+      - VLOG_HWACCEL_PREFERRED_CODEC=${VLOG_HWACCEL_PREFERRED_CODEC:-av1}
+      - LIBVA_DRIVER_NAME=iHD
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - worker-data-intel:/tmp/vlog-worker
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    restart: unless-stopped
+    profiles:
+      - intel
+
+  # CPU-only worker (using GPU image but forcing CPU encoding)
+  worker-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker.gpu
+    environment:
+      - VLOG_WORKER_API_URL=${VLOG_WORKER_API_URL:-http://host.docker.internal:9002}
+      - VLOG_WORKER_API_KEY=${VLOG_WORKER_API_KEY}
+      - VLOG_WORKER_HEARTBEAT_INTERVAL=${VLOG_WORKER_HEARTBEAT_INTERVAL:-30}
+      - VLOG_WORKER_POLL_INTERVAL=${VLOG_WORKER_POLL_INTERVAL:-10}
+      - VLOG_HWACCEL_TYPE=none
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - worker-data-cpu:/tmp/vlog-worker
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    restart: unless-stopped
+    profiles:
+      - cpu
+
+volumes:
+  worker-data-nvidia:
+  worker-data-intel:
+  worker-data-cpu:

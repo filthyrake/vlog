@@ -1,0 +1,140 @@
+# VLog Worker Deployment with Intel Arc/QuickSync GPU Support
+# kubectl apply -f k8s/worker-deployment-intel.yaml
+#
+# Prerequisites:
+# 1. Intel GPU device plugin installed (intel/intel-device-plugins-for-kubernetes)
+# 2. Nodes labeled with intel.feature.node.kubernetes.io/gpu=true
+# 3. Build and push GPU worker image:
+#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:latest .
+#    docker push your-registry/vlog-worker-gpu:latest
+# 4. Create the secret with your API key (see secret.yaml)
+# 5. Update the ConfigMap with your API URL (see configmap.yaml)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vlog-worker-intel
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/gpu-type: intel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/gpu-type: intel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vlog
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/gpu-type: intel
+    spec:
+      # Security context - need video group for /dev/dri access
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 44  # video group
+
+      containers:
+      - name: worker
+        # GPU-enabled worker image
+        image: vlog-worker-gpu:latest
+        imagePullPolicy: Always
+
+        # Load environment from ConfigMap and Secret
+        envFrom:
+        - configMapRef:
+            name: vlog-worker-config
+        - secretRef:
+            name: vlog-worker-credentials
+
+        # GPU-specific environment variables
+        env:
+        - name: VLOG_HWACCEL_TYPE
+          value: "intel"
+        - name: VLOG_HWACCEL_PREFERRED_CODEC
+          value: "av1"  # Intel Arc has excellent AV1 encode!
+        # Intel Media Driver (iHD) for Arc GPUs
+        - name: LIBVA_DRIVER_NAME
+          value: "iHD"
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1000m"
+            gpu.intel.com/i915: 1
+          limits:
+            memory: "8Gi"
+            cpu: "2000m"
+            gpu.intel.com/i915: 1
+
+        # Mount volumes
+        volumeMounts:
+        - name: work-dir
+          mountPath: /tmp/vlog-worker
+        # DRI device access for VAAPI
+        - name: dri
+          mountPath: /dev/dri
+
+        # Liveness probe
+        livenessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import sys; sys.exit(0)"
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        # Readiness probe
+        readinessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import sys; sys.exit(0)"
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: work-dir
+        emptyDir:
+          sizeLimit: 50Gi
+      # Host path for GPU device access
+      - name: dri
+        hostPath:
+          path: /dev/dri
+          type: Directory
+
+      # Grace period for job completion
+      terminationGracePeriodSeconds: 300
+
+      restartPolicy: Always
+
+      # Node selector for Intel GPU nodes
+      nodeSelector:
+        intel.feature.node.kubernetes.io/gpu: "true"
+
+      # Toleration for Intel GPU nodes (if using taints)
+      tolerations:
+      - key: "gpu.intel.com/i915"
+        operator: "Exists"
+        effect: "NoSchedule"

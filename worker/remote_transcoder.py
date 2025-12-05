@@ -15,13 +15,15 @@ Environment variables:
     VLOG_WORKER_HEARTBEAT_INTERVAL: Heartbeat interval in seconds (default: 30)
     VLOG_WORKER_POLL_INTERVAL: Job poll interval in seconds (default: 10)
     VLOG_WORKER_WORK_DIR: Working directory for downloads (default: /tmp/vlog-worker)
+    VLOG_HWACCEL_TYPE: Hardware acceleration type (auto, nvidia, intel, none)
+    VLOG_HWACCEL_PREFERRED_CODEC: Preferred codec (h264, hevc, av1)
 """
 
 import asyncio
 import shutil
 import signal
 import sys
-from typing import List
+from typing import List, Optional
 
 from config import (
     QUALITY_PRESETS,
@@ -32,8 +34,7 @@ from config import (
     WORKER_WORK_DIR,
 )
 from worker.http_client import WorkerAPIClient, WorkerAPIError
-
-# Import transcoding functions from the main transcoder
+from worker.hwaccel import GPUCapabilities, detect_gpu_capabilities, get_worker_capabilities
 from worker.transcoder import (
     create_original_quality,
     generate_master_playlist,
@@ -46,6 +47,9 @@ from worker.transcoder import (
 
 # Global shutdown flag
 shutdown_requested = False
+
+# Global GPU capabilities (detected at startup)
+GPU_CAPS: Optional[GPUCapabilities] = None
 
 
 def signal_handler(sig, frame):
@@ -140,18 +144,18 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         quality_progress_list[0] = {"name": "original", "status": "in_progress", "progress": 0}
         await client.update_progress(job_id, "transcode", 15, quality_progress_list)
 
-        success, error, quality_info = await create_original_quality(
-            source_path, output_dir, duration, None
-        )
+        success, error, quality_info = await create_original_quality(source_path, output_dir, duration, None)
         if success:
             # Get actual bitrate from quality_info
             bitrate_bps = quality_info.get("bitrate_bps", 0) if quality_info else 0
-            successful_qualities.append({
-                "name": "original",
-                "width": source_width,
-                "height": source_height,
-                "bitrate": bitrate_bps // 1000,  # Convert to kbps
-            })
+            successful_qualities.append(
+                {
+                    "name": "original",
+                    "width": source_width,
+                    "height": source_height,
+                    "bitrate": bitrate_bps // 1000,  # Convert to kbps
+                }
+            )
             quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
             print("    original: Done")
         else:
@@ -179,10 +183,15 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
             async def update_quality_progress(pct: int):
                 import time
+
                 now = time.time()
                 # Only update every 5 seconds to avoid flooding the API
                 if now - last_update_time[0] >= 5.0:
-                    quality_progress_list[quality_idx] = {"name": quality_name, "status": "in_progress", "progress": pct}
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "in_progress",
+                        "progress": pct,
+                    }
                     try:
                         await client.update_progress(job_id, "transcode", progress_base, quality_progress_list)
                         last_update_time[0] = now
@@ -190,7 +199,12 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         print(f"      Progress update failed: {e}")
 
             success, error = await transcode_quality_with_progress(
-                source_path, output_dir, quality, duration, update_quality_progress
+                source_path,
+                output_dir,
+                quality,
+                duration,
+                update_quality_progress,
+                gpu_caps=GPU_CAPS,
             )
 
             if success:
@@ -205,12 +219,14 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     # Round to nearest even number (required for h264)
                     actual_width = actual_width + (actual_width % 2)
 
-                successful_qualities.append({
-                    "name": quality_name,
-                    "width": actual_width,
-                    "height": actual_height,
-                    "bitrate": int(quality["bitrate"].replace("k", "")),
-                })
+                successful_qualities.append(
+                    {
+                        "name": quality_name,
+                        "width": actual_width,
+                        "height": actual_height,
+                        "bitrate": int(quality["bitrate"].replace("k", "")),
+                    }
+                )
                 quality_progress_list[quality_idx] = {"name": quality_name, "status": "completed", "progress": 100}
                 print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
             else:
@@ -280,7 +296,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
 async def worker_loop():
     """Main worker loop."""
-    global shutdown_requested
+    global shutdown_requested, GPU_CAPS
 
     # Set up signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
@@ -303,9 +319,24 @@ async def worker_loop():
     print(f"  Heartbeat interval: {WORKER_HEARTBEAT_INTERVAL}s")
     print(f"  Poll interval: {WORKER_POLL_INTERVAL}s")
 
-    # Verify connection with initial heartbeat
+    # Detect GPU capabilities
+    print("  Detecting GPU capabilities...")
+    GPU_CAPS = await detect_gpu_capabilities()
+    if GPU_CAPS:
+        print(f"  GPU detected: {GPU_CAPS.device_name}")
+        print(f"    Type: {GPU_CAPS.hwaccel_type.value}")
+        encoders = [e.name for codec_encoders in GPU_CAPS.encoders.values() for e in codec_encoders]
+        print(f"    Encoders: {encoders}")
+        print(f"    Max sessions: {GPU_CAPS.max_concurrent_sessions}")
+    else:
+        print("  No GPU acceleration available, using CPU encoding")
+
+    # Get worker capabilities for heartbeat
+    worker_caps = await get_worker_capabilities(GPU_CAPS)
+
+    # Verify connection with initial heartbeat (include capabilities)
     try:
-        await client.heartbeat()
+        await client.heartbeat(metadata={"capabilities": worker_caps})
         print("  Connected to Worker API")
     except WorkerAPIError as e:
         print(f"ERROR: Failed to connect to Worker API: {e.message}")

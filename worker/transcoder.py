@@ -521,9 +521,18 @@ async def transcode_quality_with_progress(
     quality: dict,
     duration: float,
     progress_callback: Optional[Callable[[int], None]] = None,
+    gpu_caps: Optional[Any] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking and timeout.
+
+    Args:
+        input_path: Source video file
+        output_dir: Output directory for HLS files
+        quality: Quality preset dict with name, height, bitrate, audio_bitrate
+        duration: Video duration in seconds
+        progress_callback: Optional async callback for progress updates (0-100)
+        gpu_caps: Optional GPUCapabilities from hwaccel module for hardware encoding
 
     Returns:
         Tuple[bool, Optional[str]]: (success, error_message) where error_message
@@ -536,49 +545,67 @@ async def transcode_quality_with_progress(
 
     playlist_name = f"{name}.m3u8"
     segment_pattern = f"{name}_%04d.ts"
-    scale_filter = f"scale=-2:{height}"
 
     # Calculate timeout based on video duration and resolution
     timeout = calculate_ffmpeg_timeout(duration, height)
     print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for {name}")
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(input_path),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "23",
-        "-b:v",
-        bitrate,
-        "-maxrate",
-        bitrate,
-        "-bufsize",
-        f"{int(bitrate.replace('k', '')) * 2}k",
-        "-vf",
-        scale_filter,
-        "-c:a",
-        "aac",
-        "-b:a",
-        audio_bitrate,
-        "-ac",
-        "2",
-        "-hls_time",
-        str(HLS_SEGMENT_DURATION),
-        "-hls_list_size",
-        "0",
-        "-hls_segment_filename",
-        str(output_dir / segment_pattern),
-        "-progress",
-        "pipe:1",  # Output progress to stdout
-        "-f",
-        "hls",
-        str(output_dir / playlist_name),
-    ]
+    # Use hardware acceleration if GPU capabilities provided
+    if gpu_caps is not None:
+        from worker.hwaccel import build_transcode_command, select_encoder
+
+        selection = select_encoder(gpu_caps, height)
+        encoder_name = selection.encoder.name
+        encoder_type = "GPU" if selection.encoder.is_hardware else "CPU"
+        print(f"      Using encoder: {encoder_name} ({encoder_type})")
+
+        cmd = build_transcode_command(
+            input_path,
+            output_dir,
+            quality,
+            selection,
+            HLS_SEGMENT_DURATION,
+        )
+    else:
+        # Default CPU encoding (no GPU available)
+        scale_filter = f"scale=-2:{height}"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
+            "-b:v",
+            bitrate,
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            f"{int(bitrate.replace('k', '')) * 2}k",
+            "-vf",
+            scale_filter,
+            "-c:a",
+            "aac",
+            "-b:a",
+            audio_bitrate,
+            "-ac",
+            "2",
+            "-hls_time",
+            str(HLS_SEGMENT_DURATION),
+            "-hls_list_size",
+            "0",
+            "-hls_segment_filename",
+            str(output_dir / segment_pattern),
+            "-progress",
+            "pipe:1",  # Output progress to stdout
+            "-f",
+            "hls",
+            str(output_dir / playlist_name),
+        ]
 
     process = await asyncio.create_subprocess_exec(
         *cmd,

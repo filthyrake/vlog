@@ -42,8 +42,51 @@ kubectl apply -f k8s/worker-hpa.yaml
 - `namespace.yaml` - Creates the `vlog` namespace
 - `configmap.yaml` - Worker configuration (API URL, intervals)
 - `secret.yaml` - Template for API key secret
-- `worker-deployment.yaml` - Worker deployment with resource limits
+- `worker-deployment.yaml` - CPU-only worker deployment
+- `worker-deployment-nvidia.yaml` - NVIDIA GPU worker deployment (NVENC)
+- `worker-deployment-intel.yaml` - Intel Arc/QuickSync worker deployment (VAAPI)
 - `worker-hpa.yaml` - Horizontal Pod Autoscaler for auto-scaling
+
+## GPU-Accelerated Workers
+
+For faster transcoding, deploy GPU-enabled workers:
+
+### NVIDIA GPU Workers
+
+Prerequisites:
+- [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/getting-started.html) installed
+- Nodes with NVIDIA GPUs labeled `nvidia.com/gpu.present=true`
+
+```bash
+# Build GPU-enabled image
+docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:latest .
+docker push your-registry/vlog-worker-gpu:latest
+
+# Deploy NVIDIA GPU workers
+kubectl apply -f k8s/worker-deployment-nvidia.yaml
+```
+
+Supported encoders: `h264_nvenc`, `hevc_nvenc`, `av1_nvenc` (RTX 40 series only)
+
+**Note**: Consumer NVIDIA GPUs have concurrent encode limits:
+- RTX 4090/4080/4070: 5 sessions
+- RTX 3090/3080/3070: 3 sessions
+- Datacenter GPUs (A100, T4, etc.): Unlimited
+
+### Intel Arc/QuickSync Workers
+
+Prerequisites:
+- [Intel GPU Device Plugin](https://github.com/intel/intel-device-plugins-for-kubernetes) installed
+- Nodes with Intel GPUs labeled `intel.feature.node.kubernetes.io/gpu=true`
+
+```bash
+# Deploy Intel GPU workers
+kubectl apply -f k8s/worker-deployment-intel.yaml
+```
+
+Supported encoders: `h264_vaapi`, `hevc_vaapi`, `av1_vaapi`
+
+Intel Arc GPUs (like B580) have excellent AV1 encoding quality!
 
 ## Scaling
 
@@ -72,11 +115,22 @@ curl http://your-vlog-server:9002/api/workers
 
 ## Resource Tuning
 
+### CPU Workers
+
 Workers are CPU-intensive during transcoding. Adjust resources in `worker-deployment.yaml`:
 
 - **Small videos (720p)**: 1 CPU, 2GB RAM
 - **HD videos (1080p)**: 2 CPU, 4GB RAM
 - **4K videos (2160p)**: 4 CPU, 8GB RAM
+
+### GPU Workers
+
+GPU workers are less CPU-intensive. Adjust resources in `worker-deployment-nvidia.yaml` or `worker-deployment-intel.yaml`:
+
+- **All resolutions**: 1-2 CPU, 4GB RAM, 1 GPU
+- GPU encoding is 5-10x faster than CPU for equivalent quality
+
+### Work Directory
 
 The work directory (`emptyDir`) should be sized to hold source + output:
 - Small: 10GB

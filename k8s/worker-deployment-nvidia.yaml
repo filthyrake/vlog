@@ -1,0 +1,138 @@
+# VLog Worker Deployment with NVIDIA GPU Support
+# kubectl apply -f k8s/worker-deployment-nvidia.yaml
+#
+# Prerequisites:
+# 1. NVIDIA GPU Operator installed on cluster
+# 2. Nodes labeled with nvidia.com/gpu.present=true
+# 3. Build and push GPU worker image:
+#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:latest .
+#    docker push your-registry/vlog-worker-gpu:latest
+# 4. Create the secret with your API key (see secret.yaml)
+# 5. Update the ConfigMap with your API URL (see configmap.yaml)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vlog-worker-nvidia
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/gpu-type: nvidia
+spec:
+  # Single GPU worker per GPU (adjust based on available GPUs)
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/gpu-type: nvidia
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vlog
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/gpu-type: nvidia
+    spec:
+      # Security context for the pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+      - name: worker
+        # GPU-enabled worker image
+        image: vlog-worker-gpu:latest
+        imagePullPolicy: Always
+
+        # Load environment from ConfigMap and Secret
+        envFrom:
+        - configMapRef:
+            name: vlog-worker-config
+        - secretRef:
+            name: vlog-worker-credentials
+
+        # GPU-specific environment variables
+        env:
+        - name: VLOG_HWACCEL_TYPE
+          value: "nvidia"
+        - name: VLOG_HWACCEL_PREFERRED_CODEC
+          value: "h264"  # or "hevc" for smaller files
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,video,utility"
+
+        # Resource limits including GPU
+        # GPU transcoding is less CPU-intensive
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1000m"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "8Gi"
+            cpu: "2000m"
+            nvidia.com/gpu: 1
+
+        # Mount emptyDir for transcoding workspace
+        volumeMounts:
+        - name: work-dir
+          mountPath: /tmp/vlog-worker
+
+        # Liveness probe
+        livenessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import sys; sys.exit(0)"
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        # Readiness probe
+        readinessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import sys; sys.exit(0)"
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: work-dir
+        emptyDir:
+          sizeLimit: 50Gi
+
+      # Grace period for job completion
+      terminationGracePeriodSeconds: 300
+
+      restartPolicy: Always
+
+      # Node selector for NVIDIA GPU nodes
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+
+      # Toleration for GPU nodes (if using taints)
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+
+      # Use NVIDIA runtime class if configured
+      # runtimeClassName: nvidia
