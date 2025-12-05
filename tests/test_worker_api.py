@@ -381,10 +381,16 @@ class TestGracefulShutdown:
         assert job["claimed_at"] is not None
         assert job["worker_id"] == registered_worker["worker_id"]
 
-        # Simulate shutdown by manually calling the shutdown portion of lifespan
+        # Disconnect test database temporarily
+        await test_database.disconnect()
+
+        # Simulate shutdown by running lifespan which will connect/disconnect its own connection
         app = FastAPI()
         async with lifespan(app):
             pass  # The shutdown logic runs when exiting the context
+
+        # Reconnect test database for subsequent assertions
+        await test_database.connect()
 
         # Verify job claim was released
         job_after = await test_database.fetch_one(
@@ -432,10 +438,16 @@ class TestGracefulShutdown:
             )
         )
 
-        # Simulate shutdown
+        # Disconnect test database temporarily
+        await test_database.disconnect()
+
+        # Simulate shutdown by running lifespan which will connect/disconnect its own connection
         app = FastAPI()
         async with lifespan(app):
             pass
+
+        # Reconnect test database for subsequent assertions
+        await test_database.connect()
 
         # Verify completed job was not modified
         job_after = await test_database.fetch_one(
