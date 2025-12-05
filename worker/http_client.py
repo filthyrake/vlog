@@ -2,8 +2,10 @@
 
 import tarfile
 import tempfile
+import time
+import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Awaitable, Callable, List, Optional
 
 import httpx
 
@@ -167,7 +169,7 @@ class WorkerAPIClient:
         self,
         video_id: int,
         output_dir: Path,
-        progress_callback: Optional[callable] = None,
+        progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
     ) -> dict:
         """
         Package and upload HLS output as tar.gz using streaming upload.
@@ -211,16 +213,8 @@ class WorkerAPIClient:
             upload_timeout = max(300, 300 + (file_size // (100 * 1024 * 1024)) * 60)
             upload_timeout = min(upload_timeout, 3600)  # Cap at 1 hour
 
-            # Stream the file in chunks using httpx's streaming support
-            async def file_stream():
-                chunk_size = 1024 * 1024  # 1MB chunks
-                with open(tmp_path, "rb") as f:
-                    while chunk := f.read(chunk_size):
-                        yield chunk
-
             # Build multipart form data manually with streaming file
             # We need to create a proper multipart boundary
-            import uuid
             boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
 
             # Multipart header for file field
@@ -238,8 +232,6 @@ class WorkerAPIClient:
 
             async def multipart_stream():
                 """Stream the multipart form data with progress tracking."""
-                import time
-
                 yield multipart_header
 
                 chunk_size = 1024 * 1024  # 1MB chunks
@@ -256,12 +248,9 @@ class WorkerAPIClient:
                         if progress_callback:
                             now = time.time()
                             if now - last_callback_time >= callback_interval:
-                                try:
-                                    await progress_callback(bytes_sent, content_length)
-                                    last_callback_time = now
-                                except Exception as e:
-                                    # Log but don't fail the upload if callback fails
-                                    print(f"      Upload progress callback failed: {e}")
+                                # Let exceptions propagate - ClaimExpiredError needs to stop the upload
+                                await progress_callback(bytes_sent, content_length)
+                                last_callback_time = now
 
                 yield multipart_footer
 
