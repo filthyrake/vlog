@@ -506,8 +506,10 @@ def _build_nvenc_selection(encoder: EncoderInfo, target_height: int) -> EncoderS
     if encoder.codec == VideoCodec.HEVC:
         output_args.extend(["-tag:v", "hvc1"])  # Apple compatibility
 
-    # Scale filter uses CUDA
-    scale_filter = f"scale_cuda=-2:{target_height}"
+    # Scale filter uses NPP (NVIDIA Performance Primitives)
+    # Note: scale_cuda requires ffmpeg compiled with --enable-cuda-llvm
+    # scale_npp is more commonly available in NVIDIA-enabled ffmpeg builds
+    scale_filter = f"scale_npp=-2:{target_height}"
 
     return EncoderSelection(
         encoder=encoder,
