@@ -215,7 +215,7 @@
                                 </td>
                                 <td class="px-4 py-3 text-dark-400" x-text="formatDuration(video.duration)"></td>
                                 <td class="px-4 py-3">
-                                    <div class="flex gap-2">
+                                    <div class="flex gap-2 flex-wrap">
                                         <button
                                             @click="openEditModal(video)"
                                             class="text-blue-400 hover:text-blue-300 text-sm"
@@ -225,6 +225,28 @@
                                             @click="openReuploadModal(video)"
                                             class="text-purple-400 hover:text-purple-300 text-sm"
                                         >Re-upload</button>
+                                        <!-- Re-transcode dropdown -->
+                                        <div class="relative" x-data="{ open: false }">
+                                            <button
+                                                @click="open = !open"
+                                                @click.away="open = false"
+                                                class="text-cyan-400 hover:text-cyan-300 text-sm"
+                                            >Re-transcode</button>
+                                            <div
+                                                x-show="open"
+                                                x-cloak
+                                                class="absolute left-0 mt-1 w-36 bg-dark-800 border border-dark-700 rounded-lg shadow-lg z-10"
+                                            >
+                                                <button
+                                                    @click="retranscodeAll(video); open = false"
+                                                    class="w-full text-left px-3 py-2 text-sm hover:bg-dark-700 rounded-t-lg"
+                                                >All Qualities</button>
+                                                <button
+                                                    @click="openRetranscodeModal(video); open = false"
+                                                    class="w-full text-left px-3 py-2 text-sm hover:bg-dark-700 rounded-b-lg"
+                                                >Select Qualities...</button>
+                                            </div>
+                                        </div>
                                         <button
                                             x-show="video.status === 'failed'"
                                             @click="retryVideo(video.id)"
@@ -506,6 +528,83 @@
         </div>
     </div>
 
+    <!-- Re-transcode Video Modal -->
+    <div x-show="retranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="retranscodeModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
+            <h3 class="text-xl font-semibold mb-2">Re-transcode Video</h3>
+            <p class="text-dark-400 text-sm mb-4">
+                Select qualities to re-transcode for "<span x-text="retranscodeTitle" class="text-white"></span>".
+                Selected quality files will be deleted and regenerated from the source.
+            </p>
+
+            <div class="space-y-4">
+                <!-- Select All / Deselect All buttons -->
+                <div class="flex gap-2">
+                    <button
+                        @click="selectAllQualities"
+                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 rounded transition"
+                    >Select All</button>
+                    <button
+                        @click="deselectAllQualities"
+                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 rounded transition"
+                    >Deselect All</button>
+                </div>
+
+                <!-- Quality checkboxes -->
+                <div class="space-y-2 max-h-64 overflow-y-auto">
+                    <template x-for="quality in retranscodeAvailable" :key="quality">
+                        <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
+                            <input
+                                type="checkbox"
+                                :checked="retranscodeSelected.includes(quality)"
+                                @change="toggleRetranscodeQuality(quality)"
+                                class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                            >
+                            <span class="flex-1">
+                                <span class="font-medium" x-text="quality"></span>
+                            </span>
+                            <span
+                                :class="{
+                                    'text-green-400': getQualityStatus(quality) === 'completed',
+                                    'text-dark-500': getQualityStatus(quality) === 'not transcoded'
+                                }"
+                                class="text-xs"
+                                x-text="getQualityStatus(quality)"
+                            ></span>
+                        </label>
+                    </template>
+                </div>
+
+                <!-- No qualities message -->
+                <div x-show="retranscodeAvailable.length === 0" class="text-dark-400 text-center py-4">
+                    No qualities available for this video.
+                </div>
+
+                <!-- Status message -->
+                <div x-show="retranscodeMessage" :class="retranscodeError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="retranscodeMessage"></div>
+
+                <!-- Action buttons -->
+                <div class="flex gap-3 pt-2">
+                    <button
+                        type="button"
+                        @click="retranscodeModal = false"
+                        :disabled="retranscoding"
+                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
+                    >Cancel</button>
+                    <button
+                        @click="retranscodeSelected()"
+                        :disabled="retranscoding || retranscodeSelected.length === 0"
+                        class="flex-1 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                    >
+                        <span x-show="!retranscoding">Re-transcode (<span x-text="retranscodeSelected.length"></span>)</span>
+                        <span x-show="retranscoding">Processing...</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         function admin() {
             return {
@@ -544,6 +643,18 @@
                 reuploadProgress: -1,
                 reuploadMessage: '',
                 reuploadError: false,
+
+                // Re-transcode modal
+                retranscodeModal: false,
+                retranscodeVideoId: null,
+                retranscodeTitle: '',
+                retranscodeQualities: [],
+                retranscodeAvailable: [],
+                retranscodeExisting: [],
+                retranscodeSelected: [],
+                retranscoding: false,
+                retranscodeMessage: '',
+                retranscodeError: false,
 
                 // Analytics
                 analyticsOverview: {},
@@ -800,6 +911,116 @@
                         this.reuploading = false;
                         this.reuploadProgress = -1;
                     }
+                },
+
+                async openRetranscodeModal(video) {
+                    this.retranscodeVideoId = video.id;
+                    this.retranscodeTitle = video.title;
+                    this.retranscodeSelected = [];
+                    this.retranscoding = false;
+                    this.retranscodeMessage = '';
+                    this.retranscodeError = false;
+
+                    // Fetch available qualities
+                    try {
+                        const res = await fetch(`/api/videos/${video.id}/qualities`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.retranscodeAvailable = data.available_qualities || [];
+                            this.retranscodeExisting = data.existing_qualities || [];
+                        } else {
+                            this.retranscodeAvailable = [];
+                            this.retranscodeExisting = [];
+                        }
+                    } catch (e) {
+                        console.error('Failed to load qualities:', e);
+                        this.retranscodeAvailable = [];
+                        this.retranscodeExisting = [];
+                    }
+
+                    this.retranscodeModal = true;
+                },
+
+                async retranscodeAll(video) {
+                    if (!confirm(`Re-transcode all qualities for "${video.title}"? This will delete all existing transcoded files and re-process the video.`)) return;
+
+                    try {
+                        const res = await fetch(`/api/videos/${video.id}/retranscode`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ qualities: ['all'] })
+                        });
+
+                        if (res.ok) {
+                            await this.loadVideos();
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Re-transcode failed');
+                        }
+                    } catch (e) {
+                        alert('Re-transcode failed: ' + e.message);
+                    }
+                },
+
+                async retranscodeSelected() {
+                    if (this.retranscodeSelected.length === 0) {
+                        this.retranscodeMessage = 'Please select at least one quality';
+                        this.retranscodeError = true;
+                        return;
+                    }
+
+                    this.retranscoding = true;
+                    this.retranscodeMessage = '';
+                    this.retranscodeError = false;
+
+                    try {
+                        const res = await fetch(`/api/videos/${this.retranscodeVideoId}/retranscode`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ qualities: this.retranscodeSelected })
+                        });
+
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.retranscodeMessage = `Queued for re-transcoding: ${data.qualities_queued.join(', ')}`;
+                            this.retranscodeError = false;
+                            await this.loadVideos();
+                            setTimeout(() => {
+                                this.retranscodeModal = false;
+                            }, 1500);
+                        } else {
+                            const data = await res.json();
+                            this.retranscodeMessage = data.detail || 'Re-transcode failed';
+                            this.retranscodeError = true;
+                        }
+                    } catch (e) {
+                        this.retranscodeMessage = 'Re-transcode failed: ' + e.message;
+                        this.retranscodeError = true;
+                    }
+
+                    this.retranscoding = false;
+                },
+
+                toggleRetranscodeQuality(quality) {
+                    const idx = this.retranscodeSelected.indexOf(quality);
+                    if (idx === -1) {
+                        this.retranscodeSelected.push(quality);
+                    } else {
+                        this.retranscodeSelected.splice(idx, 1);
+                    }
+                },
+
+                selectAllQualities() {
+                    this.retranscodeSelected = [...this.retranscodeAvailable];
+                },
+
+                deselectAllQualities() {
+                    this.retranscodeSelected = [];
+                },
+
+                getQualityStatus(quality) {
+                    const existing = this.retranscodeExisting.find(q => q.name === quality);
+                    return existing ? existing.status : 'not transcoded';
                 },
 
                 openEditModal(video) {
