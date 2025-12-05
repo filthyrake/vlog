@@ -330,3 +330,38 @@ class TranscriptionTrigger(BaseModel):
 
 class TranscriptionUpdate(BaseModel):
     text: str = Field(..., min_length=1, max_length=500000)  # 500KB max transcript
+
+
+class RetranscodeRequest(BaseModel):
+    qualities: List[str] = Field(..., min_items=1)
+
+    @validator("qualities")
+    def validate_qualities(cls, v):
+        valid_qualities = {"all", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p"}
+        for q in v:
+            if q not in valid_qualities:
+                raise ValueError(f"Invalid quality '{q}'. Valid options: {', '.join(sorted(valid_qualities))}")
+        return v
+
+
+class RetranscodeResponse(BaseModel):
+    status: str
+    video_id: int
+    message: str
+    qualities_queued: List[str]
+
+
+class VideoQualityInfo(BaseModel):
+    name: str
+    width: int
+    height: int
+    bitrate: int
+    status: str  # completed, pending, in_progress, failed
+
+
+class VideoQualitiesResponse(BaseModel):
+    video_id: int
+    source_width: int
+    source_height: int
+    available_qualities: List[str]  # What qualities could be generated based on source
+    existing_qualities: List[VideoQualityInfo]  # Current transcoded qualities

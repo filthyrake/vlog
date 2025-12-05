@@ -47,6 +47,8 @@ from api.schemas import (
     DailyViews,
     QualityBreakdown,
     QualityProgressResponse,
+    RetranscodeRequest,
+    RetranscodeResponse,
     TranscodingProgressResponse,
     TranscriptionResponse,
     TranscriptionTrigger,
@@ -57,6 +59,8 @@ from api.schemas import (
     VideoAnalyticsListResponse,
     VideoAnalyticsSummary,
     VideoListResponse,
+    VideoQualitiesResponse,
+    VideoQualityInfo,
     VideoQualityResponse,
     VideoResponse,
 )
@@ -68,6 +72,7 @@ from config import (
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
     ARCHIVE_DIR,
     MAX_UPLOAD_SIZE,
+    QUALITY_PRESETS,
     RATE_LIMIT_ADMIN_DEFAULT,
     RATE_LIMIT_ADMIN_UPLOAD,
     RATE_LIMIT_ENABLED,
@@ -500,7 +505,9 @@ async def update_video(
         update_data["title"] = title
     if description is not None:
         if len(description) > MAX_DESCRIPTION_LENGTH:
-            raise HTTPException(status_code=400, detail=f"Description must be {MAX_DESCRIPTION_LENGTH} characters or less")
+            raise HTTPException(
+                status_code=400, detail=f"Description must be {MAX_DESCRIPTION_LENGTH} characters or less"
+            )
         update_data["description"] = description
     if category_id is not None:
         if category_id > 0:
@@ -859,6 +866,187 @@ async def get_video_progress(request: Request, video_id: int) -> TranscodingProg
         max_attempts=job["max_attempts"] or 3,
         started_at=job["started_at"],
         last_error=sanitize_progress_error(job["last_error"]),
+    )
+
+
+@app.get("/api/videos/{video_id}/qualities")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_video_qualities(request: Request, video_id: int) -> VideoQualitiesResponse:
+    """Get available and existing qualities for a video."""
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Get existing transcoded qualities
+    quality_rows = await database.fetch_all(video_qualities.select().where(video_qualities.c.video_id == video_id))
+
+    existing = [
+        VideoQualityInfo(
+            name=q["quality"],
+            width=q["width"],
+            height=q["height"],
+            bitrate=q["bitrate"],
+            status="completed",
+        )
+        for q in quality_rows
+    ]
+
+    # Determine available qualities based on source resolution
+    source_height = video["source_height"] or 0
+    available = ["original"]  # Always available
+    for preset in QUALITY_PRESETS:
+        if preset["height"] <= source_height:
+            available.append(preset["name"])
+
+    return VideoQualitiesResponse(
+        video_id=video_id,
+        source_width=video["source_width"] or 0,
+        source_height=source_height,
+        available_qualities=available,
+        existing_qualities=existing,
+    )
+
+
+@app.post("/api/videos/{video_id}/retranscode")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def retranscode_video(
+    request: Request,
+    video_id: int,
+    data: RetranscodeRequest,
+) -> RetranscodeResponse:
+    """
+    Re-transcode a video, either all qualities or specific ones.
+
+    This will:
+    - Cancel any in-progress transcoding job
+    - Delete specified quality files (HLS segments and playlists)
+    - Delete corresponding video_qualities records
+    - Reset video status to pending for reprocessing
+    - Preserve: source file, metadata, thumbnail (unless re-transcoding all)
+    """
+    # Get video info
+    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if row["deleted_at"]:
+        raise HTTPException(status_code=400, detail="Cannot re-transcode a deleted video")
+
+    slug = row["slug"]
+    video_dir = VIDEOS_DIR / slug
+
+    # Check if source file exists
+    source_file = None
+    for ext in [".mp4", ".mkv", ".webm", ".mov", ".avi"]:
+        candidate = UPLOADS_DIR / f"{video_id}{ext}"
+        if candidate.exists():
+            source_file = candidate
+            break
+
+    if not source_file:
+        raise HTTPException(
+            status_code=400,
+            detail="Source file not found. Cannot re-transcode without original video file.",
+        )
+
+    # Determine which qualities to re-transcode
+    requested_qualities = data.qualities
+    retranscode_all = "all" in requested_qualities
+
+    if retranscode_all:
+        # Get all quality names that could be transcoded based on source
+        source_height = row["source_height"] or 0
+        qualities_to_delete = ["original"]
+        for preset in QUALITY_PRESETS:
+            if preset["height"] <= source_height:
+                qualities_to_delete.append(preset["name"])
+    else:
+        qualities_to_delete = requested_qualities
+
+    # === FILE CLEANUP ===
+    if video_dir.exists():
+        for quality in qualities_to_delete:
+            # Delete quality playlist
+            playlist = video_dir / f"{quality}.m3u8"
+            if playlist.exists():
+                playlist.unlink()
+
+            # Delete quality segments (pattern: {quality}_XXXX.ts)
+            for segment in video_dir.glob(f"{quality}_*.ts"):
+                segment.unlink()
+
+        # If re-transcoding all, also delete master playlist and thumbnail
+        if retranscode_all:
+            master = video_dir / "master.m3u8"
+            if master.exists():
+                master.unlink()
+            thumb = video_dir / "thumbnail.jpg"
+            if thumb.exists():
+                thumb.unlink()
+
+    # === DATABASE CLEANUP ===
+    async with database.transaction():
+        # Cancel any existing transcoding job
+        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        if job:
+            # Delete quality_progress records
+            if retranscode_all:
+                await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+            else:
+                # Only delete progress for specified qualities
+                await database.execute(
+                    quality_progress.delete().where(
+                        (quality_progress.c.job_id == job["id"]) & (quality_progress.c.quality.in_(qualities_to_delete))
+                    )
+                )
+            # Delete the job itself
+            await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
+
+        # Delete video_qualities records for specified qualities
+        if retranscode_all:
+            await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
+        else:
+            await database.execute(
+                video_qualities.delete().where(
+                    (video_qualities.c.video_id == video_id) & (video_qualities.c.quality.in_(qualities_to_delete))
+                )
+            )
+
+        # If re-transcoding all, also delete transcription
+        if retranscode_all:
+            await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+            # Delete VTT file if exists
+            vtt_path = video_dir / "captions.vtt"
+            if vtt_path.exists():
+                vtt_path.unlink()
+
+        # Reset video status to pending
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(
+                status=VideoStatus.PENDING,
+                error_message=None,
+            )
+        )
+
+        # Create new transcoding job for remote workers to claim
+        await database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                current_step="pending",
+                progress_percent=0,
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+    return RetranscodeResponse(
+        status="ok",
+        video_id=video_id,
+        message="Video queued for re-transcoding",
+        qualities_queued=qualities_to_delete,
     )
 
 
@@ -1264,7 +1452,9 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         FROM playback_sessions
         WHERE video_id = :video_id
     """
-    stats = await database.fetch_one(sa.text(stats_query).bindparams(video_id=video_id, duration=video["duration"] or 1))
+    stats = await database.fetch_one(
+        sa.text(stats_query).bindparams(video_id=video_id, duration=video["duration"] or 1)
+    )
 
     # Quality breakdown
     quality_query = """
