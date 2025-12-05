@@ -21,6 +21,7 @@ from slowapi.errors import RateLimitExceeded
 from slugify import slugify
 
 from api.analytics_cache import AnalyticsCache
+from worker.transcoder import get_video_info
 from api.common import (
     SecurityHeadersMiddleware,
     check_health,
@@ -496,6 +497,22 @@ async def upload_video(
         await database.execute(videos.delete().where(videos.c.id == video_id))
         raise
 
+    # Probe video file to get actual duration and dimensions
+    try:
+        video_info = await get_video_info(upload_path)
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(
+                duration=video_info["duration"],
+                source_width=video_info["width"],
+                source_height=video_info["height"],
+            )
+        )
+    except Exception as e:
+        # Log but don't fail the upload - transcoder will get this info later
+        logging.warning(f"Failed to probe video {video_id}: {e}")
+
     return {
         "status": "ok",
         "video_id": video_id,
@@ -831,6 +848,22 @@ async def re_upload_video(
     # Done after transaction so DB state is consistent even if upload fails
     upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
     await save_upload_with_size_limit(file, upload_path)
+
+    # Probe video file to get actual duration and dimensions
+    try:
+        video_info = await get_video_info(upload_path)
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(
+                duration=video_info["duration"],
+                source_width=video_info["width"],
+                source_height=video_info["height"],
+            )
+        )
+    except Exception as e:
+        # Log but don't fail the upload - transcoder will get this info later
+        logging.warning(f"Failed to probe re-uploaded video {video_id}: {e}")
 
     return {
         "status": "ok",
