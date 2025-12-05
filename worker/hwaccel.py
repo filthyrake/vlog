@@ -331,6 +331,7 @@ async def detect_intel_vaapi() -> Optional[GPUCapabilities]:
 async def _test_vaapi_encoder(encoder_name: str, device_path: str) -> bool:
     """Test if a VAAPI encoder actually works (not just listed)."""
     # Quick encode test with null output
+    # Use 256x256 to avoid minimum resolution issues (NVENC requires 144x144)
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -340,7 +341,7 @@ async def _test_vaapi_encoder(encoder_name: str, device_path: str) -> bool:
         "-f",
         "lavfi",
         "-i",
-        "color=black:s=64x64:d=0.1",
+        "color=black:s=256x256:d=0.1",
         "-vf",
         "format=nv12,hwupload",
         "-c:v",
@@ -357,6 +358,7 @@ async def _test_vaapi_encoder(encoder_name: str, device_path: str) -> bool:
 async def _test_nvenc_encoder(encoder_name: str) -> bool:
     """Test if an NVENC encoder actually works (not just listed)."""
     # Quick encode test with null output
+    # Note: NVENC requires minimum 144x144 resolution, use 256x256 to be safe
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -366,7 +368,7 @@ async def _test_nvenc_encoder(encoder_name: str) -> bool:
         "-f",
         "lavfi",
         "-i",
-        "color=black:s=64x64:d=0.1",
+        "color=black:s=256x256:d=0.1",
         "-c:v",
         encoder_name,
         "-f",
