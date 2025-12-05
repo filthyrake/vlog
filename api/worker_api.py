@@ -75,6 +75,71 @@ logger = logging.getLogger(__name__)
 _shutdown_event: Optional[asyncio.Event] = None
 
 
+async def _detect_and_release_stale_jobs():
+    """
+    Core logic for detecting and releasing stale jobs from offline workers.
+
+    This function is extracted for testability - it performs one check without looping.
+    Returns the number of stale workers found and processed.
+    """
+    now = datetime.now(timezone.utc)
+    offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
+
+    # Find workers that are not already offline but haven't sent heartbeat
+    stale_workers = await database.fetch_all(
+        workers.select()
+        .where(workers.c.status != "offline")
+        .where(workers.c.last_heartbeat < offline_threshold)
+    )
+
+    for worker in stale_workers:
+        worker_name = worker["worker_name"] or worker["worker_id"][:8]
+        logger.warning(f"Worker '{worker_name}' went offline (no heartbeat since {worker['last_heartbeat']})")
+
+        # Mark worker as offline
+        await database.execute(
+            workers.update()
+            .where(workers.c.id == worker["id"])
+            .values(status="offline", current_job_id=None)
+        )
+
+        # Find and release any jobs claimed by this worker
+        stale_jobs = await database.fetch_all(
+            transcoding_jobs.select()
+            .where(transcoding_jobs.c.worker_id == worker["worker_id"])
+            .where(transcoding_jobs.c.completed_at.is_(None))
+        )
+
+        for job in stale_jobs:
+            logger.info(f"Releasing stale job {job['id']} from offline worker '{worker_name}'")
+
+            # Release the job claim
+            await database.execute(
+                transcoding_jobs.update()
+                .where(transcoding_jobs.c.id == job["id"])
+                .values(
+                    claimed_at=None,
+                    claim_expires_at=None,
+                    worker_id=None,
+                    current_step=None,
+                )
+            )
+
+            # Reset video status back to pending so it can be reclaimed
+            video = await database.fetch_one(
+                videos.select().where(videos.c.id == job["video_id"])
+            )
+            if video and video["status"] == "processing":
+                await database.execute(
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(status="pending")
+                )
+                logger.info(f"Reset video {job['video_id']} status to pending")
+
+    return len(stale_workers)
+
+
 async def check_stale_jobs():
     """
     Background task to detect and release stale jobs from offline workers.
@@ -90,61 +155,7 @@ async def check_stale_jobs():
 
     while not _shutdown_event.is_set():
         try:
-            now = datetime.now(timezone.utc)
-            offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
-
-            # Find workers that are not already offline but haven't sent heartbeat
-            stale_workers = await database.fetch_all(
-                workers.select()
-                .where(workers.c.status != "offline")
-                .where(workers.c.last_heartbeat < offline_threshold)
-            )
-
-            for worker in stale_workers:
-                worker_name = worker["worker_name"] or worker["worker_id"][:8]
-                logger.warning(f"Worker '{worker_name}' went offline (no heartbeat since {worker['last_heartbeat']})")
-
-                # Mark worker as offline
-                await database.execute(
-                    workers.update()
-                    .where(workers.c.id == worker["id"])
-                    .values(status="offline", current_job_id=None)
-                )
-
-                # Find and release any jobs claimed by this worker
-                stale_jobs = await database.fetch_all(
-                    transcoding_jobs.select()
-                    .where(transcoding_jobs.c.worker_id == worker["worker_id"])
-                    .where(transcoding_jobs.c.completed_at.is_(None))
-                )
-
-                for job in stale_jobs:
-                    logger.info(f"Releasing stale job {job['id']} from offline worker '{worker_name}'")
-
-                    # Release the job claim
-                    await database.execute(
-                        transcoding_jobs.update()
-                        .where(transcoding_jobs.c.id == job["id"])
-                        .values(
-                            claimed_at=None,
-                            claim_expires_at=None,
-                            worker_id=None,
-                            current_step=None,
-                        )
-                    )
-
-                    # Reset video status back to pending so it can be reclaimed
-                    video = await database.fetch_one(
-                        videos.select().where(videos.c.id == job["video_id"])
-                    )
-                    if video and video["status"] == "processing":
-                        await database.execute(
-                            videos.update()
-                            .where(videos.c.id == job["video_id"])
-                            .values(status="pending")
-                        )
-                        logger.info(f"Reset video {job['video_id']} status to pending")
-
+            await _detect_and_release_stale_jobs()
         except Exception as e:
             logger.error(f"Error in stale job checker: {e}")
 

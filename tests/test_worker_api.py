@@ -703,9 +703,7 @@ class TestStaleJobDetection:
     @pytest.mark.asyncio
     async def test_stale_job_released_when_worker_offline(self, worker_client, test_database, sample_pending_video):
         """Test that stale jobs are released when workers go offline."""
-        import asyncio
-
-        from api.worker_api import check_stale_jobs
+        from api.worker_api import _detect_and_release_stale_jobs
 
         # Register a worker
         response = worker_client.post(
@@ -743,17 +741,9 @@ class TestStaleJobDetection:
             .values(last_heartbeat=old_time, status="active")
         )
 
-        # Mock the shutdown event and run stale job check once
-        from api import worker_api
-        original_event = worker_api._shutdown_event
-        worker_api._shutdown_event = asyncio.Event()
-        worker_api._shutdown_event.set()  # Set immediately so it only runs once
-
-        # Run the check (will exit after first iteration due to shutdown event)
-        await check_stale_jobs()
-
-        # Restore original event
-        worker_api._shutdown_event = original_event
+        # Run the stale job detection (single iteration, testable helper)
+        stale_count = await _detect_and_release_stale_jobs()
+        assert stale_count == 1
 
         # Verify worker is marked offline
         worker_record = await test_database.fetch_one(
