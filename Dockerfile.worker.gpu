@@ -1,0 +1,185 @@
+# VLog Remote Transcoding Worker with GPU Support
+# Containerized worker with NVIDIA NVENC and Intel VAAPI hardware encoding
+#
+# Build: docker build -f Dockerfile.worker.gpu -t vlog-worker-gpu .
+# Run (NVIDIA): docker run --gpus all -e VLOG_WORKER_API_KEY=<key> vlog-worker-gpu
+# Run (Intel):  docker run --device /dev/dri -e VLOG_WORKER_API_KEY=<key> vlog-worker-gpu
+
+# =============================================================================
+# Stage 1: Build FFmpeg with hardware encoder support
+# =============================================================================
+FROM nvidia/cuda:12.2-devel-ubuntu22.04 AS ffmpeg-builder
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    nasm \
+    yasm \
+    pkg-config \
+    wget \
+    # Video codec libraries
+    libx264-dev \
+    libx265-dev \
+    libvpx-dev \
+    libopus-dev \
+    libfdk-aac-dev \
+    # Other FFmpeg dependencies
+    libass-dev \
+    libfreetype6-dev \
+    libmp3lame-dev \
+    libtheora-dev \
+    libvorbis-dev \
+    # NVIDIA Video Codec SDK headers (included in CUDA devel image)
+    libnvidia-encode-525 \
+    # Intel VAAPI headers
+    libva-dev \
+    vainfo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build FFmpeg from source with hardware encoders
+WORKDIR /tmp/ffmpeg
+
+# Download and extract FFmpeg source
+RUN wget -q https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
+    tar xf ffmpeg-6.1.tar.xz && \
+    cd ffmpeg-6.1 && \
+    ./configure \
+      --prefix=/usr/local \
+      --enable-gpl \
+      --enable-nonfree \
+      --enable-version3 \
+      # Software encoders
+      --enable-libx264 \
+      --enable-libx265 \
+      --enable-libvpx \
+      --enable-libopus \
+      --enable-libfdk-aac \
+      --enable-libass \
+      --enable-libfreetype \
+      --enable-libmp3lame \
+      --enable-libtheora \
+      --enable-libvorbis \
+      # NVIDIA hardware acceleration
+      --enable-nvenc \
+      --enable-cuda \
+      --enable-cuvid \
+      --enable-libnpp \
+      # Intel VAAPI hardware acceleration
+      --enable-vaapi \
+      # CUDA paths
+      --extra-cflags="-I/usr/local/cuda/include" \
+      --extra-ldflags="-L/usr/local/cuda/lib64" \
+      --disable-doc \
+      --disable-debug && \
+    make -j$(nproc) && \
+    make install
+
+# =============================================================================
+# Stage 2: Runtime image with GPU support
+# =============================================================================
+FROM nvidia/cuda:12.2-runtime-ubuntu22.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Python 3.9
+    python3.9 \
+    python3.9-venv \
+    python3-pip \
+    # FFmpeg runtime libraries
+    libx264-163 \
+    libx265-199 \
+    libvpx7 \
+    libopus0 \
+    libfdk-aac2 \
+    libass9 \
+    libfreetype6 \
+    libmp3lame0 \
+    libtheora0 \
+    libvorbis0a \
+    libvorbisenc2 \
+    # Intel compute runtime for Arc/QuickSync
+    intel-opencl-icd \
+    intel-media-va-driver-non-free \
+    libva-drm2 \
+    libva2 \
+    vainfo \
+    # VAAPI utilities
+    i965-va-driver-shaders \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy FFmpeg binaries from builder
+COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/
+COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
+COPY --from=ffmpeg-builder /usr/local/lib/lib*.so* /usr/local/lib/
+
+# Update library path
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+# Create non-root user for security
+RUN useradd -m -u 1000 -s /bin/bash vlog && \
+    usermod -aG video vlog
+
+WORKDIR /app
+
+# Copy package files first for better caching
+COPY pyproject.toml ./
+
+# Copy source code
+COPY config.py ./
+COPY api/ api/
+COPY worker/ worker/
+COPY cli/ cli/
+
+# Install Python dependencies
+RUN pip3 install --no-cache-dir \
+    fastapi>=0.100.0 \
+    uvicorn>=0.23.0 \
+    python-multipart>=0.0.6 \
+    aiosqlite>=0.19.0 \
+    "databases[sqlite]>=0.8.0" \
+    sqlalchemy>=2.0.0 \
+    alembic>=1.13.0 \
+    python-slugify>=8.0.0 \
+    aiofiles>=23.0.0 \
+    httpx>=0.25.0 \
+    watchdog>=3.0.0
+
+# Install the package itself
+RUN pip3 install --no-cache-dir -e .
+
+# Change ownership to non-root user
+RUN chown -R vlog:vlog /app
+
+# Switch to non-root user
+USER vlog
+
+# Create work directory
+RUN mkdir -p /tmp/vlog-worker
+
+# Environment variables
+ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
+    VLOG_WORKER_WORK_DIR=/tmp/vlog-worker \
+    VLOG_WORKER_HEARTBEAT_INTERVAL=30 \
+    VLOG_WORKER_POLL_INTERVAL=10 \
+    # GPU detection (auto-detect by default)
+    VLOG_HWACCEL_TYPE=auto \
+    VLOG_HWACCEL_PREFERRED_CODEC=h264 \
+    # NVIDIA runtime
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+    # Python settings
+    PYTHONUNBUFFERED=1
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python3 -c "import sys; sys.exit(0)"
+
+# Run the remote transcoder
+CMD ["python3", "-m", "worker.remote_transcoder"]

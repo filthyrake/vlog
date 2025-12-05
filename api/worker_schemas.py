@@ -5,6 +5,75 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# GPU and Hardware Acceleration Capabilities
+class GPUInfo(BaseModel):
+    """GPU hardware information reported by workers."""
+    hwaccel_type: str = Field(
+        default="none",
+        description="Hardware acceleration type: nvidia, intel, or none"
+    )
+    gpu_name: Optional[str] = Field(
+        default=None,
+        description="GPU device name (e.g., 'NVIDIA GeForce RTX 3090')"
+    )
+    driver_version: Optional[str] = Field(
+        default=None,
+        description="GPU driver version"
+    )
+    cuda_version: Optional[str] = Field(
+        default=None,
+        description="CUDA version (NVIDIA only)"
+    )
+    vaapi_device: Optional[str] = Field(
+        default=None,
+        description="VAAPI device path (Intel only, e.g., '/dev/dri/renderD128')"
+    )
+
+
+class WorkerCapabilities(BaseModel):
+    """Detailed worker capabilities including GPU and encoding support."""
+    hwaccel_enabled: bool = Field(
+        default=False,
+        description="Whether hardware acceleration is available"
+    )
+    hwaccel_type: str = Field(
+        default="none",
+        description="Hardware acceleration type: nvidia, intel, or none"
+    )
+    gpu_name: Optional[str] = Field(
+        default=None,
+        description="GPU device name"
+    )
+    supported_codecs: List[str] = Field(
+        default=["h264"],
+        description="List of supported codecs (h264, hevc, av1)"
+    )
+    encoders: Dict[str, List[str]] = Field(
+        default={"h264": ["libx264"]},
+        description="Available encoders by codec (e.g., {'h264': ['h264_nvenc', 'libx264']})"
+    )
+    max_concurrent_encode_sessions: int = Field(
+        default=1,
+        description="Maximum concurrent encoding sessions (NVIDIA consumer GPUs: 3-5)"
+    )
+    ffmpeg_version: Optional[str] = Field(
+        default=None,
+        description="FFmpeg version string"
+    )
+    driver_version: Optional[str] = Field(
+        default=None,
+        description="GPU driver version"
+    )
+    cuda_version: Optional[str] = Field(
+        default=None,
+        description="CUDA version (NVIDIA only)"
+    )
+    vaapi_device: Optional[str] = Field(
+        default=None,
+        description="VAAPI device path (Intel only)"
+    )
+
+
 # Worker registration
 class WorkerRegisterRequest(BaseModel):
     worker_name: Optional[str] = Field(default=None, max_length=100)

@@ -72,6 +72,18 @@ TRANSCRIPTION_COMPUTE_TYPE = os.getenv("VLOG_TRANSCRIPTION_COMPUTE_TYPE", "int8"
 TRANSCRIPTION_TIMEOUT = int(os.getenv("VLOG_TRANSCRIPTION_TIMEOUT", "3600"))
 AUDIO_EXTRACTION_TIMEOUT = int(os.getenv("VLOG_AUDIO_EXTRACTION_TIMEOUT", "300"))
 
+# Hardware Acceleration Settings (for remote workers with GPUs)
+# VLOG_HWACCEL_TYPE: "auto" (detect), "nvidia", "intel", or "none"
+HWACCEL_TYPE = os.getenv("VLOG_HWACCEL_TYPE", "auto")
+# Preferred codec: "h264" (max compatibility), "hevc" (smaller files), "av1" (best compression)
+HWACCEL_PREFERRED_CODEC = os.getenv("VLOG_HWACCEL_PREFERRED_CODEC", "h264")
+# Fall back to CPU encoding if GPU encoding fails
+HWACCEL_FALLBACK_TO_CPU = os.getenv("VLOG_HWACCEL_FALLBACK_TO_CPU", "true").lower() == "true"
+# Max concurrent encode sessions (NVIDIA consumer GPUs have limits: RTX 3090=3, RTX 4090=5)
+HWACCEL_MAX_CONCURRENT_SESSIONS = int(os.getenv("VLOG_HWACCEL_MAX_SESSIONS", "3"))
+# Intel VAAPI device path (auto-detected if empty)
+HWACCEL_VAAPI_DEVICE = os.getenv("VLOG_HWACCEL_VAAPI_DEVICE", "")
+
 # Worker settings (event-driven processing for local worker)
 WORKER_USE_FILESYSTEM_WATCHER = os.getenv("VLOG_WORKER_USE_FILESYSTEM_WATCHER", "true").lower() == "true"
 WORKER_FALLBACK_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_FALLBACK_POLL_INTERVAL", "60"))

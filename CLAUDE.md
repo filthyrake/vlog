@@ -83,6 +83,7 @@ api/
 worker/
 ├── transcoder.py       # Local event-driven (inotify) transcoder with checkpoint-based resumable processing
 ├── remote_transcoder.py # Containerized worker for distributed transcoding via Worker API
+├── hwaccel.py          # GPU detection and hardware encoder selection (NVENC, VAAPI)
 ├── http_client.py      # HTTP client for worker-to-API communication
 └── transcription.py    # Whisper transcription worker
 
@@ -95,7 +96,10 @@ cli/
 
 k8s/              # Kubernetes manifests for containerized workers
 ├── namespace.yaml, configmap.yaml, secret.yaml
-├── worker-deployment.yaml, worker-hpa.yaml
+├── worker-deployment.yaml          # CPU-only worker deployment
+├── worker-deployment-nvidia.yaml   # NVIDIA GPU worker deployment (NVENC)
+├── worker-deployment-intel.yaml    # Intel Arc/QuickSync worker deployment (VAAPI)
+├── worker-hpa.yaml
 └── README.md
 
 migrations/
@@ -123,6 +127,13 @@ migrations/
 
 **Distributed transcoding**: Remote workers register via Worker API and receive API keys. Workers poll for jobs, claim them atomically, download source files via HTTP, transcode locally, and upload HLS output as tar.gz. Progress updates are sent to the API and visible in the admin UI.
 
+**Hardware acceleration**: Remote workers can use GPU encoding for faster transcoding:
+- **NVIDIA NVENC**: h264_nvenc, hevc_nvenc, av1_nvenc (RTX 40 series)
+- **Intel VAAPI**: h264_vaapi, hevc_vaapi, av1_vaapi (Arc GPUs, QuickSync)
+- GPU is auto-detected at worker startup; falls back to CPU if unavailable
+- Consumer NVIDIA GPUs have session limits (RTX 3090: 3 sessions, RTX 4090: 5 sessions)
+- Use `Dockerfile.worker.gpu` for GPU-enabled containers
+
 ### Database Schema
 
 Core tables: `categories`, `videos` (with `deleted_at` for soft-delete), `video_qualities`
@@ -142,6 +153,7 @@ Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
   - Archive: `VLOG_ARCHIVE_RETENTION_DAYS` (default: 30)
   - Worker API: `VLOG_WORKER_API_PORT`, `VLOG_WORKER_API_URL`, `VLOG_WORKER_API_KEY`
   - Remote workers: `VLOG_WORKER_HEARTBEAT_INTERVAL`, `VLOG_WORKER_CLAIM_DURATION`, `VLOG_WORKER_POLL_INTERVAL`
+  - Hardware acceleration: `VLOG_HWACCEL_TYPE` (auto, nvidia, intel, none), `VLOG_HWACCEL_PREFERRED_CODEC` (h264, hevc, av1)
 - NAS mount: `//10.0.10.84/MainPool` mounted at `/mnt/nas` via fstab
 - systemd services: Located in `systemd/` folder, use venv Python with security hardening
 - Package installed in development mode: `pip install -e .` makes `vlog` CLI available
