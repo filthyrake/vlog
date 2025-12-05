@@ -43,14 +43,14 @@ class TestEnsureUtc:
 
     def test_non_utc_datetime_converted(self):
         """Test that non-UTC timezone-aware datetime is converted to UTC."""
-        # Create a datetime in US Eastern time (UTC-5 or UTC-4 depending on DST)
+        # Create a datetime in US Eastern time (EST is UTC-5 in winter)
         eastern = zoneinfo.ZoneInfo("America/New_York")
         eastern_dt = datetime(2024, 1, 1, 12, 0, 0, tzinfo=eastern)
         result = ensure_utc(eastern_dt)
 
-        # Should be converted to UTC (17:00 UTC in winter, 16:00 in summer)
+        # January 1, 2024 is in EST (UTC-5), so 12:00 EST = 17:00 UTC
         assert result.tzinfo == timezone.utc
-        assert result.hour in [16, 17]  # Depends on DST
+        assert result.hour == 17
 
     def test_comparison_with_naive_and_aware(self):
         """Test that ensure_utc enables proper comparison."""
@@ -97,7 +97,7 @@ class TestStaleJobDetectionWithTimezone:
         )
 
         # The retrieved last_checkpoint should be naive (no tzinfo)
-        assert job["last_checkpoint"].tzinfo is None or job["last_checkpoint"].tzinfo == timezone.utc
+        assert job["last_checkpoint"].tzinfo is None
 
         # Test stale detection with 30 minute threshold
         threshold = datetime.now(timezone.utc) - timedelta(minutes=30)
