@@ -7,8 +7,13 @@ from config import DATABASE_PATH
 
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
+# SQLite connection timeout (seconds) - passed to sqlite3 connection
+# This is the timeout for acquiring locks, not for query execution
+SQLITE_TIMEOUT = 30.0
+
 # Note: SQLite per-connection pragmas are configured in configure_sqlite_pragmas()
-database = Database(DATABASE_URL)
+# The timeout kwarg is passed to aiosqlite/sqlite3 and sets the connection busy_timeout
+database = Database(DATABASE_URL, timeout=SQLITE_TIMEOUT)
 metadata = sa.MetaData()
 
 
@@ -22,15 +27,15 @@ async def configure_sqlite_pragmas():
     - synchronous=NORMAL: Balance between safety and speed (WAL mode makes this safe)
     - foreign_keys=ON: Enforce foreign key constraints
     - cache_size=-64000: 64MB cache for better read performance
-    - busy_timeout=5000: Wait 5 seconds on locked database before failing
+    - busy_timeout=30000: Wait 30 seconds on locked database before failing
 
     Note: journal_mode and busy_timeout work reliably. Other per-connection
     pragmas may not persist across connection pool reuse in the async library.
     """
     # WAL mode is persistent - only needs to be set once per database file
     await database.execute("PRAGMA journal_mode=WAL")
-    # busy_timeout works with the connection pool
-    await database.execute("PRAGMA busy_timeout=5000")
+    # busy_timeout works with the connection pool (30 seconds to match SQLITE_TIMEOUT)
+    await database.execute("PRAGMA busy_timeout=30000")
     # These are per-connection but we set them for the initial connection
     await database.execute("PRAGMA synchronous=NORMAL")
     await database.execute("PRAGMA foreign_keys=ON")
@@ -47,7 +52,7 @@ def set_sqlite_pragmas_sync(dbapi_conn, connection_record):
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA cache_size=-64000")
-    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
 
 

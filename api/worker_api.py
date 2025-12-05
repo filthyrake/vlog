@@ -34,6 +34,7 @@ from api.database import (
     worker_api_keys,
     workers,
 )
+from api.db_retry import DatabaseLockedError, execute_with_retry
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
     ClaimJobResponse,
@@ -106,30 +107,43 @@ async def register_worker(data: WorkerRegisterRequest):
 
     worker_name = data.worker_name or f"worker-{worker_id[:8]}"
 
-    async with database.transaction():
-        # Create worker record
-        worker_db_id = await database.execute(
-            workers.insert().values(
-                worker_id=worker_id,
-                worker_name=worker_name,
-                worker_type=data.worker_type,
-                registered_at=now,
-                last_heartbeat=now,
-                status="active",
-                capabilities=json.dumps(data.capabilities) if data.capabilities else None,
-                metadata=json.dumps(data.metadata) if data.metadata else None,
-            )
-        )
+    # Track worker_db_id in a mutable container for the transaction
+    result = {"worker_db_id": None}
 
-        # Create API key record
-        await database.execute(
-            worker_api_keys.insert().values(
-                worker_id=worker_db_id,
-                key_hash=key_hash,
-                key_prefix=key_prefix,
-                created_at=now,
+    async def do_register_transaction():
+        """Execute the registration transaction - wrapped with retry logic."""
+        async with database.transaction():
+            # Create worker record
+            result["worker_db_id"] = await database.execute(
+                workers.insert().values(
+                    worker_id=worker_id,
+                    worker_name=worker_name,
+                    worker_type=data.worker_type,
+                    registered_at=now,
+                    last_heartbeat=now,
+                    status="active",
+                    capabilities=json.dumps(data.capabilities) if data.capabilities else None,
+                    metadata=json.dumps(data.metadata) if data.metadata else None,
+                )
             )
-        )
+
+            # Create API key record
+            await database.execute(
+                worker_api_keys.insert().values(
+                    worker_id=result["worker_db_id"],
+                    key_hash=key_hash,
+                    key_prefix=key_prefix,
+                    created_at=now,
+                )
+            )
+
+    try:
+        await execute_with_retry(do_register_transaction)
+    except DatabaseLockedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily unavailable, please retry",
+        ) from e
 
     return WorkerRegisterResponse(
         worker_id=worker_id,
@@ -182,54 +196,73 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
     """
     now = datetime.now(timezone.utc)
     claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
 
-    async with database.transaction():
-        # Find oldest unclaimed pending job, or job with expired claim
-        job = await database.fetch_one(
-            sa.text("""
-                SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
-                FROM transcoding_jobs tj
-                JOIN videos v ON tj.video_id = v.id
-                WHERE v.status = 'pending'
-                  AND v.deleted_at IS NULL
-                  AND (tj.claimed_at IS NULL OR tj.claim_expires_at < :now)
-                  AND tj.completed_at IS NULL
-                ORDER BY v.created_at ASC
-                LIMIT 1
-            """).bindparams(now=now)
-        )
+    # Store job data in mutable container for the transaction
+    claim_result = {"job": None}
 
-        if not job:
-            return ClaimJobResponse(message="No jobs available")
-
-        expires_at = now + claim_duration
-
-        # Update job with claim
-        await database.execute(
-            transcoding_jobs.update()
-            .where(transcoding_jobs.c.id == job["id"])
-            .values(
-                worker_id=worker["worker_id"],
-                claimed_at=now,
-                claim_expires_at=expires_at,
-                started_at=now,
-                current_step="claimed",
+    async def do_claim_transaction():
+        """Execute the claim transaction - wrapped with retry logic."""
+        async with database.transaction():
+            # Find oldest unclaimed pending job, or job with expired claim
+            job = await database.fetch_one(
+                sa.text("""
+                    SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                    FROM transcoding_jobs tj
+                    JOIN videos v ON tj.video_id = v.id
+                    WHERE v.status = 'pending'
+                      AND v.deleted_at IS NULL
+                      AND (tj.claimed_at IS NULL OR tj.claim_expires_at < :now)
+                      AND tj.completed_at IS NULL
+                    ORDER BY v.created_at ASC
+                    LIMIT 1
+                """).bindparams(now=now)
             )
-        )
 
-        # Update video status
-        await database.execute(
-            videos.update()
-            .where(videos.c.id == job["video_id"])
-            .values(status="processing")
-        )
+            if not job:
+                claim_result["job"] = None
+                return
 
-        # Update worker's current job
-        await database.execute(
-            workers.update()
-            .where(workers.c.id == worker["id"])
-            .values(current_job_id=job["id"])
-        )
+            claim_result["job"] = dict(job)
+
+            # Update job with claim
+            await database.execute(
+                transcoding_jobs.update()
+                .where(transcoding_jobs.c.id == job["id"])
+                .values(
+                    worker_id=worker["worker_id"],
+                    claimed_at=now,
+                    claim_expires_at=expires_at,
+                    started_at=now,
+                    current_step="claimed",
+                )
+            )
+
+            # Update video status
+            await database.execute(
+                videos.update()
+                .where(videos.c.id == job["video_id"])
+                .values(status="processing")
+            )
+
+            # Update worker's current job
+            await database.execute(
+                workers.update()
+                .where(workers.c.id == worker["id"])
+                .values(current_job_id=job["id"])
+            )
+
+    try:
+        await execute_with_retry(do_claim_transaction)
+    except DatabaseLockedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily unavailable, please retry",
+        ) from e
+
+    job = claim_result["job"]
+    if not job:
+        return ClaimJobResponse(message="No jobs available")
 
     # Find source filename
     source_filename = None
@@ -334,60 +367,70 @@ async def complete_job(
 
     now = datetime.now(timezone.utc)
 
-    async with database.transaction():
-        # Save quality info
-        for q in data.qualities:
-            existing = await database.fetch_one(
-                video_qualities.select()
-                .where(video_qualities.c.video_id == job["video_id"])
-                .where(video_qualities.c.quality == q.name)
-            )
-            if not existing:
-                await database.execute(
-                    video_qualities.insert().values(
-                        video_id=job["video_id"],
-                        quality=q.name,
-                        width=q.width,
-                        height=q.height,
-                        bitrate=q.bitrate,
-                    )
+    async def do_complete_transaction():
+        """Execute the completion transaction - wrapped with retry logic."""
+        async with database.transaction():
+            # Save quality info
+            for q in data.qualities:
+                existing = await database.fetch_one(
+                    video_qualities.select()
+                    .where(video_qualities.c.video_id == job["video_id"])
+                    .where(video_qualities.c.quality == q.name)
                 )
+                if not existing:
+                    await database.execute(
+                        video_qualities.insert().values(
+                            video_id=job["video_id"],
+                            quality=q.name,
+                            width=q.width,
+                            height=q.height,
+                            bitrate=q.bitrate,
+                        )
+                    )
 
-        # Update video metadata if provided
-        video_updates = {"status": "ready", "published_at": now}
-        if data.duration is not None:
-            video_updates["duration"] = data.duration
-        if data.source_width is not None:
-            video_updates["source_width"] = data.source_width
-        if data.source_height is not None:
-            video_updates["source_height"] = data.source_height
+            # Update video metadata if provided
+            video_updates = {"status": "ready", "published_at": now}
+            if data.duration is not None:
+                video_updates["duration"] = data.duration
+            if data.source_width is not None:
+                video_updates["source_width"] = data.source_width
+            if data.source_height is not None:
+                video_updates["source_height"] = data.source_height
 
-        # Mark job complete
-        await database.execute(
-            transcoding_jobs.update()
-            .where(transcoding_jobs.c.id == job_id)
-            .values(
-                completed_at=now,
-                progress_percent=100,
-                current_step="finalize",
-                claimed_at=None,
-                claim_expires_at=None,
+            # Mark job complete
+            await database.execute(
+                transcoding_jobs.update()
+                .where(transcoding_jobs.c.id == job_id)
+                .values(
+                    completed_at=now,
+                    progress_percent=100,
+                    current_step="finalize",
+                    claimed_at=None,
+                    claim_expires_at=None,
+                )
             )
-        )
 
-        # Mark video ready
-        await database.execute(
-            videos.update()
-            .where(videos.c.id == job["video_id"])
-            .values(**video_updates)
-        )
+            # Mark video ready
+            await database.execute(
+                videos.update()
+                .where(videos.c.id == job["video_id"])
+                .values(**video_updates)
+            )
 
-        # Clear worker's current job
-        await database.execute(
-            workers.update()
-            .where(workers.c.id == worker["id"])
-            .values(current_job_id=None)
-        )
+            # Clear worker's current job
+            await database.execute(
+                workers.update()
+                .where(workers.c.id == worker["id"])
+                .values(current_job_id=None)
+            )
+
+    try:
+        await execute_with_retry(do_complete_transaction)
+    except DatabaseLockedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily unavailable, please retry",
+        ) from e
 
     return CompleteJobResponse(status="ok", message="Job completed successfully")
 
@@ -415,50 +458,60 @@ async def fail_job(
     will_retry = data.retry and job["attempt_number"] < job["max_attempts"]
     now = datetime.now(timezone.utc)
 
-    async with database.transaction():
-        if will_retry:
-            # Reset for retry
-            await database.execute(
-                transcoding_jobs.update()
-                .where(transcoding_jobs.c.id == job_id)
-                .values(
-                    last_error=data.error_message[:500],
-                    claimed_at=None,
-                    claim_expires_at=None,
-                    worker_id=None,
-                    current_step=None,
-                    attempt_number=job["attempt_number"] + 1,
+    async def do_fail_transaction():
+        """Execute the failure transaction - wrapped with retry logic."""
+        async with database.transaction():
+            if will_retry:
+                # Reset for retry
+                await database.execute(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job_id)
+                    .values(
+                        last_error=data.error_message[:500],
+                        claimed_at=None,
+                        claim_expires_at=None,
+                        worker_id=None,
+                        current_step=None,
+                        attempt_number=job["attempt_number"] + 1,
+                    )
                 )
-            )
-            await database.execute(
-                videos.update()
-                .where(videos.c.id == job["video_id"])
-                .values(status="pending")
-            )
-        else:
-            # Final failure
-            await database.execute(
-                transcoding_jobs.update()
-                .where(transcoding_jobs.c.id == job_id)
-                .values(
-                    last_error=data.error_message[:500],
-                    completed_at=now,
-                    claimed_at=None,
-                    claim_expires_at=None,
+                await database.execute(
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(status="pending")
                 )
-            )
+            else:
+                # Final failure
+                await database.execute(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job_id)
+                    .values(
+                        last_error=data.error_message[:500],
+                        completed_at=now,
+                        claimed_at=None,
+                        claim_expires_at=None,
+                    )
+                )
+                await database.execute(
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(status="failed", error_message=data.error_message[:500])
+                )
+
+            # Clear worker's current job
             await database.execute(
-                videos.update()
-                .where(videos.c.id == job["video_id"])
-                .values(status="failed", error_message=data.error_message[:500])
+                workers.update()
+                .where(workers.c.id == worker["id"])
+                .values(current_job_id=None)
             )
 
-        # Clear worker's current job
-        await database.execute(
-            workers.update()
-            .where(workers.c.id == worker["id"])
-            .values(current_job_id=None)
-        )
+    try:
+        await execute_with_retry(do_fail_transaction)
+    except DatabaseLockedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily unavailable, please retry",
+        ) from e
 
     return FailJobResponse(
         status="ok",
