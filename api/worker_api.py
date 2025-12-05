@@ -9,6 +9,7 @@ Provides endpoints for:
 
 Run with: uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
 """
+
 import json
 import logging
 import secrets
@@ -102,14 +103,10 @@ async def lifespan(app: FastAPI):
                 )
 
                 # Reset video status back to pending if it was processing
-                video = await database.fetch_one(
-                    videos.select().where(videos.c.id == job["video_id"])
-                )
+                video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
                 if video and video["status"] == "processing":
                     await database.execute(
-                        videos.update()
-                        .where(videos.c.id == job["video_id"])
-                        .values(status="pending")
+                        videos.update().where(videos.c.id == job["video_id"]).values(status="pending")
                     )
 
             logger.info(f"Released {len(claimed_jobs)} claimed job(s)")
@@ -117,11 +114,7 @@ async def lifespan(app: FastAPI):
             logger.info("No claimed jobs to release")
 
         # Clear current_job_id from all workers
-        await database.execute(
-            workers.update()
-            .where(workers.c.current_job_id.isnot(None))
-            .values(current_job_id=None)
-        )
+        await database.execute(workers.update().where(workers.c.current_job_id.isnot(None)).values(current_job_id=None))
 
     except Exception as e:
         logger.error(f"Error during shutdown cleanup: {e}")
@@ -178,20 +171,14 @@ async def register_worker(data: WorkerRegisterRequest):
     if data.capabilities:  # None check before accessing model_dump()
         capabilities_json = json.dumps(data.capabilities.model_dump())
         if len(capabilities_json) > 10000:  # 10KB limit
-            raise HTTPException(
-                status_code=400,
-                detail="Capabilities JSON too large (max 10KB)"
-            )
+            raise HTTPException(status_code=400, detail="Capabilities JSON too large (max 10KB)")
 
     # Validate and serialize metadata
     metadata_json = None
     if data.metadata:  # None check before accessing model_dump()
         metadata_json = json.dumps(data.metadata.model_dump())
         if len(metadata_json) > 10000:  # 10KB limit
-            raise HTTPException(
-                status_code=400,
-                detail="Metadata JSON too large (max 10KB)"
-            )
+            raise HTTPException(status_code=400, detail="Metadata JSON too large (max 10KB)")
 
     # Track worker_db_id in a mutable container for the transaction
     result = {"worker_db_id": None}
@@ -265,17 +252,10 @@ async def worker_heartbeat(
     if data.metadata:
         metadata_json = json.dumps(data.metadata)
         if len(metadata_json) > 10000:  # 10KB limit
-            raise HTTPException(
-                status_code=400,
-                detail="Metadata JSON too large (max 10KB)"
-            )
+            raise HTTPException(status_code=400, detail="Metadata JSON too large (max 10KB)")
         update_values["metadata"] = metadata_json
 
-    await database.execute(
-        workers.update()
-        .where(workers.c.id == worker["id"])
-        .values(**update_values)
-    )
+    await database.execute(workers.update().where(workers.c.id == worker["id"]).values(**update_values))
 
     return HeartbeatResponse(status="ok", server_time=now)
 
@@ -338,17 +318,11 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
             )
 
             # Update video status
-            await database.execute(
-                videos.update()
-                .where(videos.c.id == job["video_id"])
-                .values(status="processing")
-            )
+            await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="processing"))
 
             # Update worker's current job
             await database.execute(
-                workers.update()
-                .where(workers.c.id == worker["id"])
-                .values(current_job_id=job["id"])
+                workers.update().where(workers.c.id == worker["id"]).values(current_job_id=job["id"])
             )
 
     try:
@@ -397,9 +371,7 @@ async def update_progress(
 ):
     """Update job progress and extend claim."""
     # Verify worker owns this job
-    job = await database.fetch_one(
-        transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-    )
+    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
@@ -463,11 +435,7 @@ async def update_progress(
         if data.source_height is not None:
             video_updates["source_height"] = data.source_height
 
-        await database.execute(
-            videos.update()
-            .where(videos.c.id == job["video_id"])
-            .values(**video_updates)
-        )
+        await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(**video_updates))
 
     return ProgressUpdateResponse(status="ok", claim_expires_at=new_expiry)
 
@@ -484,9 +452,7 @@ async def complete_job(
     worker: dict = Depends(verify_worker_key),
 ):
     """Mark job as complete after HLS files uploaded."""
-    job = await database.fetch_one(
-        transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-    )
+    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
@@ -538,18 +504,10 @@ async def complete_job(
             )
 
             # Mark video ready
-            await database.execute(
-                videos.update()
-                .where(videos.c.id == job["video_id"])
-                .values(**video_updates)
-            )
+            await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(**video_updates))
 
             # Clear worker's current job
-            await database.execute(
-                workers.update()
-                .where(workers.c.id == worker["id"])
-                .values(current_job_id=None)
-            )
+            await database.execute(workers.update().where(workers.c.id == worker["id"]).values(current_job_id=None))
 
     try:
         await execute_with_retry(do_complete_transaction)
@@ -574,9 +532,7 @@ async def fail_job(
     worker: dict = Depends(verify_worker_key),
 ):
     """Report job failure."""
-    job = await database.fetch_one(
-        transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-    )
+    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
@@ -602,11 +558,7 @@ async def fail_job(
                         attempt_number=job["attempt_number"] + 1,
                     )
                 )
-                await database.execute(
-                    videos.update()
-                    .where(videos.c.id == job["video_id"])
-                    .values(status="pending")
-                )
+                await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
             else:
                 # Final failure
                 await database.execute(
@@ -626,11 +578,7 @@ async def fail_job(
                 )
 
             # Clear worker's current job
-            await database.execute(
-                workers.update()
-                .where(workers.c.id == worker["id"])
-                .values(current_job_id=None)
-            )
+            await database.execute(workers.update().where(workers.c.id == worker["id"]).values(current_job_id=None))
 
     try:
         await execute_with_retry(do_fail_transaction)
@@ -704,9 +652,7 @@ async def upload_hls(
     if not job:
         raise HTTPException(status_code=403, detail="Not your job or job not found")
 
-    video = await database.fetch_one(
-        videos.select().where(videos.c.id == video_id)
-    )
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -810,9 +756,7 @@ async def list_workers():
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
 
     # Get all workers
-    rows = await database.fetch_all(
-        workers.select().order_by(workers.c.last_heartbeat.desc())
-    )
+    rows = await database.fetch_all(workers.select().order_by(workers.c.last_heartbeat.desc()))
 
     worker_list = []
     active_count = 0
@@ -873,9 +817,7 @@ async def list_workers():
 async def revoke_worker(worker_id: str):
     """Revoke a worker's API keys (admin endpoint, no auth required for now)."""
     # Find worker by UUID
-    worker = await database.fetch_one(
-        workers.select().where(workers.c.worker_id == worker_id)
-    )
+    worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
 
@@ -890,11 +832,7 @@ async def revoke_worker(worker_id: str):
     )
 
     # Mark worker as disabled
-    await database.execute(
-        workers.update()
-        .where(workers.c.id == worker["id"])
-        .values(status="disabled")
-    )
+    await database.execute(workers.update().where(workers.c.id == worker["id"]).values(status="disabled"))
 
     return StatusResponse(status="ok", message=f"Worker {worker_id} has been revoked")
 

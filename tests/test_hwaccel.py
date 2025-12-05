@@ -1,4 +1,5 @@
 """Tests for hardware acceleration detection and encoder selection."""
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,7 +67,7 @@ class TestEncoderSelection:
         assert selection.encoder.is_hardware is True
         assert "-hwaccel" in selection.input_args
         assert "cuda" in selection.input_args
-        assert "scale_cuda" in selection.scale_filter
+        assert "scale_npp" in selection.scale_filter
 
     def test_select_nvenc_hevc(self):
         """Test NVENC HEVC encoder selection."""

@@ -23,16 +23,13 @@ class TestWorkerCapabilitiesValidation:
                     "hwaccel_type": "nvidia",
                     "gpu_name": "NVIDIA GeForce RTX 3090",
                     "supported_codecs": ["h264", "hevc"],
-                    "encoders": {
-                        "h264": ["h264_nvenc", "libx264"],
-                        "hevc": ["hevc_nvenc", "libx265"]
-                    },
+                    "encoders": {"h264": ["h264_nvenc", "libx264"], "hevc": ["hevc_nvenc", "libx265"]},
                     "max_concurrent_encode_sessions": 3,
                     "ffmpeg_version": "5.1.2",
                     "driver_version": "525.60.11",
-                    "cuda_version": "12.0"
-                }
-            }
+                    "cuda_version": "12.0",
+                },
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -50,16 +47,15 @@ class TestWorkerCapabilitiesValidation:
                     "hwaccel_enabled": True,
                     "hwaccel_type": "nvidia",
                     "unknown_field": "should be rejected",
-                    "malicious_data": {"nested": "should not be allowed"}
-                }
-            }
+                    "malicious_data": {"nested": "should not be allowed"},
+                },
+            },
         )
         # Should get 422 Unprocessable Entity due to Pydantic validation
         assert response.status_code == 422
         error_detail = response.json()["detail"]
         # Check that it mentions extra fields not permitted
-        assert any("extra" in str(e).lower() or "permitted" in str(e).lower()
-                   for e in error_detail)
+        assert any("extra" in str(e).lower() or "permitted" in str(e).lower() for e in error_detail)
 
     def test_register_capabilities_too_large(self, worker_client):
         """Test that oversized capabilities JSON is rejected."""
@@ -73,12 +69,8 @@ class TestWorkerCapabilitiesValidation:
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
-                "capabilities": {
-                    "hwaccel_enabled": True,
-                    "hwaccel_type": "nvidia",
-                    "encoders": large_encoders
-                }
-            }
+                "capabilities": {"hwaccel_enabled": True, "hwaccel_type": "nvidia", "encoders": large_encoders},
+            },
         )
         # Should get 400 Bad Request due to size limit
         assert response.status_code == 400
@@ -95,8 +87,8 @@ class TestWorkerCapabilitiesValidation:
                     "hwaccel_enabled": True,
                     "hwaccel_type": "nvidia",
                     "gpu_name": "A" * 300,  # Exceeds 200 char limit
-                }
-            }
+                },
+            },
         )
         # Should get 422 Unprocessable Entity due to Pydantic validation
         assert response.status_code == 422
@@ -112,8 +104,8 @@ class TestWorkerCapabilitiesValidation:
                     "hwaccel_enabled": True,
                     "hwaccel_type": "nvidia",
                     "supported_codecs": ["h264", "A" * 50],  # One codec name too long
-                }
-            }
+                },
+            },
         )
         # Should get 422 due to validation
         assert response.status_code == 422
@@ -130,9 +122,9 @@ class TestWorkerCapabilitiesValidation:
                     "hwaccel_type": "nvidia",
                     "encoders": {
                         "h264": ["encoder_" + "x" * 100]  # Encoder name too long
-                    }
-                }
-            }
+                    },
+                },
+            },
         )
         # Should get 422 due to validation
         assert response.status_code == 422
@@ -147,9 +139,9 @@ class TestWorkerCapabilitiesValidation:
                 "worker_type": "remote",
                 "capabilities": {
                     "hwaccel_enabled": True,
-                    "max_concurrent_encode_sessions": 1000  # Exceeds limit of 100
-                }
-            }
+                    "max_concurrent_encode_sessions": 1000,  # Exceeds limit of 100
+                },
+            },
         )
         assert response.status_code == 422
 
@@ -161,9 +153,9 @@ class TestWorkerCapabilitiesValidation:
                 "worker_type": "remote",
                 "capabilities": {
                     "hwaccel_enabled": True,
-                    "max_concurrent_encode_sessions": 0  # Below minimum of 1
-                }
-            }
+                    "max_concurrent_encode_sessions": 0,  # Below minimum of 1
+                },
+            },
         )
         assert response.status_code == 422
 
@@ -188,12 +180,9 @@ class TestWorkerMetadataValidation:
                     "cloud_provider": "aws",
                     "region": "us-west-2",
                     "availability_zone": "us-west-2a",
-                    "labels": {
-                        "app": "vlog",
-                        "tier": "worker"
-                    }
-                }
-            }
+                    "labels": {"app": "vlog", "tier": "worker"},
+                },
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -209,15 +198,14 @@ class TestWorkerMetadataValidation:
                 "metadata": {
                     "pod_name": "test-pod",
                     "secret_data": "should not be allowed",
-                    "exfiltrated_info": {"password": "secret"}
-                }
-            }
+                    "exfiltrated_info": {"password": "secret"},
+                },
+            },
         )
         # Should get 422 due to extra fields
         assert response.status_code == 422
         error_detail = response.json()["detail"]
-        assert any("extra" in str(e).lower() or "permitted" in str(e).lower()
-                   for e in error_detail)
+        assert any("extra" in str(e).lower() or "permitted" in str(e).lower() for e in error_detail)
 
     def test_register_metadata_too_large(self, worker_client):
         """Test that oversized metadata JSON is rejected."""
@@ -230,11 +218,8 @@ class TestWorkerMetadataValidation:
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
-                "metadata": {
-                    "pod_name": "test-pod",
-                    "labels": large_labels
-                }
-            }
+                "metadata": {"pod_name": "test-pod", "labels": large_labels},
+            },
         )
         # Should get 400 due to size limit (or 422 if labels validation catches it first)
         assert response.status_code in [400, 422]
@@ -251,9 +236,9 @@ class TestWorkerMetadataValidation:
                 "worker_type": "remote",
                 "metadata": {
                     "pod_name": "test-pod",
-                    "labels": {f"label_{i}": "value" for i in range(100)}  # Exceeds 50
-                }
-            }
+                    "labels": {f"label_{i}": "value" for i in range(100)},  # Exceeds 50
+                },
+            },
         )
         assert response.status_code == 422
 
@@ -266,8 +251,8 @@ class TestWorkerMetadataValidation:
                 "worker_type": "remote",
                 "metadata": {
                     "pod_name": "x" * 300,  # Exceeds 253 char limit
-                }
-            }
+                },
+            },
         )
         assert response.status_code == 422
 
@@ -288,15 +273,11 @@ class TestHeartbeatMetadataValidation:
                         "hwaccel_type": "nvidia",
                         "gpu_name": "NVIDIA GeForce RTX 4090",
                         "supported_codecs": ["h264", "hevc", "av1"],
-                        "encoders": {
-                            "h264": ["h264_nvenc"],
-                            "hevc": ["hevc_nvenc"],
-                            "av1": ["av1_nvenc"]
-                        },
-                        "max_concurrent_encode_sessions": 5
+                        "encoders": {"h264": ["h264_nvenc"], "hevc": ["hevc_nvenc"], "av1": ["av1_nvenc"]},
+                        "max_concurrent_encode_sessions": 5,
                     }
-                }
-            }
+                },
+            },
         )
         assert response.status_code == 200
 
@@ -310,10 +291,10 @@ class TestHeartbeatMetadataValidation:
                 "metadata": {
                     "capabilities": {
                         "hwaccel_enabled": True,
-                        "unknown_field": "not allowed"  # Should be rejected
+                        "unknown_field": "not allowed",  # Should be rejected
                     }
-                }
-            }
+                },
+            },
         )
         assert response.status_code == 422
 
@@ -325,10 +306,7 @@ class TestHeartbeatMetadataValidation:
         response = worker_client.post(
             "/api/worker/heartbeat",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
-            json={
-                "status": "idle",
-                "metadata": large_data
-            }
+            json={"status": "idle", "metadata": large_data},
         )
         assert response.status_code == 400
         assert "too large" in response.json()["detail"].lower()
@@ -338,6 +316,6 @@ class TestHeartbeatMetadataValidation:
         response = worker_client.post(
             "/api/worker/heartbeat",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
-            json={"status": "active"}
+            json={"status": "active"},
         )
         assert response.status_code == 200

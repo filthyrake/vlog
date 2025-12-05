@@ -210,9 +210,7 @@ class TestCalculateFfmpegTimeout:
         """Test all quality presets have timeout multipliers."""
         for preset in QUALITY_PRESETS:
             height = preset["height"]
-            assert height in FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS, (
-                f"Missing timeout multiplier for {height}p"
-            )
+            assert height in FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS, f"Missing timeout multiplier for {height}p"
 
     def test_zero_duration(self):
         """Test zero duration gets minimum timeout."""

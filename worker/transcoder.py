@@ -1813,9 +1813,7 @@ async def cleanup_expired_archives():
     cutoff = datetime.now(timezone.utc) - timedelta(days=ARCHIVE_RETENTION_DAYS)
 
     expired = await database.fetch_all(
-        videos.select().where(
-            videos.c.deleted_at.isnot(None) & (videos.c.deleted_at < cutoff)
-        )
+        videos.select().where(videos.c.deleted_at.isnot(None) & (videos.c.deleted_at < cutoff))
     )
 
     if not expired:
@@ -1831,25 +1829,13 @@ async def cleanup_expired_archives():
             # Delete database records atomically
             async with database.transaction():
                 # Get job ID for quality_progress cleanup
-                job = await database.fetch_one(
-                    transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-                )
+                job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
                 if job:
-                    await database.execute(
-                        quality_progress.delete().where(quality_progress.c.job_id == job["id"])
-                    )
-                await database.execute(
-                    transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id)
-                )
-                await database.execute(
-                    playback_sessions.delete().where(playback_sessions.c.video_id == video_id)
-                )
-                await database.execute(
-                    transcriptions.delete().where(transcriptions.c.video_id == video_id)
-                )
-                await database.execute(
-                    video_qualities.delete().where(video_qualities.c.video_id == video_id)
-                )
+                    await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+                await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
+                await database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
+                await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+                await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
                 # Delete video record last
                 await database.execute(videos.delete().where(videos.c.id == video_id))
 

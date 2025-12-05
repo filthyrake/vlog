@@ -1,4 +1,5 @@
 """HTTP client for worker-to-API communication."""
+
 import tarfile
 import tempfile
 from pathlib import Path

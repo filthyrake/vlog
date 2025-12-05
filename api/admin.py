@@ -21,7 +21,6 @@ from slowapi.errors import RateLimitExceeded
 from slugify import slugify
 
 from api.analytics_cache import AnalyticsCache
-from worker.transcoder import get_video_info
 from api.common import (
     SecurityHeadersMiddleware,
     check_health,
@@ -83,6 +82,7 @@ from config import (
     UPLOADS_DIR,
     VIDEOS_DIR,
 )
+from worker.transcoder import get_video_info
 
 logger = logging.getLogger(__name__)
 

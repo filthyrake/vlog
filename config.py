@@ -55,7 +55,7 @@ FFMPEG_TIMEOUT_MAXIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MAXIMUM", "14400")) 
 # Per-resolution timeout multipliers (applied on top of base multiplier)
 # Lower resolutions encode faster, higher resolutions need more time
 FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS = {
-    360: 1.0,   # 360p: fast encode
+    360: 1.0,  # 360p: fast encode
     480: 1.25,
     720: 1.5,
     1080: 2.0,
@@ -146,9 +146,7 @@ RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
 # Set VLOG_TRUSTED_PROXIES to comma-separated IPs (e.g., "127.0.0.1,10.0.0.1,192.168.1.1")
 # If empty (default), X-Forwarded-For is never trusted (prevents rate limit bypass)
 _trusted_proxies_env = os.getenv("VLOG_TRUSTED_PROXIES", "")
-TRUSTED_PROXIES = set(
-    ip.strip() for ip in _trusted_proxies_env.split(",") if ip.strip()
-)
+TRUSTED_PROXIES = set(ip.strip() for ip in _trusted_proxies_env.split(",") if ip.strip())
 
 # Analytics Caching Configuration
 # Set to "0" or "false" to disable analytics caching
