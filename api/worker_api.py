@@ -24,6 +24,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from api.common import ensure_utc
 from api.database import (
     configure_sqlite_pragmas,
     database,
@@ -684,9 +685,7 @@ async def list_workers():
         status = row["status"]
         if status == "active" and row["last_heartbeat"]:
             # Handle both timezone-aware and naive datetimes from SQLite
-            last_hb = row["last_heartbeat"]
-            if last_hb.tzinfo is None:
-                last_hb = last_hb.replace(tzinfo=timezone.utc)
+            last_hb = ensure_utc(row["last_heartbeat"])
             if last_hb < offline_threshold:
                 status = "offline"
                 offline_count += 1
