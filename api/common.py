@@ -6,6 +6,8 @@ This module contains shared code to avoid duplication (DRY principle).
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -18,6 +20,39 @@ from config import TRUSTED_PROXIES, UPLOADS_DIR, VIDEOS_DIR
 
 # Timeout for storage health check (seconds)
 STORAGE_CHECK_TIMEOUT = 5
+
+
+def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """
+    Ensure datetime is timezone-aware UTC.
+
+    SQLite doesn't store timezone info, so datetimes retrieved from the database
+    may be timezone-naive even though they were stored as UTC. This function
+    ensures consistent timezone handling for datetime comparisons.
+
+    Args:
+        dt: A datetime object (may be None, timezone-aware, or timezone-naive)
+
+    Returns:
+        - None if input is None
+        - UTC datetime if input was timezone-aware (converted to UTC if needed)
+        - UTC datetime if input was timezone-naive (assumed to be UTC)
+
+    Examples:
+        >>> ensure_utc(None)
+        None
+        >>> ensure_utc(datetime(2024, 1, 1, 12, 0, 0))  # naive
+        datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        >>> ensure_utc(datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
+        datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        # Assume naive datetimes from SQLite are UTC
+        return dt.replace(tzinfo=timezone.utc)
+    # Convert timezone-aware datetimes to UTC
+    return dt.astimezone(timezone.utc)
 
 
 def get_real_ip(request: Request) -> str:
