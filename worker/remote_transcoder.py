@@ -43,6 +43,7 @@ from worker.transcoder import (
     get_output_dimensions,
     get_video_info,
     transcode_quality_with_progress,
+    validate_hls_playlist,
 )
 
 # Global shutdown flag
@@ -179,23 +180,31 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             )
             print("    original: Done")
 
-            # Upload original quality immediately
-            print("    original: Uploading...")
-            try:
-                await client.upload_quality(video_id, "original", output_dir)
-                quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
-                print("    original: Uploaded")
+            # Validate HLS playlist before upload (issue #166)
+            playlist_path = output_dir / "original.m3u8"
+            is_valid, validation_error = validate_hls_playlist(playlist_path)
+            if not is_valid:
+                print(f"    original: HLS validation failed - {validation_error}")
+                quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
+                failed_qualities.append("original")
+            else:
+                # Upload original quality immediately
+                print("    original: Uploading...")
+                try:
+                    await client.upload_quality(video_id, "original", output_dir)
+                    quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
+                    print("    original: Uploaded")
 
-                # Delete local files to free disk space
-                playlist_file = output_dir / "original.m3u8"
-                if playlist_file.exists():
-                    playlist_file.unlink()
-                for segment in output_dir.glob("original_*.ts"):
-                    segment.unlink()
-                print("    original: Local files cleaned up")
-            except WorkerAPIError as e:
-                quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
-                print(f"    original: Upload failed - {e.message}")
+                    # Delete local files to free disk space
+                    playlist_file = output_dir / "original.m3u8"
+                    if playlist_file.exists():
+                        playlist_file.unlink()
+                    for segment in output_dir.glob("original_*.ts"):
+                        segment.unlink()
+                    print("    original: Local files cleaned up")
+                except WorkerAPIError as e:
+                    quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
+                    print(f"    original: Upload failed - {e.message}")
         else:
             quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
             failed_qualities.append("original")
@@ -277,24 +286,35 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 )
                 print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
 
-                # Upload this quality immediately to free disk space
-                print(f"    {quality_name}: Uploading...")
-                try:
-                    await client.upload_quality(video_id, quality_name, output_dir)
-                    quality_progress_list[quality_idx] = {"name": quality_name, "status": "uploaded", "progress": 100}
-                    print(f"    {quality_name}: Uploaded")
+                # Validate HLS playlist before upload (issue #166)
+                quality_playlist_path = output_dir / f"{quality_name}.m3u8"
+                is_valid, validation_error = validate_hls_playlist(quality_playlist_path)
+                if not is_valid:
+                    print(f"    {quality_name}: HLS validation failed - {validation_error}")
+                    quality_progress_list[quality_idx] = {"name": quality_name, "status": "failed", "progress": 0}
+                    failed_qualities.append(quality_name)
+                    # Remove the quality we just added since validation failed
+                    if successful_qualities and successful_qualities[-1]["name"] == quality_name:
+                        successful_qualities.pop()
+                else:
+                    # Upload this quality immediately to free disk space
+                    print(f"    {quality_name}: Uploading...")
+                    try:
+                        await client.upload_quality(video_id, quality_name, output_dir)
+                        quality_progress_list[quality_idx] = {"name": quality_name, "status": "uploaded", "progress": 100}
+                        print(f"    {quality_name}: Uploaded")
 
-                    # Delete local files to free disk space
-                    playlist_file = output_dir / f"{quality_name}.m3u8"
-                    if playlist_file.exists():
-                        playlist_file.unlink()
-                    for segment in output_dir.glob(f"{quality_name}_*.ts"):
-                        segment.unlink()
-                    print(f"    {quality_name}: Local files cleaned up")
-                except WorkerAPIError as e:
-                    # Upload failed - keep files, mark as completed (not uploaded)
-                    quality_progress_list[quality_idx] = {"name": quality_name, "status": "completed", "progress": 100}
-                    print(f"    {quality_name}: Upload failed - {e.message}")
+                        # Delete local files to free disk space
+                        playlist_file = output_dir / f"{quality_name}.m3u8"
+                        if playlist_file.exists():
+                            playlist_file.unlink()
+                        for segment in output_dir.glob(f"{quality_name}_*.ts"):
+                            segment.unlink()
+                        print(f"    {quality_name}: Local files cleaned up")
+                    except WorkerAPIError as e:
+                        # Upload failed - keep files, mark as completed (not uploaded)
+                        quality_progress_list[quality_idx] = {"name": quality_name, "status": "completed", "progress": 100}
+                        print(f"    {quality_name}: Upload failed - {e.message}")
             else:
                 quality_progress_list[quality_idx] = {"name": quality_name, "status": "failed", "progress": 0}
                 failed_qualities.append(quality_name)
@@ -323,6 +343,16 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             master_qualities.append(mq)
 
         generate_master_playlist(output_dir, master_qualities)
+
+        # Validate master playlist before upload (issue #166)
+        master_playlist_path = output_dir / "master.m3u8"
+        if not master_playlist_path.exists():
+            raise Exception("Master playlist was not generated")
+        master_content = master_playlist_path.read_text()
+        if not master_content.startswith("#EXTM3U"):
+            raise Exception("Master playlist is malformed (missing #EXTM3U header)")
+        if "#EXT-X-STREAM-INF" not in master_content:
+            raise Exception("Master playlist is malformed (no stream variants)")
 
         # Upload finalize files (master.m3u8 + thumbnail.jpg)
         # Quality files were already uploaded incrementally after each transcode
