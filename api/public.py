@@ -36,6 +36,12 @@ from api.database import (
     videos,
     viewers,
 )
+from api.db_retry import (
+    DatabaseLockedError,
+    db_execute_with_retry,
+    fetch_all_with_retry,
+    fetch_one_with_retry,
+)
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
 from api.schemas import (
@@ -95,6 +101,18 @@ app = FastAPI(title="VLog", description="Self-hosted video platform", lifespan=l
 # Register rate limiter with the app
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+
+@app.exception_handler(DatabaseLockedError)
+async def database_locked_handler(request: Request, exc: DatabaseLockedError):
+    """Handle database locked errors with a 503 response."""
+    logger.warning(f"Database locked error: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Database temporarily unavailable, please retry"},
+        headers={"Retry-After": "1"},
+    )
+
 
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -208,7 +226,7 @@ async def list_videos(
             )
         )
 
-    rows = await database.fetch_all(query)
+    rows = await fetch_all_with_retry(query)
 
     return [
         VideoListResponse(
@@ -243,13 +261,13 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
     )
 
-    row = await database.fetch_one(query)
+    row = await fetch_one_with_retry(query)
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get quality variants
     quality_query = video_qualities.select().where(video_qualities.c.video_id == row["id"])
-    quality_rows = await database.fetch_all(quality_query)
+    quality_rows = await fetch_all_with_retry(quality_query)
 
     qualities = [
         VideoQualityResponse(
@@ -263,7 +281,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
 
     # Get transcription status
     transcription_query = transcriptions.select().where(transcriptions.c.video_id == row["id"])
-    transcription_row = await database.fetch_one(transcription_query)
+    transcription_row = await fetch_one_with_retry(transcription_query)
 
     captions_url = None
     transcription_status = None
@@ -302,7 +320,7 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
     """Get transcoding progress for a video."""
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
-    video = await database.fetch_one(video_query)
+    video = await fetch_one_with_retry(video_query)
 
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -326,7 +344,7 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
 
     # Get job info for processing videos
     job_query = transcoding_jobs.select().where(transcoding_jobs.c.video_id == video["id"])
-    job = await database.fetch_one(job_query)
+    job = await fetch_one_with_retry(job_query)
 
     if not job:
         return TranscodingProgressResponse(
@@ -336,7 +354,7 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
 
     # Get quality progress
     quality_query = quality_progress.select().where(quality_progress.c.job_id == job["id"])
-    quality_rows = await database.fetch_all(quality_query)
+    quality_rows = await fetch_all_with_retry(quality_query)
 
     qualities = [
         QualityProgressResponse(
@@ -365,14 +383,14 @@ async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
-    video = await database.fetch_one(video_query)
+    video = await fetch_one_with_retry(video_query)
 
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get transcription record
     transcription_query = transcriptions.select().where(transcriptions.c.video_id == video["id"])
-    transcription = await database.fetch_one(transcription_query)
+    transcription = await fetch_one_with_retry(transcription_query)
 
     if not transcription:
         return TranscriptionResponse(status=TranscriptionStatus.NONE)
@@ -406,7 +424,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
         ORDER BY c.name
     """)
 
-    rows = await database.fetch_all(query)
+    rows = await fetch_all_with_retry(query)
 
     return [
         CategoryResponse(
@@ -426,7 +444,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
 async def get_category(request: Request, slug: str) -> CategoryResponse:
     """Get a single category by slug."""
     query = categories.select().where(categories.c.slug == slug)
-    row = await database.fetch_one(query)
+    row = await fetch_one_with_retry(query)
     if not row:
         raise HTTPException(status_code=404, detail="Category not found")
 
@@ -472,7 +490,7 @@ async def start_analytics_session(
     Creates/updates viewer record and links playback session to viewer.
     """
     # Verify video exists and is accessible
-    video = await database.fetch_one(
+    video = await fetch_one_with_retry(
         videos.select().where(
             videos.c.id == data.video_id,
             videos.c.status == VideoStatus.READY,
@@ -488,18 +506,18 @@ async def start_analytics_session(
     # Get or create viewer from cookie
     if vlog_viewer:
         # Look up existing viewer
-        viewer = await database.fetch_one(viewers.select().where(viewers.c.session_id == vlog_viewer))
+        viewer = await fetch_one_with_retry(viewers.select().where(viewers.c.session_id == vlog_viewer))
         if viewer:
             viewer_id = viewer["id"]
             # Update last_seen timestamp
-            await database.execute(
+            await db_execute_with_retry(
                 viewers.update().where(viewers.c.id == viewer_id).values(last_seen=datetime.now(timezone.utc))
             )
 
     # If no valid viewer cookie, create new viewer
     if viewer_id is None:
         new_viewer_session = str(uuid.uuid4())
-        viewer_id = await database.execute(
+        viewer_id = await db_execute_with_retry(
             viewers.insert().values(
                 session_id=new_viewer_session,
                 first_seen=datetime.now(timezone.utc),
@@ -517,7 +535,7 @@ async def start_analytics_session(
         )
 
     # Create playback session linked to viewer
-    await database.execute(
+    await db_execute_with_retry(
         playback_sessions.insert().values(
             video_id=data.video_id,
             viewer_id=viewer_id,
@@ -536,7 +554,7 @@ async def analytics_heartbeat(request: Request, data: PlaybackHeartbeat):
     """Update playback session with current progress."""
     # Find the session
     query = playback_sessions.select().where(playback_sessions.c.session_token == data.session_token)
-    session = await database.fetch_one(query)
+    session = await fetch_one_with_retry(query)
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -558,7 +576,7 @@ async def analytics_heartbeat(request: Request, data: PlaybackHeartbeat):
     if data.quality:
         update_values["quality_used"] = data.quality
 
-    await database.execute(
+    await db_execute_with_retry(
         playback_sessions.update()
         .where(playback_sessions.c.session_token == data.session_token)
         .values(**update_values)
@@ -573,14 +591,14 @@ async def end_analytics_session(request: Request, data: PlaybackEnd):
     """End a playback session."""
     # Find the session
     query = playback_sessions.select().where(playback_sessions.c.session_token == data.session_token)
-    session = await database.fetch_one(query)
+    session = await fetch_one_with_retry(query)
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Get video duration to determine if completed
     video_query = videos.select().where(videos.c.id == session["video_id"])
-    video = await database.fetch_one(video_query)
+    video = await fetch_one_with_retry(video_query)
 
     completed = data.completed
     if video and video["duration"] > 0:
@@ -591,7 +609,7 @@ async def end_analytics_session(request: Request, data: PlaybackEnd):
 
     # Final update (handle None values from fresh sessions)
     current_max_position = session["max_position"] or 0.0
-    await database.execute(
+    await db_execute_with_retry(
         playback_sessions.update()
         .where(playback_sessions.c.session_token == data.session_token)
         .values(

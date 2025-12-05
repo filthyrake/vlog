@@ -39,6 +39,12 @@ from api.database import (
     video_qualities,
     videos,
 )
+from api.db_retry import (
+    DatabaseLockedError,
+    db_execute_with_retry,
+    fetch_all_with_retry,
+    fetch_one_with_retry,
+)
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
 from api.schemas import (
@@ -162,6 +168,18 @@ app = FastAPI(title="VLog Admin", description="Video management API", lifespan=l
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
+
+@app.exception_handler(DatabaseLockedError)
+async def database_locked_handler(request: Request, exc: DatabaseLockedError):
+    """Handle database locked errors with a 503 response."""
+    logger.warning(f"Database locked error: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Database temporarily unavailable, please retry"},
+        headers={"Retry-After": "1"},
+    )
+
+
 app.add_middleware(SecurityHeadersMiddleware)
 
 # Allow CORS for admin UI (internal-only, not exposed externally)
@@ -214,7 +232,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
         GROUP BY c.id
         ORDER BY c.name
     """)
-    rows = await database.fetch_all(query)
+    rows = await fetch_all_with_retry(query)
 
     return [
         CategoryResponse(
@@ -236,7 +254,7 @@ async def create_category(request: Request, data: CategoryCreate) -> CategoryRes
     slug = slugify(data.name)
 
     # Check for duplicate slug
-    existing = await database.fetch_one(categories.select().where(categories.c.slug == slug))
+    existing = await fetch_one_with_retry(categories.select().where(categories.c.slug == slug))
     if existing:
         raise HTTPException(status_code=400, detail="Category with this name already exists")
 
@@ -246,7 +264,7 @@ async def create_category(request: Request, data: CategoryCreate) -> CategoryRes
         description=data.description,
         created_at=datetime.now(timezone.utc),
     )
-    category_id = await database.execute(query)
+    category_id = await db_execute_with_retry(query)
 
     return CategoryResponse(
         id=category_id,
@@ -263,7 +281,7 @@ async def create_category(request: Request, data: CategoryCreate) -> CategoryRes
 async def delete_category(request: Request, category_id: int):
     """Delete a category."""
     # Verify category exists
-    existing = await database.fetch_one(categories.select().where(categories.c.id == category_id))
+    existing = await fetch_one_with_retry(categories.select().where(categories.c.id == category_id))
     if not existing:
         raise HTTPException(status_code=404, detail="Category not found")
 
@@ -311,7 +329,7 @@ async def list_all_videos(
     if status:
         query = query.where(videos.c.status == status)
 
-    rows = await database.fetch_all(query)
+    rows = await fetch_all_with_retry(query)
 
     return [
         VideoListResponse(
@@ -350,7 +368,7 @@ async def list_archived_videos(
         .limit(limit)
         .offset(offset)
     )
-    rows = await database.fetch_all(query)
+    rows = await fetch_all_with_retry(query)
 
     # Get total count of archived videos
     count_query = sa.select(sa.func.count()).select_from(videos).where(videos.c.deleted_at.is_not(None))
@@ -384,11 +402,11 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
         .where(videos.c.id == video_id)
     )
 
-    row = await database.fetch_one(query)
+    row = await fetch_one_with_retry(query)
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    quality_rows = await database.fetch_all(video_qualities.select().where(video_qualities.c.video_id == video_id))
+    quality_rows = await fetch_all_with_retry(video_qualities.select().where(video_qualities.c.video_id == video_id))
 
     qualities = [
         VideoQualityResponse(
