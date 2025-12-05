@@ -922,6 +922,12 @@ async def upload_quality(
                     )
 
                 tar.extract(member, output_dir)
+                # Reset permissions to safe defaults (issue #164)
+                extracted_path = output_dir / member.name
+                if extracted_path.is_file():
+                    extracted_path.chmod(0o644)  # rw-r--r-- for files
+                elif extracted_path.is_dir():
+                    extracted_path.chmod(0o755)  # rwxr-xr-x for directories
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -1008,6 +1014,12 @@ async def upload_finalize(
                     raise HTTPException(status_code=400, detail="Path traversal detected")
 
                 tar.extract(member, output_dir)
+                # Reset permissions to safe defaults (issue #164)
+                extracted_path = output_dir / member.name
+                if extracted_path.is_file():
+                    extracted_path.chmod(0o644)  # rw-r--r-- for files
+                elif extracted_path.is_dir():
+                    extracted_path.chmod(0o755)  # rwxr-xr-x for directories
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -1150,6 +1162,12 @@ async def upload_hls(
 
                 # Safe to extract this member
                 tar.extract(member, output_dir)
+                # Reset permissions to safe defaults (issue #164)
+                extracted_path = output_dir / member.name
+                if extracted_path.is_file():
+                    extracted_path.chmod(0o644)  # rw-r--r-- for files
+                elif extracted_path.is_dir():
+                    extracted_path.chmod(0o755)  # rwxr-xr-x for directories
     finally:
         tmp_path.unlink()
 

@@ -515,15 +515,23 @@ async def upload_video(
         logging.warning(f"Failed to probe video {video_id}: {e}")
 
     # Create transcoding job for remote workers to claim
-    await database.execute(
-        transcoding_jobs.insert().values(
-            video_id=video_id,
-            current_step="pending",
-            progress_percent=0,
-            attempt_number=1,
-            max_attempts=3,
+    # If this fails, clean up to avoid orphaned video record (issue #162)
+    try:
+        await database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                current_step="pending",
+                progress_percent=0,
+                attempt_number=1,
+                max_attempts=3,
+            )
         )
-    )
+    except Exception:
+        # Clean up video record and uploaded file on job creation failure
+        await database.execute(videos.delete().where(videos.c.id == video_id))
+        upload_path.unlink(missing_ok=True)
+        shutil.rmtree(VIDEOS_DIR / slug, ignore_errors=True)
+        raise
 
     return {
         "status": "ok",
