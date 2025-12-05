@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import sqlalchemy as sa
 from databases import Database
 
-from config import DATABASE_PATH, DATABASE_POOL_MAX_SIZE, DATABASE_POOL_MIN_SIZE
+from config import DATABASE_PATH
 
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
@@ -13,12 +13,11 @@ SQLITE_TIMEOUT = 30.0
 
 # Note: SQLite per-connection pragmas are configured in configure_sqlite_pragmas()
 # The timeout kwarg is passed to aiosqlite/sqlite3 and sets the connection busy_timeout
-# Pool size configuration helps manage concurrent reads (writes are serialized by SQLite)
+# Note: min_size/max_size pool parameters are NOT supported by the SQLite backend
+# of the databases library - aiosqlite handles connections differently
 database = Database(
     DATABASE_URL,
     timeout=SQLITE_TIMEOUT,
-    min_size=DATABASE_POOL_MIN_SIZE,
-    max_size=DATABASE_POOL_MAX_SIZE,
 )
 metadata = sa.MetaData()
 

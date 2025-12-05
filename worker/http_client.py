@@ -163,16 +163,29 @@ class WorkerAPIClient:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
 
-    async def upload_hls(self, video_id: int, output_dir: Path) -> dict:
+    async def upload_hls(
+        self,
+        video_id: int,
+        output_dir: Path,
+        progress_callback: Optional[callable] = None,
+    ) -> dict:
         """
-        Package and upload HLS output as tar.gz.
+        Package and upload HLS output as tar.gz using streaming upload.
 
         Args:
             video_id: The video ID
             output_dir: Directory containing HLS files
+            progress_callback: Optional async callback(bytes_sent, total_bytes)
+                               called periodically during upload to allow
+                               extending job claims for long uploads.
 
         Returns:
             Server response
+
+        Note:
+            Uses streaming upload to avoid loading entire tar.gz into memory.
+            For large 4K videos with multiple quality variants, the tar.gz
+            can be 5-15GB, which would exhaust worker memory if loaded at once.
         """
         # Create tar.gz of output directory
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
@@ -184,21 +197,100 @@ class WorkerAPIClient:
                     if file.is_file():
                         tar.add(file, arcname=file.name)
 
-            # Upload
+            # Get file size for logging
+            file_size = tmp_path.stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+
+            # Upload using streaming to avoid loading entire file into memory
+            # This is critical for large HLS outputs (4K videos can be 5-15GB)
             client = await self._get_client()
             url = f"{self.base_url}/api/worker/upload/{video_id}"
 
-            with open(tmp_path, "rb") as f:
-                files = {"file": ("hls.tar.gz", f, "application/gzip")}
-                resp = await client.post(url, headers=self.headers, files=files)
-                resp.raise_for_status()
-                return resp.json()
+            # Use a longer timeout for large uploads (1 hour max)
+            # Base: 5 minutes + 1 minute per 100MB
+            upload_timeout = max(300, 300 + (file_size // (100 * 1024 * 1024)) * 60)
+            upload_timeout = min(upload_timeout, 3600)  # Cap at 1 hour
+
+            # Stream the file in chunks using httpx's streaming support
+            async def file_stream():
+                chunk_size = 1024 * 1024  # 1MB chunks
+                with open(tmp_path, "rb") as f:
+                    while chunk := f.read(chunk_size):
+                        yield chunk
+
+            # Build multipart form data manually with streaming file
+            # We need to create a proper multipart boundary
+            import uuid
+            boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+
+            # Multipart header for file field
+            multipart_header = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="hls.tar.gz"\r\n'
+                f"Content-Type: application/gzip\r\n\r\n"
+            ).encode()
+
+            # Multipart footer
+            multipart_footer = f"\r\n--{boundary}--\r\n".encode()
+
+            # Calculate total content length for progress tracking
+            content_length = len(multipart_header) + file_size + len(multipart_footer)
+
+            async def multipart_stream():
+                """Stream the multipart form data with progress tracking."""
+                import time
+
+                yield multipart_header
+
+                chunk_size = 1024 * 1024  # 1MB chunks
+                bytes_sent = len(multipart_header)
+                last_callback_time = time.time()
+                callback_interval = 60.0  # Call progress callback every 60 seconds
+
+                with open(tmp_path, "rb") as f:
+                    while chunk := f.read(chunk_size):
+                        yield chunk
+                        bytes_sent += len(chunk)
+
+                        # Call progress callback periodically to extend claim
+                        if progress_callback:
+                            now = time.time()
+                            if now - last_callback_time >= callback_interval:
+                                try:
+                                    await progress_callback(bytes_sent, content_length)
+                                    last_callback_time = now
+                                except Exception as e:
+                                    # Log but don't fail the upload if callback fails
+                                    print(f"      Upload progress callback failed: {e}")
+
+                yield multipart_footer
+
+            headers = {
+                **self.headers,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(content_length),
+            }
+
+            # Use a custom timeout for this upload
+            resp = await client.post(
+                url,
+                content=multipart_stream(),
+                headers=headers,
+                timeout=upload_timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
         except httpx.HTTPStatusError as e:
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
+        except httpx.TimeoutException as e:
+            raise WorkerAPIError(
+                0,
+                f"Upload timeout after {upload_timeout}s for {file_size_mb:.1f}MB file: {e}",
+            )
         finally:
             tmp_path.unlink(missing_ok=True)
 
