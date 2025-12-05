@@ -134,5 +134,5 @@ spec:
         operator: "Exists"
         effect: "NoSchedule"
 
-      # Use NVIDIA runtime class if configured
-      # runtimeClassName: nvidia
+      # NVIDIA runtime class is REQUIRED for GPU access
+      runtimeClassName: nvidia

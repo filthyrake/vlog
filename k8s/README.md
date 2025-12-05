@@ -56,15 +56,21 @@ For faster transcoding, deploy GPU-enabled workers:
 Prerequisites:
 - [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/getting-started.html) installed
 - Nodes with NVIDIA GPUs labeled `nvidia.com/gpu.present=true`
+- NVIDIA RuntimeClass configured (check with `kubectl get runtimeclass`)
 
 ```bash
 # Build GPU-enabled image
 docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:latest .
 docker push your-registry/vlog-worker-gpu:latest
 
+# For k3s: Import image directly to containerd
+docker save vlog-worker-gpu:latest | ssh user@node 'sudo k3s ctr images import -'
+
 # Deploy NVIDIA GPU workers
 kubectl apply -f k8s/worker-deployment-nvidia.yaml
 ```
+
+**Important**: The deployment uses `runtimeClassName: nvidia` which is required for GPU access. If your cluster uses a different runtime class name, update the deployment accordingly.
 
 Supported encoders: `h264_nvenc`, `hevc_nvenc`, `av1_nvenc` (RTX 40 series only)
 
