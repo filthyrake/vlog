@@ -1,0 +1,25 @@
+# VLog Worker ConfigMap
+# kubectl apply -f k8s/configmap.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vlog-worker-config
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+data:
+  # Worker API URL - update this to your Worker API service address
+  # For external API: use the public IP/hostname of your VLog server
+  # For in-cluster API: use the service name
+  VLOG_WORKER_API_URL: "http://vlog-server.example.com:9002"
+
+  # Heartbeat interval in seconds
+  VLOG_WORKER_HEARTBEAT_INTERVAL: "30"
+
+  # Job poll interval in seconds (when no jobs available)
+  VLOG_WORKER_POLL_INTERVAL: "10"
+
+  # Work directory for temporary files
+  VLOG_WORKER_WORK_DIR: "/tmp/vlog-worker"

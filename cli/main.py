@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import ADMIN_PORT
+from config import ADMIN_PORT, WORKER_API_PORT
 
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
@@ -26,6 +26,10 @@ UPLOAD_TIMEOUT = int(os.getenv("VLOG_UPLOAD_TIMEOUT", "7200"))
 # Admin API URL - can override host and port, or use the port from config
 _default_api_url = f"http://localhost:{ADMIN_PORT}"
 API_BASE = os.getenv("VLOG_ADMIN_API_URL", _default_api_url).rstrip("/") + "/api"
+
+# Worker API URL - can override host and port
+_default_worker_api_url = f"http://localhost:{WORKER_API_PORT}"
+WORKER_API_BASE = os.getenv("VLOG_WORKER_API_URL", _default_worker_api_url).rstrip("/") + "/api"
 
 
 class CLIError(Exception):
@@ -386,6 +390,104 @@ def cmd_download(args):
         sys.exit(1)
 
 
+def cmd_worker(args):
+    """Worker management commands."""
+    try:
+        if args.worker_command == "register":
+            # Register a new worker
+            data = {"worker_type": args.type}
+            if args.name:
+                data["worker_name"] = args.name
+
+            response = httpx.post(
+                f"{WORKER_API_BASE}/worker/register",
+                json=data,
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            result = safe_json_response(response)
+
+            print("Worker registered successfully!")
+            print(f"  Worker ID: {result['worker_id']}")
+            print(f"  API Key: {result['api_key']}")
+            print()
+            print("IMPORTANT: Save the API key - it will not be shown again!")
+            print()
+            print("To use this worker, set the environment variable:")
+            print(f"  export VLOG_WORKER_API_KEY={result['api_key']}")
+
+        elif args.worker_command == "list":
+            # List all workers
+            response = httpx.get(f"{WORKER_API_BASE}/workers", timeout=DEFAULT_API_TIMEOUT)
+            result = safe_json_response(response)
+
+            workers = result.get("workers", [])
+            if not workers:
+                print("No workers registered.")
+                return
+
+            print(f"Workers: {result['active_count']} active, {result['offline_count']} offline")
+            print()
+            print(f"{'ID':<10} {'Name':<20} {'Type':<8} {'Status':<10} {'Last Heartbeat':<20} {'Current Job':<15}")
+            print("-" * 90)
+
+            for w in workers:
+                worker_id = w["worker_id"][:8] + "..."
+                name = (w["worker_name"] or "-")[:18]
+                wtype = w["worker_type"]
+                status = w["status"]
+                heartbeat = w["last_heartbeat"][:19] if w["last_heartbeat"] else "-"
+                job = w.get("current_video_slug") or "-"
+
+                print(f"{worker_id:<10} {name:<20} {wtype:<8} {status:<10} {heartbeat:<20} {job:<15}")
+
+        elif args.worker_command == "revoke":
+            # Revoke a worker's API key
+            response = httpx.post(
+                f"{WORKER_API_BASE}/workers/{args.worker_id}/revoke",
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            safe_json_response(response)
+            print(f"Worker {args.worker_id} has been revoked.")
+
+        elif args.worker_command == "status":
+            # Show worker status summary
+            response = httpx.get(f"{WORKER_API_BASE}/workers", timeout=DEFAULT_API_TIMEOUT)
+            result = safe_json_response(response)
+
+            print("Worker Status Summary")
+            print("=" * 40)
+            print(f"  Total workers: {result['total_count']}")
+            print(f"  Active: {result['active_count']}")
+            print(f"  Offline: {result['offline_count']}")
+
+            # Show active workers with current jobs
+            active = [w for w in result.get("workers", []) if w["status"] == "active"]
+            if active:
+                print()
+                print("Active Workers:")
+                for w in active:
+                    name = w["worker_name"] or w["worker_id"][:8]
+                    job = w.get("current_video_slug")
+                    if job:
+                        print(f"  {name}: processing {job}")
+                    else:
+                        print(f"  {name}: idle")
+
+    except httpx.ConnectError:
+        print(f"Error: Could not connect to Worker API at {WORKER_API_BASE}")
+        print("Make sure the worker API server is running (port 9002).")
+        sys.exit(1)
+    except httpx.TimeoutException:
+        print(f"Error: Request timed out while connecting to {WORKER_API_BASE}")
+        sys.exit(1)
+    except CLIError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="vlog", description="VLog CLI - Manage your video library")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -423,6 +525,29 @@ def main():
     dl_parser.add_argument("-d", "--description", help="Video description")
     dl_parser.add_argument("-c", "--category", help="Category name or slug")
     dl_parser.set_defaults(func=cmd_download)
+
+    # Worker management command
+    worker_parser = subparsers.add_parser("worker", help="Manage transcoding workers")
+    worker_subparsers = worker_parser.add_subparsers(dest="worker_command", required=True)
+
+    # worker register
+    worker_register = worker_subparsers.add_parser("register", help="Register a new worker")
+    worker_register.add_argument("-n", "--name", help="Worker name (optional)")
+    worker_register.add_argument(
+        "-t", "--type", choices=["local", "remote"], default="remote", help="Worker type (default: remote)"
+    )
+
+    # worker list
+    worker_subparsers.add_parser("list", help="List all registered workers")
+
+    # worker status
+    worker_subparsers.add_parser("status", help="Show worker status summary")
+
+    # worker revoke
+    worker_revoke = worker_subparsers.add_parser("revoke", help="Revoke a worker's API key")
+    worker_revoke.add_argument("worker_id", help="Worker ID (UUID) to revoke")
+
+    worker_parser.set_defaults(func=cmd_worker)
 
     args = parser.parse_args()
     args.func(args)

@@ -138,11 +138,15 @@ transcoding_jobs = sa.Table(
     sa.Column("started_at", sa.DateTime, nullable=True),
     sa.Column("last_checkpoint", sa.DateTime, nullable=True),
     sa.Column("completed_at", sa.DateTime, nullable=True),
+    # Job claiming for distributed workers
+    sa.Column("claimed_at", sa.DateTime, nullable=True),
+    sa.Column("claim_expires_at", sa.DateTime, nullable=True),
     # Retry tracking
     sa.Column("attempt_number", sa.Integer, default=1),
     sa.Column("max_attempts", sa.Integer, default=3),
     # Error tracking
     sa.Column("last_error", sa.Text, nullable=True),
+    sa.Index("ix_transcoding_jobs_claim_expires", "claim_expires_at"),
 )
 
 # Per-quality progress tracking
@@ -184,6 +188,41 @@ transcriptions = sa.Table(
     sa.Column("word_count", sa.Integer, nullable=True),
     # Error tracking
     sa.Column("error_message", sa.Text, nullable=True),
+)
+
+# Worker registration for distributed transcoding
+workers = sa.Table(
+    "workers",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("worker_id", sa.String(36), unique=True, nullable=False),  # UUID
+    sa.Column("worker_name", sa.String(100), nullable=True),
+    sa.Column("worker_type", sa.String(20), default="remote"),  # 'local' or 'remote'
+    sa.Column("registered_at", sa.DateTime, nullable=False),
+    sa.Column("last_heartbeat", sa.DateTime, nullable=True),
+    sa.Column("status", sa.String(20), default="active"),  # 'active', 'offline', 'disabled'
+    sa.Column("current_job_id", sa.Integer, nullable=True),
+    sa.Column("capabilities", sa.Text, nullable=True),  # JSON
+    sa.Column("metadata", sa.Text, nullable=True),  # JSON (k8s pod info, etc.)
+    sa.Index("ix_workers_status", "status"),
+    sa.Index("ix_workers_last_heartbeat", "last_heartbeat"),
+    sa.Index("ix_workers_worker_id", "worker_id"),
+)
+
+# Worker API keys for authentication
+worker_api_keys = sa.Table(
+    "worker_api_keys",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("worker_id", sa.Integer, sa.ForeignKey("workers.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("key_hash", sa.String(64), nullable=False),  # SHA-256 hash
+    sa.Column("key_prefix", sa.String(8), nullable=False),  # First 8 chars for lookup
+    sa.Column("created_at", sa.DateTime, nullable=False),
+    sa.Column("expires_at", sa.DateTime, nullable=True),
+    sa.Column("revoked_at", sa.DateTime, nullable=True),
+    sa.Column("last_used_at", sa.DateTime, nullable=True),
+    sa.Index("ix_worker_api_keys_key_prefix", "key_prefix"),
+    sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
 )
 
 

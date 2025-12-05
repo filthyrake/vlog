@@ -1,0 +1,55 @@
+# Docker Compose for testing remote transcoding workers
+#
+# Prerequisites:
+# 1. Worker API running on host: ./start-worker-api.sh (or uvicorn api.worker_api:app --port 9002)
+# 2. Register a worker: curl -X POST http://localhost:9002/api/worker/register
+# 3. Set the VLOG_WORKER_API_KEY environment variable with the returned key
+#
+# Usage:
+#   export VLOG_WORKER_API_KEY=<your-api-key>
+#   docker compose -f docker-compose.worker.yaml up --build
+#
+#   # Scale workers:
+#   docker compose -f docker-compose.worker.yaml up --build --scale vlog-worker=3
+
+services:
+  vlog-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      # API URL - use host.docker.internal for macOS/Windows, or host IP for Linux
+      - VLOG_WORKER_API_URL=${VLOG_WORKER_API_URL:-http://host.docker.internal:9002}
+      # API key from worker registration (required)
+      - VLOG_WORKER_API_KEY=${VLOG_WORKER_API_KEY}
+      # Worker settings
+      - VLOG_WORKER_HEARTBEAT_INTERVAL=${VLOG_WORKER_HEARTBEAT_INTERVAL:-30}
+      - VLOG_WORKER_POLL_INTERVAL=${VLOG_WORKER_POLL_INTERVAL:-10}
+    # For Linux hosts, use host networking to access localhost services
+    # Uncomment the next line and comment out the extra_hosts section if needed
+    # network_mode: host
+    extra_hosts:
+      # Enable host.docker.internal on Linux
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Mount work directory for debugging (optional)
+      - worker-data:/tmp/vlog-worker
+    deploy:
+      # Resource limits for transcoding
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  worker-data:
