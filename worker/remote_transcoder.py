@@ -51,6 +51,15 @@ shutdown_requested = False
 # Global GPU capabilities (detected at startup)
 GPU_CAPS: Optional[GPUCapabilities] = None
 
+# Error messages
+CLAIM_EXPIRED_ERROR = "Claim expired - job may have been reassigned to another worker"
+
+
+class ClaimExpiredError(Exception):
+    """Raised when a job claim has expired and the job may have been reassigned."""
+
+    pass
+
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -199,7 +208,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         if e.status_code == 409:
                             # Claim expired - job may have been reassigned
                             print("      Claim expired - aborting job")
-                            raise Exception("Claim expired - job may have been reassigned to another worker")
+                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
                         print(f"      Progress update failed: {e.message}")
                     except Exception as e:
                         print(f"      Progress update failed: {e}")
@@ -285,11 +294,16 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
         return True
 
+    except ClaimExpiredError:
+        # Claim expired - job may have been reassigned
+        print(f"  {CLAIM_EXPIRED_ERROR}")
+        # Don't report failure - the job may already be claimed by another worker
+        return False
+
     except WorkerAPIError as e:
-        # Handle claim expiration specially - don't retry
+        # Handle claim expiration from API responses specially - don't retry
         if e.status_code == 409:
-            error_msg = "Claim expired - job may have been reassigned to another worker"
-            print(f"  {error_msg}")
+            print(f"  {CLAIM_EXPIRED_ERROR}")
             # Don't report failure - the job may already be claimed by another worker
             return False
 
