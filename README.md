@@ -28,8 +28,7 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 
 ```bash
 # Clone and setup
-cd /home/damen
-git clone <repo-url> vlog
+git clone https://github.com/filthyrake/vlog.git
 cd vlog
 
 # Create virtual environment
@@ -200,7 +199,6 @@ See [k8s/README.md](k8s/README.md) for detailed Kubernetes deployment instructio
 | [DATABASE.md](docs/DATABASE.md) | Database schema documentation |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Configuration options |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment guide |
-| [CLAUDE.md](CLAUDE.md) | AI assistant project context |
 
 ## Configuration
 

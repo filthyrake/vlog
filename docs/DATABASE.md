@@ -4,7 +4,7 @@
 
 VLog uses SQLite for data storage. The database file (`vlog.db`) is kept local for performance, while video files are stored on NAS.
 
-**Location:** `/home/damen/vlog/vlog.db`
+**Location:** `./vlog.db` (configurable via `VLOG_DATABASE_PATH`)
 
 **ORM:** SQLAlchemy with async support via `databases` and `aiosqlite`
 

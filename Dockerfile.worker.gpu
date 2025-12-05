@@ -158,7 +158,9 @@ RUN pip3 install --no-cache-dir \
     python-slugify>=8.0.0 \
     aiofiles>=23.0.0 \
     httpx>=0.25.0 \
-    watchdog>=3.0.0
+    watchdog>=3.0.0 \
+    slowapi>=0.1.9 \
+    limits>=3.0.0
 
 # Install the package itself (non-editable for container)
 RUN pip3 install --no-cache-dir .
