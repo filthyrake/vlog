@@ -292,7 +292,25 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Upload HLS files
         print("  Uploading HLS files...")
         await client.update_progress(job_id, "upload", 98, quality_progress_list)
-        await client.upload_hls(video_id, output_dir)
+
+        # Define upload progress callback to extend claim during long uploads
+        async def upload_progress(bytes_sent: int, total_bytes: int):
+            """Called periodically during upload to extend the job claim."""
+            pct = int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0
+            # Map upload progress to 98-99% range (100% reserved for completion)
+            overall_pct = 98 + min(pct // 100, 1)  # 98% during upload, 99% near end
+            mb_sent = bytes_sent / (1024 * 1024)
+            mb_total = total_bytes / (1024 * 1024)
+            print(f"    Uploading: {mb_sent:.1f}/{mb_total:.1f} MB ({pct}%)")
+            try:
+                await client.update_progress(job_id, "upload", overall_pct, quality_progress_list)
+            except WorkerAPIError as e:
+                if e.status_code == 409:
+                    # Claim expired during upload
+                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                raise
+
+        await client.upload_hls(video_id, output_dir, progress_callback=upload_progress)
 
         # Complete job
         print("  Marking job complete...")
