@@ -56,6 +56,9 @@ from api.worker_schemas import (
     WorkerStatusResponse,
 )
 from config import (
+    MAX_HLS_ARCHIVE_FILES,
+    MAX_HLS_ARCHIVE_SIZE,
+    MAX_HLS_SINGLE_FILE_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
     WORKER_API_PORT,
@@ -683,7 +686,34 @@ async def upload_hls(
             # We extract each member individually after validating the resolved path
             output_dir_resolved = output_dir.resolve()
 
+            # Track extraction counts and sizes to prevent tar bomb attacks
+            extracted_count = 0
+            extracted_size = 0
+
             for member in tar.getmembers():
+                # Check file count limit
+                extracted_count += 1
+                if extracted_count > MAX_HLS_ARCHIVE_FILES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Archive contains too many files (limit: {MAX_HLS_ARCHIVE_FILES})",
+                    )
+
+                # Check individual file size (for regular files)
+                if member.isfile() and member.size > MAX_HLS_SINGLE_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File too large: {member.name} ({member.size} bytes, limit: {MAX_HLS_SINGLE_FILE_SIZE})",
+                    )
+
+                # Track cumulative extracted size
+                extracted_size += member.size
+                if extracted_size > MAX_HLS_ARCHIVE_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Archive too large (limit: {MAX_HLS_ARCHIVE_SIZE} bytes)",
+                    )
+
                 # Reject symlinks and hardlinks (could point outside target)
                 if member.issym() or member.islnk():
                     raise HTTPException(

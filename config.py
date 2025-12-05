@@ -9,6 +9,12 @@ UPLOADS_DIR = NAS_STORAGE / os.getenv("VLOG_UPLOADS_SUBDIR", "uploads")
 ARCHIVE_DIR = NAS_STORAGE / os.getenv("VLOG_ARCHIVE_SUBDIR", "archive")
 DATABASE_PATH = Path(os.getenv("VLOG_DATABASE_PATH", str(BASE_DIR / "vlog.db")))
 
+# Database connection pool settings
+# SQLite handles concurrent reads well but serializes writes
+# These settings control the async connection pool
+DATABASE_POOL_MIN_SIZE = int(os.getenv("VLOG_DATABASE_POOL_MIN_SIZE", "1"))
+DATABASE_POOL_MAX_SIZE = int(os.getenv("VLOG_DATABASE_POOL_MAX_SIZE", "10"))
+
 # Ensure directories exist (skip in test/CI environments)
 if not os.environ.get("VLOG_TEST_MODE"):
     try:
@@ -107,6 +113,16 @@ PROGRESS_UPDATE_INTERVAL = float(os.getenv("VLOG_PROGRESS_UPDATE_INTERVAL", "5.0
 # Upload size limits (default 100GB - reasonable for 4K video)
 MAX_UPLOAD_SIZE = int(os.getenv("VLOG_MAX_UPLOAD_SIZE", str(100 * 1024 * 1024 * 1024)))  # 100 GB
 UPLOAD_CHUNK_SIZE = int(os.getenv("VLOG_UPLOAD_CHUNK_SIZE", str(1024 * 1024)))  # 1 MB chunks
+
+# HLS archive extraction limits (prevent tar bomb attacks)
+# Max number of files in an HLS archive (master playlist + quality playlists + segments + thumbnail)
+# 6 qualities × 1200 segments (2hrs @ 6s each) + playlists + thumbnails = ~7200 files for 2hr video
+# Using 50,000 as generous default to support very long videos (8+ hours)
+MAX_HLS_ARCHIVE_FILES = int(os.getenv("VLOG_MAX_HLS_ARCHIVE_FILES", "50000"))
+# Max total extracted size (200 GB - generous for long 4K HLS output with all qualities)
+MAX_HLS_ARCHIVE_SIZE = int(os.getenv("VLOG_MAX_HLS_ARCHIVE_SIZE", str(200 * 1024 * 1024 * 1024)))
+# Max size per individual file (500 MB - largest reasonable .ts segment at high bitrate)
+MAX_HLS_SINGLE_FILE_SIZE = int(os.getenv("VLOG_MAX_HLS_SINGLE_FILE_SIZE", str(500 * 1024 * 1024)))
 
 # CORS Configuration
 # Set VLOG_CORS_ORIGINS to comma-separated origins, or leave empty/unset to allow same-origin only
