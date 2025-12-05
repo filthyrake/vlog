@@ -253,6 +253,16 @@ class TestProgressUpdates:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_progress_update_expired_claim(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test updating progress on an expired claim fails with 409."""
+        from datetime import timedelta
+
+        # Create a job with an expired claim
+        now = datetime.now(timezone.utc)
+        expired_time = now - timedelta(minutes=5)  # Claim expired 5 minutes ago
+
     async def test_progress_update_with_metadata(
         self, worker_client, registered_worker, test_database, sample_pending_video
     ):
@@ -262,6 +272,8 @@ class TestProgressUpdates:
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
                 worker_id=registered_worker["worker_id"],
+                claimed_at=now - timedelta(minutes=35),  # Claimed 35 minutes ago
+                claim_expires_at=expired_time,  # Expired
                 claimed_at=datetime.now(timezone.utc),
                 attempt_number=1,
                 max_attempts=3,
@@ -273,6 +285,24 @@ class TestProgressUpdates:
             f"/api/worker/{job_id}/progress",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
             json={
+                "current_step": "transcode",
+                "progress_percent": 50,
+            },
+        )
+        assert response.status_code == 409
+        assert "expired" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_progress_update_extends_valid_claim(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that progress updates extend valid (non-expired) claims."""
+        from datetime import timedelta
+
+        # Create a job with a valid claim (expires in the future)
+        now = datetime.now(timezone.utc)
+        future_expiry = now + timedelta(minutes=25)  # Still 25 minutes left
+
                 "current_step": "probe",
                 "progress_percent": 8,
                 "duration": 120.5,
@@ -357,6 +387,8 @@ class TestProgressUpdates:
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
                 worker_id=registered_worker["worker_id"],
+                claimed_at=now - timedelta(minutes=5),  # Claimed 5 minutes ago
+                claim_expires_at=future_expiry,  # Still valid
                 claimed_at=datetime.now(timezone.utc),
                 attempt_number=1,
                 max_attempts=3,
@@ -368,6 +400,25 @@ class TestProgressUpdates:
             f"/api/worker/{job_id}/progress",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
             json={
+                "current_step": "transcode",
+                "progress_percent": 50,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert "claim_expires_at" in data
+
+        # Verify the claim was extended
+        from api.database import transcoding_jobs as tj
+
+        job = await test_database.fetch_one(tj.select().where(tj.c.id == job_id))
+        assert job is not None
+        # The new expiry should be later than the old one
+        new_expiry = job["claim_expires_at"]
+        if new_expiry.tzinfo is None:
+            new_expiry = new_expiry.replace(tzinfo=timezone.utc)
+        assert new_expiry > future_expiry
                 "current_step": "probe",
                 "progress_percent": 8,
                 "duration": -10.0,

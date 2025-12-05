@@ -51,6 +51,15 @@ shutdown_requested = False
 # Global GPU capabilities (detected at startup)
 GPU_CAPS: Optional[GPUCapabilities] = None
 
+# Error messages
+CLAIM_EXPIRED_ERROR = "Claim expired - job may have been reassigned to another worker"
+
+
+class ClaimExpiredError(Exception):
+    """Raised when a job claim has expired and the job may have been reassigned."""
+
+    pass
+
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -207,6 +216,12 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     try:
                         await client.update_progress(job_id, "transcode", progress_base, quality_progress_list)
                         last_update_time[0] = now
+                    except WorkerAPIError as e:
+                        if e.status_code == 409:
+                            # Claim expired - job may have been reassigned
+                            print("      Claim expired - aborting job")
+                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                        print(f"      Progress update failed: {e.message}")
                     except Exception as e:
                         print(f"      Progress update failed: {e}")
 
@@ -290,6 +305,28 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             print(f"  Note: Some qualities failed: {', '.join(failed_qualities)}")
 
         return True
+
+    except ClaimExpiredError:
+        # Claim expired - job may have been reassigned
+        print(f"  {CLAIM_EXPIRED_ERROR}")
+        # Don't report failure - the job may already be claimed by another worker
+        return False
+
+    except WorkerAPIError as e:
+        # Handle claim expiration from API responses specially - don't retry
+        if e.status_code == 409:
+            print(f"  {CLAIM_EXPIRED_ERROR}")
+            # Don't report failure - the job may already be claimed by another worker
+            return False
+
+        # Other API errors
+        error_msg = f"API error: {e.message}"[:500]
+        print(f"  Error: {error_msg}")
+        try:
+            await client.fail_job(job_id, error_msg, retry=True)
+        except Exception as fail_e:
+            print(f"  Failed to report error: {fail_e}")
+        return False
 
     except Exception as e:
         error_msg = str(e)[:500]
