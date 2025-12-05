@@ -17,7 +17,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from sqlite3 import IntegrityError
+from sqlite3 import IntegrityError  # databases library passes through sqlite3 exceptions
 from typing import Any, Callable, List, Optional, Tuple
 
 from api.database import (
