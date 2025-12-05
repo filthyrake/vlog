@@ -35,3 +35,10 @@ node_modules/
 .claude/
 test_env/
 .coverage
+
+# AI assistant context (personal configuration)
+CLAUDE.md
+
+# Local systemd service files (use .template files for distribution)
+systemd/*.service
+!systemd/*.service.template

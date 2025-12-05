@@ -29,8 +29,7 @@ pip install yt-dlp
 ### 1. Clone and Setup Virtual Environment
 
 ```bash
-cd /home/damen
-git clone <repo-url> vlog
+git clone https://github.com/filthyrake/vlog.git
 cd vlog
 
 python3 -m venv venv
@@ -46,7 +45,7 @@ sudo mkdir -p /mnt/nas/vlog-storage/{videos,uploads,archive}
 sudo chown $USER:$USER /mnt/nas/vlog-storage
 
 # Or for local storage, set environment variable
-export VLOG_STORAGE_PATH=/home/damen/vlog-storage
+export VLOG_STORAGE_PATH=$HOME/vlog-storage
 ```
 
 ### 3. Initialize Database
@@ -77,8 +76,8 @@ python api/database.py
 #### NAS Mount (if using NAS)
 
 ```bash
-# /etc/fstab entry
-//10.0.10.84/MainPool/vlog-storage /mnt/nas/vlog-storage cifs credentials=/etc/samba/credentials,uid=damen,gid=damen,file_mode=0644,dir_mode=0755 0 0
+# /etc/fstab entry (replace <NAS_IP> and <YOUR_USER> with your values)
+//<NAS_IP>/share/vlog-storage /mnt/nas/vlog-storage cifs credentials=/etc/samba/credentials,uid=<YOUR_USER>,gid=<YOUR_USER>,file_mode=0644,dir_mode=0755 0 0
 ```
 
 #### Create Credentials File
@@ -93,10 +92,19 @@ sudo chmod 600 /etc/samba/credentials
 
 ### 2. Systemd Service Files
 
-Service files are provided in the `systemd/` directory. Copy them to `/etc/systemd/system/`:
+Template service files are provided in the `systemd/` directory. Copy and customize them:
 
 ```bash
-sudo cp systemd/*.service systemd/*.target /etc/systemd/system/
+# Copy template files
+for f in systemd/*.template; do
+  sudo cp "$f" "/etc/systemd/system/$(basename "$f" .template)"
+done
+sudo cp systemd/vlog.target /etc/systemd/system/
+
+# Edit each service file to set your paths and username
+sudo nano /etc/systemd/system/vlog-public.service
+# ... repeat for other services
+
 sudo systemctl daemon-reload
 ```
 
@@ -104,7 +112,12 @@ The service files include:
 - **Security hardening** - PrivateTmp, ProtectSystem, NoNewPrivileges
 - **Resource limits** - Memory caps, file descriptor limits
 - **Restart policies** - Automatic restart on failure with rate limiting
-- **Venv Python** - Uses `/home/damen/vlog/venv/bin/python` directly
+- **Venv Python** - Uses the project's virtual environment Python directly
+
+**Note:** The service files in `systemd/` use hardcoded paths. Before deploying, edit them to match your installation:
+- Replace `/home/damen/vlog` with your installation path
+- Replace `User=damen` and `Group=damen` with your user
+- Replace `/mnt/nas/vlog-storage` with your storage path
 
 #### vlog-public.service
 
@@ -116,10 +129,10 @@ Wants=mnt-nas.mount
 
 [Service]
 Type=simple
-User=damen
-Group=damen
-WorkingDirectory=/home/damen/vlog
-ExecStart=/home/damen/vlog/venv/bin/python -m uvicorn api.public:app --host 0.0.0.0 --port 9000 --proxy-headers --forwarded-allow-ips='127.0.0.1,10.0.10.1'
+User=<YOUR_USER>
+Group=<YOUR_USER>
+WorkingDirectory=/path/to/vlog
+ExecStart=/path/to/vlog/venv/bin/python -m uvicorn api.public:app --host 0.0.0.0 --port 9000 --proxy-headers --forwarded-allow-ips='127.0.0.1,<PROXY_IP>'
 
 # Security hardening
 PrivateTmp=true
@@ -130,7 +143,7 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 
 # Allowed paths
-ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+ReadWritePaths=/path/to/vlog /mnt/nas/vlog-storage
 
 # Resource limits
 LimitNOFILE=65535
@@ -156,10 +169,10 @@ Wants=mnt-nas.mount
 
 [Service]
 Type=simple
-User=damen
-Group=damen
-WorkingDirectory=/home/damen/vlog
-ExecStart=/home/damen/vlog/venv/bin/python -m uvicorn api.admin:app --host 0.0.0.0 --port 9001
+User=<YOUR_USER>
+Group=<YOUR_USER>
+WorkingDirectory=/path/to/vlog
+ExecStart=/path/to/vlog/venv/bin/python -m uvicorn api.admin:app --host 0.0.0.0 --port 9001
 
 # Security hardening
 PrivateTmp=true
@@ -168,7 +181,7 @@ ProtectHome=read-only
 NoNewPrivileges=true
 
 # Allowed paths
-ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+ReadWritePaths=/path/to/vlog /mnt/nas/vlog-storage
 
 # Resource limits
 LimitNOFILE=65535
@@ -192,11 +205,11 @@ Wants=mnt-nas.mount
 
 [Service]
 Type=simple
-User=damen
-Group=damen
-WorkingDirectory=/home/damen/vlog
+User=<YOUR_USER>
+Group=<YOUR_USER>
+WorkingDirectory=/path/to/vlog
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/damen/vlog/venv/bin/python worker/transcoder.py
+ExecStart=/path/to/vlog/venv/bin/python worker/transcoder.py
 
 # Security hardening
 PrivateTmp=true
@@ -205,7 +218,7 @@ ProtectHome=read-only
 NoNewPrivileges=true
 
 # Allowed paths
-ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+ReadWritePaths=/path/to/vlog /mnt/nas/vlog-storage
 
 # Resource limits (higher for transcoding)
 LimitNOFILE=65535
@@ -232,11 +245,11 @@ Wants=mnt-nas.mount
 
 [Service]
 Type=simple
-User=damen
-Group=damen
-WorkingDirectory=/home/damen/vlog
+User=<YOUR_USER>
+Group=<YOUR_USER>
+WorkingDirectory=/path/to/vlog
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/damen/vlog/venv/bin/python worker/transcription.py
+ExecStart=/path/to/vlog/venv/bin/python worker/transcription.py
 
 # Security hardening
 PrivateTmp=true
@@ -245,7 +258,7 @@ ProtectHome=read-only
 NoNewPrivileges=true
 
 # Allowed paths
-ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+ReadWritePaths=/path/to/vlog /mnt/nas/vlog-storage
 
 # Resource limits (higher for whisper model)
 LimitNOFILE=65535
@@ -273,10 +286,10 @@ Requires=network.target
 
 [Service]
 Type=simple
-User=damen
-Group=damen
-WorkingDirectory=/home/damen/vlog
-ExecStart=/home/damen/vlog/venv/bin/python -m uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
+User=<YOUR_USER>
+Group=<YOUR_USER>
+WorkingDirectory=/path/to/vlog
+ExecStart=/path/to/vlog/venv/bin/python -m uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
 
 # Security hardening
 PrivateTmp=true
@@ -285,7 +298,7 @@ ProtectHome=read-only
 NoNewPrivileges=true
 
 # Allowed paths
-ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+ReadWritePaths=/path/to/vlog /mnt/nas/vlog-storage
 
 # Resource limits
 LimitNOFILE=65535
@@ -401,7 +414,7 @@ For horizontal scaling, deploy containerized workers to Kubernetes.
 ### 1. Build Worker Docker Image
 
 ```bash
-cd /home/damen/vlog
+cd /path/to/vlog
 
 # Build the image
 docker build -f Dockerfile.worker -t vlog-worker:latest .
@@ -533,11 +546,11 @@ vlog worker status
 kubectl logs -n vlog -l app=vlog-worker --tail=100
 
 # Check for pending jobs
-sqlite3 /home/damen/vlog/vlog.db "SELECT id, video_id, current_step, worker_id FROM transcoding_jobs WHERE completed_at IS NULL"
+sqlite3 ./vlog.db "SELECT id, video_id, current_step, worker_id FROM transcoding_jobs WHERE completed_at IS NULL"
 
 # Reset stuck jobs
-sqlite3 /home/damen/vlog/vlog.db "UPDATE transcoding_jobs SET worker_id = NULL WHERE completed_at IS NULL"
-sqlite3 /home/damen/vlog/vlog.db "UPDATE videos SET status = 'pending' WHERE status = 'processing'"
+sqlite3 ./vlog.db "UPDATE transcoding_jobs SET worker_id = NULL WHERE completed_at IS NULL"
+sqlite3 ./vlog.db "UPDATE videos SET status = 'pending' WHERE status = 'processing'"
 ```
 
 ---
@@ -590,11 +603,11 @@ MaxRetentionSec=30days
 ### Database
 
 ```bash
-# Backup
-cp /home/damen/vlog/vlog.db /backup/vlog-$(date +%Y%m%d).db
+# Backup (adjust paths as needed)
+cp ./vlog.db /backup/vlog-$(date +%Y%m%d).db
 
 # Or with sqlite3
-sqlite3 /home/damen/vlog/vlog.db ".backup '/backup/vlog.db'"
+sqlite3 ./vlog.db ".backup '/backup/vlog.db'"
 ```
 
 ### Video Files
@@ -636,7 +649,7 @@ SQLite can lock with concurrent access:
 
 ```bash
 # Check for processes using the database
-lsof /home/damen/vlog/vlog.db
+lsof ./vlog.db
 
 # Restart services
 sudo systemctl restart vlog.target

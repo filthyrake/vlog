@@ -1,3 +1,10 @@
+# VLog Transcoding Worker Service Template
+# Copy to /etc/systemd/system/vlog-worker.service and customize:
+#   - Replace <YOUR_USER> with your username
+#   - Replace /path/to/vlog with your installation path
+#   - Adjust storage path if not using /mnt/nas/vlog-storage
+#   - Adjust MemoryMax based on your system (8G recommended for transcoding)
+
 [Unit]
 Description=VLog Transcoding Worker
 After=network.target mnt-nas.mount
@@ -5,11 +12,11 @@ Wants=mnt-nas.mount
 
 [Service]
 Type=simple
-User=damen
-Group=damen
-WorkingDirectory=/home/damen/vlog
+User=<YOUR_USER>
+Group=<YOUR_USER>
+WorkingDirectory=/path/to/vlog
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/damen/vlog/venv/bin/python worker/transcoder.py
+ExecStart=/path/to/vlog/venv/bin/python worker/transcoder.py
 
 # Security hardening
 PrivateTmp=true
@@ -20,7 +27,7 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 
 # Allowed paths (NAS storage and working directory)
-ReadWritePaths=/home/damen/vlog /mnt/nas/vlog-storage
+ReadWritePaths=/path/to/vlog /mnt/nas/vlog-storage
 
 # Resource limits (higher for transcoding)
 LimitNOFILE=65535

@@ -180,7 +180,7 @@ Timeout calculation: `min(max(duration * multiplier, minimum), maximum)`
 VLOG_CORS_ORIGINS=http://localhost:9000,https://videos.example.com
 
 # Restrict admin API to internal network
-VLOG_ADMIN_CORS_ORIGINS=http://10.0.10.1:9001,http://192.168.1.100:9001
+VLOG_ADMIN_CORS_ORIGINS=http://your-server:9001,http://192.168.1.100:9001
 ```
 
 **Notes:**
