@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from api.database import transcoding_jobs, videos
+from api.database import transcoding_jobs, videos, workers
 
 
 class TestWorkerRegistration:
@@ -78,6 +78,78 @@ class TestWorkerHeartbeat:
             json={"status": "active"},
         )
         assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_idle_status(self, worker_client, registered_worker, test_database):
+        """Test heartbeat with idle status."""
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle"},
+        )
+        assert response.status_code == 200
+
+        # Verify the status was actually stored in the database
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_busy_status(self, worker_client, registered_worker, test_database):
+        """Test heartbeat with busy status."""
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "busy"},
+        )
+        assert response.status_code == 200
+
+        # Verify the status was actually stored in the database
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "busy"
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_status_transition(self, worker_client, registered_worker, test_database):
+        """Test status transitions from idle to busy to idle."""
+
+        # Start with idle
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle"},
+        )
+        assert response.status_code == 200
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "idle"
+
+        # Transition to busy
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "busy"},
+        )
+        assert response.status_code == 200
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "busy"
+
+        # Return to idle
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle"},
+        )
+        assert response.status_code == 200
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
+        )
+        assert worker["status"] == "idle"
 
 
 class TestJobClaiming:
