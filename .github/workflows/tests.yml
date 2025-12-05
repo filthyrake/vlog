@@ -32,7 +32,7 @@ jobs:
           pytest --cov=api --cov=worker --cov=cli --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         if: github.event_name == 'push'
         with:
           file: ./coverage.xml
