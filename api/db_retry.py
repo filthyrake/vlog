@@ -8,6 +8,7 @@ SQLite has limited concurrent write support, and when multiple services
 This module provides retry logic with exponential backoff to handle these
 transient locking errors gracefully.
 """
+
 import asyncio
 import functools
 import logging
@@ -96,18 +97,13 @@ async def execute_with_retry(
                 delay = max(0.01, delay + jitter)
 
                 logger.warning(
-                    f"Database locked (attempt {attempt + 1}/{max_retries + 1}), "
-                    f"retrying in {delay:.2f}s: {e}"
+                    f"Database locked (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.2f}s: {e}"
                 )
                 await asyncio.sleep(delay)
             else:
-                logger.error(
-                    f"Database locked after {max_retries + 1} attempts, giving up: {e}"
-                )
+                logger.error(f"Database locked after {max_retries + 1} attempts, giving up: {e}")
 
-    raise DatabaseLockedError(
-        f"Database operation failed after {max_retries + 1} attempts: {last_exception}"
-    )
+    raise DatabaseLockedError(f"Database operation failed after {max_retries + 1} attempts: {last_exception}")
 
 
 def with_db_retry(

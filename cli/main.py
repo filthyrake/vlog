@@ -118,7 +118,7 @@ def validate_url(url):
     result = urlparse(url)
     if not result.scheme:
         raise CLIError("Invalid URL: missing scheme. Use http:// or https://")
-    if result.scheme not in ('http', 'https'):
+    if result.scheme not in ("http", "https"):
         raise CLIError(f"Invalid URL scheme: '{result.scheme}'. Use http or https.")
     if not result.netloc:
         raise CLIError("Invalid URL: missing domain")

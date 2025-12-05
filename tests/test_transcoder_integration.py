@@ -120,9 +120,7 @@ class TestTranscodingJobDatabase:
             )
         )
 
-        job = await integration_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await integration_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
         assert job is not None
         assert job["video_id"] == integration_video["id"]
@@ -154,9 +152,7 @@ class TestTranscodingJobDatabase:
             )
         )
 
-        job = await integration_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await integration_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
         assert job["current_step"] == "transcode"
         assert job["progress_percent"] == 50
@@ -243,9 +239,7 @@ class TestTranscodingJobDatabase:
 
         # Our job should be found (it was updated "now", so not stale in this test)
         # But we can verify the checkpoint data is correct
-        job = await integration_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await integration_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["current_step"] == "transcode"
         assert job["progress_percent"] == 60
 
@@ -327,14 +321,10 @@ class TestVideoStatusTransitions:
         """Test video status transition from pending to processing."""
         # Update status to processing
         await integration_database.execute(
-            videos.update()
-            .where(videos.c.id == integration_video["id"])
-            .values(status=VideoStatus.PROCESSING)
+            videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
 
-        video = await integration_database.fetch_one(
-            videos.select().where(videos.c.id == integration_video["id"])
-        )
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == integration_video["id"]))
         assert video["status"] == VideoStatus.PROCESSING
 
     @pytest.mark.asyncio
@@ -344,9 +334,7 @@ class TestVideoStatusTransitions:
 
         # Set to processing first
         await integration_database.execute(
-            videos.update()
-            .where(videos.c.id == integration_video["id"])
-            .values(status=VideoStatus.PROCESSING)
+            videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
 
         # Complete transcoding - set to ready with metadata
@@ -362,9 +350,7 @@ class TestVideoStatusTransitions:
             )
         )
 
-        video = await integration_database.fetch_one(
-            videos.select().where(videos.c.id == integration_video["id"])
-        )
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == integration_video["id"]))
         assert video["status"] == VideoStatus.READY
         assert video["duration"] == 120.5
         assert video["source_width"] == 1920
@@ -375,9 +361,7 @@ class TestVideoStatusTransitions:
         """Test video status transition from processing to failed."""
         # Set to processing first
         await integration_database.execute(
-            videos.update()
-            .where(videos.c.id == integration_video["id"])
-            .values(status=VideoStatus.PROCESSING)
+            videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
 
         # Fail transcoding
@@ -390,9 +374,7 @@ class TestVideoStatusTransitions:
             )
         )
 
-        video = await integration_database.fetch_one(
-            videos.select().where(videos.c.id == integration_video["id"])
-        )
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == integration_video["id"]))
         assert video["status"] == VideoStatus.FAILED
         assert "FFmpeg failed" in video["error_message"]
 
@@ -425,9 +407,7 @@ class TestVideoStatusTransitions:
             )
         )
 
-        job = await integration_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await integration_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["attempt_number"] == 2
         assert job["last_error"] == "First attempt failed"
 
@@ -611,9 +591,7 @@ class TestErrorRecovery:
             )
         )
 
-        video = await integration_database.fetch_one(
-            videos.select().where(videos.c.id == integration_video["id"])
-        )
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == integration_video["id"]))
         assert video["status"] == VideoStatus.FAILED
         assert f"{max_attempts} attempts" in video["error_message"]
 
@@ -753,9 +731,7 @@ class TestTranscodingPipelineMocked:
     """End-to-end tests with mocked FFmpeg subprocess."""
 
     @pytest.mark.asyncio
-    async def test_full_pipeline_success_mocked(
-        self, integration_database, integration_video, integration_temp_dir
-    ):
+    async def test_full_pipeline_success_mocked(self, integration_database, integration_video, integration_temp_dir):
         """Test full transcoding pipeline with mocked FFmpeg."""
         now = datetime.now(timezone.utc)
 
@@ -769,9 +745,7 @@ class TestTranscodingPipelineMocked:
 
         # 3. Update status to processing
         await integration_database.execute(
-            videos.update()
-            .where(videos.c.id == integration_video["id"])
-            .values(status=VideoStatus.PROCESSING)
+            videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
 
         # 4. Create transcoding job
@@ -869,9 +843,7 @@ class TestTranscodingPipelineMocked:
         source_file.unlink()
 
         # Verify final state
-        video = await integration_database.fetch_one(
-            videos.select().where(videos.c.id == integration_video["id"])
-        )
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == integration_video["id"]))
         assert video["status"] == VideoStatus.READY
         assert video["duration"] == 120.5
 
@@ -886,9 +858,7 @@ class TestTranscodingPipelineMocked:
         assert not source_file.exists()  # Source should be cleaned up
 
     @pytest.mark.asyncio
-    async def test_pipeline_failure_and_recovery(
-        self, integration_database, integration_video, integration_temp_dir
-    ):
+    async def test_pipeline_failure_and_recovery(self, integration_database, integration_video, integration_temp_dir):
         """Test pipeline failure and recovery from checkpoint."""
         now = datetime.now(timezone.utc)
 
@@ -901,9 +871,7 @@ class TestTranscodingPipelineMocked:
 
         # Start processing
         await integration_database.execute(
-            videos.update()
-            .where(videos.c.id == integration_video["id"])
-            .values(status=VideoStatus.PROCESSING)
+            videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
 
         job_id = await integration_database.execute(
@@ -996,13 +964,9 @@ class TestTranscodingPipelineMocked:
         )
 
         # Verify recovery succeeded
-        video = await integration_database.fetch_one(
-            videos.select().where(videos.c.id == integration_video["id"])
-        )
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == integration_video["id"]))
         assert video["status"] == VideoStatus.READY
 
-        job = await integration_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await integration_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["attempt_number"] == 2
         assert job["worker_id"] == "worker-2"

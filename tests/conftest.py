@@ -23,11 +23,8 @@ from api.database import (  # noqa: E402
     categories,
     metadata,
     playback_sessions,
-    transcoding_jobs,
     video_qualities,
     videos,
-    worker_api_keys,
-    workers,
 )
 from api.enums import VideoStatus  # noqa: E402
 

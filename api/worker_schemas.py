@@ -1,4 +1,5 @@
 """Pydantic schemas for Worker API endpoints."""
+
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -8,83 +9,44 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # GPU and Hardware Acceleration Capabilities
 class GPUInfo(BaseModel):
     """GPU hardware information reported by workers."""
-    hwaccel_type: str = Field(
-        default="none",
-        description="Hardware acceleration type: nvidia, intel, or none"
-    )
-    gpu_name: Optional[str] = Field(
-        default=None,
-        description="GPU device name (e.g., 'NVIDIA GeForce RTX 3090')"
-    )
-    driver_version: Optional[str] = Field(
-        default=None,
-        description="GPU driver version"
-    )
-    cuda_version: Optional[str] = Field(
-        default=None,
-        description="CUDA version (NVIDIA only)"
-    )
+
+    hwaccel_type: str = Field(default="none", description="Hardware acceleration type: nvidia, intel, or none")
+    gpu_name: Optional[str] = Field(default=None, description="GPU device name (e.g., 'NVIDIA GeForce RTX 3090')")
+    driver_version: Optional[str] = Field(default=None, description="GPU driver version")
+    cuda_version: Optional[str] = Field(default=None, description="CUDA version (NVIDIA only)")
     vaapi_device: Optional[str] = Field(
-        default=None,
-        description="VAAPI device path (Intel only, e.g., '/dev/dri/renderD128')"
+        default=None, description="VAAPI device path (Intel only, e.g., '/dev/dri/renderD128')"
     )
 
 
 class WorkerCapabilities(BaseModel):
     """Detailed worker capabilities including GPU and encoding support."""
+
     model_config = ConfigDict(extra="forbid")  # Reject unknown fields
 
-    hwaccel_enabled: bool = Field(
-        default=False,
-        description="Whether hardware acceleration is available"
-    )
+    hwaccel_enabled: bool = Field(default=False, description="Whether hardware acceleration is available")
     hwaccel_type: str = Field(
-        default="none",
-        max_length=20,
-        description="Hardware acceleration type: nvidia, intel, or none"
+        default="none", max_length=20, description="Hardware acceleration type: nvidia, intel, or none"
     )
-    gpu_name: Optional[str] = Field(
-        default=None,
-        max_length=200,
-        description="GPU device name"
-    )
+    gpu_name: Optional[str] = Field(default=None, max_length=200, description="GPU device name")
     supported_codecs: List[str] = Field(
         default=["h264"],
         max_length=10,  # Max 10 codecs in the list
-        description="List of supported codecs (h264, hevc, av1)"
+        description="List of supported codecs (h264, hevc, av1)",
     )
     encoders: Dict[str, List[str]] = Field(
         default={"h264": ["libx264"]},
-        description="Available encoders by codec (e.g., {'h264': ['h264_nvenc', 'libx264']})"
+        description="Available encoders by codec (e.g., {'h264': ['h264_nvenc', 'libx264']})",
     )
     max_concurrent_encode_sessions: int = Field(
-        default=1,
-        ge=1,
-        le=100,
-        description="Maximum concurrent encoding sessions (NVIDIA consumer GPUs: 3-5)"
+        default=1, ge=1, le=100, description="Maximum concurrent encoding sessions (NVIDIA consumer GPUs: 3-5)"
     )
-    ffmpeg_version: Optional[str] = Field(
-        default=None,
-        max_length=100,
-        description="FFmpeg version string"
-    )
-    driver_version: Optional[str] = Field(
-        default=None,
-        max_length=100,
-        description="GPU driver version"
-    )
-    cuda_version: Optional[str] = Field(
-        default=None,
-        max_length=100,
-        description="CUDA version (NVIDIA only)"
-    )
-    vaapi_device: Optional[str] = Field(
-        default=None,
-        max_length=200,
-        description="VAAPI device path (Intel only)"
-    )
+    ffmpeg_version: Optional[str] = Field(default=None, max_length=100, description="FFmpeg version string")
+    driver_version: Optional[str] = Field(default=None, max_length=100, description="GPU driver version")
+    cuda_version: Optional[str] = Field(default=None, max_length=100, description="CUDA version (NVIDIA only)")
+    vaapi_device: Optional[str] = Field(default=None, max_length=200, description="VAAPI device path (Intel only)")
 
-    @field_validator('supported_codecs')
+    @field_validator("supported_codecs")
     @classmethod
     def validate_codec_list(cls, v):
         """Ensure each codec name is reasonable length."""
@@ -94,7 +56,7 @@ class WorkerCapabilities(BaseModel):
                     raise ValueError(f"Codec name too long: {codec}")
         return v
 
-    @field_validator('encoders')
+    @field_validator("encoders")
     @classmethod
     def validate_encoders(cls, v):
         """Ensure encoder names and codec keys are reasonable length."""
@@ -112,6 +74,7 @@ class WorkerCapabilities(BaseModel):
 
 class WorkerMetadata(BaseModel):
     """Worker metadata for Kubernetes pod info, etc."""
+
     model_config = ConfigDict(extra="forbid")  # Reject unknown fields
 
     # Kubernetes pod information
@@ -132,7 +95,7 @@ class WorkerMetadata(BaseModel):
     # Custom labels/annotations (limited to prevent abuse)
     labels: Optional[Dict[str, str]] = Field(default=None)
 
-    @field_validator('labels')
+    @field_validator("labels")
     @classmethod
     def validate_labels(cls, v):
         """Ensure labels dict is reasonable size."""
@@ -152,13 +115,9 @@ class WorkerRegisterRequest(BaseModel):
     worker_name: Optional[str] = Field(default=None, max_length=100)
     worker_type: str = Field(default="remote", pattern="^(local|remote)$")
     capabilities: Optional[WorkerCapabilities] = Field(
-        default=None,
-        description="Worker capabilities including GPU and encoding support"
+        default=None, description="Worker capabilities including GPU and encoding support"
     )
-    metadata: Optional[WorkerMetadata] = Field(
-        default=None,
-        description="Worker metadata (e.g., kubernetes pod info)"
-    )
+    metadata: Optional[WorkerMetadata] = Field(default=None, description="Worker metadata (e.g., kubernetes pod info)")
 
 
 class WorkerRegisterResponse(BaseModel):
@@ -171,11 +130,10 @@ class WorkerRegisterResponse(BaseModel):
 class HeartbeatRequest(BaseModel):
     status: str = Field(default="active", pattern="^(active|busy|idle)$")
     metadata: Optional[Dict] = Field(
-        default=None,
-        description="Optional metadata dict containing 'capabilities' key with WorkerCapabilities"
+        default=None, description="Optional metadata dict containing 'capabilities' key with WorkerCapabilities"
     )
 
-    @field_validator('metadata')
+    @field_validator("metadata")
     @classmethod
     def validate_metadata_dict(cls, v):
         """Validate metadata dict contains valid capabilities if present."""
@@ -215,8 +173,7 @@ class QualityProgressUpdate(BaseModel):
 
 class ProgressUpdateRequest(BaseModel):
     current_step: Optional[str] = Field(
-        default=None,
-        pattern="^(download|probe|thumbnail|transcode|master_playlist|upload|finalize)$"
+        default=None, pattern="^(download|probe|thumbnail|transcode|master_playlist|upload|finalize)$"
     )
     progress_percent: int = Field(ge=0, le=100)
     quality_progress: Optional[List[QualityProgressUpdate]] = None

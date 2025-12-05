@@ -168,9 +168,7 @@ class TestJobClaiming:
         assert "No jobs" in data["message"]
 
     @pytest.mark.asyncio
-    async def test_claim_job_success(
-        self, worker_client, registered_worker, test_database, sample_pending_video
-    ):
+    async def test_claim_job_success(self, worker_client, registered_worker, test_database, sample_pending_video):
         """Test successful job claim."""
         # Create a transcoding job for the pending video
         await test_database.execute(
@@ -202,9 +200,7 @@ class TestProgressUpdates:
     """Tests for progress update endpoint."""
 
     @pytest.mark.asyncio
-    async def test_progress_update_success(
-        self, worker_client, registered_worker, test_database, sample_pending_video
-    ):
+    async def test_progress_update_success(self, worker_client, registered_worker, test_database, sample_pending_video):
         """Test successful progress update."""
         # Create and claim a job
         job_id = await test_database.execute(
@@ -319,9 +315,7 @@ class TestProgressUpdates:
         assert data["status"] == "ok"
 
         # Verify metadata was saved to video table
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == sample_pending_video["id"])
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == sample_pending_video["id"]))
         assert video["duration"] == 120.5
         assert video["source_width"] == 1920
         assert video["source_height"] == 1080
@@ -356,9 +350,7 @@ class TestProgressUpdates:
         )
 
         # Simulate worker crash - verify metadata was saved
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == sample_pending_video["id"])
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == sample_pending_video["id"]))
         assert video["duration"] == 180.0
         assert video["source_width"] == 3840
         assert video["source_height"] == 2160
@@ -391,8 +383,6 @@ class TestProgressUpdates:
             transcoding_jobs.insert().values(
                 video_id=sample_pending_video["id"],
                 worker_id=registered_worker["worker_id"],
-                claimed_at=now - timedelta(minutes=5),  # Claimed 5 minutes ago
-                claim_expires_at=future_expiry,  # Still valid
                 claimed_at=datetime.now(timezone.utc),
                 attempt_number=1,
                 max_attempts=3,
@@ -404,25 +394,6 @@ class TestProgressUpdates:
             f"/api/worker/{job_id}/progress",
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
             json={
-                "current_step": "transcode",
-                "progress_percent": 50,
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "ok"
-        assert "claim_expires_at" in data
-
-        # Verify the claim was extended
-        from api.database import transcoding_jobs as tj
-
-        job = await test_database.fetch_one(tj.select().where(tj.c.id == job_id))
-        assert job is not None
-        # The new expiry should be later than the old one
-        new_expiry = job["claim_expires_at"]
-        if new_expiry.tzinfo is None:
-            new_expiry = new_expiry.replace(tzinfo=timezone.utc)
-        assert new_expiry > future_expiry
                 "current_step": "probe",
                 "progress_percent": 8,
                 "duration": -10.0,
@@ -459,9 +430,7 @@ class TestJobCompletion:
     """Tests for job completion endpoint."""
 
     @pytest.mark.asyncio
-    async def test_complete_job_success(
-        self, worker_client, registered_worker, test_database, sample_pending_video
-    ):
+    async def test_complete_job_success(self, worker_client, registered_worker, test_database, sample_pending_video):
         """Test successful job completion."""
         # Create and claim a job
         job_id = await test_database.execute(
@@ -492,9 +461,7 @@ class TestJobCompletion:
         assert data["status"] == "ok"
 
         # Verify video is now ready
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == sample_pending_video["id"])
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == sample_pending_video["id"]))
         assert video["status"] == "ready"
 
 
@@ -502,9 +469,7 @@ class TestJobFailure:
     """Tests for job failure endpoint."""
 
     @pytest.mark.asyncio
-    async def test_fail_job_with_retry(
-        self, worker_client, registered_worker, test_database, sample_pending_video
-    ):
+    async def test_fail_job_with_retry(self, worker_client, registered_worker, test_database, sample_pending_video):
         """Test failing a job with retry enabled."""
         job_id = await test_database.execute(
             transcoding_jobs.insert().values(
@@ -527,9 +492,7 @@ class TestJobFailure:
         assert data["attempt_number"] == 2
 
     @pytest.mark.asyncio
-    async def test_fail_job_final(
-        self, worker_client, registered_worker, test_database, sample_pending_video
-    ):
+    async def test_fail_job_final(self, worker_client, registered_worker, test_database, sample_pending_video):
         """Test failing a job without retry."""
         job_id = await test_database.execute(
             transcoding_jobs.insert().values(
@@ -575,9 +538,7 @@ class TestWorkerRevocation:
 
     def test_revoke_worker(self, worker_client, registered_worker):
         """Test revoking a worker's API key."""
-        response = worker_client.post(
-            f"/api/workers/{registered_worker['worker_id']}/revoke"
-        )
+        response = worker_client.post(f"/api/workers/{registered_worker['worker_id']}/revoke")
         assert response.status_code == 200
 
         # Verify the worker can no longer authenticate
@@ -609,9 +570,7 @@ class TestGracefulShutdown:
     """Tests for graceful shutdown behavior."""
 
     @pytest.mark.asyncio
-    async def test_shutdown_releases_claimed_jobs(
-        self, test_database, registered_worker, sample_pending_video
-    ):
+    async def test_shutdown_releases_claimed_jobs(self, test_database, registered_worker, sample_pending_video):
         """Test that shutdown releases claimed jobs."""
         from fastapi import FastAPI
 
@@ -633,9 +592,7 @@ class TestGracefulShutdown:
 
         # Set video to processing
         await test_database.execute(
-            videos.update()
-            .where(videos.c.id == sample_pending_video["id"])
-            .values(status="processing")
+            videos.update().where(videos.c.id == sample_pending_video["id"]).values(status="processing")
         )
 
         # Update worker's current job
@@ -643,15 +600,11 @@ class TestGracefulShutdown:
             workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
         )
         await test_database.execute(
-            workers.update()
-            .where(workers.c.id == worker_record["id"])
-            .values(current_job_id=job_id)
+            workers.update().where(workers.c.id == worker_record["id"]).values(current_job_id=job_id)
         )
 
         # Verify job is claimed
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["claimed_at"] is not None
         assert job["worker_id"] == registered_worker["worker_id"]
 
@@ -667,30 +620,22 @@ class TestGracefulShutdown:
         await test_database.connect()
 
         # Verify job claim was released
-        job_after = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job_after = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job_after["claimed_at"] is None
         assert job_after["claim_expires_at"] is None
         assert job_after["worker_id"] is None
         assert job_after["current_step"] is None
 
         # Verify video status was reset to pending
-        video_after = await test_database.fetch_one(
-            videos.select().where(videos.c.id == sample_pending_video["id"])
-        )
+        video_after = await test_database.fetch_one(videos.select().where(videos.c.id == sample_pending_video["id"]))
         assert video_after["status"] == "pending"
 
         # Verify worker's current_job_id was cleared
-        worker_after = await test_database.fetch_one(
-            workers.select().where(workers.c.id == worker_record["id"])
-        )
+        worker_after = await test_database.fetch_one(workers.select().where(workers.c.id == worker_record["id"]))
         assert worker_after["current_job_id"] is None
 
     @pytest.mark.asyncio
-    async def test_shutdown_ignores_completed_jobs(
-        self, test_database, registered_worker, sample_pending_video
-    ):
+    async def test_shutdown_ignores_completed_jobs(self, test_database, registered_worker, sample_pending_video):
         """Test that shutdown does not affect completed jobs."""
         from fastapi import FastAPI
 
@@ -724,9 +669,7 @@ class TestGracefulShutdown:
         await test_database.connect()
 
         # Verify completed job was not modified
-        job_after = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job_after = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job_after["claimed_at"] is not None  # Should still be set
         assert job_after["completed_at"] is not None  # Should still be set
         assert job_after["worker_id"] == registered_worker["worker_id"]

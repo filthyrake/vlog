@@ -160,9 +160,7 @@ class TestStaleJobDetectionWithTimezone:
         )
 
         # Retrieve the worker (SQLite will return naive datetime)
-        worker = await test_database.fetch_one(
-            workers.select().where(workers.c.worker_id == "test-worker-123")
-        )
+        worker = await test_database.fetch_one(workers.select().where(workers.c.worker_id == "test-worker-123"))
 
         # Test offline detection with 30 minute threshold
         offline_threshold = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -193,9 +191,7 @@ class TestStaleJobDetectionWithTimezone:
         )
 
         # Retrieve the worker
-        worker = await test_database.fetch_one(
-            workers.select().where(workers.c.worker_id == "test-worker-456")
-        )
+        worker = await test_database.fetch_one(workers.select().where(workers.c.worker_id == "test-worker-456"))
 
         # Test offline detection with 30 minute threshold
         offline_threshold = datetime.now(timezone.utc) - timedelta(minutes=30)

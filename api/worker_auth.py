@@ -1,4 +1,5 @@
 """Authentication middleware for Worker API."""
+
 import hashlib
 from datetime import datetime, timezone
 from typing import Optional
@@ -57,15 +58,11 @@ async def verify_worker_key(api_key: Optional[str] = Security(api_key_header)) -
 
     # Update last_used_at (fire-and-forget, don't block on this)
     await database.execute(
-        worker_api_keys.update()
-        .where(worker_api_keys.c.id == key_record["id"])
-        .values(last_used_at=now)
+        worker_api_keys.update().where(worker_api_keys.c.id == key_record["id"]).values(last_used_at=now)
     )
 
     # Get worker info
-    worker = await database.fetch_one(
-        workers.select().where(workers.c.id == key_record["worker_id"])
-    )
+    worker = await database.fetch_one(workers.select().where(workers.c.id == key_record["worker_id"]))
 
     if not worker:
         raise HTTPException(status_code=401, detail="Worker not found")
@@ -78,7 +75,5 @@ async def verify_worker_key(api_key: Optional[str] = Security(api_key_header)) -
 
 async def get_worker_by_id(worker_id: str) -> Optional[dict]:
     """Get a worker by its UUID."""
-    worker = await database.fetch_one(
-        workers.select().where(workers.c.worker_id == worker_id)
-    )
+    worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
     return dict(worker) if worker else None

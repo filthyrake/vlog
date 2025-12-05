@@ -571,7 +571,7 @@ class TestAnalyticsEndpoints:
     @pytest.mark.asyncio
     async def test_session_token_unique_constraint(self, test_database, sample_video):
         """Test that session_token has a unique constraint.
-        
+
         Note: Uses sqlite3.IntegrityError because the databases library passes through
         the underlying SQLite driver exceptions. This is appropriate since VLog uses
         SQLite exclusively.
