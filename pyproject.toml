@@ -31,6 +31,9 @@ dev = [
     "pytest-cov>=4.0.0",
     "ruff>=0.1.0",
 ]
+production = [
+    "redis>=4.0.0",  # Required for rate limiting across multiple instances
+]
 
 [project.scripts]
 vlog = "cli.main:main"

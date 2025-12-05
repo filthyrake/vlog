@@ -205,6 +205,24 @@ VLOG_ADMIN_CORS_ORIGINS=http://10.0.10.1:9001,http://192.168.1.100:9001
 - `memory://` - In-memory storage (per-process, resets on restart)
 - `redis://localhost:6379` - Redis storage (shared across processes)
 
+**⚠️ Multi-Instance Deployments:**
+
+The default in-memory storage does not work correctly when running multiple API instances behind a load balancer. Each process maintains its own rate limit counter, so:
+- With N instances, effective rate limit is N × configured limit
+- Users can bypass rate limits by hitting different instances
+
+For production deployments with multiple instances, you **must** use Redis:
+
+```bash
+# Install redis Python package
+pip install redis
+
+# Configure Redis backend
+export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
+```
+
+The API will log a warning at startup if rate limiting is enabled with in-memory storage.
+
 ---
 
 ## Customization Examples
