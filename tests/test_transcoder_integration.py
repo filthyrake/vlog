@@ -261,8 +261,8 @@ class TestTranscodingJobDatabase:
     @pytest.mark.asyncio
     async def test_get_or_create_job_race_condition(self, integration_database, integration_video):
         """Test that get_or_create_job handles race condition gracefully."""
-        # Local imports are necessary here to avoid circular dependencies
-        # and to ensure proper patching with the test database
+        # Local imports are necessary here for proper module patching
+        # Importing at module level would prevent patching the database instance
         from unittest.mock import patch
 
         import worker.transcoder as transcoder_module
