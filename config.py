@@ -164,6 +164,11 @@ RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
 _trusted_proxies_env = os.getenv("VLOG_TRUSTED_PROXIES", "")
 TRUSTED_PROXIES = set(ip.strip() for ip in _trusted_proxies_env.split(",") if ip.strip())
 
+# Cookie Security Configuration
+# Set to "false" for local development without HTTPS
+# Production should always use secure cookies (default: True)
+SECURE_COOKIES = os.getenv("VLOG_SECURE_COOKIES", "true").lower() not in ("false", "0", "no")
+
 # Analytics Caching Configuration
 # Set to "0" or "false" to disable analytics caching
 ANALYTICS_CACHE_ENABLED = os.getenv("VLOG_ANALYTICS_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
