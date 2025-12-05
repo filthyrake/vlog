@@ -8,6 +8,7 @@ import io
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import HTTPException
 
 from api.database import (
     categories,
@@ -151,6 +152,38 @@ class TestVideoUploadHTTP:
                 data={"title": f"Test {ext}", "description": "test"},
             )
             assert response.status_code == 200, f"Failed for extension {ext}"
+
+    @pytest.mark.asyncio
+    async def test_upload_cleanup_on_file_save_failure(self, admin_client, test_database, test_storage, monkeypatch):
+        """Test that database record is cleaned up when file save fails."""
+        # Get initial video count
+        initial_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
+
+        # Mock save_upload_with_size_limit to raise HTTPException (like real failures)
+        async def mock_save_upload(*args, **kwargs):
+            raise HTTPException(status_code=500, detail="Simulated disk I/O error")
+
+        # Import the admin module to patch it
+        import api.admin
+
+        # Patch the function in the admin module
+        monkeypatch.setattr(api.admin, "save_upload_with_size_limit", mock_save_upload)
+
+        # Attempt upload which should fail
+        file_content = b"fake video content"
+        response = admin_client.post(
+            "/api/videos",
+            files={"file": ("test.mp4", io.BytesIO(file_content), "video/mp4")},
+            data={"title": "Test Upload Failure", "description": "Should fail and cleanup"},
+        )
+
+        # Upload should fail with 500 status
+        assert response.status_code == 500
+        assert "Simulated disk I/O error" in response.json()["detail"]
+
+        # Verify no orphan record was created - count should be the same
+        final_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
+        assert final_count == initial_count, "Database record was not cleaned up after upload failure"
 
 
 class TestVideoManagementHTTP:

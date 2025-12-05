@@ -481,11 +481,17 @@ async def upload_video(
         raise HTTPException(status_code=500, detail="Failed to generate unique slug")
 
     # Save uploaded file with size validation (file_ext already validated above)
-    upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
-    await save_upload_with_size_limit(file, upload_path)
+    # If file save fails, clean up the database record to avoid orphans
+    try:
+        upload_path = UPLOADS_DIR / f"{video_id}{file_ext}"
+        await save_upload_with_size_limit(file, upload_path)
 
-    # Create output directory
-    (VIDEOS_DIR / slug).mkdir(parents=True, exist_ok=True)
+        # Create output directory
+        (VIDEOS_DIR / slug).mkdir(parents=True, exist_ok=True)
+    except (HTTPException, OSError, IOError):
+        # Clean up orphan database record on upload failure or filesystem errors
+        await database.execute(videos.delete().where(videos.c.id == video_id))
+        raise
 
     return {
         "status": "ok",
