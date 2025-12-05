@@ -8,6 +8,7 @@ import io
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import HTTPException
 
 from api.database import (
     categories,
@@ -155,8 +156,6 @@ class TestVideoUploadHTTP:
     @pytest.mark.asyncio
     async def test_upload_cleanup_on_file_save_failure(self, admin_client, test_database, test_storage, monkeypatch):
         """Test that database record is cleaned up when file save fails."""
-        from fastapi import HTTPException
-
         # Get initial video count
         initial_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
 
