@@ -2,12 +2,13 @@
 
 ## Overview
 
-VLog exposes two FastAPI servers:
+VLog exposes three FastAPI servers:
 
 - **Public API** (port 9000) - Video browsing, playback, and analytics
 - **Admin API** (port 9001) - Video management and uploads (internal only)
+- **Worker API** (port 9002) - Remote worker registration and job management
 
-Both APIs return JSON responses and support CORS.
+All APIs return JSON responses and support CORS.
 
 ---
 
@@ -559,3 +560,185 @@ Error response format:
 | processing | Currently being transcribed |
 | completed | Transcription complete |
 | failed | Transcription failed |
+
+---
+
+## Worker API (Port 9002)
+
+**Authentication:** All endpoints (except `/api/health`) require API key authentication via `X-API-Key` header.
+
+### Health Check
+
+```
+GET /api/health
+```
+
+Response:
+```json
+{"status": "healthy"}
+```
+
+### Worker Registration
+
+#### Register Worker
+```
+POST /api/worker/register
+```
+
+Request body:
+```json
+{
+  "worker_name": "k8s-worker-1",
+  "worker_type": "remote",
+  "capabilities": {"ffmpeg_version": "6.0"}
+}
+```
+
+Response:
+```json
+{
+  "worker_id": "uuid-string",
+  "api_key": "generated-api-key",
+  "message": "Worker registered successfully"
+}
+```
+
+**Note:** Save the `api_key` - it cannot be retrieved again.
+
+#### Send Heartbeat
+```
+POST /api/worker/heartbeat
+```
+
+Request body:
+```json
+{
+  "status": "active",
+  "metadata": {"cpu_usage": 45.2}
+}
+```
+
+### Job Management
+
+#### Claim Job
+```
+POST /api/worker/claim
+```
+
+Response (job available):
+```json
+{
+  "job_id": 16,
+  "video_id": 15,
+  "video_slug": "my-video",
+  "video_duration": 300.5,
+  "source_width": 1920,
+  "source_height": 1080,
+  "source_filename": "15.mp4",
+  "claim_expires_at": "2024-01-15T11:00:00Z",
+  "message": "Job claimed successfully"
+}
+```
+
+Response (no jobs):
+```json
+{
+  "message": "No jobs available"
+}
+```
+
+#### Update Progress
+```
+POST /api/worker/{job_id}/progress
+```
+
+Request body:
+```json
+{
+  "current_step": "transcode",
+  "progress_percent": 45,
+  "quality_progress": [
+    {"name": "1080p", "status": "completed", "progress": 100},
+    {"name": "720p", "status": "in_progress", "progress": 60}
+  ]
+}
+```
+
+#### Complete Job
+```
+POST /api/worker/{job_id}/complete
+```
+
+Request body:
+```json
+{
+  "qualities": [
+    {"name": "1080p", "width": 1920, "height": 1080, "bitrate": 5000},
+    {"name": "720p", "width": 1280, "height": 720, "bitrate": 2500}
+  ]
+}
+```
+
+#### Fail Job
+```
+POST /api/worker/{job_id}/fail
+```
+
+Request body:
+```json
+{
+  "error_message": "FFmpeg encoding failed",
+  "retry": true
+}
+```
+
+### File Transfer
+
+#### Download Source
+```
+GET /api/worker/source/{video_id}
+```
+
+Returns the source video file as a streaming download.
+
+#### Upload HLS Output
+```
+POST /api/worker/upload/{video_id}
+```
+
+Upload a tar.gz archive containing:
+- `master.m3u8`
+- `{quality}.m3u8` files
+- `{quality}_XXXX.ts` segments
+- `thumbnail.jpg`
+
+### Admin Endpoints
+
+#### List Workers
+```
+GET /api/workers
+```
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "worker_id": "uuid-string",
+    "worker_name": "k8s-worker-1",
+    "worker_type": "remote",
+    "status": "active",
+    "registered_at": "2024-01-15T10:00:00",
+    "last_heartbeat": "2024-01-15T10:30:00",
+    "current_job_id": 16,
+    "current_video_slug": "my-video"
+  }
+]
+```
+
+#### Revoke Worker
+```
+POST /api/workers/{worker_id}/revoke
+```
+
+Revokes the worker's API key, preventing further API access.

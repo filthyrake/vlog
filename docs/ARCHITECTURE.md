@@ -30,13 +30,16 @@ VLog is a self-hosted video platform built with Python/FastAPI for the backend a
                               |      (vlog.db - local)     |
                               +-------------+--------------+
                                             |
-              +-----------------------------+-----------------------------+
-              |                             |                             |
-    +---------v---------+       +-----------v-----------+     +-----------v-----------+
-    |  Transcoding      |       |   Transcription       |     |   NAS Storage         |
-    |  Worker           |       |   Worker              |     |   /mnt/nas/vlog-      |
-    |  (event-driven)   |       |   (faster-whisper)    |     |   storage/            |
-    +-------------------+       +-----------------------+     +-----------------------+
+     +----------------+---------------------+--------------------+----------------+
+     |                |                     |                    |                |
++----v----+    +------v------+    +--------v--------+    +------v------+  +------v------+
+| Worker  |    | Local       |    | Transcription   |    | NAS Storage |  | Kubernetes  |
+| API     |    | Transcoder  |    | Worker          |    | /mnt/nas/   |  | Workers     |
+| :9002   |    | (inotify)   |    | (whisper)       |    | vlog-storage|  | (remote)    |
++---------+    +-------------+    +-----------------+    +-------------+  +-------------+
+     ^                                                                          |
+     |                          HTTP: claim jobs, download/upload               |
+     +--------------------------------------------------------------------------+
 ```
 
 ## Components
@@ -76,11 +79,29 @@ Internal-only API for video management:
 
 **Rate Limiting:** Both APIs implement rate limiting via slowapi with configurable limits per endpoint.
 
-### 3. Transcoding Worker
+### 3. Worker API (Port 9002)
+
+**Location:** `api/worker_api.py`
+
+Central coordinator for distributed transcoding:
+
+**Endpoints:**
+- Worker registration with API key generation
+- Heartbeat for worker health tracking
+- Atomic job claiming with expiration
+- Progress updates (reflected in admin UI)
+- Source file download and HLS upload
+
+**Security:**
+- API key authentication (SHA-256 hashed)
+- Prefix-based key lookup
+- Per-worker revocation
+
+### 4. Local Transcoding Worker
 
 **Location:** `worker/transcoder.py`
 
-Event-driven background process for video transcoding:
+Event-driven background process for local video transcoding:
 
 **Processing Flow:**
 1. **Detection** - Monitors uploads directory via inotify (watchdog)
@@ -97,7 +118,27 @@ Event-driven background process for video transcoding:
 - Configurable retry attempts with exponential backoff
 - Graceful shutdown handling
 
-### 4. Transcription Worker
+### 5. Remote Transcoding Workers (Kubernetes)
+
+**Location:** `worker/remote_transcoder.py`, `Dockerfile.worker`
+
+Containerized workers for horizontal scaling:
+
+**Processing Flow:**
+1. **Register** - Worker registers via API, receives API key
+2. **Poll** - Periodically claims available jobs
+3. **Download** - Fetches source file from Worker API
+4. **Transcode** - Runs ffmpeg locally in container
+5. **Upload** - Sends HLS output as tar.gz to Worker API
+6. **Complete** - Reports completion, job marked ready
+
+**Deployment:**
+- Docker container with FFmpeg
+- Kubernetes Deployment with HPA
+- ConfigMap for API URL, Secret for API key
+- Progress updates every 5 seconds
+
+### 6. Transcription Worker
 
 **Location:** `worker/transcription.py`
 
@@ -116,7 +157,7 @@ Background process for automatic captioning:
 - Language auto-detection
 - Word count and duration tracking
 
-### 5. Database
+### 7. Database
 
 **Location:** `vlog.db` (local SQLite)
 
@@ -131,8 +172,10 @@ Background process for automatic captioning:
 - `transcoding_jobs` - Job tracking with checkpoints
 - `quality_progress` - Per-quality transcoding progress
 - `transcriptions` - Whisper transcription records
+- `workers` - Registered remote workers with status tracking
+- `worker_api_keys` - API key authentication (SHA-256 hashed)
 
-### 6. Storage (NAS)
+### 8. Storage (NAS)
 
 **Mount Point:** `/mnt/nas/vlog-storage`
 

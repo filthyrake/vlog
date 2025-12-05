@@ -27,6 +27,7 @@ All settings support environment variable configuration. Set these in your shell
 |----------|---------|-------------|
 | `VLOG_PUBLIC_PORT` | `9000` | Public API port (video browsing/playback) |
 | `VLOG_ADMIN_PORT` | `9001` | Admin API port (uploads/management) |
+| `VLOG_WORKER_API_PORT` | `9002` | Worker API port (remote worker coordination) |
 
 ### Soft-Delete Settings
 
@@ -119,7 +120,7 @@ Timeout calculation: `min(max(duration * multiplier, minimum), maximum)`
 - `int8` - CPU optimized (recommended for CPU-only)
 - `int8_float16` - Mixed precision
 
-### Worker Settings
+### Local Worker Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -133,6 +134,31 @@ Timeout calculation: `min(max(duration * multiplier, minimum), maximum)`
 - Immediately detects new uploads without polling
 - Falls back to polling if watchdog unavailable
 - Debouncing prevents multiple triggers during large file uploads
+
+### Remote Worker / Worker API Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_WORKER_API_URL` | `http://localhost:9002` | Worker API URL for remote workers |
+| `VLOG_WORKER_API_KEY` | (none) | API key for remote worker authentication (required) |
+| `VLOG_WORKER_HEARTBEAT_INTERVAL` | `30` | Heartbeat interval in seconds |
+| `VLOG_WORKER_POLL_INTERVAL` | `10` | Job polling interval in seconds |
+| `VLOG_WORKER_WORK_DIR` | `/tmp/vlog-worker` | Working directory for downloads/transcoding |
+| `VLOG_WORKER_JOB_TIMEOUT` | `7200` | Maximum job duration before expiration (seconds) |
+
+**Remote Worker Architecture:**
+- Workers register with the Worker API and receive an API key
+- Workers poll for available jobs via `POST /api/worker/claim`
+- Source files are downloaded via HTTP from the Worker API
+- HLS output is uploaded as a tar.gz archive
+- Progress updates are sent periodically during transcoding
+- Heartbeats maintain worker status for health monitoring
+
+**API Key Security:**
+- Keys are generated on worker registration
+- Stored as SHA-256 hashes in the database
+- Each worker has a unique key that can be revoked
+- Prefix-based lookup for efficient authentication
 
 ### Upload Settings
 

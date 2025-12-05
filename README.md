@@ -6,6 +6,7 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 
 - **4K Video Support** - Transcode to 2160p, 1440p, 1080p, 720p, 480p, 360p (YouTube-style quality ladder)
 - **HLS Streaming** - Adaptive bitrate for smooth playback on any connection
+- **Distributed Transcoding** - Containerized workers in Kubernetes with automatic job distribution
 - **Auto-Transcription** - Automatic subtitles using faster-whisper (WebVTT captions)
 - **Event-Driven Processing** - Instant video detection via inotify (no polling delay)
 - **Crash Recovery** - Checkpoint-based resumable transcoding
@@ -55,7 +56,9 @@ Access:
 |---------|------|-------------|
 | Public API | 9000 | Video browsing and HLS playback |
 | Admin API | 9001 | Upload and management (internal only) |
-| Transcoding Worker | - | Event-driven video processing |
+| Worker API | 9002 | Remote worker registration and job distribution |
+| Transcoding Worker | - | Local event-driven video processing |
+| Remote Workers | - | Containerized transcoding in Kubernetes |
 | Transcription Worker | - | Auto-captioning (faster-whisper) |
 
 ## CLI Usage
@@ -80,6 +83,11 @@ vlog download "https://youtube.com/watch?v=..." -c "Category"
 
 # Delete a video
 vlog delete 123
+
+# Worker management (for distributed transcoding)
+vlog worker register --name "k8s-worker-1"  # Get API key for new worker
+vlog worker status                           # Show all workers and current jobs
+vlog worker list                             # List registered workers
 ```
 
 ## Directory Structure
@@ -88,23 +96,26 @@ vlog delete 123
 vlog/
 ├── pyproject.toml        # Package configuration
 ├── api/                  # FastAPI backend
-│   ├── __init__.py
 │   ├── public.py         # Public API (port 9000)
 │   ├── admin.py          # Admin API (port 9001)
+│   ├── worker_api.py     # Worker API (port 9002)
+│   ├── worker_auth.py    # API key authentication
 │   ├── database.py       # SQLAlchemy schema
 │   └── schemas.py        # Pydantic models
 ├── worker/
-│   ├── __init__.py
-│   ├── transcoder.py     # HLS transcoding worker
+│   ├── transcoder.py     # Local HLS transcoding worker
+│   ├── remote_transcoder.py  # Containerized remote worker
+│   ├── http_client.py    # Worker API client
 │   └── transcription.py  # Whisper transcription worker
 ├── web/
 │   ├── public/           # Public-facing frontend
 │   └── admin/            # Admin interface
 ├── cli/
-│   ├── __init__.py
-│   └── main.py           # Command-line tool
+│   └── main.py           # Command-line tool (upload, worker mgmt)
+├── k8s/                  # Kubernetes manifests for workers
 ├── systemd/              # Systemd service files
 ├── docs/                 # Documentation
+├── Dockerfile.worker     # Container image for remote workers
 ├── config.py             # Central configuration (env var support)
 ├── vlog.db               # SQLite database (local)
 └── start.sh              # Development startup script
@@ -158,6 +169,28 @@ sudo journalctl -u vlog-worker -f
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full production setup including nginx configuration.
 
+### Distributed Transcoding (Kubernetes)
+
+For horizontal scaling, deploy containerized workers to Kubernetes:
+
+```bash
+# Register workers and get API keys
+vlog worker register --name "k8s-worker-1"
+# Save the returned API key
+
+# Deploy to k8s
+kubectl apply -f k8s/namespace.yaml
+kubectl create secret generic vlog-worker-secret -n vlog \
+  --from-literal=api-key='YOUR_API_KEY'
+kubectl apply -f k8s/
+
+# Check worker status
+vlog worker status
+kubectl logs -n vlog -l app=vlog-worker -f
+```
+
+See [k8s/README.md](k8s/README.md) for detailed Kubernetes deployment instructions.
+
 ## Documentation
 
 | Document | Description |
@@ -193,8 +226,13 @@ VLOG_RATE_LIMIT_STORAGE_URL=memory://  # or redis://localhost:6379
 # Soft-delete retention
 VLOG_ARCHIVE_RETENTION_DAYS=30
 
-# Worker mode
+# Local worker mode
 VLOG_WORKER_USE_FILESYSTEM_WATCHER=true  # inotify vs polling
+
+# Remote workers (Kubernetes)
+VLOG_WORKER_API_PORT=9002
+VLOG_WORKER_API_URL=http://your-server:9002
+VLOG_WORKER_API_KEY=your-api-key
 ```
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all options.

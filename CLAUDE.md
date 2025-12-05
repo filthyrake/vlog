@@ -4,10 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VLog is a self-hosted video platform with 4K support and HLS streaming. It consists of three services:
+VLog is a self-hosted video platform with 4K support and HLS streaming. It consists of these services:
 - **Public API** (port 9000): FastAPI server for video browsing, playback, and analytics
 - **Admin API** (port 9001): FastAPI server for uploads and management (internal only)
-- **Transcoding Worker**: Background process that converts uploads to HLS with multiple quality variants (event-driven with inotify)
+- **Worker API** (port 9002): FastAPI server for remote worker registration, job claiming, and file transfer
+- **Transcoding Worker**: Background process that converts uploads to HLS with multiple quality variants
+  - **Local mode**: Event-driven with inotify, runs as systemd service
+  - **Remote mode**: Containerized workers in Kubernetes, communicate via Worker API
 
 Storage is on NAS at `/mnt/nas/vlog-storage` (videos/ and uploads/), while the SQLite database stays local for performance.
 
@@ -39,6 +42,12 @@ vlog list
 vlog categories --create "Name"
 vlog download "https://youtube.com/..." -c "Category"
 
+# Worker management
+vlog worker register --name "worker-1"  # Register new worker, get API key
+vlog worker list                         # List all registered workers
+vlog worker status                       # Show active/idle/offline workers
+vlog worker revoke <worker-id>           # Revoke worker's API key
+
 # Database migrations (using Alembic)
 python api/database.py              # Apply all pending migrations
 python api/database.py stamp 001    # Mark existing DB as migrated (for upgrades)
@@ -63,25 +72,35 @@ ruff format api/ worker/ cli/ tests/ config.py   # Auto-format
 
 ```
 api/
-├── public.py     # Public browsing API, serves /api/videos, /api/categories, HLS files, analytics
-├── admin.py      # Upload/management API, multipart uploads, CRUD operations, soft-delete
-├── database.py   # SQLAlchemy table definitions (categories, videos, video_qualities, analytics, transcoding_jobs, transcriptions)
-└── schemas.py    # Pydantic models for request/response validation
+├── public.py       # Public browsing API, serves /api/videos, /api/categories, HLS files, analytics
+├── admin.py        # Upload/management API, multipart uploads, CRUD operations, soft-delete
+├── worker_api.py   # Worker API for remote transcoder registration, job claiming, file transfer
+├── worker_auth.py  # API key authentication for workers
+├── worker_schemas.py # Pydantic models for Worker API
+├── database.py     # SQLAlchemy table definitions (categories, videos, workers, transcoding_jobs, etc.)
+└── schemas.py      # Pydantic models for request/response validation
 
 worker/
-├── transcoder.py     # Event-driven (inotify) transcoder with checkpoint-based resumable processing
-└── transcription.py  # Whisper transcription worker
+├── transcoder.py       # Local event-driven (inotify) transcoder with checkpoint-based resumable processing
+├── remote_transcoder.py # Containerized worker for distributed transcoding via Worker API
+├── http_client.py      # HTTP client for worker-to-API communication
+└── transcription.py    # Whisper transcription worker
 
 web/
 ├── public/       # Tailwind + Alpine.js frontend for browsing
 └── admin/        # Admin UI for uploads and video management
 
 cli/
-└── main.py       # Argparse CLI, talks to admin API via httpx
+└── main.py       # Argparse CLI, talks to admin API via httpx, includes worker management
+
+k8s/              # Kubernetes manifests for containerized workers
+├── namespace.yaml, configmap.yaml, secret.yaml
+├── worker-deployment.yaml, worker-hpa.yaml
+└── README.md
 
 migrations/
 ├── env.py        # Alembic environment config (loads from config.py)
-└── versions/     # Migration scripts (001_initial_schema.py, etc.)
+└── versions/     # Migration scripts (001_initial_schema.py, 003_add_workers_table.py, etc.)
 ```
 
 ### Key Flows
@@ -102,11 +121,14 @@ migrations/
 
 **Database migrations**: Schema changes are managed by Alembic. New databases get all tables via `python api/database.py`. Existing databases being upgraded should first run `python api/database.py stamp 001` to mark current state, then future migrations apply normally.
 
+**Distributed transcoding**: Remote workers register via Worker API and receive API keys. Workers poll for jobs, claim them atomically, download source files via HTTP, transcode locally, and upload HLS output as tar.gz. Progress updates are sent to the API and visible in the admin UI.
+
 ### Database Schema
 
 Core tables: `categories`, `videos` (with `deleted_at` for soft-delete), `video_qualities`
 Analytics: `viewers`, `playback_sessions` (cookie-based viewer tracking, watch progress)
 Transcoding: `transcoding_jobs`, `quality_progress` (checkpoint-based resumable transcoding)
+Workers: `workers`, `worker_api_keys` (remote worker registration with API key auth)
 Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
 
 ## Important Configuration
@@ -118,6 +140,8 @@ Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
   - Rate limiting: `VLOG_RATE_LIMIT_ENABLED`, `VLOG_RATE_LIMIT_PUBLIC_DEFAULT`, etc.
   - CORS: `VLOG_CORS_ORIGINS`, `VLOG_ADMIN_CORS_ORIGINS`
   - Archive: `VLOG_ARCHIVE_RETENTION_DAYS` (default: 30)
+  - Worker API: `VLOG_WORKER_API_PORT`, `VLOG_WORKER_API_URL`, `VLOG_WORKER_API_KEY`
+  - Remote workers: `VLOG_WORKER_HEARTBEAT_INTERVAL`, `VLOG_WORKER_CLAIM_DURATION`, `VLOG_WORKER_POLL_INTERVAL`
 - NAS mount: `//10.0.10.84/MainPool` mounted at `/mnt/nas` via fstab
 - systemd services: Located in `systemd/` folder, use venv Python with security hardening
 - Package installed in development mode: `pip install -e .` makes `vlog` CLI available
