@@ -23,8 +23,11 @@ from api.database import (  # noqa: E402
     categories,
     metadata,
     playback_sessions,
+    transcoding_jobs,
     video_qualities,
     videos,
+    worker_api_keys,
+    workers,
 )
 from api.enums import VideoStatus  # noqa: E402
 
@@ -336,3 +339,65 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
     # Create test client without lifespan
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
+
+
+@pytest.fixture(scope="function")
+def worker_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
+    """
+    Create a test client for the Worker API.
+    Patches config to use test paths.
+    """
+    import importlib
+    import sys
+
+    from fastapi.testclient import TestClient
+
+    # Patch config before importing app
+    import config
+
+    monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+    monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+    monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+    monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+
+    # Patch the database module
+    import api.database
+
+    monkeypatch.setattr(api.database, "database", test_database)
+    monkeypatch.setattr(api.database, "create_tables", lambda: None)
+
+    # Force reload worker_auth to pick up the patched database
+    if "api.worker_auth" in sys.modules:
+        importlib.reload(sys.modules["api.worker_auth"])
+
+    # Patch worker_auth's database reference
+    import api.worker_auth
+
+    monkeypatch.setattr(api.worker_auth, "database", test_database)
+
+    # Force reload the worker_api module to pick up the patched database
+    if "api.worker_api" in sys.modules:
+        importlib.reload(sys.modules["api.worker_api"])
+
+    # Patch the app's database reference directly
+    import api.worker_api
+    from api.worker_api import app
+
+    monkeypatch.setattr(api.worker_api, "database", test_database)
+
+    # Create test client without lifespan
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client
+
+
+@pytest.fixture(scope="function")
+def registered_worker(worker_client) -> dict:
+    """
+    Register a worker and return its credentials.
+    """
+    response = worker_client.post(
+        "/api/worker/register",
+        json={"worker_name": "test-worker", "worker_type": "remote"},
+    )
+    assert response.status_code == 200
+    return response.json()

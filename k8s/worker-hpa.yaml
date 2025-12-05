@@ -1,0 +1,64 @@
+# VLog Worker Horizontal Pod Autoscaler
+# Automatically scales workers based on CPU usage
+# kubectl apply -f k8s/worker-hpa.yaml
+#
+# Requires metrics-server to be installed in your cluster:
+# kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vlog-worker-hpa
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vlog-worker
+
+  # Scaling bounds
+  minReplicas: 1
+  maxReplicas: 10
+
+  metrics:
+  # Scale based on CPU usage
+  # Target 70% average CPU across all pods
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+  # Scale based on memory usage (optional)
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+  behavior:
+    # Scale up quickly when jobs are waiting
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      selectPolicy: Max
+
+    # Scale down slowly to handle bursty workloads
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 120
+      selectPolicy: Min

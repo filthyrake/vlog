@@ -1,0 +1,10 @@
+# VLog Namespace
+# kubectl apply -f k8s/namespace.yaml
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: transcoding

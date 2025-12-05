@@ -72,10 +72,22 @@ TRANSCRIPTION_COMPUTE_TYPE = os.getenv("VLOG_TRANSCRIPTION_COMPUTE_TYPE", "int8"
 TRANSCRIPTION_TIMEOUT = int(os.getenv("VLOG_TRANSCRIPTION_TIMEOUT", "3600"))
 AUDIO_EXTRACTION_TIMEOUT = int(os.getenv("VLOG_AUDIO_EXTRACTION_TIMEOUT", "300"))
 
-# Worker settings (event-driven processing)
+# Worker settings (event-driven processing for local worker)
 WORKER_USE_FILESYSTEM_WATCHER = os.getenv("VLOG_WORKER_USE_FILESYSTEM_WATCHER", "true").lower() == "true"
 WORKER_FALLBACK_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_FALLBACK_POLL_INTERVAL", "60"))
 WORKER_DEBOUNCE_DELAY = float(os.getenv("VLOG_WORKER_DEBOUNCE_DELAY", "1.0"))
+
+# Worker API service settings (for distributed workers)
+WORKER_API_PORT = int(os.getenv("VLOG_WORKER_API_PORT", "9002"))
+
+# Remote worker client settings
+WORKER_API_URL = os.getenv("VLOG_WORKER_API_URL", "http://localhost:9002")
+WORKER_API_KEY = os.getenv("VLOG_WORKER_API_KEY", "")
+WORKER_HEARTBEAT_INTERVAL = int(os.getenv("VLOG_WORKER_HEARTBEAT_INTERVAL", "30"))
+WORKER_CLAIM_DURATION_MINUTES = int(os.getenv("VLOG_WORKER_CLAIM_DURATION", "30"))
+WORKER_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_POLL_INTERVAL", "10"))
+WORKER_WORK_DIR = Path(os.getenv("VLOG_WORKER_WORK_DIR", "/tmp/vlog-worker"))
+WORKER_OFFLINE_THRESHOLD_MINUTES = int(os.getenv("VLOG_WORKER_OFFLINE_THRESHOLD", "2"))
 
 # Progress update rate limiting (prevents database overload during transcoding)
 PROGRESS_UPDATE_INTERVAL = float(os.getenv("VLOG_PROGRESS_UPDATE_INTERVAL", "5.0"))

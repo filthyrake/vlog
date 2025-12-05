@@ -1,0 +1,131 @@
+# VLog Worker Deployment
+# kubectl apply -f k8s/worker-deployment.yaml
+#
+# Prerequisites:
+# 1. Build and push worker image to your registry:
+#    docker build -f Dockerfile.worker -t your-registry/vlog-worker:latest .
+#    docker push your-registry/vlog-worker:latest
+# 2. Update the image reference below
+# 3. Create the secret with your API key (see secret.yaml)
+# 4. Update the ConfigMap with your API URL (see configmap.yaml)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vlog-worker
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+spec:
+  # Number of worker replicas - adjust based on workload
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vlog
+        app.kubernetes.io/component: worker
+    spec:
+      # Security context for the pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+      - name: worker
+        # Update this to your container registry
+        image: vlog-worker:latest
+        imagePullPolicy: Always
+
+        # Load environment from ConfigMap and Secret
+        envFrom:
+        - configMapRef:
+            name: vlog-worker-config
+        - secretRef:
+            name: vlog-worker-credentials
+
+        # Resource limits for video transcoding
+        # FFmpeg is CPU-intensive; adjust based on your node capacity
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+
+        # Mount emptyDir for transcoding workspace
+        volumeMounts:
+        - name: work-dir
+          mountPath: /tmp/vlog-worker
+
+        # Liveness probe - worker is alive
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "import sys; sys.exit(0)"
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        # Readiness probe - worker can accept jobs
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "import sys; sys.exit(0)"
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        # Security context for container
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # FFmpeg needs to write temp files
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: work-dir
+        emptyDir:
+          # Size limit for transcoding workspace
+          # Should be large enough for source + HLS output
+          sizeLimit: 50Gi
+
+      # Grace period for job completion on shutdown
+      # Workers finish current job before terminating
+      terminationGracePeriodSeconds: 300
+
+      # Restart policy
+      restartPolicy: Always
+
+      # Optional: Node affinity for dedicated transcoding nodes
+      # Uncomment and customize if you have dedicated nodes
+      # affinity:
+      #   nodeAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       nodeSelectorTerms:
+      #       - matchExpressions:
+      #         - key: node-type
+      #           operator: In
+      #           values:
+      #           - transcoding
+
+      # Optional: Tolerations for dedicated nodes
+      # tolerations:
+      # - key: "dedicated"
+      #   operator: "Equal"
+      #   value: "transcoding"
+      #   effect: "NoSchedule"
