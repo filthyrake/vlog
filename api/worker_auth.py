@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import HTTPException, Security
 from fastapi.security import APIKeyHeader
 
+from api.common import ensure_utc
 from api.database import database, worker_api_keys, workers
 
 # API key header
@@ -51,10 +52,12 @@ async def verify_worker_key(api_key: Optional[str] = Security(api_key_header)) -
     if not key_record:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    # Check expiration
+    # Check expiration (handle both timezone-aware and naive datetimes from SQLite)
     now = datetime.now(timezone.utc)
-    if key_record["expires_at"] and key_record["expires_at"] < now:
-        raise HTTPException(status_code=401, detail="API key expired")
+    if key_record["expires_at"]:
+        expires_at = ensure_utc(key_record["expires_at"])
+        if expires_at < now:
+            raise HTTPException(status_code=401, detail="API key expired")
 
     # Update last_used_at (fire-and-forget, don't block on this)
     await database.execute(

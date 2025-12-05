@@ -2,13 +2,398 @@
 Tests for the Worker API endpoints.
 
 Tests worker registration, heartbeat, job claiming, and file transfer endpoints.
+Covers authentication edge cases, key hashing, source file download, and path traversal prevention.
 """
 
-from datetime import datetime, timezone
+import io
+import tarfile
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from api.database import transcoding_jobs, videos, workers
+from api.database import transcoding_jobs, videos, worker_api_keys, workers
+from api.worker_auth import get_key_prefix, hash_api_key
+
+# ============================================================================
+# Authentication Edge Cases (Issue #119)
+# ============================================================================
+
+
+class TestAuthenticationEdgeCases:
+    """Tests for API key authentication edge cases."""
+
+    def test_missing_api_key(self, worker_client):
+        """Test request without API key returns 401."""
+        response = worker_client.post("/api/worker/heartbeat", json={"status": "active"})
+        assert response.status_code == 401
+        assert "Missing API key" in response.json()["detail"]
+
+    def test_invalid_api_key_format(self, worker_client):
+        """Test request with malformed API key returns 401."""
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"X-Worker-API-Key": "x"},  # Too short to have prefix
+        )
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_expired_api_key(self, worker_client, test_database, registered_worker):
+        """Test expired API key returns 401 with appropriate message."""
+        # Set expiration to the past
+        past_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        await test_database.execute(
+            worker_api_keys.update()
+            .where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
+            .values(expires_at=past_time)
+        )
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 401
+        assert "expired" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_revoked_api_key(self, worker_client, test_database, registered_worker):
+        """Test revoked API key returns 401."""
+        # Revoke the key
+        await test_database.execute(
+            worker_api_keys.update()
+            .where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
+            .values(revoked_at=datetime.now(timezone.utc))
+        )
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 401
+        assert "Invalid API key" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_disabled_worker(self, worker_client, test_database, registered_worker):
+        """Test disabled worker returns 403."""
+        # Get the worker's database ID through the API key
+        key_record = await test_database.fetch_one(
+            worker_api_keys.select()
+            .where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
+        )
+
+        # Disable the worker
+        await test_database.execute(
+            workers.update()
+            .where(workers.c.id == key_record["worker_id"])
+            .values(status="disabled")
+        )
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 403
+        assert "disabled" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_api_key_last_used_updated(self, worker_client, test_database, registered_worker):
+        """Test that last_used_at is updated on successful authentication."""
+        # Make authenticated request
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+
+        # Check last_used_at was updated
+        key_record_after = await test_database.fetch_one(
+            worker_api_keys.select()
+            .where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
+        )
+        assert key_record_after["last_used_at"] is not None
+
+
+class TestKeyHashingFunctions:
+    """Tests for API key hashing utilities (Issue #119)."""
+
+    def test_hash_api_key_produces_consistent_hash(self):
+        """Test that hashing the same key twice produces the same result."""
+        key = "test-api-key-abcdefgh12345678"
+        hash1 = hash_api_key(key)
+        hash2 = hash_api_key(key)
+        assert hash1 == hash2
+        assert len(hash1) == 64  # SHA-256 produces 64 hex characters
+
+    def test_hash_api_key_different_inputs_different_outputs(self):
+        """Test that different keys produce different hashes."""
+        key1 = "test-api-key-abcdefgh12345678"
+        key2 = "test-api-key-12345678abcdefgh"
+        assert hash_api_key(key1) != hash_api_key(key2)
+
+    def test_get_key_prefix_extracts_first_8_chars(self):
+        """Test key prefix extraction returns first 8 characters."""
+        key = "abcdefghijklmnopqrstuvwxyz"
+        prefix = get_key_prefix(key)
+        assert prefix == "abcdefgh"
+        assert len(prefix) == 8
+
+    def test_get_key_prefix_short_key(self):
+        """Test prefix extraction with key shorter than 8 chars."""
+        key = "short"
+        prefix = get_key_prefix(key)
+        assert prefix == "short"  # Returns entire key if < 8 chars
+
+
+# ============================================================================
+# Source File Download (Issue #119)
+# ============================================================================
+
+
+class TestSourceDownload:
+    """Tests for source file download endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_download_source_success(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage
+    ):
+        """Test successful source file download."""
+        # Create transcoding job and claim it
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create source file
+        source_content = b"fake video content for download test"
+        source_file = test_storage["uploads"] / f"{sample_pending_video['id']}.mp4"
+        source_file.write_bytes(source_content)
+
+        # Claim the job
+        claim_response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert claim_response.status_code == 200
+
+        # Download source
+        response = worker_client.get(
+            f"/api/worker/source/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+        assert response.content == source_content
+
+    @pytest.mark.asyncio
+    async def test_download_source_not_your_job(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage
+    ):
+        """Test downloading source for a job claimed by another worker fails."""
+        # Create a job claimed by a different worker
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id="different-worker-uuid",
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create source file
+        source_file = test_storage["uploads"] / f"{sample_pending_video['id']}.mp4"
+        source_file.write_bytes(b"fake video content")
+
+        response = worker_client.get(
+            f"/api/worker/source/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 403
+        assert "Not your job" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_download_source_no_job(self, worker_client, registered_worker, sample_pending_video):
+        """Test downloading source when no job exists fails."""
+        response = worker_client.get(
+            f"/api/worker/source/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_download_source_file_not_found(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test downloading when source file doesn't exist returns 404."""
+        # Create and claim job, but don't create source file
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Claim the job
+        worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+
+        # Try to download non-existent source
+        response = worker_client.get(
+            f"/api/worker/source/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 404
+        assert "Source file not found" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_download_source_finds_different_extensions(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage
+    ):
+        """Test that source download finds files with different video extensions."""
+        # Create and claim job
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create source file with .mkv extension
+        source_content = b"mkv video content"
+        source_file = test_storage["uploads"] / f"{sample_pending_video['id']}.mkv"
+        source_file.write_bytes(source_content)
+
+        # Claim the job
+        worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+
+        response = worker_client.get(
+            f"/api/worker/source/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+        assert response.content == source_content
+
+
+# ============================================================================
+# Path Traversal Prevention (Issue #119)
+# ============================================================================
+
+
+class TestPathTraversalPrevention:
+    """Tests for path traversal prevention in HLS upload."""
+
+    def _create_tar_with_file(self, name: str, content: bytes) -> bytes:
+        """Helper to create a tar.gz archive with a single file."""
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        tar_buffer.seek(0)
+        return tar_buffer.read()
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_with_dotdot(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage
+    ):
+        """Test that ../path traversal is blocked."""
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create tar with path traversal attempt
+        tar_data = self._create_tar_with_file("../../../etc/passwd.m3u8", b"malicious")
+
+        response = worker_client.post(
+            f"/api/worker/upload/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            files={"file": ("hls.tar.gz", tar_data, "application/gzip")},
+        )
+        assert response.status_code == 400
+        assert "path traversal" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_with_absolute_path(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage
+    ):
+        """Test that absolute paths in archive are blocked."""
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create tar with absolute path
+        tar_data = self._create_tar_with_file("/etc/passwd.m3u8", b"malicious")
+
+        response = worker_client.post(
+            f"/api/worker/upload/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            files={"file": ("hls.tar.gz", tar_data, "application/gzip")},
+        )
+        assert response.status_code == 400
+        # Either path traversal or unexpected file type error
+        assert "path traversal" in response.json()["detail"].lower() or "cannot resolve" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_hardlink_blocked(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage
+    ):
+        """Test that hardlinks in archive are blocked."""
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create tar with hardlink
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+            info = tarfile.TarInfo(name="evil_link.m3u8")
+            info.type = tarfile.LNKTYPE
+            info.linkname = "/etc/passwd"
+            tar.addfile(info)
+        tar_buffer.seek(0)
+
+        response = worker_client.post(
+            f"/api/worker/upload/{sample_pending_video['id']}",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            files={"file": ("hls.tar.gz", tar_buffer.read(), "application/gzip")},
+        )
+        assert response.status_code == 400
+        assert "symlinks not allowed" in response.json()["detail"].lower()
+
+
+# ============================================================================
+# Original Test Classes
+# ============================================================================
 
 
 class TestWorkerRegistration:
