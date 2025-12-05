@@ -293,8 +293,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     print(f"    {quality_name}: HLS validation failed - {validation_error}")
                     quality_progress_list[quality_idx] = {"name": quality_name, "status": "failed", "progress": 0}
                     failed_qualities.append(quality_name)
-                    # Remove from successful_qualities since validation failed
-                    successful_qualities.pop()
+                    # Remove the quality we just added since validation failed
+                    if successful_qualities and successful_qualities[-1]["name"] == quality_name:
+                        successful_qualities.pop()
                 else:
                     # Upload this quality immediately to free disk space
                     print(f"    {quality_name}: Uploading...")
