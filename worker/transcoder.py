@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
+from api.common import ensure_utc
 from api.database import (
     configure_sqlite_pragmas,
     database,
@@ -1128,6 +1129,12 @@ async def recover_interrupted_jobs():
     )
 
     for job in stale_jobs:
+        # Ensure timezone-aware comparison for stale detection
+        last_checkpoint = ensure_utc(job["last_checkpoint"])
+        if last_checkpoint >= stale_threshold:
+            # Not actually stale after timezone normalization
+            continue
+
         video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
 
         if not video:
@@ -1751,6 +1758,12 @@ async def check_stale_jobs():
     )
 
     for job in stale_jobs:
+        # Ensure timezone-aware comparison for stale detection
+        last_checkpoint = ensure_utc(job["last_checkpoint"])
+        if last_checkpoint >= stale_threshold:
+            # Not actually stale after timezone normalization
+            continue
+
         video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
 
         if not video:
