@@ -541,28 +541,65 @@ async def upload_hls(
 
     try:
         with tarfile.open(tmp_path, "r:gz") as tar:
-            # Security: validate paths before extraction
+            # Security: validate and extract files safely (CVE-2007-4559 mitigation)
+            # We extract each member individually after validating the resolved path
+            output_dir_resolved = output_dir.resolve()
+
             for member in tar.getmembers():
-                # Prevent path traversal
-                if member.name.startswith("/") or ".." in member.name:
+                # Reject symlinks and hardlinks (could point outside target)
+                if member.issym() or member.islnk():
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Invalid archive: unsafe path {member.name}",
+                        detail=f"Invalid archive: symlinks not allowed ({member.name})",
                     )
-                # Only allow expected file types
-                if not (
+
+                # Reject device files, fifos, etc.
+                if not (member.isfile() or member.isdir()):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid archive: unsupported file type ({member.name})",
+                    )
+
+                # Only allow expected file extensions for regular files
+                if member.isfile() and not (
                     member.name.endswith(".m3u8")
                     or member.name.endswith(".ts")
                     or member.name.endswith(".jpg")
                     or member.name.endswith(".vtt")
-                    or member.isdir()
                 ):
                     raise HTTPException(
                         status_code=400,
                         detail=f"Invalid archive: unexpected file type {member.name}",
                     )
-            # Extract to output directory
-            tar.extractall(output_dir)
+
+                # Compute the resolved destination path
+                # This catches path traversal via "..", absolute paths, etc.
+                member_path = output_dir / member.name
+                try:
+                    # For existing paths, resolve() works directly
+                    # For new paths, we need to resolve the parent and append the name
+                    if member_path.exists():
+                        dest_resolved = member_path.resolve()
+                    else:
+                        # Resolve parent (must exist after mkdir) and join with name
+                        dest_resolved = member_path.parent.resolve() / member_path.name
+                except (ValueError, OSError) as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid archive: cannot resolve path {member.name}: {e}",
+                    )
+
+                # Verify the destination is within the output directory
+                try:
+                    dest_resolved.relative_to(output_dir_resolved)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid archive: path traversal detected ({member.name})",
+                    )
+
+                # Safe to extract this member
+                tar.extract(member, output_dir)
     finally:
         tmp_path.unlink()
 
