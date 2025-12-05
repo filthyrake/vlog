@@ -132,6 +132,10 @@ class ProgressUpdateRequest(BaseModel):
     )
     progress_percent: int = Field(ge=0, le=100)
     quality_progress: Optional[List[QualityProgressUpdate]] = None
+    # Video metadata (updated after probing to prevent data loss if worker crashes)
+    duration: Optional[float] = Field(default=None, description="Video duration in seconds")
+    source_width: Optional[int] = Field(default=None, description="Source video width")
+    source_height: Optional[int] = Field(default=None, description="Source video height")
 
 
 class ProgressUpdateResponse(BaseModel):
