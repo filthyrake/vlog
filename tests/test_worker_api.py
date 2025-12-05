@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from api.database import transcoding_jobs, videos
+from api.database import transcoding_jobs, videos, workers
 
 
 class TestWorkerRegistration:
@@ -90,7 +90,6 @@ class TestWorkerHeartbeat:
         assert response.status_code == 200
 
         # Verify the status was actually stored in the database
-        from api.database import workers
         worker = await test_database.fetch_one(
             workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
         )
@@ -107,7 +106,6 @@ class TestWorkerHeartbeat:
         assert response.status_code == 200
 
         # Verify the status was actually stored in the database
-        from api.database import workers
         worker = await test_database.fetch_one(
             workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
         )
@@ -116,7 +114,6 @@ class TestWorkerHeartbeat:
     @pytest.mark.asyncio
     async def test_heartbeat_status_transition(self, worker_client, registered_worker, test_database):
         """Test status transitions from idle to busy to idle."""
-        from api.database import workers
 
         # Start with idle
         response = worker_client.post(

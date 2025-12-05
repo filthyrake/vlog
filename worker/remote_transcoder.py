@@ -338,7 +338,7 @@ async def worker_loop():
 
     # Verify connection with initial heartbeat (include capabilities)
     try:
-        await client.heartbeat(metadata={"capabilities": worker_caps})
+        await client.heartbeat(status="idle", metadata={"capabilities": worker_caps})
         print("  Connected to Worker API")
     except WorkerAPIError as e:
         print(f"ERROR: Failed to connect to Worker API: {e.message}")
