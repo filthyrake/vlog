@@ -11,6 +11,7 @@ from fastapi.security import APIKeyHeader
 
 from api.common import ensure_utc
 from api.database import database, worker_api_keys, workers
+from config import TRUSTED_PROXIES
 
 # Security event logger - separate from regular application logging
 # Configure with appropriate handlers for security monitoring/SIEM integration
@@ -31,23 +32,46 @@ def get_key_prefix(key: str) -> str:
 
 
 def _get_request_context(request: Optional[Request]) -> dict:
-    """Extract security-relevant context from request for logging."""
-    if request is None:
-        return {"ip_address": "unknown", "user_agent": "unknown"}
+    """
+    Extract security-relevant context from request for logging.
 
-    # Get client IP (handles X-Forwarded-For if behind proxy)
-    client_ip = "unknown"
-    if request.client:
-        client_ip = request.client.host
-    # Check for X-Forwarded-For header (common with reverse proxies)
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        # Take the first IP in the chain (original client)
-        client_ip = forwarded_for.split(",")[0].strip()
+    Returns both the direct client IP and any X-Forwarded-For value separately.
+    The X-Forwarded-For header is only trusted if the direct client IP is in
+    TRUSTED_PROXIES to prevent header spoofing attacks.
+    """
+    if request is None:
+        return {
+            "ip_address": "unknown",
+            "direct_ip": "unknown",
+            "forwarded_for": None,
+            "user_agent": "unknown",
+        }
+
+    # Always get the direct connection IP
+    direct_ip = request.client.host if request.client else "unknown"
+
+    # Get X-Forwarded-For header if present (may be spoofed if not behind trusted proxy)
+    forwarded_for_header = request.headers.get("x-forwarded-for")
+    forwarded_for_ip = None
+    if forwarded_for_header:
+        # Take the first IP in the chain (claimed original client)
+        forwarded_for_ip = forwarded_for_header.split(",")[0].strip()
+
+    # Determine the effective IP address for logging
+    # Only trust X-Forwarded-For if request comes from a trusted proxy
+    if forwarded_for_ip and direct_ip in TRUSTED_PROXIES:
+        effective_ip = forwarded_for_ip
+    else:
+        effective_ip = direct_ip
 
     user_agent = request.headers.get("user-agent", "unknown")
 
-    return {"ip_address": client_ip, "user_agent": user_agent}
+    return {
+        "ip_address": effective_ip,  # The IP to use for security decisions
+        "direct_ip": direct_ip,  # Always the direct connection IP
+        "forwarded_for": forwarded_for_ip,  # X-Forwarded-For value (may be spoofed)
+        "user_agent": user_agent,
+    }
 
 
 async def verify_worker_key(
@@ -68,8 +92,7 @@ async def verify_worker_key(
             extra={
                 "event": "auth_failure",
                 "reason": "missing_key",
-                "ip_address": ctx["ip_address"],
-                "user_agent": ctx["user_agent"],
+                **ctx,  # includes ip_address, direct_ip, forwarded_for, user_agent
             },
         )
         raise HTTPException(
@@ -95,8 +118,7 @@ async def verify_worker_key(
                 "event": "auth_failure",
                 "reason": "invalid_key",
                 "key_prefix": prefix,
-                "ip_address": ctx["ip_address"],
-                "user_agent": ctx["user_agent"],
+                **ctx,
             },
         )
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -109,8 +131,7 @@ async def verify_worker_key(
                 "event": "auth_failure",
                 "reason": "hash_mismatch",
                 "key_prefix": prefix,
-                "ip_address": ctx["ip_address"],
-                "user_agent": ctx["user_agent"],
+                **ctx,
             },
         )
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -128,8 +149,7 @@ async def verify_worker_key(
                     "key_prefix": prefix,
                     "worker_id": key_record["worker_id"],
                     "expired_at": expires_at.isoformat(),
-                    "ip_address": ctx["ip_address"],
-                    "user_agent": ctx["user_agent"],
+                    **ctx,
                 },
             )
             raise HTTPException(status_code=401, detail="API key expired")
@@ -150,8 +170,7 @@ async def verify_worker_key(
                 "reason": "worker_not_found",
                 "key_prefix": prefix,
                 "worker_id": key_record["worker_id"],
-                "ip_address": ctx["ip_address"],
-                "user_agent": ctx["user_agent"],
+                **ctx,
             },
         )
         raise HTTPException(status_code=401, detail="Worker not found")
@@ -164,8 +183,7 @@ async def verify_worker_key(
                 "reason": "worker_disabled",
                 "worker_id": worker["worker_id"],
                 "worker_name": worker["worker_name"],
-                "ip_address": ctx["ip_address"],
-                "user_agent": ctx["user_agent"],
+                **ctx,
             },
         )
         raise HTTPException(status_code=403, detail="Worker is disabled")
@@ -177,7 +195,7 @@ async def verify_worker_key(
             "event": "auth_success",
             "worker_id": worker["worker_id"],
             "worker_name": worker["worker_name"],
-            "ip_address": ctx["ip_address"],
+            **ctx,
         },
     )
 
