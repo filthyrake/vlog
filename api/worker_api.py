@@ -89,6 +89,11 @@ limiter = Limiter(
 
 # Global flag to signal background task to stop
 _shutdown_event: Optional[asyncio.Event] = None
+# Track when the API started for grace period on stale job detection
+_api_start_time: Optional[datetime] = None
+# Grace period after API startup before running stale job detection (seconds)
+# This allows workers to send heartbeats after API recovers from downtime
+STALE_CHECK_STARTUP_GRACE_PERIOD = 120  # 2 minutes
 
 
 async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret")):
@@ -136,8 +141,30 @@ async def _detect_and_release_stale_jobs():
 
     This function is extracted for testability - it performs one check without looping.
     Returns the number of stale workers found and processed.
+
+    IMPORTANT: Uses atomic conditional updates to prevent race conditions with
+    heartbeat updates. A worker is only marked offline if its last_heartbeat
+    is still stale at update time (prevents marking workers offline right after
+    they sent a valid heartbeat).
+
+    Jobs are only released if the job's claim has expired (claim_expires_at < now),
+    not just based on worker heartbeat age. This prevents releasing jobs when
+    the API was temporarily unresponsive but workers were actively processing.
     """
+    global _api_start_time
     now = datetime.now(timezone.utc)
+
+    # Skip stale check during startup grace period
+    # This allows workers to send heartbeats after API recovers from downtime
+    if _api_start_time:
+        time_since_startup = (now - _api_start_time).total_seconds()
+        if time_since_startup < STALE_CHECK_STARTUP_GRACE_PERIOD:
+            logger.debug(
+                f"Skipping stale check during startup grace period "
+                f"({time_since_startup:.0f}s < {STALE_CHECK_STARTUP_GRACE_PERIOD}s)"
+            )
+            return 0
+
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
 
     # Find workers that are not already offline but haven't sent heartbeat
@@ -145,24 +172,51 @@ async def _detect_and_release_stale_jobs():
         workers.select().where(workers.c.status != "offline").where(workers.c.last_heartbeat < offline_threshold)
     )
 
+    processed_count = 0
     for worker in stale_workers:
         worker_name = worker["worker_name"] or worker["worker_id"][:8]
-        logger.warning(f"Worker '{worker_name}' went offline (no heartbeat since {worker['last_heartbeat']})")
+        worker_last_hb = worker["last_heartbeat"]
 
-        # Mark worker as offline
-        await database.execute(
-            workers.update().where(workers.c.id == worker["id"]).values(status="offline", current_job_id=None)
+        # ATOMIC CONDITIONAL UPDATE: Only mark offline if last_heartbeat is STILL old
+        # This prevents race condition where heartbeat arrives between our fetch and update
+        result = await database.execute(
+            workers.update()
+            .where(workers.c.id == worker["id"])
+            .where(workers.c.last_heartbeat < offline_threshold)  # Re-check condition
+            .where(workers.c.status != "offline")  # Don't update if already offline
+            .values(status="offline", current_job_id=None)
         )
 
-        # Find and release any jobs claimed by this worker
+        if result == 0:
+            # Worker was updated (heartbeat received) between fetch and update
+            logger.info(
+                f"Worker '{worker_name}' recovered (heartbeat received since stale check started)"
+            )
+            continue
+
+        processed_count += 1
+        logger.warning(f"Worker '{worker_name}' went offline (no heartbeat since {worker_last_hb})")
+
+        # Find jobs claimed by this worker that have EXPIRED claims
+        # Don't release jobs where the claim hasn't expired yet - the worker might still complete them
         stale_jobs = await database.fetch_all(
             transcoding_jobs.select()
             .where(transcoding_jobs.c.worker_id == worker["worker_id"])
             .where(transcoding_jobs.c.completed_at.is_(None))
+            .where(
+                sa.or_(
+                    transcoding_jobs.c.claim_expires_at.is_(None),  # No expiry set
+                    transcoding_jobs.c.claim_expires_at < now,  # Claim has expired
+                )
+            )
         )
 
         for job in stale_jobs:
-            logger.info(f"Releasing stale job {job['id']} from offline worker '{worker_name}'")
+            claim_expires = job["claim_expires_at"]
+            logger.info(
+                f"Releasing stale job {job['id']} from offline worker '{worker_name}' "
+                f"(claim expired: {claim_expires})"
+            )
 
             # Release the job claim
             await database.execute(
@@ -182,7 +236,7 @@ async def _detect_and_release_stale_jobs():
                 await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
                 logger.info(f"Reset video {job['video_id']} status to pending")
 
-    return len(stale_workers)
+    return processed_count
 
 
 async def check_stale_jobs():
@@ -219,13 +273,17 @@ async def check_stale_jobs():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage database connection lifecycle and graceful shutdown."""
-    global _shutdown_event
+    global _shutdown_event, _api_start_time
     _shutdown_event = asyncio.Event()
+    _api_start_time = datetime.now(timezone.utc)
 
     # Startup
     await database.connect()
     await configure_sqlite_pragmas()
-    logger.info("Worker API started - database connected")
+    logger.info(
+        f"Worker API started - database connected. "
+        f"Stale check grace period: {STALE_CHECK_STARTUP_GRACE_PERIOD}s"
+    )
 
     # Start background task for stale job detection
     stale_job_task = asyncio.create_task(check_stale_jobs())
@@ -422,8 +480,13 @@ async def worker_heartbeat(
 
     Validates metadata.capabilities if provided to ensure workers don't store
     arbitrarily large or malicious JSON blobs.
+
+    If the worker was previously offline, this heartbeat will bring it back online
+    and log the recovery for debugging connectivity issues.
     """
     now = datetime.now(timezone.utc)
+    worker_name = worker["worker_name"] or worker["worker_id"][:8]
+    was_offline = worker["status"] == "offline"
 
     update_values = {
         "last_heartbeat": now,
@@ -438,6 +501,13 @@ async def worker_heartbeat(
         update_values["metadata"] = metadata_json
 
     await database.execute(workers.update().where(workers.c.id == worker["id"]).values(**update_values))
+
+    # Log recovery from offline status for debugging
+    if was_offline:
+        logger.info(
+            f"Worker '{worker_name}' recovered from offline status "
+            f"(was offline since last_heartbeat={worker['last_heartbeat']})"
+        )
 
     return HeartbeatResponse(status="ok", server_time=now)
 
