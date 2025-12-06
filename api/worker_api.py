@@ -443,7 +443,31 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
     async def do_claim_transaction():
         """Execute the claim transaction - wrapped with retry logic."""
         async with database.transaction():
-            # Find oldest unclaimed pending job, or job with expired claim
+            # First, clean up any expired claims - reset video status to 'pending'
+            # so they can be picked up by the normal claim query
+            await database.execute(
+                sa.text("""
+                    UPDATE videos SET status = 'pending'
+                    WHERE status = 'processing'
+                      AND id IN (
+                          SELECT video_id FROM transcoding_jobs
+                          WHERE claim_expires_at < :now
+                            AND completed_at IS NULL
+                      )
+                """).bindparams(now=now)
+            )
+
+            # Also clear the stale claim data from the jobs
+            await database.execute(
+                sa.text("""
+                    UPDATE transcoding_jobs
+                    SET worker_id = NULL, claimed_at = NULL, claim_expires_at = NULL
+                    WHERE claim_expires_at < :now
+                      AND completed_at IS NULL
+                """).bindparams(now=now)
+            )
+
+            # Find oldest unclaimed pending job
             job = await database.fetch_one(
                 sa.text("""
                     SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
@@ -451,11 +475,11 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
                     JOIN videos v ON tj.video_id = v.id
                     WHERE v.status = 'pending'
                       AND v.deleted_at IS NULL
-                      AND (tj.claimed_at IS NULL OR tj.claim_expires_at < :now)
+                      AND tj.claimed_at IS NULL
                       AND tj.completed_at IS NULL
                     ORDER BY v.created_at ASC
                     LIMIT 1
-                """).bindparams(now=now)
+                """)
             )
 
             if not job:
