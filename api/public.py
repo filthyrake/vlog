@@ -4,6 +4,7 @@ Runs on port 9000.
 """
 
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -155,7 +156,9 @@ class HLSStaticFiles(StaticFiles):
 
 
 # Serve video files (HLS segments, playlists, thumbnails)
-app.mount("/videos", HLSStaticFiles(directory=str(VIDEOS_DIR)), name="videos")
+# Skip in test mode since CI doesn't have the storage directory
+if not os.environ.get("VLOG_TEST_MODE"):
+    app.mount("/videos", HLSStaticFiles(directory=str(VIDEOS_DIR)), name="videos")
 
 # Serve static web files
 WEB_DIR = Path(__file__).parent.parent / "web" / "public"
