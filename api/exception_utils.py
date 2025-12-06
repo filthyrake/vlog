@@ -23,18 +23,18 @@ def handle_api_exceptions(
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorator for standardized exception handling in API endpoints.
-    
+
     This ensures:
     1. HTTPExceptions are always re-raised (never masked)
     2. Specific domain errors can be caught and converted to appropriate HTTP errors
     3. Generic exceptions are logged and converted to 500 errors with sanitized messages
-    
+
     Args:
         operation_name: Name of the operation for logging context
         error_detail: Default error message for generic exceptions
         status_code: Default status code for generic exceptions
         log_errors: Whether to log exceptions (default: True)
-    
+
     Example:
         @handle_api_exceptions("video_upload", "Failed to upload video", 500)
         async def upload_video(...):
@@ -61,10 +61,10 @@ def handle_api_exceptions(
 def reraise_http_exceptions(func: Callable[..., T]) -> Callable[..., T]:
     """
     Minimal decorator that ensures HTTPExceptions are re-raised.
-    
+
     Use this when you want to add HTTPException re-raising to existing try/except blocks
     without changing other exception handling logic.
-    
+
     Example:
         try:
             result = await some_operation()
@@ -95,14 +95,14 @@ def log_and_raise_http_exception(
 ) -> None:
     """
     Log an exception and raise an HTTPException with sanitized message.
-    
+
     Args:
         exception: The original exception
         status_code: HTTP status code for the response
         detail: User-facing error message (should be sanitized)
         operation_name: Optional operation name for logging context
         log_level: Logging level (default: "error")
-    
+
     Example:
         try:
             result = await database_operation()
@@ -112,8 +112,8 @@ def log_and_raise_http_exception(
             )
     """
     log_msg = f"Error in {operation_name}: {exception}" if operation_name else str(exception)
-    
+
     log_func = getattr(logger, log_level, logger.error)
     log_func(log_msg)
-    
+
     raise HTTPException(status_code=status_code, detail=detail) from exception
