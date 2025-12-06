@@ -348,7 +348,7 @@ class TestHeartbeatMetadataValidation:
         error_detail = response.json()["detail"]
         assert any("too many keys" in str(e).lower() for e in error_detail)
 
-    def test_heartbeat_metadata_exceeds_64kb(self, worker_client, registered_worker):
+    def test_heartbeat_metadata_exceeds_10kb(self, worker_client, registered_worker):
         """Test that heartbeat rejects metadata exceeding 10KB."""
         # Create metadata that when serialized exceeds 10KB
         # A single key with 12KB of data

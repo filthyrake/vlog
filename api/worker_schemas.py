@@ -143,16 +143,15 @@ class HeartbeatRequest(BaseModel):
             if len(v) > 20:
                 raise ValueError("Too many keys in metadata (max 20)")
 
-            # Limit serialized size to match endpoint limit (10KB)
+            # Validate JSON serializability first
             try:
                 serialized = json.dumps(v)
-                if len(serialized) > 10240:  # 10KB max (10 * 1024 bytes)
-                    raise ValueError("Metadata too large (max 10KB)")
-            except (TypeError, ValueError) as e:
-                # If it's a ValueError from size check, re-raise it
-                if "too large" in str(e).lower():
-                    raise
+            except (TypeError, ValueError):
                 raise ValueError("Metadata must be JSON-serializable")
+
+            # Then check serialized size to match endpoint limit (10KB)
+            if len(serialized) > 10240:  # 10KB max (10 * 1024 bytes)
+                raise ValueError("Metadata too large (max 10KB)")
 
             # Validate capabilities structure if present
             if "capabilities" in v:
