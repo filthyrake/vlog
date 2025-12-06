@@ -120,23 +120,62 @@ Event-driven background process for local video transcoding:
 
 ### 5. Remote Transcoding Workers (Kubernetes)
 
-**Location:** `worker/remote_transcoder.py`, `Dockerfile.worker`
+**Location:** `worker/remote_transcoder.py`, `Dockerfile.worker.gpu`
 
-Containerized workers for horizontal scaling:
+Containerized workers for horizontal scaling with GPU hardware acceleration.
+
+**Container Image:**
+- Base: Rocky Linux 10
+- FFmpeg 7.1.2 from RPM Fusion (pre-built with nvenc, vaapi, qsv encoders)
+- intel-media-driver 25.2.6 (Battlemage/Arc B580 support)
+- Python 3.12
+- Local registry: `localhost:9003/vlog-worker-gpu:rocky10`
 
 **Processing Flow:**
 1. **Register** - Worker registers via API, receives API key
 2. **Poll** - Periodically claims available jobs
 3. **Download** - Fetches source file from Worker API
-4. **Transcode** - Runs ffmpeg locally in container
+4. **Transcode** - Runs ffmpeg locally with GPU acceleration
 5. **Upload** - Sends HLS output as tar.gz to Worker API
 6. **Complete** - Reports completion, job marked ready
 
-**Deployment:**
-- Docker container with FFmpeg
-- Kubernetes Deployment with HPA
-- ConfigMap for API URL, Secret for API key
-- Progress updates every 5 seconds
+**GPU Hardware Acceleration:**
+
+| Type | Encoders | K8s Resource | Runtime |
+|------|----------|--------------|---------|
+| NVIDIA NVENC | h264_nvenc, hevc_nvenc, av1_nvenc | `nvidia.com/gpu` | `runtimeClassName: nvidia` |
+| Intel VAAPI | h264_vaapi, hevc_vaapi, av1_vaapi | `gpu.intel.com/xe` | Standard (mounts /dev/dri) |
+
+**Cluster Requirements:**
+- NVIDIA: nvidia-container-toolkit + nvidia device plugin
+- Intel: Node Feature Discovery (NFD) + Intel GPU device plugin
+
+**Current rocky10-desktop Configuration:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    rocky10-desktop                          │
+├─────────────────────────────────────────────────────────────┤
+│  vlog-worker-rocky10          vlog-worker-intel             │
+│  ├─ RTX 3090 (NVENC)          ├─ Arc B580 (VAAPI)          │
+│  ├─ nvidia.com/gpu: 1         ├─ gpu.intel.com/xe: 1       │
+│  └─ runtimeClassName: nvidia  └─ Standard runtime          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Deployment Files:**
+- `k8s/worker-deployment-nvidia.yaml` - NVIDIA GPU workers
+- `k8s/worker-deployment-intel.yaml` - Intel Arc/QuickSync workers
+- `k8s/worker-deployment.yaml` - CPU-only workers
+
+**Encoding Performance (1080p test):**
+
+| Encoder | GPU | Speed |
+|---------|-----|-------|
+| h264_nvenc | RTX 3090 | 3.74x |
+| hevc_nvenc | RTX 3090 | 3.57x |
+| h264_vaapi | Arc B580 | 8.36x |
+| hevc_vaapi | Arc B580 | 6.64x |
+| av1_vaapi | Arc B580 | 6.86x |
 
 ### 6. Transcription Worker
 
@@ -251,13 +290,17 @@ Video ready → Transcription worker polls
 | Database | SQLite + SQLAlchemy |
 | Async DB Access | aiosqlite, databases |
 | Rate Limiting | slowapi (memory or Redis) |
-| Video Processing | ffmpeg, ffprobe |
+| Video Processing | FFmpeg 7.1.2 (NVENC, VAAPI, QSV) |
 | Transcription | faster-whisper |
 | File Monitoring | watchdog (inotify) |
 | Frontend Framework | Alpine.js |
 | CSS | Tailwind CSS v4 |
 | Video Player | hls.js |
 | Process Management | systemd |
+| Container Base | Rocky Linux 10 |
+| Container Registry | Docker Registry v2 (localhost:9003) |
+| Container Orchestration | Kubernetes (k3s) |
+| GPU Management | NVIDIA device plugin, Intel GPU device plugin |
 
 ## Configuration
 
