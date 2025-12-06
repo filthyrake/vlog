@@ -21,6 +21,7 @@ from slowapi.errors import RateLimitExceeded
 from slugify import slugify
 
 from api.analytics_cache import AnalyticsCache
+from api.audit import AuditAction, log_audit
 from api.common import (
     SecurityHeadersMiddleware,
     check_health,
@@ -289,6 +290,17 @@ async def create_category(request: Request, data: CategoryCreate) -> CategoryRes
     )
     category_id = await db_execute_with_retry(query)
 
+    # Audit log
+    log_audit(
+        AuditAction.CATEGORY_CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="category",
+        resource_id=category_id,
+        resource_name=slug,
+        details={"name": data.name},
+    )
+
     return CategoryResponse(
         id=category_id,
         name=data.name,
@@ -313,6 +325,17 @@ async def delete_category(request: Request, category_id: int):
         # Set videos in this category to uncategorized
         await database.execute(videos.update().where(videos.c.category_id == category_id).values(category_id=None))
         await database.execute(categories.delete().where(categories.c.id == category_id))
+
+    # Audit log
+    log_audit(
+        AuditAction.CATEGORY_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="category",
+        resource_id=category_id,
+        resource_name=existing["slug"],
+        details={"name": existing["name"]},
+    )
 
     return {"status": "ok"}
 
@@ -591,6 +614,21 @@ async def upload_video(
         shutil.rmtree(VIDEOS_DIR / slug, ignore_errors=True)
         raise
 
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_UPLOAD,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=slug,
+        details={
+            "title": title,
+            "category_id": category_id,
+            "filename": file.filename,
+        },
+    )
+
     return {
         "status": "ok",
         "video_id": video_id,
@@ -645,6 +683,16 @@ async def update_video(
 
     if update_data:
         await database.execute(videos.update().where(videos.c.id == video_id).values(**update_data))
+
+        # Audit log
+        log_audit(
+            AuditAction.VIDEO_UPDATE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="video",
+            resource_id=video_id,
+            details={"updated_fields": list(update_data.keys())},
+        )
 
     return {"status": "ok"}
 
@@ -701,6 +749,17 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
             if upload_file.exists():
                 upload_file.unlink()
 
+        # Audit log
+        log_audit(
+            AuditAction.VIDEO_DELETE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="video",
+            resource_id=video_id,
+            resource_name=row["slug"],
+            details={"permanent": True, "title": row["title"]},
+        )
+
         return {"status": "ok", "message": "Video permanently deleted"}
 
     else:
@@ -739,6 +798,17 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
             # Rollback database change
             await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
             raise HTTPException(status_code=500, detail=f"Failed to archive files: {e}")
+
+        # Audit log
+        log_audit(
+            AuditAction.VIDEO_DELETE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="video",
+            resource_id=video_id,
+            resource_name=row["slug"],
+            details={"permanent": False, "title": row["title"]},
+        )
 
         return {"status": "ok", "message": "Video moved to archive"}
 
@@ -788,6 +858,17 @@ async def restore_video(request: Request, video_id: int):
         await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=original_deleted_at))
         raise HTTPException(status_code=500, detail=f"Failed to restore files: {e}")
 
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_RESTORE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=row["slug"],
+        details={"title": row["title"]},
+    )
+
     return {"status": "ok", "message": "Video restored from archive"}
 
 
@@ -820,6 +901,17 @@ async def retry_video(request: Request, video_id: int):
             status=VideoStatus.PENDING,
             error_message=None,
         )
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_RETRY,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=row["slug"],
+        details={"title": row["title"]},
     )
 
     return {"status": "ok", "message": "Video queued for retry"}
@@ -942,6 +1034,17 @@ async def re_upload_video(
     except Exception as e:
         # Log but don't fail the upload - transcoder will get this info later
         logging.warning(f"Failed to probe re-uploaded video {video_id}: {e}")
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_REUPLOAD,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=slug,
+        details={"filename": file.filename},
+    )
 
     return {
         "status": "ok",
@@ -1183,6 +1286,17 @@ async def retranscode_video(
             )
         )
 
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_RETRANSCODE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=slug,
+        details={"qualities": qualities_to_delete, "retranscode_all": retranscode_all},
+    )
+
     return RetranscodeResponse(
         status="ok",
         video_id=video_id,
@@ -1261,6 +1375,18 @@ async def trigger_transcription(request: Request, video_id: int, data: Transcrip
                 error_message=None,
             )
         )
+
+        # Audit log
+        log_audit(
+            AuditAction.TRANSCRIPTION_TRIGGER,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="video",
+            resource_id=video_id,
+            resource_name=video["slug"],
+            details={"retry": True, "language": data.language if data else None},
+        )
+
         return {"status": "ok", "message": "Transcription queued for retry"}
 
     # Create new transcription record
@@ -1270,6 +1396,17 @@ async def trigger_transcription(request: Request, video_id: int, data: Transcrip
             status=TranscriptionStatus.PENDING,
             language=data.language if data else None,
         )
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.TRANSCRIPTION_TRIGGER,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"retry": False, "language": data.language if data else None},
     )
 
     return {"status": "ok", "message": "Transcription queued"}
@@ -1301,6 +1438,17 @@ async def update_transcript(request: Request, video_id: int, data: Transcription
         )
     )
 
+    # Audit log
+    log_audit(
+        AuditAction.TRANSCRIPTION_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"word_count": word_count},
+    )
+
     return {"status": "ok", "message": "Transcript updated", "word_count": word_count}
 
 
@@ -1326,6 +1474,16 @@ async def delete_transcript(request: Request, video_id: int):
 
     # Delete transcription record
     await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+
+    # Audit log
+    log_audit(
+        AuditAction.TRANSCRIPTION_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+    )
 
     return {"status": "ok", "message": "Transcription deleted"}
 
