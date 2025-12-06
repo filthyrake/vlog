@@ -412,11 +412,12 @@ class TestPathTraversalPrevention:
 class TestWorkerRegistration:
     """Tests for worker registration endpoint."""
 
-    def test_register_worker_success(self, worker_client):
+    def test_register_worker_success(self, worker_client, worker_admin_headers):
         """Test successful worker registration."""
         response = worker_client.post(
             "/api/worker/register",
             json={"worker_name": "test-worker", "worker_type": "remote"},
+            headers=worker_admin_headers,
         )
         assert response.status_code == 200
         data = response.json()
@@ -425,24 +426,45 @@ class TestWorkerRegistration:
         assert len(data["api_key"]) > 20  # Should be a substantial key
         assert data["message"] is not None
 
-    def test_register_worker_without_name(self, worker_client):
+    def test_register_worker_without_name(self, worker_client, worker_admin_headers):
         """Test registration without specifying a name."""
         response = worker_client.post(
             "/api/worker/register",
             json={"worker_type": "remote"},
+            headers=worker_admin_headers,
         )
         assert response.status_code == 200
         data = response.json()
         assert "worker_id" in data
         assert "api_key" in data
 
-    def test_register_local_worker(self, worker_client):
+    def test_register_local_worker(self, worker_client, worker_admin_headers):
         """Test registering a local worker type."""
         response = worker_client.post(
             "/api/worker/register",
             json={"worker_name": "local-worker", "worker_type": "local"},
+            headers=worker_admin_headers,
         )
         assert response.status_code == 200
+
+    def test_register_without_admin_secret_fails(self, worker_client):
+        """Test registration without admin secret fails."""
+        response = worker_client.post(
+            "/api/worker/register",
+            json={"worker_name": "test-worker", "worker_type": "remote"},
+        )
+        assert response.status_code == 401
+        assert "X-Admin-Secret" in response.json()["detail"]
+
+    def test_register_with_wrong_admin_secret_fails(self, worker_client):
+        """Test registration with wrong admin secret fails."""
+        response = worker_client.post(
+            "/api/worker/register",
+            json={"worker_name": "test-worker", "worker_type": "remote"},
+            headers={"X-Admin-Secret": "wrong-secret"},
+        )
+        assert response.status_code == 403
+        assert "Invalid admin secret" in response.json()["detail"]
 
 
 class TestWorkerHeartbeat:
@@ -594,7 +616,9 @@ class TestJobClaiming:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_cpu_worker_waits_for_gpu_worker(self, worker_client, test_database, sample_pending_video):
+    async def test_cpu_worker_waits_for_gpu_worker(
+        self, worker_client, test_database, sample_pending_video, worker_admin_headers
+    ):
         """Test that CPU workers yield to idle GPU workers."""
         # Create a transcoding job
         await test_database.execute(
@@ -608,6 +632,7 @@ class TestJobClaiming:
         # Register a CPU worker (no GPU)
         cpu_response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "cpu-worker",
                 "capabilities": {
@@ -623,6 +648,7 @@ class TestJobClaiming:
         # Register a GPU worker
         gpu_response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "gpu-worker",
                 "capabilities": {
@@ -659,7 +685,9 @@ class TestJobClaiming:
         assert gpu_claim_response.json()["job_id"] is not None
 
     @pytest.mark.asyncio
-    async def test_cpu_worker_claims_when_no_gpu_available(self, worker_client, test_database, sample_pending_video):
+    async def test_cpu_worker_claims_when_no_gpu_available(
+        self, worker_client, test_database, sample_pending_video, worker_admin_headers
+    ):
         """Test that CPU workers can claim when no GPU workers are idle."""
         # Create a transcoding job
         await test_database.execute(
@@ -673,6 +701,7 @@ class TestJobClaiming:
         # Register a CPU worker
         cpu_response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "cpu-worker-solo",
                 "capabilities": {
@@ -698,13 +727,16 @@ class TestStaleJobDetection:
     """Tests for stale job detection when workers go offline."""
 
     @pytest.mark.asyncio
-    async def test_stale_job_released_when_worker_offline(self, worker_client, test_database, sample_pending_video):
+    async def test_stale_job_released_when_worker_offline(
+        self, worker_client, test_database, sample_pending_video, worker_admin_headers
+    ):
         """Test that stale jobs are released when workers go offline."""
         from api.worker_api import _detect_and_release_stale_jobs
 
         # Register a worker
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={"worker_name": "stale-test-worker"},
         )
         assert response.status_code == 200
@@ -1078,28 +1110,45 @@ class TestJobFailure:
 class TestWorkerListing:
     """Tests for worker listing endpoint."""
 
-    def test_list_workers_empty(self, worker_client):
+    def test_list_workers_empty(self, worker_client, worker_admin_headers):
         """Test listing workers when none registered."""
-        response = worker_client.get("/api/workers")
+        response = worker_client.get("/api/workers", headers=worker_admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["total_count"] == 0
 
-    def test_list_workers_with_data(self, worker_client, registered_worker):
+    def test_list_workers_with_data(self, worker_client, registered_worker, worker_admin_headers):
         """Test listing workers with registered workers."""
-        response = worker_client.get("/api/workers")
+        response = worker_client.get("/api/workers", headers=worker_admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["total_count"] >= 1
         assert any(w["worker_id"] == registered_worker["worker_id"] for w in data["workers"])
 
+    def test_list_workers_without_admin_secret_fails(self, worker_client):
+        """Test listing workers without admin secret fails."""
+        response = worker_client.get("/api/workers")
+        assert response.status_code == 401
+
+    def test_list_workers_with_wrong_admin_secret_fails(self, worker_client):
+        """Test listing workers with wrong admin secret fails."""
+        response = worker_client.get(
+            "/api/workers",
+            headers={"X-Admin-Secret": "wrong-secret"},
+        )
+        assert response.status_code == 403
+        assert "Invalid admin secret" in response.json()["detail"]
+
 
 class TestWorkerRevocation:
     """Tests for worker revocation endpoint."""
 
-    def test_revoke_worker(self, worker_client, registered_worker):
+    def test_revoke_worker(self, worker_client, registered_worker, worker_admin_headers):
         """Test revoking a worker's API key."""
-        response = worker_client.post(f"/api/workers/{registered_worker['worker_id']}/revoke")
+        response = worker_client.post(
+            f"/api/workers/{registered_worker['worker_id']}/revoke",
+            headers=worker_admin_headers,
+        )
         assert response.status_code == 200
 
         # Verify the worker can no longer authenticate
@@ -1110,10 +1159,162 @@ class TestWorkerRevocation:
         )
         assert heartbeat.status_code == 401
 
-    def test_revoke_nonexistent_worker(self, worker_client):
+    def test_revoke_nonexistent_worker(self, worker_client, worker_admin_headers):
         """Test revoking a non-existent worker fails."""
-        response = worker_client.post("/api/workers/nonexistent-id/revoke")
+        response = worker_client.post(
+            "/api/workers/nonexistent-id/revoke",
+            headers=worker_admin_headers,
+        )
         assert response.status_code == 404
+
+    def test_revoke_without_admin_secret_fails(self, worker_client, registered_worker):
+        """Test revoking without admin secret fails."""
+        response = worker_client.post(f"/api/workers/{registered_worker['worker_id']}/revoke")
+        assert response.status_code == 401
+
+    def test_revoke_with_wrong_admin_secret_fails(self, worker_client, registered_worker):
+        """Test revoking with wrong admin secret fails."""
+        response = worker_client.post(
+            f"/api/workers/{registered_worker['worker_id']}/revoke",
+            headers={"X-Admin-Secret": "wrong-secret"},
+        )
+        assert response.status_code == 403
+        assert "Invalid admin secret" in response.json()["detail"]
+
+
+class TestAdminSecretNotConfigured:
+    """Tests for when WORKER_ADMIN_SECRET is not configured (503 errors)."""
+
+    def test_register_returns_503_when_secret_not_configured(
+        self, test_database, test_storage, test_db_path, monkeypatch
+    ):
+        """Test registration returns 503 when admin secret is not configured."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import api.database
+        import config
+
+        # Patch config with empty secret
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+        monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", "")  # Empty secret
+
+        monkeypatch.setattr(api.database, "database", test_database)
+        monkeypatch.setattr(api.database, "create_tables", lambda: None)
+
+        if "api.worker_auth" in sys.modules:
+            importlib.reload(sys.modules["api.worker_auth"])
+        import api.worker_auth
+
+        monkeypatch.setattr(api.worker_auth, "database", test_database)
+
+        if "api.worker_api" in sys.modules:
+            importlib.reload(sys.modules["api.worker_api"])
+        import api.worker_api
+        from api.worker_api import app
+
+        monkeypatch.setattr(api.worker_api, "database", test_database)
+        monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", "")
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            response = client.post(
+                "/api/worker/register",
+                json={"worker_name": "test-worker", "worker_type": "remote"},
+                headers={"X-Admin-Secret": "any-secret"},
+            )
+            assert response.status_code == 503
+            assert "VLOG_WORKER_ADMIN_SECRET" in response.json()["detail"]
+
+    def test_list_workers_returns_503_when_secret_not_configured(
+        self, test_database, test_storage, test_db_path, monkeypatch
+    ):
+        """Test listing workers returns 503 when admin secret is not configured."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import api.database
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+        monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", "")
+
+        monkeypatch.setattr(api.database, "database", test_database)
+        monkeypatch.setattr(api.database, "create_tables", lambda: None)
+
+        if "api.worker_auth" in sys.modules:
+            importlib.reload(sys.modules["api.worker_auth"])
+        import api.worker_auth
+
+        monkeypatch.setattr(api.worker_auth, "database", test_database)
+
+        if "api.worker_api" in sys.modules:
+            importlib.reload(sys.modules["api.worker_api"])
+        import api.worker_api
+        from api.worker_api import app
+
+        monkeypatch.setattr(api.worker_api, "database", test_database)
+        monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", "")
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            response = client.get(
+                "/api/workers",
+                headers={"X-Admin-Secret": "any-secret"},
+            )
+            assert response.status_code == 503
+            assert "VLOG_WORKER_ADMIN_SECRET" in response.json()["detail"]
+
+    def test_revoke_returns_503_when_secret_not_configured(
+        self, test_database, test_storage, test_db_path, monkeypatch
+    ):
+        """Test revoking returns 503 when admin secret is not configured."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import api.database
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+        monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", "")
+
+        monkeypatch.setattr(api.database, "database", test_database)
+        monkeypatch.setattr(api.database, "create_tables", lambda: None)
+
+        if "api.worker_auth" in sys.modules:
+            importlib.reload(sys.modules["api.worker_auth"])
+        import api.worker_auth
+
+        monkeypatch.setattr(api.worker_auth, "database", test_database)
+
+        if "api.worker_api" in sys.modules:
+            importlib.reload(sys.modules["api.worker_api"])
+        import api.worker_api
+        from api.worker_api import app
+
+        monkeypatch.setattr(api.worker_api, "database", test_database)
+        monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", "")
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            response = client.post(
+                "/api/workers/some-worker-id/revoke",
+                headers={"X-Admin-Secret": "any-secret"},
+            )
+            assert response.status_code == 503
+            assert "VLOG_WORKER_ADMIN_SECRET" in response.json()["detail"]
 
 
 class TestHealthCheck:
