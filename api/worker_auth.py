@@ -1,5 +1,6 @@
 """Authentication middleware for Worker API."""
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -16,6 +17,9 @@ from config import TRUSTED_PROXIES
 # Security event logger - separate from regular application logging
 # Configure with appropriate handlers for security monitoring/SIEM integration
 security_logger = logging.getLogger("security.auth")
+
+# Standard logger for general operations
+logger = logging.getLogger(__name__)
 
 # API key header
 api_key_header = APIKeyHeader(name="X-Worker-API-Key", auto_error=False)
@@ -154,10 +158,17 @@ async def verify_worker_key(
             )
             raise HTTPException(status_code=401, detail="API key expired")
 
-    # Update last_used_at (fire-and-forget, don't block on this)
-    await database.execute(
-        worker_api_keys.update().where(worker_api_keys.c.id == key_record["id"]).values(last_used_at=now)
-    )
+    # Update last_used_at in background (non-blocking)
+    async def update_last_used():
+        try:
+            await database.execute(
+                worker_api_keys.update().where(worker_api_keys.c.id == key_record["id"]).values(last_used_at=now)
+            )
+        except Exception as e:
+            # Log failure but don't raise - last_used tracking is non-critical
+            logger.debug(f"Failed to update last_used_at for worker API key: {e}")
+
+    asyncio.create_task(update_last_used())
 
     # Get worker info
     worker = await database.fetch_one(workers.select().where(workers.c.id == key_record["worker_id"]))
