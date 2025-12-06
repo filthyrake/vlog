@@ -1947,8 +1947,40 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
     now = datetime.now(timezone.utc)
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
 
-    # Get all workers with job counts
+    # Get all workers
     worker_rows = await fetch_all_with_retry(workers.select().order_by(workers.c.last_heartbeat.desc()))
+
+    # Batch fetch current job info for all workers with active jobs
+    current_job_ids = [row["current_job_id"] for row in worker_rows if row["current_job_id"]]
+    current_jobs_info = {}
+    if current_job_ids:
+        job_rows = await database.fetch_all(
+            sa.select(
+                transcoding_jobs.c.id,
+                transcoding_jobs.c.current_step,
+                transcoding_jobs.c.progress_percent,
+                videos.c.slug,
+                videos.c.title,
+            )
+            .select_from(transcoding_jobs.join(videos))
+            .where(transcoding_jobs.c.id.in_(current_job_ids))
+        )
+        for job in job_rows:
+            current_jobs_info[job["id"]] = job
+
+    # Batch fetch job stats (completed, failed, last_completed) for all workers
+    job_stats_query = sa.text("""
+        SELECT
+            tj.worker_id,
+            COUNT(CASE WHEN tj.completed_at IS NOT NULL AND v.status = 'ready' THEN 1 END) as jobs_completed,
+            COUNT(CASE WHEN tj.completed_at IS NOT NULL AND v.status = 'failed' THEN 1 END) as jobs_failed,
+            MAX(CASE WHEN tj.completed_at IS NOT NULL THEN tj.completed_at END) as last_completed
+        FROM transcoding_jobs tj
+        JOIN videos v ON tj.video_id = v.id
+        GROUP BY tj.worker_id
+    """)
+    job_stats_rows = await fetch_all_with_retry(job_stats_query)
+    job_stats_map = {row["worker_id"]: row for row in job_stats_rows}
 
     worker_list = []
     active_count = 0
@@ -1980,54 +2012,24 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
                 hb = hb.replace(tzinfo=timezone.utc)
             seconds_since_hb = int((now - hb).total_seconds())
 
-        # Get current job info if worker has a job
+        # Get current job info from batch query
         current_video_slug = None
         current_video_title = None
         current_step = None
         current_progress = None
-
         if row["current_job_id"]:
-            job_info = await database.fetch_one(
-                sa.select(
-                    transcoding_jobs.c.current_step,
-                    transcoding_jobs.c.progress_percent,
-                    videos.c.slug,
-                    videos.c.title,
-                )
-                .select_from(transcoding_jobs.join(videos))
-                .where(transcoding_jobs.c.id == row["current_job_id"])
-            )
+            job_info = current_jobs_info.get(row["current_job_id"])
             if job_info:
                 current_video_slug = job_info["slug"]
                 current_video_title = job_info["title"]
                 current_step = job_info["current_step"]
                 current_progress = job_info["progress_percent"]
 
-        # Get job counts for this worker
-        jobs_completed = await database.fetch_val(
-            sa.select(sa.func.count())
-            .select_from(transcoding_jobs)
-            .where(transcoding_jobs.c.worker_id == row["worker_id"])
-            .where(transcoding_jobs.c.completed_at.isnot(None))
-            .where(videos.c.status == "ready")
-            .select_from(transcoding_jobs.join(videos))
-        ) or 0
-
-        jobs_failed = await database.fetch_val(
-            sa.select(sa.func.count())
-            .select_from(transcoding_jobs)
-            .where(transcoding_jobs.c.worker_id == row["worker_id"])
-            .where(transcoding_jobs.c.completed_at.isnot(None))
-            .where(videos.c.status == "failed")
-            .select_from(transcoding_jobs.join(videos))
-        ) or 0
-
-        # Get last job completion time
-        last_completed = await database.fetch_val(
-            sa.select(sa.func.max(transcoding_jobs.c.completed_at))
-            .where(transcoding_jobs.c.worker_id == row["worker_id"])
-            .where(transcoding_jobs.c.completed_at.isnot(None))
-        )
+        # Get job stats from batch query
+        stats = job_stats_map.get(row["worker_id"], {})
+        jobs_completed = stats.get("jobs_completed", 0) or 0
+        jobs_failed = stats.get("jobs_failed", 0) or 0
+        last_completed = stats.get("last_completed")
 
         worker_list.append(
             WorkerDashboardStatus(
@@ -2099,6 +2101,16 @@ async def list_active_jobs(request: Request) -> ActiveJobsResponse:
 
     rows = await fetch_all_with_retry(query)
 
+    # Batch fetch quality progress for all jobs
+    job_ids = [row["job_id"] for row in rows]
+    quality_by_job = {}
+    if job_ids:
+        all_quality_rows = await database.fetch_all(
+            quality_progress.select().where(quality_progress.c.job_id.in_(job_ids))
+        )
+        for q in all_quality_rows:
+            quality_by_job.setdefault(q["job_id"], []).append(q)
+
     jobs = []
     processing_count = 0
     pending_count = 0
@@ -2112,18 +2124,14 @@ async def list_active_jobs(request: Request) -> ActiveJobsResponse:
         else:
             pending_count += 1
 
-        # Get quality progress for this job
-        quality_rows = await database.fetch_all(
-            quality_progress.select().where(quality_progress.c.job_id == row["job_id"])
-        )
-
+        # Get quality progress from batch query
         qualities = [
             QualityProgressResponse(
                 name=q["quality"],
                 status=q["status"],
                 progress=q["progress_percent"] or 0,
             )
-            for q in quality_rows
+            for q in quality_by_job.get(row["job_id"], [])
         ]
 
         jobs.append(
@@ -2180,6 +2188,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
         try:
             capabilities = json.loads(worker["capabilities"])
         except (json.JSONDecodeError, TypeError):
+            # If capabilities is not valid JSON or malformed, leave as None
             pass
 
     metadata = None
@@ -2187,6 +2196,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
         try:
             metadata = json.loads(worker["metadata"])
         except (json.JSONDecodeError, TypeError):
+            # If metadata is not valid JSON or malformed, leave as None
             pass
 
     # Get job stats
@@ -2424,6 +2434,13 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
                 .where(worker_api_keys.c.revoked_at.is_(None))
                 .values(revoked_at=now)
             )
+
+        # Nullify worker_id in all historical transcoding_jobs to prevent orphaned references
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.worker_id == worker_id)
+            .values(worker_id=None)
+        )
 
         # Delete the worker record
         await database.execute(workers.delete().where(workers.c.id == worker["id"]))
