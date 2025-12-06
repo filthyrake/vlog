@@ -74,24 +74,75 @@ else:
 
 logger = logging.getLogger(__name__)
 
-# Generate unique worker ID for this instance
-WORKER_ID = str(uuid.uuid4())
-
-# Global shutdown flag for graceful shutdown
-shutdown_requested = False
-
-# Global event for signaling new uploads (used by filesystem watcher)
-new_upload_event = None  # Will be initialized as asyncio.Event in worker_loop
-
-# Global GPU capabilities (detected at startup)
-GPU_CAPS: Optional["GPUCapabilities"] = None
-
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 
 # Error message truncation limits for logging
 MAX_ERROR_SUMMARY_LENGTH = 100  # Characters per quality in total failure summary
 MAX_ERROR_DETAIL_LENGTH = 200  # Characters per quality in partial failure details
+
+
+class WorkerState:
+    """
+    Encapsulates mutable state for a transcoder worker instance.
+
+    This class replaces global variables with instance state, enabling:
+    - Easy test isolation with fresh instances
+    - Dependency injection for mocking
+    - Clear lifecycle management
+    - Multiple workers in same process for testing
+
+    Related Issue: #159
+    """
+
+    def __init__(self, worker_id: Optional[str] = None):
+        """
+        Initialize worker state.
+
+        Args:
+            worker_id: Unique identifier for this worker. If not provided,
+                       a UUID will be generated.
+        """
+        self.worker_id = worker_id or str(uuid.uuid4())
+        self.shutdown_requested = False
+        self.new_upload_event: Optional[asyncio.Event] = None
+        self.gpu_caps: Optional["GPUCapabilities"] = None
+
+    def request_shutdown(self):
+        """Request graceful shutdown of the worker."""
+        self.shutdown_requested = True
+        # Wake up any waiting tasks
+        if self.new_upload_event is not None:
+            self.new_upload_event.set()
+
+    def reset(self):
+        """Reset state for testing purposes.
+
+        Note: worker_id is intentionally not reset to maintain worker identity
+        across test state resets.
+        """
+        self.shutdown_requested = False
+        self.new_upload_event = None
+        self.gpu_caps = None
+
+
+# Default worker state instance (for backward compatibility)
+# New code should create WorkerState instances directly for better testability
+_default_worker_state: Optional[WorkerState] = None
+
+
+def get_worker_state() -> WorkerState:
+    """Get the default worker state, creating it if necessary."""
+    global _default_worker_state
+    if _default_worker_state is None:
+        _default_worker_state = WorkerState()
+    return _default_worker_state
+
+
+def set_worker_state(state: WorkerState):
+    """Set the default worker state (useful for testing)."""
+    global _default_worker_state
+    _default_worker_state = state
 
 
 class ProgressTracker:
@@ -169,10 +220,10 @@ def calculate_ffmpeg_timeout(duration: float, height: int = 1080) -> float:
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
-    global shutdown_requested
     sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
     print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
-    shutdown_requested = True
+    state = get_worker_state()
+    state.request_shutdown()
 
 
 def validate_duration(duration: Any) -> float:
@@ -936,8 +987,17 @@ async def cleanup_partial_output(
 # ============================================================================
 
 
-async def get_or_create_job(video_id: int) -> dict:
-    """Get existing job or create a new one for the video."""
+async def get_or_create_job(video_id: int, state: Optional[WorkerState] = None) -> dict:
+    """Get existing job or create a new one for the video.
+
+    Args:
+        video_id: Database ID of the video
+        state: Optional WorkerState instance. If not provided, uses/creates the
+               default global state.
+    """
+    if state is None:
+        state = get_worker_state()
+
     # Check for existing job
     query = transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
     job = await database.fetch_one(query)
@@ -950,7 +1010,7 @@ async def get_or_create_job(video_id: int) -> dict:
         result = await database.execute(
             transcoding_jobs.insert().values(
                 video_id=video_id,
-                worker_id=WORKER_ID,
+                worker_id=state.worker_id,
                 current_step=None,
                 progress_percent=0,
                 started_at=datetime.now(timezone.utc),
@@ -1035,8 +1095,17 @@ async def mark_job_failed(job_id: int, error: str, final: bool = False):
     await database.execute(transcoding_jobs.update().where(transcoding_jobs.c.id == job_id).values(**values))
 
 
-async def reset_job_for_retry(job_id: int):
-    """Reset a job for retry, incrementing attempt number."""
+async def reset_job_for_retry(job_id: int, state: Optional[WorkerState] = None):
+    """Reset a job for retry, incrementing attempt number.
+
+    Args:
+        job_id: Database ID of the transcoding job
+        state: Optional WorkerState instance. If not provided, uses/creates the
+               default global state.
+    """
+    if state is None:
+        state = get_worker_state()
+
     job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
     if not job:
@@ -1048,7 +1117,7 @@ async def reset_job_for_retry(job_id: int):
         transcoding_jobs.update()
         .where(transcoding_jobs.c.id == job_id)
         .values(
-            worker_id=WORKER_ID,
+            worker_id=state.worker_id,
             attempt_number=new_attempt,
             started_at=datetime.now(timezone.utc),
             last_checkpoint=datetime.now(timezone.utc),
@@ -1138,12 +1207,18 @@ async def get_completed_qualities(job_id: int) -> List[str]:
 # ============================================================================
 
 
-async def recover_interrupted_jobs():
+async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
     """
     Check for jobs that were interrupted (worker crashed) and reset them for retry.
     Called on worker startup.
+
+    Args:
+        state: Optional WorkerState instance. If not provided, uses/creates the
+               default global state.
     """
-    print(f"Worker {WORKER_ID[:8]} checking for interrupted jobs...")
+    if state is None:
+        state = get_worker_state()
+    print(f"Worker {state.worker_id[:8]} checking for interrupted jobs...")
 
     # Find jobs that have a checkpoint but no completion and are stale
     stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
@@ -1216,15 +1291,24 @@ async def reset_video_to_pending(video_id: int):
     await database.execute(videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PENDING))
 
 
-async def process_video_resumable(video_id: int, video_slug: str):
+async def process_video_resumable(video_id: int, video_slug: str, state: Optional[WorkerState] = None):
     """
     Process a video with checkpoint-based resumable transcoding.
     Can resume from the last successful step if interrupted.
+
+    Args:
+        video_id: Database ID of the video to process
+        video_slug: URL slug for the video
+        state: Optional WorkerState instance. If not provided, uses/creates the
+               default global state.
     """
+    if state is None:
+        state = get_worker_state()
+
     print(f"Processing video: {video_slug} (id={video_id})")
 
     # Check for shutdown at the start
-    if shutdown_requested:
+    if state.shutdown_requested:
         print("  Shutdown requested, skipping this video")
         return False
 
@@ -1245,7 +1329,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
         return False
 
     # Get or create job record
-    job = await get_or_create_job(video_id)
+    job = await get_or_create_job(video_id, state)
     job_id = job["id"]
 
     # Always mark video as processing when we start/resume
@@ -1290,7 +1374,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             await checkpoint(job_id)
 
             # Check for shutdown after probe
-            if shutdown_requested:
+            if state.shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
                 await reset_video_to_pending(video_id)
                 return False
@@ -1323,7 +1407,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             await checkpoint(job_id)
 
             # Check for shutdown after thumbnail
-            if shutdown_requested:
+            if state.shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
                 await reset_video_to_pending(video_id)
                 return False
@@ -1432,7 +1516,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             quality_idx = idx + 1
 
             # Check for shutdown before processing each quality
-            if shutdown_requested:
+            if state.shutdown_requested:
                 print("  Shutdown requested, resetting video to pending...")
                 await reset_video_to_pending(video_id)
                 return False
@@ -1499,7 +1583,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
             try:
                 success, error_detail = await transcode_quality_with_progress(
                     source_file, output_dir, quality, info["duration"], progress_cb,
-                    gpu_caps=GPU_CAPS,
+                    gpu_caps=state.gpu_caps,
                 )
 
                 if success:
@@ -1568,7 +1652,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                 quality_name = quality["name"]
 
                 # Check for shutdown
-                if shutdown_requested:
+                if state.shutdown_requested:
                     print("  Shutdown requested, resetting video to pending...")
                     await reset_video_to_pending(video_id)
                     return False
@@ -1638,7 +1722,7 @@ async def process_video_resumable(video_id: int, video_slug: str):
                     else:
                         success, error_detail = await transcode_quality_with_progress(
                             source_file, output_dir, quality, info["duration"], None,
-                            gpu_caps=GPU_CAPS,
+                            gpu_caps=state.gpu_caps,
                         )
                         if success:
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
@@ -1774,11 +1858,18 @@ async def process_video_resumable(video_id: int, video_slug: str):
         return False
 
 
-async def check_stale_jobs():
+async def check_stale_jobs(state: Optional[WorkerState] = None):
     """
     Periodic check for stale jobs that might need recovery.
     Called periodically during the worker loop.
+
+    Args:
+        state: Optional WorkerState instance. If not provided, uses/creates the
+               default global state.
     """
+    if state is None:
+        state = get_worker_state()
+
     stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
 
     stale_jobs = await database.fetch_all(
@@ -1786,7 +1877,7 @@ async def check_stale_jobs():
             transcoding_jobs.c.completed_at.is_(None)
             & transcoding_jobs.c.last_checkpoint.isnot(None)
             & (transcoding_jobs.c.last_checkpoint < stale_threshold)
-            & (transcoding_jobs.c.worker_id != WORKER_ID)  # Not our own jobs
+            & (transcoding_jobs.c.worker_id != state.worker_id)  # Not our own jobs
         )
     )
 
@@ -1881,15 +1972,24 @@ async def cleanup_expired_archives():
             print(f"  Error cleaning up expired archive '{slug}': {e}")
 
 
-async def worker_loop():
+async def worker_loop(state: Optional[WorkerState] = None):
     """
     Main worker loop - process pending videos using event-driven architecture.
 
     Uses filesystem watching (inotify via watchdog) to detect new uploads immediately,
     with a fallback poll interval for edge cases. This eliminates the constant 5-second
     polling that wasted resources and added latency.
+
+    Args:
+        state: Optional WorkerState instance. If not provided, uses/creates the
+               default global state. Pass a custom state for testing.
     """
-    global new_upload_event, GPU_CAPS
+    # Use provided state or get/create default
+    if state is None:
+        state = get_worker_state()
+    else:
+        # Register provided state as the default for signal handlers
+        set_worker_state(state)
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, signal_handler)
@@ -1897,29 +1997,29 @@ async def worker_loop():
 
     await database.connect()
     await configure_sqlite_pragmas()
-    print(f"Transcoding worker started (ID: {WORKER_ID[:8]})")
+    print(f"Transcoding worker started (ID: {state.worker_id[:8]})")
 
     # Detect GPU capabilities for hardware-accelerated encoding
     from worker.hwaccel import detect_gpu_capabilities
 
-    GPU_CAPS = await detect_gpu_capabilities()
-    if GPU_CAPS:
-        print(f"  GPU detected: {GPU_CAPS.device_name}")
-        print(f"    Type: {GPU_CAPS.hwaccel_type.value}")
-        encoders = [e.name for codec_encoders in GPU_CAPS.encoders.values() for e in codec_encoders]
+    state.gpu_caps = await detect_gpu_capabilities()
+    if state.gpu_caps:
+        print(f"  GPU detected: {state.gpu_caps.device_name}")
+        print(f"    Type: {state.gpu_caps.hwaccel_type.value}")
+        encoders = [e.name for codec_encoders in state.gpu_caps.encoders.values() for e in codec_encoders]
         print(f"    Encoders: {', '.join(encoders)}")
-        print(f"    Max sessions: {GPU_CAPS.max_concurrent_sessions}")
+        print(f"    Max sessions: {state.gpu_caps.max_concurrent_sessions}")
     else:
         print("  No GPU acceleration available, using CPU encoding")
 
     # Initialize the upload event for signaling between filesystem watcher and main loop
     loop = asyncio.get_running_loop()
-    new_upload_event = asyncio.Event()
+    state.new_upload_event = asyncio.Event()
 
     # Start filesystem watcher if available
     observer = None
     if WORKER_USE_FILESYSTEM_WATCHER and WATCHDOG_AVAILABLE:
-        observer = start_filesystem_watcher(loop, new_upload_event)
+        observer = start_filesystem_watcher(loop, state.new_upload_event)
         if observer:
             print(f"  Mode: Event-driven (inotify) with {WORKER_FALLBACK_POLL_INTERVAL}s fallback poll")
         else:
@@ -1933,7 +2033,7 @@ async def worker_loop():
     print("Watching for new videos...")
 
     # Recover any interrupted jobs from previous crashes
-    await recover_interrupted_jobs()
+    await recover_interrupted_jobs(state)
 
     last_stale_check = datetime.now(timezone.utc)
     stale_check_interval = 300  # Check every 5 minutes
@@ -1945,47 +2045,47 @@ async def worker_loop():
     use_event_driven = observer is not None
 
     try:
-        while not shutdown_requested:
+        while not state.shutdown_requested:
             # Find pending videos
             query = videos.select().where(videos.c.status == VideoStatus.PENDING).order_by(videos.c.created_at)
             pending = await database.fetch_all(query)
 
             for video in pending:
-                if shutdown_requested:
+                if state.shutdown_requested:
                     print("Shutdown requested, stopping worker loop...")
                     break
-                result = await process_video_resumable(video["id"], video["slug"])
+                result = await process_video_resumable(video["id"], video["slug"], state)
                 if result:
                     print(f"Successfully completed: {video['slug']}")
-                elif shutdown_requested:
+                elif state.shutdown_requested:
                     print(f"Shutdown interrupted: {video['slug']}")
                 else:
                     print(f"Failed to process: {video['slug']}")
 
             # Periodic stale job check
             if (
-                not shutdown_requested
+                not state.shutdown_requested
                 and (datetime.now(timezone.utc) - last_stale_check).total_seconds() > stale_check_interval
             ):
-                await check_stale_jobs()
+                await check_stale_jobs(state)
                 last_stale_check = datetime.now(timezone.utc)
 
             # Periodic archive cleanup
             if (
-                not shutdown_requested
+                not state.shutdown_requested
                 and (datetime.now(timezone.utc) - last_archive_cleanup).total_seconds() > archive_cleanup_interval
             ):
                 await cleanup_expired_archives()
                 last_archive_cleanup = datetime.now(timezone.utc)
 
             # Wait for new uploads or fallback timeout
-            if not shutdown_requested:
+            if not state.shutdown_requested:
                 if use_event_driven:
                     # Event-driven: wait for filesystem event OR fallback timeout
                     try:
-                        await asyncio.wait_for(new_upload_event.wait(), timeout=WORKER_FALLBACK_POLL_INTERVAL)
+                        await asyncio.wait_for(state.new_upload_event.wait(), timeout=WORKER_FALLBACK_POLL_INTERVAL)
                         # Event was set - new file detected
-                        new_upload_event.clear()
+                        state.new_upload_event.clear()
                     except asyncio.TimeoutError:
                         # Timeout - fallback poll, this is expected
                         pass
@@ -2006,7 +2106,7 @@ async def worker_loop():
         try:
             # Find incomplete jobs for this worker
             jobs_query = transcoding_jobs.select().where(
-                (transcoding_jobs.c.worker_id == WORKER_ID) & (transcoding_jobs.c.completed_at.is_(None))
+                (transcoding_jobs.c.worker_id == state.worker_id) & (transcoding_jobs.c.completed_at.is_(None))
             )
             jobs = await database.fetch_all(jobs_query)
 
