@@ -185,11 +185,3 @@ ANALYTICS_CLIENT_CACHE_MAX_AGE = int(os.getenv("VLOG_ANALYTICS_CLIENT_CACHE_MAX_
 # Timeout for health check storage access test (seconds)
 # Reduced from 5 to 2 for faster failure detection on stale NFS mounts
 STORAGE_CHECK_TIMEOUT = int(os.getenv("VLOG_STORAGE_CHECK_TIMEOUT", "2"))
-
-# Storage operation timeout for file downloads/reads (seconds)
-# Used for worker API source file downloads
-STORAGE_OPERATION_TIMEOUT = int(os.getenv("VLOG_STORAGE_OPERATION_TIMEOUT", "300"))
-
-# Enable graceful degradation when storage is unavailable
-# When enabled, read-only endpoints will continue to work from database cache
-STORAGE_GRACEFUL_DEGRADATION = os.getenv("VLOG_STORAGE_GRACEFUL_DEGRADATION", "true").lower() not in ("false", "0", "no")
