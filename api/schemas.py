@@ -183,7 +183,7 @@ class PlaybackSessionCreate(BaseModel):
 
 
 class PlaybackHeartbeat(BaseModel):
-    session_token: str
+    session_token: str = Field(..., max_length=64)
     position: float
     quality: Optional[str] = None
     playing: bool = True
@@ -201,7 +201,7 @@ class PlaybackHeartbeat(BaseModel):
 
 
 class PlaybackEnd(BaseModel):
-    session_token: str
+    session_token: str = Field(..., max_length=64)
     position: float
     completed: bool = False
 
