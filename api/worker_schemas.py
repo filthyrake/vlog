@@ -1,5 +1,6 @@
 """Pydantic schemas for Worker API endpoints."""
 
+import json
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -136,13 +137,29 @@ class HeartbeatRequest(BaseModel):
     @field_validator("metadata")
     @classmethod
     def validate_metadata_dict(cls, v):
-        """Validate metadata dict contains valid capabilities if present."""
-        if v and "capabilities" in v:
-            # Validate capabilities structure
+        """Validate metadata dict size and contents."""
+        if v:
+            # Limit total number of keys
+            if len(v) > 20:
+                raise ValueError("Too many keys in metadata (max 20)")
+            
+            # Limit serialized size to match endpoint limit (10KB)
             try:
-                WorkerCapabilities(**v["capabilities"])
-            except Exception as e:
-                raise ValueError(f"Invalid capabilities in metadata: {e}")
+                serialized = json.dumps(v)
+                if len(serialized) > 10240:  # 10KB max (10 * 1024 bytes)
+                    raise ValueError("Metadata too large (max 10KB)")
+            except (TypeError, ValueError) as e:
+                # If it's a ValueError from size check, re-raise it
+                if "too large" in str(e).lower():
+                    raise
+                raise ValueError("Metadata must be JSON-serializable")
+            
+            # Validate capabilities structure if present
+            if "capabilities" in v:
+                try:
+                    WorkerCapabilities(**v["capabilities"])
+                except Exception as e:
+                    raise ValueError(f"Invalid capabilities in metadata: {e}")
         return v
 
 
