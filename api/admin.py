@@ -24,7 +24,9 @@ from api.analytics_cache import AnalyticsCache
 from api.common import (
     SecurityHeadersMiddleware,
     check_health,
+    check_storage_available,
     get_real_ip,
+    get_storage_status,
     rate_limit_exceeded_handler,
 )
 from api.database import (
@@ -137,8 +139,17 @@ async def save_upload_with_size_limit(file: UploadFile, upload_path: Path, max_s
                 f.write(chunk)
     except HTTPException:
         raise
+    except (OSError, IOError, PermissionError) as e:
+        # Storage-related errors - clean up and return 503
+        upload_path.unlink(missing_ok=True)
+        logger.warning(f"Storage error during upload to {upload_path}: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Video storage temporarily unavailable. Please try again later.",
+            headers={"Retry-After": "30"},
+        )
     except Exception as e:
-        # Clean up on any error
+        # Clean up on any other error
         upload_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
@@ -207,13 +218,25 @@ async def admin_home():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring and load balancers."""
+    """
+    Health check endpoint for monitoring and load balancers.
+
+    Returns detailed status of database and storage health.
+    Returns 503 if any critical component is unhealthy.
+    """
     result = await check_health()
+    storage_status = get_storage_status()
+
     return JSONResponse(
         status_code=result["status_code"],
         content={
             "status": "healthy" if result["healthy"] else "unhealthy",
             "checks": result["checks"],
+            "storage": {
+                "healthy": storage_status["healthy"],
+                "last_check": storage_status["last_check"],
+                "error": storage_status["last_error"],
+            },
         },
     )
 
@@ -448,6 +471,14 @@ async def upload_video(
     category_id: Optional[int] = Form(None),
 ):
     """Upload a new video for processing."""
+    # Check storage availability before accepting upload
+    if not await check_storage_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Video storage temporarily unavailable. Please try again later.",
+            headers={"Retry-After": "30"},
+        )
+
     # Validate file extension
     file_ext = Path(file.filename).suffix.lower() if file.filename else ""
     if not file_ext:
@@ -511,10 +542,19 @@ async def upload_video(
 
         # Create output directory
         (VIDEOS_DIR / slug).mkdir(parents=True, exist_ok=True)
-    except (HTTPException, OSError, IOError):
-        # Clean up orphan database record on upload failure or filesystem errors
+    except HTTPException:
+        # Clean up orphan database record on upload failure
         await database.execute(videos.delete().where(videos.c.id == video_id))
         raise
+    except (OSError, IOError, PermissionError) as e:
+        # Storage-related errors - clean up and return 503
+        await database.execute(videos.delete().where(videos.c.id == video_id))
+        logger.warning(f"Storage error during video upload (video_id={video_id}): {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Video storage temporarily unavailable. Please try again later.",
+            headers={"Retry-After": "30"},
+        )
 
     # Probe video file to get actual duration and dimensions
     try:

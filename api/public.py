@@ -4,6 +4,7 @@ Runs on port 9000.
 """
 
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from api.common import (
     SecurityHeadersMiddleware,
     check_health,
     get_real_ip,
+    get_storage_status,
     rate_limit_exceeded_handler,
 )
 from api.database import (
@@ -132,20 +134,31 @@ app.add_middleware(
 # Custom static files handler with proper headers for HLS
 class HLSStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope) -> Response:
-        response = await super().get_response(path, scope)
-        # Fix MIME types and cache headers for HLS
-        if path.endswith(".ts"):
-            # CRITICAL: .ts files are MPEG Transport Stream, not TypeScript/Qt Linguist
-            response.headers["Content-Type"] = "video/mp2t"
-            response.headers["Cache-Control"] = "public, max-age=31536000"
-        elif path.endswith(".m3u8"):
-            response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
-            response.headers["Cache-Control"] = "no-cache"
-        return response
+        try:
+            response = await super().get_response(path, scope)
+            # Fix MIME types and cache headers for HLS
+            if path.endswith(".ts"):
+                # CRITICAL: .ts files are MPEG Transport Stream, not TypeScript/Qt Linguist
+                response.headers["Content-Type"] = "video/mp2t"
+                response.headers["Cache-Control"] = "public, max-age=31536000"
+            elif path.endswith(".m3u8"):
+                response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+        except (OSError, PermissionError) as e:
+            # Storage unavailable - return 503 with helpful message
+            logger.warning(f"Storage unavailable for HLS file {path}: {e}")
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Video storage temporarily unavailable. Please try again later."},
+                headers={"Retry-After": "30"},
+            )
 
 
 # Serve video files (HLS segments, playlists, thumbnails)
-app.mount("/videos", HLSStaticFiles(directory=str(VIDEOS_DIR)), name="videos")
+# Skip in test mode since CI doesn't have the storage directory
+if not os.environ.get("VLOG_TEST_MODE"):
+    app.mount("/videos", HLSStaticFiles(directory=str(VIDEOS_DIR)), name="videos")
 
 # Serve static web files
 WEB_DIR = Path(__file__).parent.parent / "web" / "public"
@@ -160,13 +173,25 @@ async def home():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring and load balancers."""
+    """
+    Health check endpoint for monitoring and load balancers.
+
+    Returns detailed status of database and storage health.
+    Returns 503 if any critical component is unhealthy.
+    """
     result = await check_health()
+    storage_status = get_storage_status()
+
     return JSONResponse(
         status_code=result["status_code"],
         content={
             "status": "healthy" if result["healthy"] else "unhealthy",
             "checks": result["checks"],
+            "storage": {
+                "healthy": storage_status["healthy"],
+                "last_check": storage_status["last_check"],
+                "error": storage_status["last_error"],
+            },
         },
     )
 
