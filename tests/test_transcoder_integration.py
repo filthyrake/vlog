@@ -291,19 +291,21 @@ class TestTranscodingJobDatabase:
             # For other queries (like SELECT), use the original execute
             return await original_execute(query)
 
+        # Create a test worker state with a known worker_id
+        test_state = transcoder_module.WorkerState(worker_id="test-worker")
+
         # Patch the database in the transcoder module to use our test database
         with patch.object(transcoder_module, "database", integration_database):
-            with patch.object(transcoder_module, "WORKER_ID", "test-worker"):
-                # Mock execute to force IntegrityError on INSERT
-                with patch.object(integration_database, "execute", side_effect=mock_execute):
-                    # This should catch the IntegrityError and fetch the existing job
-                    job = await transcoder_module.get_or_create_job(integration_video["id"])
+            # Mock execute to force IntegrityError on INSERT
+            with patch.object(integration_database, "execute", side_effect=mock_execute):
+                # This should catch the IntegrityError and fetch the existing job
+                job = await transcoder_module.get_or_create_job(integration_video["id"], test_state)
 
-                    # Verify it returned the existing job, not a new one
-                    assert job is not None
-                    assert job["id"] == existing_job_id
-                    assert job["video_id"] == integration_video["id"]
-                    assert job["worker_id"] == "other-worker"  # From the pre-existing job
+                # Verify it returned the existing job, not a new one
+                assert job is not None
+                assert job["id"] == existing_job_id
+                assert job["video_id"] == integration_video["id"]
+                assert job["worker_id"] == "other-worker"  # From the pre-existing job
 
         # Verify only one job exists in the database (no duplicate was created)
         all_jobs = await integration_database.fetch_all(
