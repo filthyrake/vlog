@@ -83,6 +83,9 @@ shutdown_requested = False
 # Global event for signaling new uploads (used by filesystem watcher)
 new_upload_event = None  # Will be initialized as asyncio.Event in worker_loop
 
+# Global GPU capabilities (detected at startup)
+GPU_CAPS: Optional["GPUCapabilities"] = None
+
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 
@@ -1495,7 +1498,8 @@ async def process_video_resumable(video_id: int, video_slug: str):
 
             try:
                 success, error_detail = await transcode_quality_with_progress(
-                    source_file, output_dir, quality, info["duration"], progress_cb
+                    source_file, output_dir, quality, info["duration"], progress_cb,
+                    gpu_caps=GPU_CAPS,
                 )
 
                 if success:
@@ -1633,7 +1637,8 @@ async def process_video_resumable(video_id: int, video_slug: str):
                             print(f"    {quality_name}: Failed")
                     else:
                         success, error_detail = await transcode_quality_with_progress(
-                            source_file, output_dir, quality, info["duration"], None
+                            source_file, output_dir, quality, info["duration"], None,
+                            gpu_caps=GPU_CAPS,
                         )
                         if success:
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
@@ -1884,7 +1889,7 @@ async def worker_loop():
     with a fallback poll interval for edge cases. This eliminates the constant 5-second
     polling that wasted resources and added latency.
     """
-    global new_upload_event
+    global new_upload_event, GPU_CAPS
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, signal_handler)
@@ -1893,6 +1898,19 @@ async def worker_loop():
     await database.connect()
     await configure_sqlite_pragmas()
     print(f"Transcoding worker started (ID: {WORKER_ID[:8]})")
+
+    # Detect GPU capabilities for hardware-accelerated encoding
+    from worker.hwaccel import detect_gpu_capabilities
+
+    GPU_CAPS = await detect_gpu_capabilities()
+    if GPU_CAPS:
+        print(f"  GPU detected: {GPU_CAPS.device_name}")
+        print(f"    Type: {GPU_CAPS.hwaccel_type.value}")
+        encoders = [e.name for codec_encoders in GPU_CAPS.encoders.values() for e in codec_encoders]
+        print(f"    Encoders: {', '.join(encoders)}")
+        print(f"    Max sessions: {GPU_CAPS.max_concurrent_sessions}")
+    else:
+        print("  No GPU acceleration available, using CPU encoding")
 
     # Initialize the upload event for signaling between filesystem watcher and main loop
     loop = asyncio.get_running_loop()

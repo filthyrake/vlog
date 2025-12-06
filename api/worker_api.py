@@ -23,11 +23,13 @@ from pathlib import Path
 from typing import Optional
 
 import sqlalchemy as sa
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
 
-from api.common import check_health, ensure_utc, get_storage_status
+from api.common import check_health, ensure_utc, get_real_ip, get_storage_status, rate_limit_exceeded_handler
 from api.database import (
     configure_sqlite_pragmas,
     database,
@@ -60,6 +62,11 @@ from config import (
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
+    RATE_LIMIT_ENABLED,
+    RATE_LIMIT_STORAGE_URL,
+    RATE_LIMIT_WORKER_DEFAULT,
+    RATE_LIMIT_WORKER_PROGRESS,
+    RATE_LIMIT_WORKER_REGISTER,
     STALE_JOB_CHECK_INTERVAL,
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
@@ -70,6 +77,13 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Initialize rate limiter
+limiter = Limiter(
+    key_func=get_real_ip,
+    storage_uri=RATE_LIMIT_STORAGE_URL if RATE_LIMIT_ENABLED else None,
+    enabled=RATE_LIMIT_ENABLED,
+)
 
 # Global flag to signal background task to stop
 _shutdown_event: Optional[asyncio.Event] = None
@@ -254,6 +268,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Rate limiting setup
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
 
 # =============================================================================
 # Worker Registration
@@ -261,7 +279,8 @@ app.add_middleware(
 
 
 @app.post("/api/worker/register", response_model=WorkerRegisterResponse)
-async def register_worker(data: WorkerRegisterRequest):
+@limiter.limit(RATE_LIMIT_WORKER_REGISTER)
+async def register_worker(request: Request, data: WorkerRegisterRequest):
     """
     Register a new transcoding worker and generate API key.
 
@@ -345,7 +364,9 @@ async def register_worker(data: WorkerRegisterRequest):
 
 
 @app.post("/api/worker/heartbeat", response_model=HeartbeatResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def worker_heartbeat(
+    request: Request,
     data: HeartbeatRequest,
     worker: dict = Depends(verify_worker_key),
 ):
@@ -408,7 +429,8 @@ def worker_has_gpu(worker: dict) -> bool:
 
 
 @app.post("/api/worker/claim", response_model=ClaimJobResponse)
-async def claim_job(worker: dict = Depends(verify_worker_key)):
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def claim_job(request: Request, worker: dict = Depends(verify_worker_key)):
     """
     Atomically claim the next available transcoding job.
 
@@ -548,7 +570,9 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
 
 
 @app.post("/api/worker/{job_id}/progress", response_model=ProgressUpdateResponse)
+@limiter.limit(RATE_LIMIT_WORKER_PROGRESS)
 async def update_progress(
+    request: Request,
     job_id: int,
     data: ProgressUpdateRequest,
     worker: dict = Depends(verify_worker_key),
@@ -630,7 +654,9 @@ async def update_progress(
 
 
 @app.post("/api/worker/{job_id}/complete", response_model=CompleteJobResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def complete_job(
+    request: Request,
     job_id: int,
     data: CompleteJobRequest,
     worker: dict = Depends(verify_worker_key),
@@ -710,7 +736,9 @@ async def complete_job(
 
 
 @app.post("/api/worker/{job_id}/fail", response_model=FailJobResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def fail_job(
+    request: Request,
     job_id: int,
     data: FailJobRequest,
     worker: dict = Depends(verify_worker_key),
@@ -785,7 +813,9 @@ async def fail_job(
 
 
 @app.get("/api/worker/source/{video_id}")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def download_source(
+    request: Request,
     video_id: int,
     worker: dict = Depends(verify_worker_key),
 ):
@@ -818,7 +848,9 @@ async def download_source(
 
 
 @app.post("/api/worker/upload/{video_id}/quality/{quality_name}", response_model=StatusResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_quality(
+    request: Request,
     video_id: int,
     quality_name: str,
     file: UploadFile = File(...),
@@ -958,7 +990,9 @@ async def upload_quality(
 
 
 @app.post("/api/worker/upload/{video_id}/finalize", response_model=StatusResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_finalize(
+    request: Request,
     video_id: int,
     file: UploadFile = File(...),
     worker: dict = Depends(verify_worker_key),
@@ -1042,7 +1076,9 @@ async def upload_finalize(
 
 
 @app.post("/api/worker/upload/{video_id}", response_model=StatusResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_hls(
+    request: Request,
     video_id: int,
     file: UploadFile = File(...),
     worker: dict = Depends(verify_worker_key),
@@ -1194,7 +1230,8 @@ async def upload_hls(
 
 
 @app.get("/api/workers", response_model=WorkerListResponse)
-async def list_workers():
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def list_workers(request: Request):
     """List all registered workers with their status."""
     now = datetime.now(timezone.utc)
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
@@ -1258,7 +1295,8 @@ async def list_workers():
 
 
 @app.post("/api/workers/{worker_id}/revoke", response_model=StatusResponse)
-async def revoke_worker(worker_id: str):
+@limiter.limit(RATE_LIMIT_WORKER_REGISTER)
+async def revoke_worker(request: Request, worker_id: str):
     """Revoke a worker's API keys (admin endpoint, no auth required for now)."""
     # Find worker by UUID
     worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
@@ -1282,7 +1320,8 @@ async def revoke_worker(worker_id: str):
 
 
 @app.get("/api/health")
-async def health_check():
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def health_check(request: Request):
     """
     Health check endpoint for kubernetes probes.
 

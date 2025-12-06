@@ -154,6 +154,11 @@ RATE_LIMIT_PUBLIC_ANALYTICS = os.getenv("VLOG_RATE_LIMIT_PUBLIC_ANALYTICS", "120
 RATE_LIMIT_ADMIN_DEFAULT = os.getenv("VLOG_RATE_LIMIT_ADMIN_DEFAULT", "200/minute")
 RATE_LIMIT_ADMIN_UPLOAD = os.getenv("VLOG_RATE_LIMIT_ADMIN_UPLOAD", "10/hour")
 
+# Worker API limits (authenticated workers + registration)
+RATE_LIMIT_WORKER_DEFAULT = os.getenv("VLOG_RATE_LIMIT_WORKER_DEFAULT", "300/minute")
+RATE_LIMIT_WORKER_REGISTER = os.getenv("VLOG_RATE_LIMIT_WORKER_REGISTER", "5/hour")
+RATE_LIMIT_WORKER_PROGRESS = os.getenv("VLOG_RATE_LIMIT_WORKER_PROGRESS", "600/minute")
+
 # Storage backend for rate limiting
 # Options: "memory" (default, per-process), or a Redis URL like "redis://localhost:6379"
 RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
