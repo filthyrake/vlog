@@ -323,7 +323,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         os.close(fd)  # Close file descriptor, we'll use the path
 
         print("  Extracting audio to WAV...")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, extract_audio_to_wav, audio_source, temp_wav)
 
         if not temp_wav.exists() or temp_wav.stat().st_size == 0:
