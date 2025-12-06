@@ -18,6 +18,9 @@ from config import TRUSTED_PROXIES
 # Configure with appropriate handlers for security monitoring/SIEM integration
 security_logger = logging.getLogger("security.auth")
 
+# Standard logger for general operations
+logger = logging.getLogger(__name__)
+
 # API key header
 api_key_header = APIKeyHeader(name="X-Worker-API-Key", auto_error=False)
 
