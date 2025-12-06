@@ -2,6 +2,17 @@
 
 Kubernetes manifests for deploying remote transcoding workers.
 
+## Container Images
+
+The GPU worker container is based on **Rocky Linux 10** with:
+- FFmpeg 7.1.2 from RPM Fusion (includes nvenc, vaapi, qsv encoders)
+- intel-media-driver 25.2.6 (required for Intel Battlemage/Arc B580 support)
+- Python 3.12
+
+Image tags:
+- `vlog-worker-gpu:rocky10` - Rocky Linux 10 based GPU worker (recommended)
+- `vlog-worker-gpu:latest` - Latest stable release
+
 ## Prerequisites
 
 1. A running Kubernetes cluster (k3s, k8s, etc.)
@@ -84,6 +95,7 @@ Supported encoders: `h264_nvenc`, `hevc_nvenc`, `av1_nvenc` (RTX 40 series only)
 Prerequisites:
 - [Intel GPU Device Plugin](https://github.com/intel/intel-device-plugins-for-kubernetes) installed
 - Nodes with Intel GPUs labeled `intel.feature.node.kubernetes.io/gpu=true`
+- For Battlemage GPUs (Arc B580): Use the Rocky Linux 10 container image (requires intel-media-driver 25.x)
 
 ```bash
 # Deploy Intel GPU workers
@@ -92,7 +104,9 @@ kubectl apply -f k8s/worker-deployment-intel.yaml
 
 Supported encoders: `h264_vaapi`, `hevc_vaapi`, `av1_vaapi`
 
-Intel Arc GPUs (like B580) have excellent AV1 encoding quality!
+Intel Arc GPUs have excellent AV1 encoding quality and support:
+- **Battlemage (B580)**: Requires intel-media-driver 25.x (Rocky Linux 10 image)
+- **Alchemist (A770, A380)**: Works with intel-media-driver 23.x+
 
 ## Scaling
 
