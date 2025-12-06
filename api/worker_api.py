@@ -11,6 +11,7 @@ Run with: uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import secrets
@@ -121,8 +122,6 @@ async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias
         )
 
     # Use constant-time comparison to prevent timing attacks
-    import hmac
-
     if not hmac.compare_digest(x_admin_secret, WORKER_ADMIN_SECRET):
         logger.warning("Invalid admin secret provided for worker management endpoint")
         raise HTTPException(
