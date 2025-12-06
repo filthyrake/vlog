@@ -230,9 +230,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
             # Use default arguments to capture loop variables by value, not reference
             # (classic Python late binding closure fix)
-            async def update_quality_progress(
-                pct: int, qidx: int = quality_idx, qname: str = quality_name
-            ):
+            async def update_quality_progress(pct: int, qidx: int = quality_idx, qname: str = quality_name):
                 import time
 
                 now = time.time()
@@ -301,7 +299,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     print(f"    {quality_name}: Uploading...")
                     try:
                         await client.upload_quality(video_id, quality_name, output_dir)
-                        quality_progress_list[quality_idx] = {"name": quality_name, "status": "uploaded", "progress": 100}
+                        quality_progress_list[quality_idx] = {
+                            "name": quality_name,
+                            "status": "uploaded",
+                            "progress": 100,
+                        }
                         print(f"    {quality_name}: Uploaded")
 
                         # Delete local files to free disk space
@@ -313,7 +315,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         print(f"    {quality_name}: Local files cleaned up")
                     except WorkerAPIError as e:
                         # Upload failed - keep files, mark as completed (not uploaded)
-                        quality_progress_list[quality_idx] = {"name": quality_name, "status": "completed", "progress": 100}
+                        quality_progress_list[quality_idx] = {
+                            "name": quality_name,
+                            "status": "completed",
+                            "progress": 100,
+                        }
                         print(f"    {quality_name}: Upload failed - {e.message}")
             else:
                 quality_progress_list[quality_idx] = {"name": quality_name, "status": "failed", "progress": 0}

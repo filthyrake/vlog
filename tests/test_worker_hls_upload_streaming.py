@@ -4,6 +4,7 @@ Tests for HLS upload streaming functionality.
 Tests that the upload_hls endpoint properly streams file uploads to disk
 instead of loading the entire file into memory.
 """
+
 import io
 import tarfile
 import tempfile
@@ -125,6 +126,7 @@ class TestHLSUploadStreaming:
 
         # Track temp directory before upload to verify cleanup
         import os
+
         temp_dir = tempfile.gettempdir()
         before_files = set(os.listdir(temp_dir))
 
@@ -132,7 +134,7 @@ class TestHLSUploadStreaming:
         original_open = open
 
         def failing_open(*args, **kwargs):
-            if args and isinstance(args[0], Path) and str(args[0]).endswith('.tar.gz'):
+            if args and isinstance(args[0], Path) and str(args[0]).endswith(".tar.gz"):
                 raise IOError("Simulated disk write failure")
             return original_open(*args, **kwargs)
 
@@ -162,7 +164,7 @@ class TestHLSUploadStreaming:
         after_files = set(os.listdir(temp_dir))
         new_files = after_files - before_files
         # Filter for .tar.gz files
-        leftover_tar_files = [f for f in new_files if f.endswith('.tar.gz')]
+        leftover_tar_files = [f for f in new_files if f.endswith(".tar.gz")]
         assert len(leftover_tar_files) == 0, f"Temp files not cleaned up: {leftover_tar_files}"
 
     @pytest.mark.asyncio
