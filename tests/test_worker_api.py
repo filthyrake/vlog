@@ -139,16 +139,16 @@ class TestAuthenticationEdgeCases:
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
         )
         request_time = time.time() - start_time
-        
+
         assert response.status_code == 200
-        
+
         # Request should complete quickly (< 100ms) even if DB update is slow
         # This verifies the update doesn't block the response
         assert request_time < 0.1, f"Request took {request_time}s, should be non-blocking"
-        
+
         # Give background task time to complete
         await asyncio.sleep(0.1)
-        
+
         # Verify the update still happened in the background
         key_record_after = await test_database.fetch_one(
             worker_api_keys.select().where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
