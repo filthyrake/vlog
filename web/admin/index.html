@@ -34,6 +34,11 @@
                         class="font-medium"
                     >Upload</button>
                     <button
+                        @click="tab = 'workers'; loadWorkers()"
+                        :class="tab === 'workers' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        class="font-medium"
+                    >Workers</button>
+                    <button
                         @click="tab = 'analytics'; loadAnalytics()"
                         :class="tab === 'analytics' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
                         class="font-medium"
@@ -409,6 +414,218 @@
                 </div>
             </div>
         </div>
+
+        <!-- Workers Tab -->
+        <div x-show="tab === 'workers'" x-cloak>
+            <!-- Worker Status Summary -->
+            <div class="grid grid-cols-5 gap-4 mb-6">
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-dark-400 text-sm mb-1">Total</div>
+                    <div class="text-2xl font-bold" x-text="workerStats.total_count || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-green-400 text-sm mb-1">Active</div>
+                    <div class="text-2xl font-bold text-green-400" x-text="workerStats.active_count || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-blue-400 text-sm mb-1">Idle</div>
+                    <div class="text-2xl font-bold text-blue-400" x-text="workerStats.idle_count || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-red-400 text-sm mb-1">Offline</div>
+                    <div class="text-2xl font-bold text-red-400" x-text="workerStats.offline_count || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-dark-500 text-sm mb-1">Disabled</div>
+                    <div class="text-2xl font-bold text-dark-500" x-text="workerStats.disabled_count || 0"></div>
+                </div>
+            </div>
+
+            <!-- Workers List -->
+            <div class="bg-dark-900 rounded-xl overflow-hidden mb-6">
+                <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                    <h3 class="font-semibold">Workers</h3>
+                    <button @click="loadWorkers" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
+                </div>
+
+                <div class="divide-y divide-dark-800">
+                    <template x-for="worker in workersList" :key="worker.id">
+                        <div class="p-4 hover:bg-dark-800/50">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <!-- Status indicator -->
+                                    <div
+                                        :class="{
+                                            'bg-green-500': worker.status === 'active',
+                                            'bg-blue-500': worker.status === 'idle',
+                                            'bg-red-500': worker.status === 'offline',
+                                            'bg-dark-600': worker.status === 'disabled'
+                                        }"
+                                        class="w-3 h-3 rounded-full"
+                                    ></div>
+                                    <div>
+                                        <div class="font-medium" x-text="worker.worker_name || worker.worker_id.slice(0, 8)"></div>
+                                        <div class="text-dark-500 text-sm flex items-center gap-2">
+                                            <span :class="{
+                                                'text-green-400': worker.status === 'active',
+                                                'text-blue-400': worker.status === 'idle',
+                                                'text-red-400': worker.status === 'offline',
+                                                'text-dark-500': worker.status === 'disabled'
+                                            }" x-text="worker.status.charAt(0).toUpperCase() + worker.status.slice(1)"></span>
+                                            <span class="text-dark-600">•</span>
+                                            <span x-text="worker.hwaccel_type ? (worker.gpu_name || worker.hwaccel_type.toUpperCase()) : 'CPU'"></span>
+                                            <template x-if="worker.seconds_since_heartbeat !== null">
+                                                <span class="text-dark-600">•</span>
+                                            </template>
+                                            <template x-if="worker.seconds_since_heartbeat !== null">
+                                                <span
+                                                    :class="{
+                                                        'text-green-400': worker.seconds_since_heartbeat < 30,
+                                                        'text-yellow-400': worker.seconds_since_heartbeat >= 30 && worker.seconds_since_heartbeat < 120,
+                                                        'text-red-400': worker.seconds_since_heartbeat >= 120
+                                                    }"
+                                                    x-text="formatTimeSince(worker.seconds_since_heartbeat)"
+                                                ></span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-4">
+                                    <!-- Stats -->
+                                    <div class="text-right text-sm">
+                                        <div class="text-dark-400">
+                                            <span class="text-green-400" x-text="worker.jobs_completed"></span> completed
+                                            <template x-if="worker.jobs_failed > 0">
+                                                <span>, <span class="text-red-400" x-text="worker.jobs_failed"></span> failed</span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                    <!-- Actions -->
+                                    <div class="flex gap-2">
+                                        <button
+                                            x-show="worker.status !== 'disabled'"
+                                            @click="disableWorker(worker.worker_id)"
+                                            class="text-yellow-400 hover:text-yellow-300 text-sm"
+                                        >Disable</button>
+                                        <button
+                                            x-show="worker.status === 'disabled'"
+                                            @click="enableWorker(worker.worker_id)"
+                                            class="text-green-400 hover:text-green-300 text-sm"
+                                        >Enable</button>
+                                        <button
+                                            @click="deleteWorker(worker.worker_id, worker.worker_name)"
+                                            class="text-red-400 hover:text-red-300 text-sm"
+                                        >Delete</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Current job info -->
+                            <template x-if="worker.current_video_title">
+                                <div class="mt-2 ml-6 text-sm">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-dark-400">Processing:</span>
+                                        <span class="text-white" x-text="worker.current_video_title"></span>
+                                        <span class="text-dark-500" x-text="'(' + worker.current_step + ')'"></span>
+                                    </div>
+                                    <div class="flex items-center gap-2 mt-1">
+                                        <div class="flex-1 max-w-xs bg-dark-700 rounded-full h-1.5">
+                                            <div
+                                                class="bg-green-500 h-1.5 rounded-full transition-all"
+                                                :style="'width: ' + (worker.current_progress || 0) + '%'"
+                                            ></div>
+                                        </div>
+                                        <span class="text-dark-400 text-xs" x-text="(worker.current_progress || 0) + '%'"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+
+                <div x-show="workersList.length === 0" class="text-center py-8 text-dark-400">
+                    No workers registered. Use <code class="bg-dark-800 px-2 py-1 rounded">vlog worker register</code> to add workers.
+                </div>
+            </div>
+
+            <!-- Active Jobs -->
+            <div class="bg-dark-900 rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                    <h3 class="font-semibold">
+                        Active Transcoding Jobs
+                        <span class="text-dark-500 font-normal" x-text="'(' + (activeJobs.processing_count || 0) + ' processing, ' + (activeJobs.pending_count || 0) + ' pending)'"></span>
+                    </h3>
+                </div>
+
+                <div class="divide-y divide-dark-800">
+                    <template x-for="job in activeJobs.jobs" :key="job.job_id">
+                        <div class="p-4">
+                            <div class="flex items-start gap-4">
+                                <!-- Video info -->
+                                <div class="flex-1">
+                                    <div class="font-medium" x-text="job.video_title"></div>
+                                    <div class="text-dark-500 text-sm flex items-center gap-2 mt-1">
+                                        <template x-if="job.worker_name">
+                                            <span>
+                                                Worker: <span class="text-white" x-text="job.worker_name"></span>
+                                                <span x-show="job.worker_hwaccel_type" class="text-dark-400" x-text="'(' + job.worker_hwaccel_type + ')'"></span>
+                                            </span>
+                                        </template>
+                                        <template x-if="!job.worker_name && job.status === 'pending'">
+                                            <span class="text-blue-400">Waiting for worker...</span>
+                                        </template>
+                                    </div>
+                                </div>
+                                <!-- Progress -->
+                                <div class="w-48">
+                                    <div class="flex items-center justify-between text-sm mb-1">
+                                        <span
+                                            :class="{
+                                                'text-yellow-400': job.status === 'processing',
+                                                'text-blue-400': job.status === 'pending'
+                                            }"
+                                            x-text="job.current_step || job.status"
+                                        ></span>
+                                        <span class="text-dark-400" x-text="job.progress_percent + '%'"></span>
+                                    </div>
+                                    <div class="w-full bg-dark-700 rounded-full h-2">
+                                        <div
+                                            :class="{
+                                                'bg-yellow-500': job.status === 'processing',
+                                                'bg-blue-500': job.status === 'pending'
+                                            }"
+                                            class="h-2 rounded-full transition-all"
+                                            :style="'width: ' + job.progress_percent + '%'"
+                                        ></div>
+                                    </div>
+                                    <!-- Quality badges -->
+                                    <template x-if="job.qualities && job.qualities.length > 0">
+                                        <div class="flex flex-wrap gap-1 mt-2">
+                                            <template x-for="q in job.qualities" :key="q.name">
+                                                <span
+                                                    :class="{
+                                                        'bg-green-500/20 text-green-400': q.status === 'completed' || q.status === 'uploaded',
+                                                        'bg-yellow-500/20 text-yellow-400': q.status === 'in_progress',
+                                                        'bg-dark-700 text-dark-400': q.status === 'pending'
+                                                    }"
+                                                    class="px-1.5 py-0.5 rounded text-xs"
+                                                >
+                                                    <span x-text="q.name"></span>
+                                                    <span x-show="q.status === 'in_progress'" x-text="' ' + q.progress + '%'"></span>
+                                                </span>
+                                            </template>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <div x-show="!activeJobs.jobs || activeJobs.jobs.length === 0" class="text-center py-8 text-dark-400">
+                    No active transcoding jobs.
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- Edit Video Modal -->
@@ -661,6 +878,11 @@
                 analyticsVideos: [],
                 analyticsPeriod: 'all',
 
+                // Workers
+                workersList: [],
+                workerStats: {},
+                activeJobs: { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 },
+
                 // Transcode progress
                 progressData: {},
 
@@ -673,6 +895,13 @@
                     // Auto-refresh videos every 10 seconds, progress every 3 seconds
                     setInterval(() => this.loadVideos(), 10000);
                     setInterval(() => this.loadProgressForActiveVideos(), 3000);
+
+                    // Auto-refresh workers every 5 seconds when workers tab is active
+                    setInterval(() => {
+                        if (this.tab === 'workers') {
+                            this.loadWorkers();
+                        }
+                    }, 5000);
                 },
 
                 async loadVideos() {
@@ -1120,6 +1349,99 @@
                     const minutes = Math.floor((seconds % 3600) / 60);
                     if (hours > 0) return `${hours}h ${minutes}m`;
                     return `${minutes}m`;
+                },
+
+                // Worker management methods
+                async loadWorkers() {
+                    try {
+                        const [workersRes, jobsRes] = await Promise.all([
+                            fetch('/api/workers'),
+                            fetch('/api/workers/active-jobs')
+                        ]);
+
+                        if (workersRes.ok) {
+                            const data = await workersRes.json();
+                            this.workersList = data.workers || [];
+                            this.workerStats = {
+                                total_count: data.total_count,
+                                active_count: data.active_count,
+                                idle_count: data.idle_count,
+                                offline_count: data.offline_count,
+                                disabled_count: data.disabled_count
+                            };
+                        } else {
+                            console.error('Failed to load workers:', workersRes.status);
+                            this.workersList = [];
+                            this.workerStats = {};
+                        }
+
+                        if (jobsRes.ok) {
+                            this.activeJobs = await jobsRes.json();
+                        } else {
+                            console.error('Failed to load active jobs:', jobsRes.status);
+                            this.activeJobs = { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 };
+                        }
+                    } catch (e) {
+                        console.error('Failed to load workers:', e);
+                        this.workersList = [];
+                        this.workerStats = {};
+                        this.activeJobs = { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 };
+                    }
+                },
+
+                async disableWorker(workerId) {
+                    if (!confirm('Disable this worker? It will not be able to claim new jobs.')) return;
+
+                    try {
+                        const res = await fetch(`/api/workers/${workerId}/disable`, { method: 'PUT' });
+                        if (res.ok) {
+                            await this.loadWorkers();
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Failed to disable worker');
+                        }
+                    } catch (e) {
+                        alert('Failed to disable worker: ' + e.message);
+                    }
+                },
+
+                async enableWorker(workerId) {
+                    try {
+                        const res = await fetch(`/api/workers/${workerId}/enable`, { method: 'PUT' });
+                        if (res.ok) {
+                            await this.loadWorkers();
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Failed to enable worker');
+                        }
+                    } catch (e) {
+                        alert('Failed to enable worker: ' + e.message);
+                    }
+                },
+
+                async deleteWorker(workerId, workerName) {
+                    const name = workerName || workerId.slice(0, 8);
+                    if (!confirm(`Delete worker "${name}"? This will revoke its API key and remove it from the system.`)) return;
+
+                    try {
+                        const res = await fetch(`/api/workers/${workerId}`, { method: 'DELETE' });
+                        if (res.ok) {
+                            await this.loadWorkers();
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Failed to delete worker');
+                        }
+                    } catch (e) {
+                        alert('Failed to delete worker: ' + e.message);
+                    }
+                },
+
+                formatTimeSince(seconds) {
+                    if (seconds === null || seconds === undefined) return '';
+                    if (seconds < 60) return seconds + 's ago';
+                    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+                    if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+                    return Math.floor(seconds / 86400) + 'd ago';
                 }
             };
         }
