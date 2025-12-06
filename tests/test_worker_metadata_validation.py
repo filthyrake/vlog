@@ -11,10 +11,11 @@ Tests the security features that prevent:
 class TestWorkerCapabilitiesValidation:
     """Tests for WorkerCapabilities schema validation."""
 
-    def test_register_with_valid_capabilities(self, worker_client):
+    def test_register_with_valid_capabilities(self, worker_client, worker_admin_headers):
         """Test registration with valid capabilities."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -36,10 +37,11 @@ class TestWorkerCapabilitiesValidation:
         assert "worker_id" in data
         assert "api_key" in data
 
-    def test_register_capabilities_rejects_unknown_fields(self, worker_client):
+    def test_register_capabilities_rejects_unknown_fields(self, worker_client, worker_admin_headers):
         """Test that unknown fields in capabilities are rejected."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -57,7 +59,7 @@ class TestWorkerCapabilitiesValidation:
         # Check that it mentions extra fields not permitted
         assert any("extra" in str(e).lower() or "permitted" in str(e).lower() for e in error_detail)
 
-    def test_register_capabilities_too_large(self, worker_client):
+    def test_register_capabilities_too_large(self, worker_client, worker_admin_headers):
         """Test that oversized capabilities JSON is rejected."""
         # Create a capabilities object that will exceed 10KB when serialized
         large_encoders = {}
@@ -66,6 +68,7 @@ class TestWorkerCapabilitiesValidation:
 
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -76,10 +79,11 @@ class TestWorkerCapabilitiesValidation:
         assert response.status_code == 400
         assert "too large" in response.json()["detail"].lower()
 
-    def test_register_capabilities_validates_string_lengths(self, worker_client):
+    def test_register_capabilities_validates_string_lengths(self, worker_client, worker_admin_headers):
         """Test that string fields have length limits."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -93,10 +97,11 @@ class TestWorkerCapabilitiesValidation:
         # Should get 422 Unprocessable Entity due to Pydantic validation
         assert response.status_code == 422
 
-    def test_register_capabilities_validates_codec_length(self, worker_client):
+    def test_register_capabilities_validates_codec_length(self, worker_client, worker_admin_headers):
         """Test that codec names are validated for reasonable length."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -110,10 +115,11 @@ class TestWorkerCapabilitiesValidation:
         # Should get 422 due to validation
         assert response.status_code == 422
 
-    def test_register_capabilities_validates_encoder_limits(self, worker_client):
+    def test_register_capabilities_validates_encoder_limits(self, worker_client, worker_admin_headers):
         """Test that encoder names have reasonable limits."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -129,11 +135,12 @@ class TestWorkerCapabilitiesValidation:
         # Should get 422 due to validation
         assert response.status_code == 422
 
-    def test_register_capabilities_validates_session_limits(self, worker_client):
+    def test_register_capabilities_validates_session_limits(self, worker_client, worker_admin_headers):
         """Test that max_concurrent_encode_sessions has reasonable bounds."""
         # Test value too high
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -148,6 +155,7 @@ class TestWorkerCapabilitiesValidation:
         # Test value too low
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -163,10 +171,11 @@ class TestWorkerCapabilitiesValidation:
 class TestWorkerMetadataValidation:
     """Tests for WorkerMetadata schema validation."""
 
-    def test_register_with_valid_metadata(self, worker_client):
+    def test_register_with_valid_metadata(self, worker_client, worker_admin_headers):
         """Test registration with valid Kubernetes metadata."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -188,10 +197,11 @@ class TestWorkerMetadataValidation:
         data = response.json()
         assert "worker_id" in data
 
-    def test_register_metadata_rejects_unknown_fields(self, worker_client):
+    def test_register_metadata_rejects_unknown_fields(self, worker_client, worker_admin_headers):
         """Test that unknown fields in metadata are rejected."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -207,7 +217,7 @@ class TestWorkerMetadataValidation:
         error_detail = response.json()["detail"]
         assert any("extra" in str(e).lower() or "permitted" in str(e).lower() for e in error_detail)
 
-    def test_register_metadata_too_large(self, worker_client):
+    def test_register_metadata_too_large(self, worker_client, worker_admin_headers):
         """Test that oversized metadata JSON is rejected."""
         # Create metadata that exceeds 10KB
         # Use valid labels (under 50 count) but with large values to exceed size
@@ -215,6 +225,7 @@ class TestWorkerMetadataValidation:
 
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -226,11 +237,12 @@ class TestWorkerMetadataValidation:
         # Either way, it should be rejected
         assert "detail" in response.json()
 
-    def test_register_metadata_validates_label_limits(self, worker_client):
+    def test_register_metadata_validates_label_limits(self, worker_client, worker_admin_headers):
         """Test that labels dict has reasonable size limits."""
         # Too many labels
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",
@@ -242,10 +254,11 @@ class TestWorkerMetadataValidation:
         )
         assert response.status_code == 422
 
-    def test_register_metadata_validates_field_lengths(self, worker_client):
+    def test_register_metadata_validates_field_lengths(self, worker_client, worker_admin_headers):
         """Test that metadata fields have length limits."""
         response = worker_client.post(
             "/api/worker/register",
+            headers=worker_admin_headers,
             json={
                 "worker_name": "test-worker",
                 "worker_type": "remote",

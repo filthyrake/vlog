@@ -338,6 +338,16 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
         yield client
 
 
+# Test admin secret for worker API authentication
+TEST_WORKER_ADMIN_SECRET = "test-admin-secret-for-worker-api-12345"
+
+
+@pytest.fixture(scope="function")
+def worker_admin_headers():
+    """Return headers for worker admin authentication."""
+    return {"X-Admin-Secret": TEST_WORKER_ADMIN_SECRET}
+
+
 @pytest.fixture(scope="function")
 def worker_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
     """
@@ -356,6 +366,8 @@ def worker_client(test_database: Database, test_storage: dict, test_db_path: Pat
     monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
     monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+    # Set the worker admin secret for testing
+    monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", TEST_WORKER_ADMIN_SECRET)
 
     # Patch the database module
     import api.database
@@ -381,6 +393,8 @@ def worker_client(test_database: Database, test_storage: dict, test_db_path: Pat
     from api.worker_api import app
 
     monkeypatch.setattr(api.worker_api, "database", test_database)
+    # Also patch the admin secret after reload
+    monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", TEST_WORKER_ADMIN_SECRET)
 
     # Create test client without lifespan
     with TestClient(app, raise_server_exceptions=True) as client:
@@ -388,13 +402,14 @@ def worker_client(test_database: Database, test_storage: dict, test_db_path: Pat
 
 
 @pytest.fixture(scope="function")
-def registered_worker(worker_client) -> dict:
+def registered_worker(worker_client, worker_admin_headers) -> dict:
     """
     Register a worker and return its credentials.
     """
     response = worker_client.post(
         "/api/worker/register",
         json={"worker_name": "test-worker", "worker_type": "remote"},
+        headers=worker_admin_headers,
     )
     assert response.status_code == 200
     return response.json()
