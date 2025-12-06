@@ -44,19 +44,25 @@ def _get_storage_health_lock() -> asyncio.Lock:
     in testing or when the application restarts.
     """
     global _storage_health_lock
+
+    if _storage_health_lock is None:
+        _storage_health_lock = asyncio.Lock()
+        return _storage_health_lock
+
+    # Check if the lock is bound to a different event loop
+    # by comparing the lock's internal loop (if accessible) with the current loop
     try:
-        # Check if we have a lock and it's bound to the current event loop
-        if _storage_health_lock is not None:
-            # Try to get the event loop - this will raise if the lock is bound
-            # to a different event loop
-            _storage_health_lock._get_loop()
-            return _storage_health_lock
+        current_loop = asyncio.get_running_loop()
+        # Access the internal _loop attribute which exists on asyncio.Lock
+        # This is safer than calling _get_loop() which is more private
+        lock_loop = getattr(_storage_health_lock, '_loop', None)
+        if lock_loop is not None and lock_loop is not current_loop:
+            # Lock is from a different event loop, create a new one
+            _storage_health_lock = asyncio.Lock()
     except RuntimeError:
-        # Lock is bound to a different event loop, create a new one
+        # No event loop running, the existing lock should be fine
         pass
 
-    # Create a new lock for the current event loop
-    _storage_health_lock = asyncio.Lock()
     return _storage_health_lock
 
 
