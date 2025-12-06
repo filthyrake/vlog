@@ -186,6 +186,7 @@ class WorkerAPIClient:
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
+        file_size_mb = 0.0  # Default value in case of early exception
         try:
             with tarfile.open(tmp_path, "w:gz") as tar:
                 # Add playlist file
