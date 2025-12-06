@@ -77,6 +77,9 @@ class AnalyticsCache:
             self.cleanup_expired()
 
             # If still at capacity after cleanup, remove oldest 10% via LRU
+            # Note: This uses O(n log n) sorting but only occurs when cache has
+            # max_size non-expired entries, which is rare due to probabilistic cleanup
+            # and TTL expiration. For default max_size of 1000, performance is acceptable.
             if len(self._cache) >= self._max_size:
                 items = sorted(self._cache.items(), key=lambda x: x[1]["timestamp"])
                 evict_count = max(1, len(items) // 10)
