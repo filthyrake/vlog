@@ -32,7 +32,38 @@ _storage_health_cache = {
     "last_check": None,
     "last_error": None,
 }
+_storage_health_lock: Optional[asyncio.Lock] = None
 STORAGE_HEALTH_CACHE_TTL = 5  # seconds
+
+
+def _get_storage_health_lock() -> asyncio.Lock:
+    """Get or create the storage health cache lock.
+
+    The lock is created lazily to ensure it's bound to the correct event loop.
+    This is necessary because the lock may be used across different event loops
+    in testing or when the application restarts.
+    """
+    global _storage_health_lock
+
+    if _storage_health_lock is None:
+        _storage_health_lock = asyncio.Lock()
+        return _storage_health_lock
+
+    # Check if the lock is bound to a different event loop
+    # by comparing the lock's internal loop (if accessible) with the current loop
+    try:
+        current_loop = asyncio.get_running_loop()
+        # Access the internal _loop attribute which exists on asyncio.Lock
+        # This is safer than calling _get_loop() which is more private
+        lock_loop = getattr(_storage_health_lock, '_loop', None)
+        if lock_loop is not None and lock_loop is not current_loop:
+            # Lock is from a different event loop, create a new one
+            _storage_health_lock = asyncio.Lock()
+    except RuntimeError:
+        # No event loop running, the existing lock should be fine
+        pass
+
+    return _storage_health_lock
 
 
 def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -187,13 +218,14 @@ async def check_health() -> dict:
 
     healthy = all(checks.values())
 
-    # Update storage health cache
-    _storage_health_cache["healthy"] = checks["storage"]
-    _storage_health_cache["last_check"] = datetime.now(timezone.utc)
-    if not checks["storage"]:
-        _storage_health_cache["last_error"] = "Storage check failed or timed out"
-    else:
-        _storage_health_cache["last_error"] = None
+    # Update storage health cache atomically
+    async with _get_storage_health_lock():
+        _storage_health_cache["healthy"] = checks["storage"]
+        _storage_health_cache["last_check"] = datetime.now(timezone.utc)
+        if not checks["storage"]:
+            _storage_health_cache["last_error"] = "Storage check failed or timed out"
+        else:
+            _storage_health_cache["last_error"] = None
 
     return {
         "checks": checks,
@@ -220,35 +252,37 @@ async def check_storage_available() -> bool:
 
     now = datetime.now(timezone.utc)
 
-    # Return cached status if recent
-    if _storage_health_cache["last_check"] is not None:
-        age = (now - _storage_health_cache["last_check"]).total_seconds()
-        if age < STORAGE_HEALTH_CACHE_TTL:
-            return _storage_health_cache["healthy"]
+    # Use lock to prevent race conditions with concurrent access
+    async with _get_storage_health_lock():
+        # Return cached status if recent
+        if _storage_health_cache["last_check"] is not None:
+            age = (now - _storage_health_cache["last_check"]).total_seconds()
+            if age < STORAGE_HEALTH_CACHE_TTL:
+                return _storage_health_cache["healthy"]
 
-    # Perform a quick storage check
-    try:
-        loop = asyncio.get_running_loop()
-        is_healthy = await asyncio.wait_for(
-            loop.run_in_executor(None, _check_storage_sync),
-            timeout=STORAGE_CHECK_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger.warning("Storage availability check timed out - possible stale NFS mount")
-        is_healthy = False
-    except Exception as e:
-        logger.warning(f"Storage availability check failed: {e}")
-        is_healthy = False
+        # Perform a quick storage check (outside lock would allow thundering herd)
+        try:
+            loop = asyncio.get_running_loop()
+            is_healthy = await asyncio.wait_for(
+                loop.run_in_executor(None, _check_storage_sync),
+                timeout=STORAGE_CHECK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Storage availability check timed out - possible stale NFS mount")
+            is_healthy = False
+        except Exception as e:
+            logger.warning(f"Storage availability check failed: {e}")
+            is_healthy = False
 
-    # Update cache
-    _storage_health_cache["healthy"] = is_healthy
-    _storage_health_cache["last_check"] = now
-    if not is_healthy:
-        _storage_health_cache["last_error"] = "Storage unavailable"
-    else:
-        _storage_health_cache["last_error"] = None
+        # Update cache atomically
+        _storage_health_cache["healthy"] = is_healthy
+        _storage_health_cache["last_check"] = now
+        if not is_healthy:
+            _storage_health_cache["last_error"] = "Storage unavailable"
+        else:
+            _storage_health_cache["last_error"] = None
 
-    return is_healthy
+        return is_healthy
 
 
 async def require_storage_available():
