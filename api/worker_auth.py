@@ -161,9 +161,9 @@ async def verify_worker_key(
             await database.execute(
                 worker_api_keys.update().where(worker_api_keys.c.id == key_record["id"]).values(last_used_at=now)
             )
-        except Exception:
-            # Silently ignore failures for last_used tracking
-            pass
+        except Exception as e:
+            # Log failure but don't raise - last_used tracking is non-critical
+            logger.debug(f"Failed to update last_used_at for worker API key: {e}")
 
     asyncio.create_task(update_last_used())
 
