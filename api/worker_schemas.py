@@ -150,7 +150,7 @@ class HeartbeatRequest(BaseModel):
                 raise ValueError("Metadata must be JSON-serializable")
 
             # Then check serialized size to match endpoint limit (10KB)
-            if len(serialized) > 10240:  # 10KB max (10 * 1024 bytes)
+            if len(serialized) > 10000:  # 10KB max (10000 bytes)
                 raise ValueError("Metadata too large (max 10KB)")
 
             # Validate capabilities structure if present
