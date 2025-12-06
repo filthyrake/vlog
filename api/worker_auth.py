@@ -1,5 +1,6 @@
 """Authentication middleware for Worker API."""
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -154,10 +155,17 @@ async def verify_worker_key(
             )
             raise HTTPException(status_code=401, detail="API key expired")
 
-    # Update last_used_at (fire-and-forget, don't block on this)
-    await database.execute(
-        worker_api_keys.update().where(worker_api_keys.c.id == key_record["id"]).values(last_used_at=now)
-    )
+    # Update last_used_at in background (non-blocking)
+    async def update_last_used():
+        try:
+            await database.execute(
+                worker_api_keys.update().where(worker_api_keys.c.id == key_record["id"]).values(last_used_at=now)
+            )
+        except Exception:
+            # Silently ignore failures for last_used tracking
+            pass
+
+    asyncio.create_task(update_last_used())
 
     # Get worker info
     worker = await database.fetch_one(workers.select().where(workers.c.id == key_record["worker_id"]))

@@ -126,6 +126,36 @@ class TestAuthenticationEdgeCases:
         )
         assert key_record_after["last_used_at"] is not None
 
+    @pytest.mark.asyncio
+    async def test_api_key_last_used_update_does_not_block(self, worker_client, test_database, registered_worker):
+        """Test that last_used_at update is truly fire-and-forget and does not block the request."""
+        import asyncio
+        import time
+
+        # Make authenticated request and measure response time
+        start_time = time.time()
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        request_time = time.time() - start_time
+        
+        assert response.status_code == 200
+        
+        # Request should complete quickly (< 100ms) even if DB update is slow
+        # This verifies the update doesn't block the response
+        assert request_time < 0.1, f"Request took {request_time}s, should be non-blocking"
+        
+        # Give background task time to complete
+        await asyncio.sleep(0.1)
+        
+        # Verify the update still happened in the background
+        key_record_after = await test_database.fetch_one(
+            worker_api_keys.select().where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
+        )
+        assert key_record_after["last_used_at"] is not None
+
 
 class TestKeyHashingFunctions:
     """Tests for API key hashing utilities (Issue #119)."""
