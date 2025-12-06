@@ -87,9 +87,7 @@ async def _detect_and_release_stale_jobs():
 
     # Find workers that are not already offline but haven't sent heartbeat
     stale_workers = await database.fetch_all(
-        workers.select()
-        .where(workers.c.status != "offline")
-        .where(workers.c.last_heartbeat < offline_threshold)
+        workers.select().where(workers.c.status != "offline").where(workers.c.last_heartbeat < offline_threshold)
     )
 
     for worker in stale_workers:
@@ -98,9 +96,7 @@ async def _detect_and_release_stale_jobs():
 
         # Mark worker as offline
         await database.execute(
-            workers.update()
-            .where(workers.c.id == worker["id"])
-            .values(status="offline", current_job_id=None)
+            workers.update().where(workers.c.id == worker["id"]).values(status="offline", current_job_id=None)
         )
 
         # Find and release any jobs claimed by this worker
@@ -126,15 +122,9 @@ async def _detect_and_release_stale_jobs():
             )
 
             # Reset video status back to pending so it can be reclaimed
-            video = await database.fetch_one(
-                videos.select().where(videos.c.id == job["video_id"])
-            )
+            video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
             if video and video["status"] == "processing":
-                await database.execute(
-                    videos.update()
-                    .where(videos.c.id == job["video_id"])
-                    .values(status="pending")
-                )
+                await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
                 logger.info(f"Reset video {job['video_id']} status to pending")
 
     return len(stale_workers)
@@ -161,10 +151,7 @@ async def check_stale_jobs():
 
         # Wait for the next check interval or shutdown
         try:
-            await asyncio.wait_for(
-                _shutdown_event.wait(),
-                timeout=STALE_JOB_CHECK_INTERVAL
-            )
+            await asyncio.wait_for(_shutdown_event.wait(), timeout=STALE_JOB_CHECK_INTERVAL)
             # If we get here, shutdown was requested
             break
         except asyncio.TimeoutError:
@@ -396,7 +383,11 @@ def worker_has_gpu(worker: dict) -> bool:
     # First check the capabilities column (set at registration)
     if worker.get("capabilities"):
         try:
-            caps = json.loads(worker["capabilities"]) if isinstance(worker["capabilities"], str) else worker["capabilities"]
+            caps = (
+                json.loads(worker["capabilities"])
+                if isinstance(worker["capabilities"], str)
+                else worker["capabilities"]
+            )
             if caps.get("hwaccel_enabled"):
                 return True
         except (json.JSONDecodeError, TypeError):
@@ -436,9 +427,7 @@ async def claim_job(worker: dict = Depends(verify_worker_key)):
     if not requesting_worker_has_gpu:
         # This is a CPU worker - check if any GPU workers are idle
         idle_gpu_workers = await database.fetch_all(
-            workers.select()
-            .where(workers.c.status == "idle")
-            .where(workers.c.id != worker["id"])  # Exclude self
+            workers.select().where(workers.c.status == "idle").where(workers.c.id != worker["id"])  # Exclude self
         )
 
         # Check if any idle workers have GPU

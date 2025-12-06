@@ -139,3 +139,114 @@ def with_db_retry(
         return wrapper
 
     return decorator
+
+
+# =============================================================================
+# Database Operation Wrappers
+# =============================================================================
+
+
+async def fetch_one_with_retry(
+    query,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+):
+    """
+    Execute a fetch_one query with retry logic for database locking errors.
+
+    Args:
+        query: SQLAlchemy query to execute
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+
+    Returns:
+        The query result (single row or None)
+
+    Raises:
+        DatabaseLockedError: If all retries are exhausted
+    """
+    from api.database import database
+
+    async def _fetch():
+        return await database.fetch_one(query)
+
+    return await execute_with_retry(
+        _fetch,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+    )
+
+
+async def fetch_all_with_retry(
+    query,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+):
+    """
+    Execute a fetch_all query with retry logic for database locking errors.
+
+    Args:
+        query: SQLAlchemy query to execute
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+
+    Returns:
+        The query result (list of rows)
+
+    Raises:
+        DatabaseLockedError: If all retries are exhausted
+    """
+    from api.database import database
+
+    async def _fetch():
+        return await database.fetch_all(query)
+
+    return await execute_with_retry(
+        _fetch,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+    )
+
+
+async def db_execute_with_retry(
+    query,
+    values=None,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+):
+    """
+    Execute a database write query with retry logic for database locking errors.
+
+    Args:
+        query: SQLAlchemy query to execute
+        values: Optional values dict for the query
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+
+    Returns:
+        The query result (typically row ID for inserts)
+
+    Raises:
+        DatabaseLockedError: If all retries are exhausted
+    """
+    from api.database import database
+
+    async def _execute():
+        if values is not None:
+            return await database.execute(query, values)
+        return await database.execute(query)
+
+    return await execute_with_retry(
+        _execute,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+    )

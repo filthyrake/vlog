@@ -79,15 +79,12 @@ class TestAuthenticationEdgeCases:
         """Test disabled worker returns 403."""
         # Get the worker's database ID through the API key
         key_record = await test_database.fetch_one(
-            worker_api_keys.select()
-            .where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
+            worker_api_keys.select().where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
         )
 
         # Disable the worker
         await test_database.execute(
-            workers.update()
-            .where(workers.c.id == key_record["worker_id"])
-            .values(status="disabled")
+            workers.update().where(workers.c.id == key_record["worker_id"]).values(status="disabled")
         )
 
         response = worker_client.post(
@@ -125,8 +122,7 @@ class TestAuthenticationEdgeCases:
 
         # Check last_used_at was updated
         key_record_after = await test_database.fetch_one(
-            worker_api_keys.select()
-            .where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
+            worker_api_keys.select().where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
         )
         assert key_record_after["last_used_at"] is not None
 
@@ -370,7 +366,10 @@ class TestPathTraversalPrevention:
         )
         assert response.status_code == 400
         # Either path traversal or unexpected file type error
-        assert "path traversal" in response.json()["detail"].lower() or "cannot resolve" in response.json()["detail"].lower()
+        assert (
+            "path traversal" in response.json()["detail"].lower()
+            or "cannot resolve" in response.json()["detail"].lower()
+        )
 
     @pytest.mark.asyncio
     async def test_hardlink_blocked(
@@ -639,9 +638,7 @@ class TestJobClaiming:
 
         # Mark GPU worker as idle (simulate heartbeat)
         await test_database.execute(
-            workers.update()
-            .where(workers.c.worker_id == gpu_worker["worker_id"])
-            .values(status="idle")
+            workers.update().where(workers.c.worker_id == gpu_worker["worker_id"]).values(status="idle")
         )
 
         # CPU worker tries to claim - should wait because GPU worker is idle
@@ -728,9 +725,7 @@ class TestStaleJobDetection:
 
         # Update video status to processing
         await test_database.execute(
-            videos.update()
-            .where(videos.c.id == sample_pending_video["id"])
-            .values(status="processing")
+            videos.update().where(videos.c.id == sample_pending_video["id"]).values(status="processing")
         )
 
         # Simulate worker going offline by setting old heartbeat
@@ -752,17 +747,13 @@ class TestStaleJobDetection:
         assert worker_record["status"] == "offline"
 
         # Verify job is released
-        job_record = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job_record = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job_record["claimed_at"] is None
         assert job_record["worker_id"] is None
         assert job_record["current_step"] is None
 
         # Verify video status reset to pending
-        video_record = await test_database.fetch_one(
-            videos.select().where(videos.c.id == sample_pending_video["id"])
-        )
+        video_record = await test_database.fetch_one(videos.select().where(videos.c.id == sample_pending_video["id"]))
         assert video_record["status"] == "pending"
 
 
