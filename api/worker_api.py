@@ -25,9 +25,9 @@ from typing import Optional
 import sqlalchemy as sa
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
-from api.common import ensure_utc
+from api.common import check_health, ensure_utc, get_storage_status
 from api.database import (
     configure_sqlite_pragmas,
     database,
@@ -1283,8 +1283,27 @@ async def revoke_worker(worker_id: str):
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint for kubernetes probes."""
-    return {"status": "healthy"}
+    """
+    Health check endpoint for kubernetes probes.
+
+    Returns detailed status of database and storage health.
+    Returns 503 if any critical component is unhealthy.
+    """
+    result = await check_health()
+    storage_status = get_storage_status()
+
+    return JSONResponse(
+        status_code=result["status_code"],
+        content={
+            "status": "healthy" if result["healthy"] else "unhealthy",
+            "checks": result["checks"],
+            "storage": {
+                "healthy": storage_status["healthy"],
+                "last_check": storage_status["last_check"],
+                "error": storage_status["last_error"],
+            },
+        },
+    )
 
 
 if __name__ == "__main__":

@@ -10,19 +10,29 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.database import database
-from config import TRUSTED_PROXIES, UPLOADS_DIR, VIDEOS_DIR
+from config import (
+    STORAGE_CHECK_TIMEOUT,
+    TRUSTED_PROXIES,
+    UPLOADS_DIR,
+    VIDEOS_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
-# Timeout for storage health check (seconds)
-STORAGE_CHECK_TIMEOUT = 5
+# Cache for storage health status to avoid hammering storage on every request
+_storage_health_cache = {
+    "healthy": True,
+    "last_check": None,
+    "last_error": None,
+}
+STORAGE_HEALTH_CACHE_TTL = 5  # seconds
 
 
 def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -117,6 +127,12 @@ def _check_storage_sync() -> bool:
     This runs in a thread pool to avoid blocking the event loop, and includes
     a write test to detect read-only mounts, permission issues, or full disks.
     """
+    import os
+
+    # Skip storage check in test mode (CI doesn't have real storage)
+    if os.environ.get("VLOG_TEST_MODE"):
+        return True
+
     try:
         # Check directories exist
         if not VIDEOS_DIR.exists() or not UPLOADS_DIR.exists():
@@ -170,8 +186,114 @@ async def check_health() -> dict:
         logger.warning(f"Storage health check failed: {e}")
 
     healthy = all(checks.values())
+
+    # Update storage health cache
+    _storage_health_cache["healthy"] = checks["storage"]
+    _storage_health_cache["last_check"] = datetime.now(timezone.utc)
+    if not checks["storage"]:
+        _storage_health_cache["last_error"] = "Storage check failed or timed out"
+    else:
+        _storage_health_cache["last_error"] = None
+
     return {
         "checks": checks,
         "healthy": healthy,
         "status_code": 200 if healthy else 503,
     }
+
+
+async def check_storage_available() -> bool:
+    """
+    Check if storage is currently available, using cached status when recent.
+
+    This is a fast check suitable for use in request handling. It uses a cached
+    status within the TTL to avoid hammering the storage on every request.
+
+    Returns:
+        True if storage is available, False otherwise.
+    """
+    import os
+
+    # Skip storage check in test mode (CI doesn't have real storage)
+    if os.environ.get("VLOG_TEST_MODE"):
+        return True
+
+    now = datetime.now(timezone.utc)
+
+    # Return cached status if recent
+    if _storage_health_cache["last_check"] is not None:
+        age = (now - _storage_health_cache["last_check"]).total_seconds()
+        if age < STORAGE_HEALTH_CACHE_TTL:
+            return _storage_health_cache["healthy"]
+
+    # Perform a quick storage check
+    try:
+        loop = asyncio.get_running_loop()
+        is_healthy = await asyncio.wait_for(
+            loop.run_in_executor(None, _check_storage_sync),
+            timeout=STORAGE_CHECK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Storage availability check timed out - possible stale NFS mount")
+        is_healthy = False
+    except Exception as e:
+        logger.warning(f"Storage availability check failed: {e}")
+        is_healthy = False
+
+    # Update cache
+    _storage_health_cache["healthy"] = is_healthy
+    _storage_health_cache["last_check"] = now
+    if not is_healthy:
+        _storage_health_cache["last_error"] = "Storage unavailable"
+    else:
+        _storage_health_cache["last_error"] = None
+
+    return is_healthy
+
+
+async def require_storage_available():
+    """
+    FastAPI dependency that ensures storage is available.
+
+    Use this as a dependency for endpoints that require storage access.
+    Raises HTTPException 503 if storage is unavailable.
+
+    Example:
+        @app.get("/videos/{slug}/stream")
+        async def stream_video(slug: str, _=Depends(require_storage_available)):
+            ...
+    """
+    if not await check_storage_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Video storage temporarily unavailable. Please try again later.",
+            headers={"Retry-After": "30"},
+        )
+
+
+def get_storage_status() -> dict:
+    """
+    Get the current storage health status from cache.
+
+    Returns a dict with:
+        - healthy: bool indicating storage health
+        - last_check: ISO timestamp of last check (or None)
+        - last_error: Error message if unhealthy (or None)
+    """
+    return {
+        "healthy": _storage_health_cache["healthy"],
+        "last_check": (
+            _storage_health_cache["last_check"].isoformat()
+            if _storage_health_cache["last_check"]
+            else None
+        ),
+        "last_error": _storage_health_cache["last_error"],
+    }
+
+
+class StorageUnavailableError(Exception):
+    """Raised when storage operations fail due to unavailable storage."""
+
+    def __init__(self, message: str = "Video storage temporarily unavailable"):
+        self.message = message
+        super().__init__(self.message)
