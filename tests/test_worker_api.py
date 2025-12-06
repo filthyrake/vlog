@@ -5,8 +5,10 @@ Tests worker registration, heartbeat, job claiming, and file transfer endpoints.
 Covers authentication edge cases, key hashing, source file download, and path traversal prevention.
 """
 
+import asyncio
 import io
 import tarfile
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -129,9 +131,6 @@ class TestAuthenticationEdgeCases:
     @pytest.mark.asyncio
     async def test_api_key_last_used_update_does_not_block(self, worker_client, test_database, registered_worker):
         """Test that last_used_at update is truly fire-and-forget and does not block the request."""
-        import asyncio
-        import time
-
         # Make authenticated request and measure response time
         start_time = time.time()
         response = worker_client.post(
