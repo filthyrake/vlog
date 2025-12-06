@@ -1934,6 +1934,9 @@ def parse_worker_capabilities(capabilities_json: Optional[str]) -> dict:
 
     try:
         caps = json.loads(capabilities_json)
+        # Handle nested structure {"capabilities": {...}} or flat structure
+        if "capabilities" in caps and isinstance(caps["capabilities"], dict):
+            caps = caps["capabilities"]
         return {
             "hwaccel_enabled": caps.get("hwaccel_enabled", False),
             "hwaccel_type": caps.get("hwaccel_type"),
@@ -2012,7 +2015,7 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
         GROUP BY tj.worker_id
     """)
     job_stats_rows = await fetch_all_with_retry(job_stats_query)
-    job_stats_map = {row["worker_id"]: row for row in job_stats_rows}
+    job_stats_map = {row["worker_id"]: dict(row) for row in job_stats_rows}
 
     worker_list = []
     active_count = 0
@@ -2021,7 +2024,7 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
     disabled_count = 0
 
     for row in worker_rows:
-        caps = parse_worker_capabilities(row["capabilities"])
+        caps = parse_worker_capabilities(row["metadata"])
         status = determine_worker_status(
             row["status"], row["last_heartbeat"], row["current_job_id"], offline_threshold
         )
@@ -2122,7 +2125,7 @@ async def list_active_jobs(request: Request) -> ActiveJobsResponse:
             tj.attempt_number,
             tj.max_attempts,
             w.worker_name,
-            w.capabilities
+            w.metadata as capabilities
         FROM transcoding_jobs tj
         JOIN videos v ON tj.video_id = v.id
         LEFT JOIN workers w ON tj.worker_id = w.worker_id
