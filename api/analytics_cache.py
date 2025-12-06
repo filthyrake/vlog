@@ -72,8 +72,8 @@ class AnalyticsCache:
         if random.random() < self.CLEANUP_PROBABILITY:
             self.cleanup_expired()
 
-        # Evict oldest entries if at capacity
-        if len(self._cache) >= self._max_size:
+        # Evict oldest entries if at capacity (only when adding new keys)
+        if key not in self._cache and len(self._cache) >= self._max_size:
             self.cleanup_expired()
 
             # If still at capacity after cleanup, remove oldest 10% via LRU
