@@ -1183,7 +1183,8 @@ class TestWorkerDashboardEndpoints:
                 status="active",
                 registered_at=now,
                 last_heartbeat=now,
-                capabilities='{"hwaccel_enabled": true, "hwaccel_type": "nvidia", "gpu_name": "RTX 3090"}',
+                metadata='{"capabilities": {"hwaccel_enabled": true, '
+                '"hwaccel_type": "nvidia", "gpu_name": "RTX 3090"}}',
             )
         )
 
