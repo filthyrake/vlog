@@ -121,6 +121,25 @@ class TestHandleAPIExceptions:
         assert isinstance(exc_info.value.__cause__, ValueError)
         assert str(exc_info.value.__cause__) == "Original error"
 
+    @pytest.mark.asyncio
+    async def test_preserves_function_metadata(self):
+        """Should preserve function name, docstring, and annotations with @functools.wraps."""
+        @handle_api_exceptions("test_operation")
+        async def documented_func(arg: int) -> str:
+            """This is a test function."""
+            return f"result: {arg}"
+
+        # Check that function metadata is preserved
+        assert documented_func.__name__ == "documented_func"
+        assert documented_func.__doc__ == "This is a test function."
+        assert "arg" in documented_func.__annotations__
+        assert documented_func.__annotations__["arg"] is int
+        assert documented_func.__annotations__["return"] is str
+
+        # Also verify it still works functionally
+        result = await documented_func(42)
+        assert result == "result: 42"
+
 
 class TestLogAndRaiseHTTPException:
     """Test the log_and_raise_http_exception utility."""
