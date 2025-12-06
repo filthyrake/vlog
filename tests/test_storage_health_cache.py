@@ -277,34 +277,29 @@ class TestStorageHealthCacheLock:
     async def test_lock_prevents_interleaved_access(self, mock_storage_check, disable_test_mode):
         """
         Test that the lock prevents interleaved reads and writes.
-        """
-        access_log = []
 
-        # Create a custom mock that logs access times
-        def logged_check():
-            access_log.append(("check_start", datetime.now(timezone.utc)))
-            import time
-            time.sleep(0.05)  # Simulate I/O
-            access_log.append(("check_end", datetime.now(timezone.utc)))
+        This test verifies that when multiple concurrent requests are made,
+        only one storage check occurs due to the lock preventing thundering herd.
+        """
+        call_count = {"count": 0}
+
+        # Create a mock that counts calls
+        def counted_check():
+            call_count["count"] += 1
             return True
 
-        mock_storage_check.side_effect = logged_check
+        mock_storage_check.side_effect = counted_check
 
         # Launch 3 concurrent requests
         tasks = [common.check_storage_available() for _ in range(3)]
-        await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks)
 
-        # Verify that checks don't overlap
-        # With the lock, only one check should happen
-        check_starts = [t for action, t in access_log if action == "check_start"]
-        check_ends = [t for action, t in access_log if action == "check_end"]
+        # All should return True
+        assert all(results), "All requests should return True"
 
-        # Should have exactly 1 check (due to lock and cache)
-        assert len(check_starts) == 1, (
-            f"Expected 1 check start, got {len(check_starts)}"
-        )
-        assert len(check_ends) == 1, (
-            f"Expected 1 check end, got {len(check_ends)}"
+        # Only one storage check should have occurred due to the lock
+        assert call_count["count"] == 1, (
+            f"Expected 1 storage check, got {call_count['count']}"
         )
 
     @pytest.mark.asyncio
