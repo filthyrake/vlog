@@ -409,21 +409,53 @@ sudo firewall-cmd --reload
 
 ## Kubernetes Distributed Transcoding
 
-For horizontal scaling, deploy containerized workers to Kubernetes.
+For horizontal scaling, deploy containerized GPU workers to Kubernetes.
+
+### Container Images
+
+The GPU worker container is based on **Rocky Linux 10**:
+- FFmpeg 7.1.2 from RPM Fusion (nvenc, vaapi, qsv encoders pre-built)
+- intel-media-driver 25.2.6 (Battlemage/Arc B580 support)
+- Python 3.12
+
+**Local registry:** `localhost:9003/vlog-worker-gpu:rocky10`
 
 ### 1. Build Worker Docker Image
 
 ```bash
 cd /path/to/vlog
 
-# Build the image
-docker build -f Dockerfile.worker -t vlog-worker:latest .
+# Build the GPU-enabled image (Rocky Linux 10 based)
+docker build -f Dockerfile.worker.gpu -t vlog-worker-gpu:rocky10 .
+
+# Tag as latest
+docker tag vlog-worker-gpu:rocky10 vlog-worker-gpu:latest
+
+# Push to local registry (port 9003)
+docker push localhost:9003/vlog-worker-gpu:rocky10
 
 # For k3s with containerd, import directly
-docker save vlog-worker:latest | sudo k3s ctr images import -
+docker save vlog-worker-gpu:rocky10 | sudo k3s ctr images import -
 
-# For multi-node clusters, import on each node or use a registry
-docker save vlog-worker:latest | ssh node2 'sudo k3s ctr images import -'
+# For multi-node clusters, import on each node
+docker save vlog-worker-gpu:rocky10 | ssh node2 'sudo k3s ctr images import -'
+```
+
+### GPU Support Requirements
+
+**NVIDIA NVENC:**
+- nvidia-container-toolkit installed on nodes
+- nvidia device plugin daemonset
+- RuntimeClass `nvidia` configured
+
+**Intel VAAPI (Arc/Battlemage):**
+- Node Feature Discovery (NFD)
+- Intel GPU device plugin
+
+```bash
+# Install Intel GPU support
+kubectl apply -k 'https://github.com/intel/intel-device-plugins-for-kubernetes/deployments/nfd?ref=main'
+kubectl apply -k 'https://github.com/intel/intel-device-plugins-for-kubernetes/deployments/gpu_plugin?ref=main'
 ```
 
 ### 2. Register Workers and Get API Keys
@@ -460,15 +492,86 @@ kubectl apply -f k8s/deployment.yaml
 
 ### 4. Example Kubernetes Manifests
 
-**k8s/namespace.yaml:**
+See `k8s/` directory for full manifests. Key examples:
+
+**NVIDIA GPU Worker (k8s/worker-deployment-nvidia.yaml):**
 ```yaml
-apiVersion: v1
-kind: Namespace
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: vlog
+  name: vlog-worker-nvidia
+  namespace: vlog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog-worker
+      app.kubernetes.io/component: nvidia
+  template:
+    spec:
+      runtimeClassName: nvidia  # Required for GPU access
+      containers:
+      - name: worker
+        image: vlog-worker-gpu:rocky10
+        imagePullPolicy: Never
+        env:
+        - name: VLOG_WORKER_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: vlog-worker-config
+              key: api-url
+        - name: VLOG_WORKER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vlog-worker-secret
+              key: nvidia-api-key
+        - name: VLOG_HWACCEL_TYPE
+          value: "nvidia"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "4Gi"
 ```
 
-**k8s/deployment.yaml:**
+**Intel Arc/Battlemage Worker (k8s/worker-deployment-intel.yaml):**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vlog-worker-intel
+  namespace: vlog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog-worker
+      app.kubernetes.io/component: intel
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: vlog-worker-gpu:rocky10
+        imagePullPolicy: Never
+        env:
+        - name: VLOG_WORKER_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: vlog-worker-config
+              key: api-url
+        - name: VLOG_WORKER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vlog-worker-secret
+              key: intel-api-key
+        - name: VLOG_HWACCEL_TYPE
+          value: "intel"
+        resources:
+          limits:
+            gpu.intel.com/xe: 1
+            memory: "4Gi"
+```
+
+**CPU-Only Worker (k8s/worker-deployment.yaml):**
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -481,13 +584,10 @@ spec:
     matchLabels:
       app: vlog-worker
   template:
-    metadata:
-      labels:
-        app: vlog-worker
     spec:
       containers:
       - name: worker
-        image: vlog-worker:latest
+        image: vlog-worker-gpu:rocky10
         imagePullPolicy: Never
         env:
         - name: VLOG_WORKER_API_URL
@@ -500,6 +600,8 @@ spec:
             secretKeyRef:
               name: vlog-worker-secret
               key: api-key
+        - name: VLOG_HWACCEL_TYPE
+          value: "none"
         resources:
           requests:
             memory: "1Gi"
