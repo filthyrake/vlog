@@ -312,6 +312,30 @@ class TestAnalyticsHTTP:
         )
         assert response.status_code == 404
 
+    def test_heartbeat_session_token_too_long(self, public_client):
+        """Test heartbeat with session token exceeding max length (64 chars) fails."""
+        response = public_client.post(
+            "/api/analytics/heartbeat",
+            json={
+                "session_token": "a" * 65,  # Exceeds 64 character limit
+                "position": 30.0,
+                "playing": True,
+            },
+        )
+        assert response.status_code == 422  # Validation error
+
+    def test_end_session_token_too_long(self, public_client):
+        """Test ending session with session token exceeding max length (64 chars) fails."""
+        response = public_client.post(
+            "/api/analytics/end",
+            json={
+                "session_token": "a" * 65,  # Exceeds 64 character limit
+                "position": 120.0,
+                "completed": True,
+            },
+        )
+        assert response.status_code == 422  # Validation error
+
 
 # ============================================================================
 # Database-Level Tests (existing tests)
