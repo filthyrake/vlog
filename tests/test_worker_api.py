@@ -759,63 +759,153 @@ class TestStaleJobDetection:
     async def test_stale_job_released_when_worker_offline(
         self, worker_client, test_database, sample_pending_video, worker_admin_headers
     ):
-        """Test that stale jobs are released when workers go offline."""
+        """Test that stale jobs are released when workers go offline AND claim has expired."""
+        import api.worker_api as worker_api_module
         from api.worker_api import _detect_and_release_stale_jobs
 
-        # Register a worker
-        response = worker_client.post(
-            "/api/worker/register",
-            headers=worker_admin_headers,
-            json={"worker_name": "stale-test-worker"},
-        )
-        assert response.status_code == 200
-        worker_data = response.json()
+        # Set _api_start_time to the past to bypass startup grace period in tests
+        old_start_time = worker_api_module._api_start_time
+        worker_api_module._api_start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
 
-        # Create and claim a job
-        job_id = await test_database.execute(
-            transcoding_jobs.insert().values(
-                video_id=sample_pending_video["id"],
-                worker_id=worker_data["worker_id"],
-                claimed_at=datetime.now(timezone.utc),
-                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
-                current_step="transcode",
-                attempt_number=1,
-                max_attempts=3,
+        try:
+            # Register a worker
+            response = worker_client.post(
+                "/api/worker/register",
+                headers=worker_admin_headers,
+                json={"worker_name": "stale-test-worker"},
             )
-        )
+            assert response.status_code == 200
+            worker_data = response.json()
 
-        # Update video status to processing
-        await test_database.execute(
-            videos.update().where(videos.c.id == sample_pending_video["id"]).values(status="processing")
-        )
+            # Create and claim a job with EXPIRED claim
+            job_id = await test_database.execute(
+                transcoding_jobs.insert().values(
+                    video_id=sample_pending_video["id"],
+                    worker_id=worker_data["worker_id"],
+                    claimed_at=datetime.now(timezone.utc) - timedelta(minutes=35),
+                    claim_expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),  # Expired 5 min ago
+                    current_step="transcode",
+                    attempt_number=1,
+                    max_attempts=3,
+                )
+            )
 
-        # Simulate worker going offline by setting old heartbeat
-        old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-        await test_database.execute(
-            workers.update()
-            .where(workers.c.worker_id == worker_data["worker_id"])
-            .values(last_heartbeat=old_time, status="active")
-        )
+            # Update video status to processing
+            await test_database.execute(
+                videos.update().where(videos.c.id == sample_pending_video["id"]).values(status="processing")
+            )
 
-        # Run the stale job detection (single iteration, testable helper)
-        stale_count = await _detect_and_release_stale_jobs()
-        assert stale_count == 1
+            # Simulate worker going offline by setting old heartbeat
+            old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+            await test_database.execute(
+                workers.update()
+                .where(workers.c.worker_id == worker_data["worker_id"])
+                .values(last_heartbeat=old_time, status="active")
+            )
 
-        # Verify worker is marked offline
-        worker_record = await test_database.fetch_one(
-            workers.select().where(workers.c.worker_id == worker_data["worker_id"])
-        )
-        assert worker_record["status"] == "offline"
+            # Run the stale job detection (single iteration, testable helper)
+            stale_count = await _detect_and_release_stale_jobs()
+            assert stale_count == 1
 
-        # Verify job is released
-        job_record = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
-        assert job_record["claimed_at"] is None
-        assert job_record["worker_id"] is None
-        assert job_record["current_step"] is None
+            # Verify worker is marked offline
+            worker_record = await test_database.fetch_one(
+                workers.select().where(workers.c.worker_id == worker_data["worker_id"])
+            )
+            assert worker_record["status"] == "offline"
 
-        # Verify video status reset to pending
-        video_record = await test_database.fetch_one(videos.select().where(videos.c.id == sample_pending_video["id"]))
-        assert video_record["status"] == "pending"
+            # Verify job is released
+            job_record = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+            assert job_record["claimed_at"] is None
+            assert job_record["worker_id"] is None
+            assert job_record["current_step"] is None
+
+            # Verify video status reset to pending
+            video_record = await test_database.fetch_one(
+                videos.select().where(videos.c.id == sample_pending_video["id"])
+            )
+            assert video_record["status"] == "pending"
+        finally:
+            # Restore original _api_start_time
+            worker_api_module._api_start_time = old_start_time
+
+    @pytest.mark.asyncio
+    async def test_job_not_released_when_claim_still_valid(
+        self, worker_client, test_database, sample_pending_video, worker_admin_headers
+    ):
+        """Test that jobs are NOT released when worker is offline but claim is still valid.
+
+        This prevents releasing jobs during temporary API outages when workers are
+        still actively processing but just can't reach the API.
+        """
+        import api.worker_api as worker_api_module
+        from api.worker_api import _detect_and_release_stale_jobs
+
+        # Set _api_start_time to the past to bypass startup grace period in tests
+        old_start_time = worker_api_module._api_start_time
+        worker_api_module._api_start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+        try:
+            # Register a worker
+            response = worker_client.post(
+                "/api/worker/register",
+                headers=worker_admin_headers,
+                json={"worker_name": "active-worker"},
+            )
+            assert response.status_code == 200
+            worker_data = response.json()
+
+            # Create and claim a job with VALID claim (30 minutes in future)
+            job_id = await test_database.execute(
+                transcoding_jobs.insert().values(
+                    video_id=sample_pending_video["id"],
+                    worker_id=worker_data["worker_id"],
+                    claimed_at=datetime.now(timezone.utc),
+                    claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+                    current_step="transcode",
+                    attempt_number=1,
+                    max_attempts=3,
+                )
+            )
+
+            # Update video status to processing
+            await test_database.execute(
+                videos.update().where(videos.c.id == sample_pending_video["id"]).values(status="processing")
+            )
+
+            # Simulate worker appearing offline (old heartbeat)
+            old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+            await test_database.execute(
+                workers.update()
+                .where(workers.c.worker_id == worker_data["worker_id"])
+                .values(last_heartbeat=old_time, status="active")
+            )
+
+            # Run the stale job detection
+            stale_count = await _detect_and_release_stale_jobs()
+            assert stale_count == 1  # Worker marked offline
+
+            # Verify worker is marked offline
+            worker_record = await test_database.fetch_one(
+                workers.select().where(workers.c.worker_id == worker_data["worker_id"])
+            )
+            assert worker_record["status"] == "offline"
+
+            # Verify job is NOT released (claim still valid)
+            job_record = await test_database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+            )
+            assert job_record["claimed_at"] is not None  # Still claimed
+            assert job_record["worker_id"] == worker_data["worker_id"]  # Still assigned
+            assert job_record["current_step"] == "transcode"  # Still in progress
+
+            # Verify video status NOT reset
+            video_record = await test_database.fetch_one(
+                videos.select().where(videos.c.id == sample_pending_video["id"])
+            )
+            assert video_record["status"] == "processing"  # Still processing
+        finally:
+            # Restore original _api_start_time
+            worker_api_module._api_start_time = old_start_time
 
 
 class TestProgressUpdates:
