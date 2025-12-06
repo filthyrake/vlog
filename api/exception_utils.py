@@ -58,34 +58,6 @@ def handle_api_exceptions(
     return decorator
 
 
-def reraise_http_exceptions(func: Callable[..., T]) -> Callable[..., T]:
-    """
-    Minimal decorator that ensures HTTPExceptions are re-raised.
-
-    Use this when you want to add HTTPException re-raising to existing try/except blocks
-    without changing other exception handling logic.
-
-    Example:
-        try:
-            result = await some_operation()
-        except HTTPException:
-            raise  # Always re-raise HTTP errors
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail="Internal error")
-    """
-    async def wrapper(*args: Any, **kwargs: Any) -> T:
-        try:
-            return await func(*args, **kwargs)
-        except HTTPException:
-            raise
-        except Exception:
-            raise
-    return wrapper
-
-
 def log_and_raise_http_exception(
     exception: Exception,
     status_code: int,
