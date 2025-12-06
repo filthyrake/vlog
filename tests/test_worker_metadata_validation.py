@@ -387,7 +387,7 @@ class TestHeartbeatMetadataValidation:
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
             json={"status": "idle", "metadata": metadata},
         )
-        # Should succeed as it's under both schema and endpoint limits
+        # Should succeed as it's under both schema (10000 bytes) and endpoint (10000 bytes) limits
         assert response.status_code == 200
 
     def test_heartbeat_combined_attack_vector(self, worker_client, registered_worker):
