@@ -1756,7 +1756,8 @@
                         payload.published_at = this.bulkUpdatePublishedAt;
                     }
 
-                    if (!payload.category_id && payload.category_id !== 0 && !payload.unpublish && !payload.published_at) {
+                    const hasUpdates = (payload.category_id !== undefined) || payload.unpublish || payload.published_at;
+                    if (!hasUpdates) {
                         this.bulkOpMessage = 'Please select at least one field to update';
                         this.bulkOpError = true;
                         return;
