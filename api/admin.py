@@ -152,7 +152,8 @@ async def save_upload_with_size_limit(file: UploadFile, upload_path: Path, max_s
     except Exception as e:
         # Clean up on any other error
         upload_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        logger.exception(f"Unexpected error during file upload: {e}")
+        raise HTTPException(status_code=500, detail="Upload failed")
 
     return total_size
 
@@ -542,6 +543,8 @@ async def upload_video(
                 source_height=0,
             )
             video_id = await database.execute(query)
+        except HTTPException:
+            raise
         except IntegrityError:
             # Slug collision - try with incremented counter
             counter += 1
@@ -607,12 +610,19 @@ async def upload_video(
                 max_attempts=3,
             )
         )
-    except Exception:
-        # Clean up video record and uploaded file on job creation failure
+    except HTTPException:
+        # Clean up on HTTP errors
         await database.execute(videos.delete().where(videos.c.id == video_id))
         upload_path.unlink(missing_ok=True)
         shutil.rmtree(VIDEOS_DIR / slug, ignore_errors=True)
         raise
+    except Exception as e:
+        # Clean up video record and uploaded file on job creation failure
+        logger.exception(f"Failed to create transcoding job for video {video_id}: {e}")
+        await database.execute(videos.delete().where(videos.c.id == video_id))
+        upload_path.unlink(missing_ok=True)
+        shutil.rmtree(VIDEOS_DIR / slug, ignore_errors=True)
+        raise HTTPException(status_code=500, detail="Failed to create transcoding job")
 
     # Audit log
     log_audit(
@@ -788,6 +798,16 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
                     archive_upload.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(upload_file), str(archive_upload))
                     moved_files.append(("file", archive_upload, upload_file))
+        except HTTPException:
+            # Rollback: restore files that were moved
+            for item_type, src, dst in reversed(moved_files):
+                try:
+                    shutil.move(str(src), str(dst))
+                except Exception:
+                    pass  # Best effort rollback
+            # Rollback database change
+            await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
+            raise
         except Exception as e:
             # Rollback: restore files that were moved
             for item_type, src, dst in reversed(moved_files):
@@ -797,7 +817,8 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
                     pass  # Best effort rollback
             # Rollback database change
             await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
-            raise HTTPException(status_code=500, detail=f"Failed to archive files: {e}")
+            logger.exception(f"Failed to archive files for video {video_id}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to archive files")
 
         # Audit log
         log_audit(
@@ -847,6 +868,16 @@ async def restore_video(request: Request, video_id: int):
                 upload_file = UPLOADS_DIR / f"{video_id}{ext}"
                 shutil.move(str(archive_upload), str(upload_file))
                 moved_files.append(("file", upload_file, archive_upload))
+    except HTTPException:
+        # Rollback: restore files that were moved
+        for item_type, src, dst in reversed(moved_files):
+            try:
+                shutil.move(str(src), str(dst))
+            except Exception:
+                pass  # Best effort rollback
+        # Rollback database change
+        await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=original_deleted_at))
+        raise
     except Exception as e:
         # Rollback: restore files that were moved
         for item_type, src, dst in reversed(moved_files):
@@ -856,7 +887,8 @@ async def restore_video(request: Request, video_id: int):
                 pass  # Best effort rollback
         # Rollback database change
         await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=original_deleted_at))
-        raise HTTPException(status_code=500, detail=f"Failed to restore files: {e}")
+        logger.exception(f"Failed to restore files for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to restore files")
 
     # Audit log
     log_audit(
