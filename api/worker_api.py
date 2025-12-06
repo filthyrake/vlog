@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 import sqlalchemy as sa
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
@@ -71,6 +71,7 @@ from config import (
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
+    WORKER_ADMIN_SECRET,
     WORKER_API_PORT,
     WORKER_CLAIM_DURATION_MINUTES,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
@@ -87,6 +88,47 @@ limiter = Limiter(
 
 # Global flag to signal background task to stop
 _shutdown_event: Optional[asyncio.Event] = None
+
+
+async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret")):
+    """
+    Verify admin secret for worker management endpoints.
+
+    This dependency protects sensitive endpoints:
+    - POST /api/worker/register (worker registration)
+    - GET /api/workers (list all workers)
+    - POST /api/workers/{id}/revoke (revoke worker API key)
+
+    Set VLOG_WORKER_ADMIN_SECRET environment variable to enable authentication.
+    If not set, these endpoints will return 503 Service Unavailable.
+
+    Raises:
+        HTTPException 503: If WORKER_ADMIN_SECRET is not configured
+        HTTPException 401: If X-Admin-Secret header is missing
+        HTTPException 403: If X-Admin-Secret header is invalid
+    """
+    if not WORKER_ADMIN_SECRET:
+        logger.warning("Worker admin endpoint called but VLOG_WORKER_ADMIN_SECRET is not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Worker admin endpoints require VLOG_WORKER_ADMIN_SECRET to be configured",
+        )
+
+    if not x_admin_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="X-Admin-Secret header required",
+        )
+
+    # Use constant-time comparison to prevent timing attacks
+    import hmac
+
+    if not hmac.compare_digest(x_admin_secret, WORKER_ADMIN_SECRET):
+        logger.warning("Invalid admin secret provided for worker management endpoint")
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid admin secret",
+        )
 
 
 async def _detect_and_release_stale_jobs():
@@ -280,9 +322,15 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 @app.post("/api/worker/register", response_model=WorkerRegisterResponse)
 @limiter.limit(RATE_LIMIT_WORKER_REGISTER)
-async def register_worker(request: Request, data: WorkerRegisterRequest):
+async def register_worker(
+    request: Request,
+    data: WorkerRegisterRequest,
+    _admin: None = Depends(verify_admin_secret),
+):
     """
     Register a new transcoding worker and generate API key.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
 
     The API key is only returned once at registration - store it securely.
 
@@ -1231,8 +1279,15 @@ async def upload_hls(
 
 @app.get("/api/workers", response_model=WorkerListResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
-async def list_workers(request: Request):
-    """List all registered workers with their status."""
+async def list_workers(
+    request: Request,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    List all registered workers with their status.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+    """
     now = datetime.now(timezone.utc)
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
 
@@ -1296,8 +1351,16 @@ async def list_workers(request: Request):
 
 @app.post("/api/workers/{worker_id}/revoke", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_REGISTER)
-async def revoke_worker(request: Request, worker_id: str):
-    """Revoke a worker's API keys (admin endpoint, no auth required for now)."""
+async def revoke_worker(
+    request: Request,
+    worker_id: str,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    Revoke a worker's API keys.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+    """
     # Find worker by UUID
     worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
     if not worker:
