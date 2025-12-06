@@ -244,11 +244,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS - allow all origins since this is internal
+# CORS - allow all origins since workers use API key auth (not cookies)
+# Note: allow_credentials must be False with wildcard origins per CORS spec
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

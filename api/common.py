@@ -94,6 +94,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         # Permissions policy (disable unnecessary browser features)
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        # Content Security Policy - restrict resource loading for API responses
+        response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
         return response
 
 

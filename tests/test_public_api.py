@@ -737,3 +737,40 @@ class TestPagination:
 
         result = await test_database.fetch_all(query)
         assert len(result) == 5
+
+
+# ============================================================================
+# Security Headers Tests
+# ============================================================================
+
+
+class TestSecurityHeaders:
+    """Tests for security headers in API responses."""
+
+    def test_content_security_policy_header(self, public_client):
+        """Test that Content-Security-Policy header is present in responses."""
+        response = public_client.get("/health")
+        assert "Content-Security-Policy" in response.headers
+        csp = response.headers["Content-Security-Policy"]
+        assert "default-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp
+
+    def test_x_frame_options_header(self, public_client):
+        """Test that X-Frame-Options header is present."""
+        response = public_client.get("/health")
+        assert response.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+    def test_x_content_type_options_header(self, public_client):
+        """Test that X-Content-Type-Options header is present."""
+        response = public_client.get("/health")
+        assert response.headers.get("X-Content-Type-Options") == "nosniff"
+
+    def test_referrer_policy_header(self, public_client):
+        """Test that Referrer-Policy header is present."""
+        response = public_client.get("/health")
+        assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+
+    def test_permissions_policy_header(self, public_client):
+        """Test that Permissions-Policy header is present."""
+        response = public_client.get("/health")
+        assert "Permissions-Policy" in response.headers

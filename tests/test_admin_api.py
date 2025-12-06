@@ -1116,3 +1116,30 @@ class TestArchivedVideos:
         )
         assert len(result) == 1
         assert result[0]["slug"] == "active"
+
+
+# ============================================================================
+# Security Headers Tests
+# ============================================================================
+
+
+class TestAdminSecurityHeaders:
+    """Tests for security headers in Admin API responses."""
+
+    def test_content_security_policy_header(self, admin_client):
+        """Test that Content-Security-Policy header is present in responses."""
+        response = admin_client.get("/health")
+        assert "Content-Security-Policy" in response.headers
+        csp = response.headers["Content-Security-Policy"]
+        assert "default-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp
+
+    def test_x_frame_options_header(self, admin_client):
+        """Test that X-Frame-Options header is present."""
+        response = admin_client.get("/health")
+        assert response.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+    def test_x_content_type_options_header(self, admin_client):
+        """Test that X-Content-Type-Options header is present."""
+        response = admin_client.get("/health")
+        assert response.headers.get("X-Content-Type-Options") == "nosniff"

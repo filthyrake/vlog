@@ -19,7 +19,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from sqlite3 import IntegrityError  # databases library passes through sqlite3 exceptions
-from typing import Any, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from worker.hwaccel import GPUCapabilities
 
 from api.common import ensure_utc
 from api.database import (
@@ -532,8 +535,8 @@ async def transcode_quality_with_progress(
     output_dir: Path,
     quality: dict,
     duration: float,
-    progress_callback: Optional[Callable[[int], None]] = None,
-    gpu_caps: Optional[Any] = None,
+    progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
+    gpu_caps: Optional["GPUCapabilities"] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking and timeout.
@@ -544,7 +547,7 @@ async def transcode_quality_with_progress(
         quality: Quality preset dict with name, height, bitrate, audio_bitrate
         duration: Video duration in seconds
         progress_callback: Optional async callback for progress updates (0-100)
-        gpu_caps: Optional GPUCapabilities from hwaccel module for hardware encoding
+        gpu_caps: GPU capabilities from hwaccel module for hardware encoding
 
     Returns:
         Tuple[bool, Optional[str]]: (success, error_message) where error_message
@@ -713,7 +716,10 @@ async def transcode_quality_with_progress(
 
 
 async def create_original_quality(
-    input_path: Path, output_dir: Path, duration: float, progress_callback: Optional[Callable[[int], None]] = None
+    input_path: Path,
+    output_dir: Path,
+    duration: float,
+    progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
 ) -> Tuple[bool, Optional[str], Optional[dict]]:
     """
     Create 'original' quality by remuxing source to HLS without re-encoding.

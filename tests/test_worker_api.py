@@ -1234,3 +1234,50 @@ class TestGracefulShutdown:
         assert job_after["claimed_at"] is not None  # Should still be set
         assert job_after["completed_at"] is not None  # Should still be set
         assert job_after["worker_id"] == registered_worker["worker_id"]
+
+
+# ============================================================================
+# CORS Configuration Tests
+# ============================================================================
+
+
+class TestWorkerAPICORS:
+    """Tests for Worker API CORS configuration."""
+
+    def test_cors_allows_all_origins(self, worker_client):
+        """Test that CORS allows all origins with wildcard."""
+        # Simulate a preflight request
+        response = worker_client.options(
+            "/api/worker/heartbeat",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        # CORS preflight should succeed
+        assert response.status_code == 200
+        assert response.headers.get("Access-Control-Allow-Origin") == "*"
+
+    def test_cors_no_credentials_with_wildcard(self, worker_client):
+        """Test that CORS does not allow credentials with wildcard origin (per CORS spec)."""
+        response = worker_client.options(
+            "/api/worker/heartbeat",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        # Access-Control-Allow-Credentials should not be "true" with wildcard origin
+        allow_credentials = response.headers.get("Access-Control-Allow-Credentials", "false")
+        assert allow_credentials.lower() != "true"
+
+    def test_cors_headers_on_actual_request(self, worker_client):
+        """Test that CORS headers are present on actual requests."""
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            json={"status": "active"},
+            headers={"Origin": "https://example.com"},
+        )
+        # Should return 401 (no API key) but still have CORS headers
+        assert response.status_code == 401
+        assert response.headers.get("Access-Control-Allow-Origin") == "*"
