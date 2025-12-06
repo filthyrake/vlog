@@ -3,6 +3,7 @@ Admin API - handles uploads and video management.
 Runs on port 9001 (not exposed externally).
 """
 
+import json
 import logging
 import shutil
 from contextlib import asynccontextmanager
@@ -41,6 +42,8 @@ from api.database import (
     transcriptions,
     video_qualities,
     videos,
+    worker_api_keys,
+    workers,
 )
 from api.db_retry import (
     DatabaseLockedError,
@@ -51,6 +54,8 @@ from api.db_retry import (
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
 from api.schemas import (
+    ActiveJobsResponse,
+    ActiveJobWithWorker,
     AnalyticsOverview,
     CategoryCreate,
     CategoryResponse,
@@ -73,6 +78,10 @@ from api.schemas import (
     VideoQualityInfo,
     VideoQualityResponse,
     VideoResponse,
+    WorkerDashboardResponse,
+    WorkerDashboardStatus,
+    WorkerDetailResponse,
+    WorkerJobHistory,
 )
 from config import (
     ADMIN_CORS_ALLOWED_ORIGINS,
@@ -91,6 +100,7 @@ from config import (
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
+    WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
 from worker.transcoder import get_video_info
 
@@ -1880,6 +1890,556 @@ async def analytics_trends(
     response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
 
     return TrendsResponse(**result_data)
+
+
+# ============ Worker Management ============
+
+
+def parse_worker_capabilities(capabilities_json: Optional[str]) -> dict:
+    """Parse worker capabilities JSON and return a dict with hardware info."""
+    if not capabilities_json:
+        return {"hwaccel_enabled": False, "hwaccel_type": None, "gpu_name": None}
+
+    try:
+        caps = json.loads(capabilities_json)
+        return {
+            "hwaccel_enabled": caps.get("hwaccel_enabled", False),
+            "hwaccel_type": caps.get("hwaccel_type"),
+            "gpu_name": caps.get("gpu_name"),
+        }
+    except (json.JSONDecodeError, TypeError):
+        return {"hwaccel_enabled": False, "hwaccel_type": None, "gpu_name": None}
+
+
+def determine_worker_status(
+    db_status: str, last_heartbeat: Optional[datetime], current_job_id: Optional[int], offline_threshold: datetime
+) -> str:
+    """Determine the effective worker status based on heartbeat and current job."""
+    if db_status == "disabled":
+        return "disabled"
+
+    if not last_heartbeat:
+        return "offline"
+
+    # Ensure timezone-aware comparison
+    hb = last_heartbeat
+    if hb.tzinfo is None:
+        hb = hb.replace(tzinfo=timezone.utc)
+
+    if hb < offline_threshold:
+        return "offline"
+
+    # Active = has a job, Idle = no job but online
+    if current_job_id:
+        return "active"
+    return "idle"
+
+
+@app.get("/api/workers")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
+    """
+    List all workers with their status and current activity.
+
+    Shows real-time worker status with heartbeat information,
+    current job assignments, and hardware capabilities.
+    """
+    now = datetime.now(timezone.utc)
+    offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
+
+    # Get all workers with job counts
+    worker_rows = await fetch_all_with_retry(workers.select().order_by(workers.c.last_heartbeat.desc()))
+
+    worker_list = []
+    active_count = 0
+    idle_count = 0
+    offline_count = 0
+    disabled_count = 0
+
+    for row in worker_rows:
+        caps = parse_worker_capabilities(row["capabilities"])
+        status = determine_worker_status(
+            row["status"], row["last_heartbeat"], row["current_job_id"], offline_threshold
+        )
+
+        # Count by status
+        if status == "active":
+            active_count += 1
+        elif status == "idle":
+            idle_count += 1
+        elif status == "disabled":
+            disabled_count += 1
+        else:
+            offline_count += 1
+
+        # Calculate seconds since heartbeat
+        seconds_since_hb = None
+        if row["last_heartbeat"]:
+            hb = row["last_heartbeat"]
+            if hb.tzinfo is None:
+                hb = hb.replace(tzinfo=timezone.utc)
+            seconds_since_hb = int((now - hb).total_seconds())
+
+        # Get current job info if worker has a job
+        current_video_slug = None
+        current_video_title = None
+        current_step = None
+        current_progress = None
+
+        if row["current_job_id"]:
+            job_info = await database.fetch_one(
+                sa.select(
+                    transcoding_jobs.c.current_step,
+                    transcoding_jobs.c.progress_percent,
+                    videos.c.slug,
+                    videos.c.title,
+                )
+                .select_from(transcoding_jobs.join(videos))
+                .where(transcoding_jobs.c.id == row["current_job_id"])
+            )
+            if job_info:
+                current_video_slug = job_info["slug"]
+                current_video_title = job_info["title"]
+                current_step = job_info["current_step"]
+                current_progress = job_info["progress_percent"]
+
+        # Get job counts for this worker
+        jobs_completed = await database.fetch_val(
+            sa.select(sa.func.count())
+            .select_from(transcoding_jobs)
+            .where(transcoding_jobs.c.worker_id == row["worker_id"])
+            .where(transcoding_jobs.c.completed_at.isnot(None))
+            .where(videos.c.status == "ready")
+            .select_from(transcoding_jobs.join(videos))
+        ) or 0
+
+        jobs_failed = await database.fetch_val(
+            sa.select(sa.func.count())
+            .select_from(transcoding_jobs)
+            .where(transcoding_jobs.c.worker_id == row["worker_id"])
+            .where(transcoding_jobs.c.completed_at.isnot(None))
+            .where(videos.c.status == "failed")
+            .select_from(transcoding_jobs.join(videos))
+        ) or 0
+
+        # Get last job completion time
+        last_completed = await database.fetch_val(
+            sa.select(sa.func.max(transcoding_jobs.c.completed_at))
+            .where(transcoding_jobs.c.worker_id == row["worker_id"])
+            .where(transcoding_jobs.c.completed_at.isnot(None))
+        )
+
+        worker_list.append(
+            WorkerDashboardStatus(
+                id=row["id"],
+                worker_id=row["worker_id"],
+                worker_name=row["worker_name"],
+                worker_type=row["worker_type"],
+                status=status,
+                registered_at=row["registered_at"],
+                last_heartbeat=row["last_heartbeat"],
+                seconds_since_heartbeat=seconds_since_hb,
+                current_job_id=row["current_job_id"],
+                current_video_slug=current_video_slug,
+                current_video_title=current_video_title,
+                current_step=current_step,
+                current_progress=current_progress,
+                hwaccel_enabled=caps["hwaccel_enabled"],
+                hwaccel_type=caps["hwaccel_type"],
+                gpu_name=caps["gpu_name"],
+                jobs_completed=jobs_completed,
+                jobs_failed=jobs_failed,
+                last_job_completed_at=last_completed,
+            )
+        )
+
+    return WorkerDashboardResponse(
+        workers=worker_list,
+        total_count=len(worker_list),
+        active_count=active_count,
+        idle_count=idle_count,
+        offline_count=offline_count,
+        disabled_count=disabled_count,
+    )
+
+
+@app.get("/api/workers/active-jobs")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_active_jobs(request: Request) -> ActiveJobsResponse:
+    """
+    List all active transcoding jobs with worker information.
+
+    Shows jobs that are pending or being processed, including
+    which worker is handling each job and progress details.
+    """
+    # Get all jobs for videos that are pending or processing
+    query = sa.text("""
+        SELECT
+            tj.id as job_id,
+            tj.video_id,
+            v.slug as video_slug,
+            v.title as video_title,
+            v.status as video_status,
+            tj.worker_id,
+            tj.current_step,
+            tj.progress_percent,
+            tj.started_at,
+            tj.claimed_at,
+            tj.attempt_number,
+            tj.max_attempts,
+            w.worker_name,
+            w.capabilities
+        FROM transcoding_jobs tj
+        JOIN videos v ON tj.video_id = v.id
+        LEFT JOIN workers w ON tj.worker_id = w.worker_id
+        WHERE v.status IN ('pending', 'processing')
+          AND v.deleted_at IS NULL
+        ORDER BY tj.claimed_at DESC NULLS LAST, v.created_at ASC
+    """)
+
+    rows = await fetch_all_with_retry(query)
+
+    jobs = []
+    processing_count = 0
+    pending_count = 0
+
+    for row in rows:
+        caps = parse_worker_capabilities(row["capabilities"])
+
+        # Count by status
+        if row["video_status"] == "processing":
+            processing_count += 1
+        else:
+            pending_count += 1
+
+        # Get quality progress for this job
+        quality_rows = await database.fetch_all(
+            quality_progress.select().where(quality_progress.c.job_id == row["job_id"])
+        )
+
+        qualities = [
+            QualityProgressResponse(
+                name=q["quality"],
+                status=q["status"],
+                progress=q["progress_percent"] or 0,
+            )
+            for q in quality_rows
+        ]
+
+        jobs.append(
+            ActiveJobWithWorker(
+                job_id=row["job_id"],
+                video_id=row["video_id"],
+                video_slug=row["video_slug"],
+                video_title=row["video_title"],
+                thumbnail_url=f"/videos/{row['video_slug']}/thumbnail.jpg" if row["video_status"] == "ready" else None,
+                worker_id=row["worker_id"],
+                worker_name=row["worker_name"],
+                worker_hwaccel_type=caps["hwaccel_type"],
+                status=row["video_status"],
+                current_step=row["current_step"],
+                progress_percent=row["progress_percent"] or 0,
+                qualities=qualities,
+                started_at=row["started_at"],
+                claimed_at=row["claimed_at"],
+                attempt=row["attempt_number"] or 1,
+                max_attempts=row["max_attempts"] or 3,
+            )
+        )
+
+    return ActiveJobsResponse(
+        jobs=jobs,
+        total_count=len(jobs),
+        processing_count=processing_count,
+        pending_count=pending_count,
+    )
+
+
+@app.get("/api/workers/{worker_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailResponse:
+    """
+    Get detailed information about a specific worker.
+
+    Includes capabilities, metadata, stats, and recent job history.
+    """
+    # Find worker by UUID
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    now = datetime.now(timezone.utc)
+    offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
+    status = determine_worker_status(
+        worker["status"], worker["last_heartbeat"], worker["current_job_id"], offline_threshold
+    )
+
+    # Parse capabilities and metadata
+    capabilities = None
+    if worker["capabilities"]:
+        try:
+            capabilities = json.loads(worker["capabilities"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    metadata = None
+    if worker["metadata"]:
+        try:
+            metadata = json.loads(worker["metadata"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Get job stats
+    jobs_completed = await database.fetch_val(
+        sa.select(sa.func.count())
+        .select_from(transcoding_jobs.join(videos))
+        .where(transcoding_jobs.c.worker_id == worker_id)
+        .where(transcoding_jobs.c.completed_at.isnot(None))
+        .where(videos.c.status == "ready")
+    ) or 0
+
+    jobs_failed = await database.fetch_val(
+        sa.select(sa.func.count())
+        .select_from(transcoding_jobs.join(videos))
+        .where(transcoding_jobs.c.worker_id == worker_id)
+        .where(transcoding_jobs.c.completed_at.isnot(None))
+        .where(videos.c.status == "failed")
+    ) or 0
+
+    # Get average job duration for completed jobs
+    avg_duration = await database.fetch_val(
+        sa.text("""
+            SELECT AVG(JULIANDAY(tj.completed_at) - JULIANDAY(tj.started_at)) * 86400
+            FROM transcoding_jobs tj
+            JOIN videos v ON tj.video_id = v.id
+            WHERE tj.worker_id = :worker_id
+              AND tj.completed_at IS NOT NULL
+              AND tj.started_at IS NOT NULL
+              AND v.status = 'ready'
+        """).bindparams(worker_id=worker_id)
+    )
+
+    # Get recent jobs (last 20)
+    recent_jobs_query = sa.text("""
+        SELECT
+            tj.id as job_id,
+            tj.video_id,
+            v.slug as video_slug,
+            v.title as video_title,
+            v.status as video_status,
+            tj.started_at,
+            tj.completed_at,
+            tj.last_error
+        FROM transcoding_jobs tj
+        JOIN videos v ON tj.video_id = v.id
+        WHERE tj.worker_id = :worker_id
+          AND tj.completed_at IS NOT NULL
+        ORDER BY tj.completed_at DESC
+        LIMIT 20
+    """)
+
+    recent_rows = await fetch_all_with_retry(recent_jobs_query.bindparams(worker_id=worker_id))
+
+    recent_jobs = []
+    for row in recent_rows:
+        duration_seconds = None
+        if row["started_at"] and row["completed_at"]:
+            start = row["started_at"]
+            end = row["completed_at"]
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            duration_seconds = (end - start).total_seconds()
+
+        recent_jobs.append(
+            WorkerJobHistory(
+                job_id=row["job_id"],
+                video_id=row["video_id"],
+                video_slug=row["video_slug"],
+                video_title=row["video_title"],
+                status="completed" if row["video_status"] == "ready" else "failed",
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                duration_seconds=duration_seconds,
+                error_message=row["last_error"] if row["video_status"] == "failed" else None,
+            )
+        )
+
+    return WorkerDetailResponse(
+        id=worker["id"],
+        worker_id=worker["worker_id"],
+        worker_name=worker["worker_name"],
+        worker_type=worker["worker_type"],
+        status=status,
+        registered_at=worker["registered_at"],
+        last_heartbeat=worker["last_heartbeat"],
+        capabilities=capabilities,
+        metadata=metadata,
+        jobs_completed=jobs_completed,
+        jobs_failed=jobs_failed,
+        avg_job_duration_seconds=avg_duration,
+        recent_jobs=recent_jobs,
+    )
+
+
+@app.put("/api/workers/{worker_id}/disable")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def disable_worker(request: Request, worker_id: str):
+    """
+    Disable a worker, preventing it from claiming new jobs.
+
+    The worker's existing claimed job (if any) is released back
+    to the pending queue.
+    """
+    # Find worker by UUID
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    if worker["status"] == "disabled":
+        raise HTTPException(status_code=400, detail="Worker is already disabled")
+
+    async with database.transaction():
+        # Mark worker as disabled
+        await database.execute(
+            workers.update()
+            .where(workers.c.id == worker["id"])
+            .values(status="disabled", current_job_id=None)
+        )
+
+        # Release any claimed job
+        if worker["current_job_id"]:
+            job = await database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.id == worker["current_job_id"])
+            )
+            if job and not job["completed_at"]:
+                # Release the job claim
+                await database.execute(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job["id"])
+                    .values(
+                        claimed_at=None,
+                        claim_expires_at=None,
+                        worker_id=None,
+                        current_step=None,
+                    )
+                )
+                # Reset video status
+                await database.execute(
+                    videos.update().where(videos.c.id == job["video_id"]).values(status="pending")
+                )
+
+    # Audit log
+    log_audit(
+        AuditAction.WORKER_DISABLE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="worker",
+        resource_id=worker["id"],
+        resource_name=worker["worker_name"] or worker["worker_id"][:8],
+    )
+
+    return {"status": "ok", "message": "Worker disabled"}
+
+
+@app.put("/api/workers/{worker_id}/enable")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def enable_worker(request: Request, worker_id: str):
+    """
+    Re-enable a disabled worker, allowing it to claim jobs again.
+    """
+    # Find worker by UUID
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    if worker["status"] != "disabled":
+        raise HTTPException(status_code=400, detail="Worker is not disabled")
+
+    # Re-enable worker
+    await db_execute_with_retry(
+        workers.update()
+        .where(workers.c.id == worker["id"])
+        .values(status="active")
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.WORKER_ENABLE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="worker",
+        resource_id=worker["id"],
+        resource_name=worker["worker_name"] or worker["worker_id"][:8],
+    )
+
+    return {"status": "ok", "message": "Worker enabled"}
+
+
+@app.delete("/api/workers/{worker_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = True):
+    """
+    Delete a worker and optionally revoke its API keys.
+
+    This will:
+    - Release any claimed job back to pending
+    - Revoke all API keys (if revoke_keys=True)
+    - Delete the worker record
+    """
+    # Find worker by UUID
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    now = datetime.now(timezone.utc)
+
+    async with database.transaction():
+        # Release any claimed job
+        if worker["current_job_id"]:
+            job = await database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.id == worker["current_job_id"])
+            )
+            if job and not job["completed_at"]:
+                await database.execute(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job["id"])
+                    .values(
+                        claimed_at=None,
+                        claim_expires_at=None,
+                        worker_id=None,
+                        current_step=None,
+                    )
+                )
+                await database.execute(
+                    videos.update().where(videos.c.id == job["video_id"]).values(status="pending")
+                )
+
+        # Revoke API keys if requested
+        if revoke_keys:
+            await database.execute(
+                worker_api_keys.update()
+                .where(worker_api_keys.c.worker_id == worker["id"])
+                .where(worker_api_keys.c.revoked_at.is_(None))
+                .values(revoked_at=now)
+            )
+
+        # Delete the worker record
+        await database.execute(workers.delete().where(workers.c.id == worker["id"]))
+
+    # Audit log
+    log_audit(
+        AuditAction.WORKER_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="worker",
+        resource_id=worker["id"],
+        resource_name=worker["worker_name"] or worker["worker_id"][:8],
+        details={"revoke_keys": revoke_keys},
+    )
+
+    return {"status": "ok", "message": "Worker deleted"}
 
 
 if __name__ == "__main__":
