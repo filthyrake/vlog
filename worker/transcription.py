@@ -9,7 +9,7 @@ import os
 import subprocess
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -308,7 +308,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         await update_transcription_status(
             transcription_id,
             TranscriptionStatus.PROCESSING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
 
         # Find audio source
@@ -358,7 +358,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         await update_transcription_status(
             transcription_id,
             TranscriptionStatus.COMPLETED,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
             duration_seconds=duration,
             transcript_text=result["text"],
             language=result["language"],
