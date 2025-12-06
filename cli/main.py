@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import ADMIN_PORT, WORKER_API_PORT
+from config import ADMIN_PORT, WORKER_ADMIN_SECRET, WORKER_API_PORT
 
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
@@ -392,6 +392,20 @@ def cmd_download(args):
 
 def cmd_worker(args):
     """Worker management commands."""
+    # Check for admin secret - required for worker management
+    if not WORKER_ADMIN_SECRET:
+        print("Error: VLOG_WORKER_ADMIN_SECRET environment variable is required for worker management.")
+        print()
+        print("Generate a secret with:")
+        print('  python -c "import secrets; print(secrets.token_urlsafe(32))"')
+        print()
+        print("Then set it in your environment:")
+        print("  export VLOG_WORKER_ADMIN_SECRET=<your-secret>")
+        sys.exit(1)
+
+    # Headers for admin authentication
+    admin_headers = {"X-Admin-Secret": WORKER_ADMIN_SECRET}
+
     try:
         if args.worker_command == "register":
             # Register a new worker
@@ -402,6 +416,7 @@ def cmd_worker(args):
             response = httpx.post(
                 f"{WORKER_API_BASE}/worker/register",
                 json=data,
+                headers=admin_headers,
                 timeout=DEFAULT_API_TIMEOUT,
             )
             result = safe_json_response(response)
@@ -417,7 +432,11 @@ def cmd_worker(args):
 
         elif args.worker_command == "list":
             # List all workers
-            response = httpx.get(f"{WORKER_API_BASE}/workers", timeout=DEFAULT_API_TIMEOUT)
+            response = httpx.get(
+                f"{WORKER_API_BASE}/workers",
+                headers=admin_headers,
+                timeout=DEFAULT_API_TIMEOUT,
+            )
             result = safe_json_response(response)
 
             workers = result.get("workers", [])
@@ -444,6 +463,7 @@ def cmd_worker(args):
             # Revoke a worker's API key
             response = httpx.post(
                 f"{WORKER_API_BASE}/workers/{args.worker_id}/revoke",
+                headers=admin_headers,
                 timeout=DEFAULT_API_TIMEOUT,
             )
             safe_json_response(response)
@@ -451,7 +471,11 @@ def cmd_worker(args):
 
         elif args.worker_command == "status":
             # Show worker status summary
-            response = httpx.get(f"{WORKER_API_BASE}/workers", timeout=DEFAULT_API_TIMEOUT)
+            response = httpx.get(
+                f"{WORKER_API_BASE}/workers",
+                headers=admin_headers,
+                timeout=DEFAULT_API_TIMEOUT,
+            )
             result = safe_json_response(response)
 
             print("Worker Status Summary")

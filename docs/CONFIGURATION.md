@@ -141,6 +141,7 @@ Timeout calculation: `min(max(duration * multiplier, minimum), maximum)`
 |----------|---------|-------------|
 | `VLOG_WORKER_API_URL` | `http://localhost:9002` | Worker API URL for remote workers |
 | `VLOG_WORKER_API_KEY` | (none) | API key for remote worker authentication (required) |
+| `VLOG_WORKER_ADMIN_SECRET` | (none) | Secret for worker admin endpoints (register, list, revoke) |
 | `VLOG_WORKER_HEARTBEAT_INTERVAL` | `30` | Heartbeat interval in seconds |
 | `VLOG_WORKER_POLL_INTERVAL` | `10` | Job polling interval in seconds |
 | `VLOG_WORKER_WORK_DIR` | `/tmp/vlog-worker` | Working directory for downloads/transcoding |
@@ -159,6 +160,12 @@ Timeout calculation: `min(max(duration * multiplier, minimum), maximum)`
 - Stored as SHA-256 hashes in the database
 - Each worker has a unique key that can be revoked
 - Prefix-based lookup for efficient authentication
+
+**Admin Secret Authentication:**
+Worker management endpoints (register, list, revoke) require the `X-Admin-Secret` header with the value of `VLOG_WORKER_ADMIN_SECRET`. Generate a secure secret:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
 
 ### Upload Settings
 
@@ -222,6 +229,36 @@ export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
 ```
 
 The API will log a warning at startup if rate limiting is enabled with in-memory storage.
+
+---
+
+## Multi-Instance Deployment Notes
+
+When running multiple API instances (e.g., behind a load balancer):
+
+### Analytics Cache Limitations
+
+The in-memory analytics cache (`api/analytics_cache.py`) is local to each process. In multi-instance deployments, different instances may show slightly different analytics counts until caches expire (default: 60 seconds TTL).
+
+**Workarounds:**
+- `VLOG_ANALYTICS_CACHE_ENABLED=false` - Disable caching entirely (higher database load)
+- Analytics are eventually consistent, which is typically acceptable for view counts
+- Note: The analytics cache does not yet support Redis for shared state
+
+### Rate Limiting
+
+By default, rate limiting uses in-memory storage (per-process). For consistent rate limiting across instances:
+```bash
+VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379
+```
+
+### SQLite Limitations
+
+SQLite WAL mode supports concurrent readers but only one writer. For true multi-instance write scaling, consider migrating to PostgreSQL.
+
+### Worker Admin Endpoints
+
+Worker management endpoints require `VLOG_WORKER_ADMIN_SECRET` to be configured. All instances must share the same secret value.
 
 ---
 
