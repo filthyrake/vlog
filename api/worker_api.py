@@ -940,10 +940,14 @@ async def upload_quality(
         with open(tmp_path, "wb") as f:
             while chunk := await file.read(1024 * 1024):
                 f.write(chunk)
+    except HTTPException:
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        raise
     except Exception as e:
         if tmp_path:
             tmp_path.unlink(missing_ok=True)
-        logger.error(f"Failed to save quality upload for video {video_id}/{quality_name}: {e}")
+        logger.exception(f"Failed to save quality upload for video {video_id}/{quality_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
@@ -1072,10 +1076,14 @@ async def upload_finalize(
         with open(tmp_path, "wb") as f:
             while chunk := await file.read(1024 * 1024):
                 f.write(chunk)
+    except HTTPException:
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        raise
     except Exception as e:
         if tmp_path:
             tmp_path.unlink(missing_ok=True)
-        logger.error(f"Failed to save finalize upload for video {video_id}: {e}")
+        logger.exception(f"Failed to save finalize upload for video {video_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
@@ -1164,11 +1172,16 @@ async def upload_hls(
         with open(tmp_path, "wb") as f:
             while chunk := await file.read(1024 * 1024):  # 1MB chunks
                 f.write(chunk)
+    except HTTPException:
+        # Cleanup temp file on error
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        raise
     except Exception as e:
         # Cleanup temp file on error
         if tmp_path:
             tmp_path.unlink(missing_ok=True)
-        logger.error(f"Failed to save upload for video {video_id}: {e}")
+        logger.exception(f"Failed to save upload for video {video_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
