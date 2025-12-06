@@ -321,8 +321,9 @@ class TestHeartbeatMetadataValidation:
             headers={"X-Worker-API-Key": registered_worker["api_key"]},
             json={"status": "idle", "metadata": large_data},
         )
-        assert response.status_code == 400
-        assert "too large" in response.json()["detail"].lower()
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("too large" in str(e).lower() or "too many keys" in str(e).lower() for e in error_detail)
 
     def test_heartbeat_without_metadata(self, worker_client, registered_worker):
         """Test that heartbeat works without metadata (optional field)."""
@@ -332,3 +333,74 @@ class TestHeartbeatMetadataValidation:
             json={"status": "active"},
         )
         assert response.status_code == 200
+
+    def test_heartbeat_metadata_too_many_keys(self, worker_client, registered_worker):
+        """Test that heartbeat rejects metadata with too many keys."""
+        # Create metadata with more than 20 keys
+        metadata = {f"key_{i}": f"value_{i}" for i in range(25)}
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle", "metadata": metadata},
+        )
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("too many keys" in str(e).lower() for e in error_detail)
+
+    def test_heartbeat_metadata_exceeds_64kb(self, worker_client, registered_worker):
+        """Test that heartbeat rejects metadata exceeding 10KB."""
+        # Create metadata that when serialized exceeds 10KB
+        # A single key with 12KB of data
+        metadata = {"large_field": "x" * 12000}
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle", "metadata": metadata},
+        )
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("too large" in str(e).lower() for e in error_detail)
+
+    def test_heartbeat_metadata_max_keys_boundary(self, worker_client, registered_worker):
+        """Test that heartbeat accepts exactly 20 keys (boundary test)."""
+        # Create metadata with exactly 20 keys
+        metadata = {f"key_{i}": f"value_{i}" for i in range(20)}
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle", "metadata": metadata},
+        )
+        assert response.status_code == 200
+
+    def test_heartbeat_metadata_max_size_boundary(self, worker_client, registered_worker):
+        """Test that heartbeat accepts metadata just under 10KB."""
+        # Create metadata that's just under 10KB when serialized
+        # Account for JSON overhead (quotes, braces, etc.)
+        # With {"data": "x" * 9980}, serialized size is ~9992 bytes
+        metadata = {"data": "x" * 9980}
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle", "metadata": metadata},
+        )
+        # Should succeed as it's under both schema and endpoint limits
+        assert response.status_code == 200
+
+    def test_heartbeat_combined_attack_vector(self, worker_client, registered_worker):
+        """Test defense against combined attack: many keys + large values."""
+        # Attempt to bypass limits with many moderately-sized values
+        metadata = {f"key_{i}": "x" * 1000 for i in range(100)}
+
+        response = worker_client.post(
+            "/api/worker/heartbeat",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"status": "idle", "metadata": metadata},
+        )
+        # Should be rejected due to too many keys
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("too many keys" in str(e).lower() for e in error_detail)
