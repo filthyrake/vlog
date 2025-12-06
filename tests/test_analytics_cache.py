@@ -210,3 +210,158 @@ class TestAnalyticsCache:
         key3 = f"analytics_videos:{params3['limit']}:{params3['offset']}:{params3['sort_by']}:{params3['period']}"
 
         assert key1 != key3
+
+    def test_probabilistic_cleanup_on_set(self):
+        """Test that probabilistic cleanup occurs during set operations."""
+        cache = AnalyticsCache(ttl_seconds=1)
+
+        # Add entries that will expire
+        for i in range(10):
+            cache.set(f"old_key_{i}", {"data": i})
+
+        # Wait for expiration
+        time.sleep(1.1)
+
+        # Add many new entries to trigger probabilistic cleanup
+        # With 1% probability, we expect cleanup after ~100 sets on average
+        # Add 500 to ensure we hit cleanup at least once
+        for i in range(500):
+            cache.set(f"new_key_{i}", {"data": i})
+
+        # Check that old entries were cleaned up
+        # At least some of them should be gone due to probabilistic cleanup
+        old_entries_count = sum(1 for i in range(10) if cache.get(f"old_key_{i}") is not None)
+        assert old_entries_count == 0, "Old expired entries should have been cleaned up"
+
+    def test_max_size_enforcement(self):
+        """Test that cache enforces max_size limit."""
+        cache = AnalyticsCache(ttl_seconds=60, max_size=10)
+
+        # Add entries up to max_size
+        for i in range(10):
+            cache.set(f"key_{i}", {"data": i})
+
+        stats = cache.get_stats()
+        assert stats["entry_count"] == 10
+        assert stats["max_size"] == 10
+
+        # Add one more entry, triggering eviction
+        cache.set("key_10", {"data": 10})
+
+        # Cache should still be at or below max_size
+        stats = cache.get_stats()
+        assert stats["entry_count"] <= 10
+
+    def test_max_size_lru_eviction(self):
+        """Test that LRU eviction removes oldest entries when at capacity."""
+        cache = AnalyticsCache(ttl_seconds=3600, max_size=10)  # Long TTL to prevent expiry-based cleanup
+
+        # Add 10 entries
+        for i in range(10):
+            cache.set(f"key_{i}", {"data": i})
+            time.sleep(0.01)  # Small delay to ensure different timestamps
+
+        # Verify all 10 entries exist
+        assert cache.get_stats()["entry_count"] == 10
+
+        # Add 5 more entries, should trigger LRU eviction
+        for i in range(10, 15):
+            cache.set(f"key_{i}", {"data": i})
+            time.sleep(0.01)
+
+        # Cache should be at or below max_size
+        stats = cache.get_stats()
+        assert stats["entry_count"] <= 10
+
+        # Oldest entries should be evicted
+        # When we hit max_size, we evict 10% (1 entry) at a time
+        # So after adding 5 more, we should have evicted at least the oldest entries
+        # But at least some old entries should be gone
+        old_entries_remaining = sum(1 for i in range(5) if cache.get(f"key_{i}") is not None)
+        assert old_entries_remaining < 5, "Some oldest entries should have been evicted"
+
+        # Newest entries should still be present
+        assert cache.get("key_14") is not None
+
+    def test_max_size_with_expired_entries(self):
+        """Test that expired entries are cleaned before LRU eviction."""
+        cache = AnalyticsCache(ttl_seconds=1, max_size=10)
+
+        # Add 10 entries
+        for i in range(10):
+            cache.set(f"old_key_{i}", {"data": i})
+
+        # Wait for expiration
+        time.sleep(1.1)
+
+        # Add new entry - should clean up expired entries instead of LRU eviction
+        cache.set("new_key", {"data": "new"})
+
+        # Old entries should be gone (expired)
+        for i in range(10):
+            assert cache.get(f"old_key_{i}") is None
+
+        # New entry should exist
+        assert cache.get("new_key") == {"data": "new"}
+
+        # Cache should have only 1 entry
+        assert cache.get_stats()["entry_count"] == 1
+
+    def test_max_size_custom_value(self):
+        """Test cache initialization with custom max_size."""
+        cache = AnalyticsCache(ttl_seconds=60, max_size=500)
+        stats = cache.get_stats()
+        assert stats["max_size"] == 500
+
+    def test_max_size_default_value(self):
+        """Test cache uses default max_size of 1000."""
+        cache = AnalyticsCache()
+        stats = cache.get_stats()
+        assert stats["max_size"] == 1000
+
+    def test_eviction_with_disabled_cache(self):
+        """Test that disabled cache doesn't perform eviction."""
+        cache = AnalyticsCache(ttl_seconds=60, enabled=False, max_size=5)
+
+        # Try to add more than max_size
+        for i in range(10):
+            cache.set(f"key_{i}", {"data": i})
+
+        # Cache should remain empty (disabled)
+        stats = cache.get_stats()
+        assert stats["entry_count"] == 0
+
+    def test_concurrent_set_operations_stay_under_limit(self):
+        """Test that rapid set operations keep cache under max_size."""
+        cache = AnalyticsCache(ttl_seconds=3600, max_size=50)
+
+        # Rapidly add many entries
+        for i in range(200):
+            cache.set(f"key_{i}", {"data": i})
+
+        # Cache should never exceed max_size
+        stats = cache.get_stats()
+        assert stats["entry_count"] <= 50
+        assert stats["entry_count"] > 0  # Should have some entries
+
+    def test_overwrite_at_capacity_no_eviction(self):
+        """Test that overwriting an existing key at capacity doesn't trigger eviction."""
+        cache = AnalyticsCache(ttl_seconds=3600, max_size=10)
+
+        # Fill cache to capacity
+        for i in range(10):
+            cache.set(f"key_{i}", {"data": i})
+
+        # Verify we're at capacity
+        assert cache.get_stats()["entry_count"] == 10
+
+        # Overwrite an existing key - should not trigger eviction
+        cache.set("key_5", {"data": "updated"})
+
+        # All 10 entries should still exist (no eviction)
+        assert cache.get_stats()["entry_count"] == 10
+        assert cache.get("key_5") == {"data": "updated"}
+
+        # Verify all original keys are still present
+        for i in range(10):
+            assert cache.get(f"key_{i}") is not None
