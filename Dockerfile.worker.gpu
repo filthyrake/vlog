@@ -1,135 +1,47 @@
-# VLog Remote Transcoding Worker with GPU Support
+# VLog Remote Transcoding Worker with GPU Support (Rocky Linux 10)
 # Containerized worker with NVIDIA NVENC and Intel VAAPI hardware encoding
 #
 # Build: docker build -f Dockerfile.worker.gpu -t vlog-worker-gpu .
 # Run (NVIDIA): docker run --gpus all -e VLOG_WORKER_API_KEY=<key> vlog-worker-gpu
 # Run (Intel):  docker run --device /dev/dri -e VLOG_WORKER_API_KEY=<key> vlog-worker-gpu
+# Run (Both):   docker run --gpus all --device /dev/dri -e VLOG_WORKER_API_KEY=<key> vlog-worker-gpu
+#
+# Base: Rocky Linux 10 with RPM Fusion packages
+# - FFmpeg 7.1.2 with nvenc, vaapi, qsv encoders (from RPM Fusion)
+# - intel-media-driver 25.2.6 for Battlemage/Arc support (from RPM Fusion)
+# - NVIDIA libraries injected at runtime via nvidia-container-toolkit
 
-# =============================================================================
-# Stage 1: Build FFmpeg with hardware encoder support
-# =============================================================================
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS ffmpeg-builder
+FROM rockylinux/rockylinux:10
 
-# Prevent interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
+# Install EPEL and RPM Fusion repositories
+RUN dnf install -y epel-release && \
+    dnf install -y --nogpgcheck \
+        https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-10.noarch.rpm \
+        https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-10.noarch.rpm && \
+    dnf clean all
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    nasm \
-    yasm \
-    pkg-config \
-    wget \
-    # Video codec libraries
-    libx264-dev \
-    libx265-dev \
-    libvpx-dev \
-    libopus-dev \
-    libfdk-aac-dev \
-    # Other FFmpeg dependencies
-    libass-dev \
-    libfreetype6-dev \
-    libmp3lame-dev \
-    libtheora-dev \
-    libvorbis-dev \
-    # NVIDIA Video Codec SDK headers (included in CUDA devel image)
-    libnvidia-encode-525 \
-    # Intel VAAPI headers
-    libva-dev \
-    vainfo \
-    && rm -rf /var/lib/apt/lists/*
+# Install FFmpeg with hardware acceleration support
+# RPM Fusion's FFmpeg 7.1.2 includes nvenc, vaapi, and qsv encoders
+RUN dnf install -y \
+    ffmpeg \
+    ffmpeg-libs \
+    && dnf clean all
 
-# Install NVIDIA codec headers (ffnvcodec) for NVENC/CUDA support
-# Use version n12.1.14.0 for compatibility with FFmpeg 6.1 and CUDA 12.x
-WORKDIR /tmp
-RUN git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git && \
-    cd nv-codec-headers && \
-    git checkout n12.1.14.0 && \
-    make && \
-    make install
+# Install Intel VAAPI driver for Arc/Battlemage support
+# intel-media-driver 25.2.6 from RPM Fusion supports Battlemage (Arc B580)
+# Note: libva and mesa-dri-drivers are pulled in as ffmpeg dependencies
+RUN dnf install -y \
+    intel-media-driver \
+    && dnf clean all
 
-# Build FFmpeg from source with hardware encoders
-WORKDIR /tmp/ffmpeg
-
-# Download and extract FFmpeg source
-RUN wget -q https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
-    tar xf ffmpeg-6.1.tar.xz && \
-    cd ffmpeg-6.1 && \
-    ./configure \
-      --prefix=/usr/local \
-      --enable-gpl \
-      --enable-nonfree \
-      --enable-version3 \
-      # Software encoders
-      --enable-libx264 \
-      --enable-libx265 \
-      --enable-libvpx \
-      --enable-libopus \
-      --enable-libfdk-aac \
-      --enable-libass \
-      --enable-libfreetype \
-      --enable-libmp3lame \
-      --enable-libtheora \
-      --enable-libvorbis \
-      # NVIDIA hardware acceleration
-      --enable-nvenc \
-      --enable-cuda \
-      --enable-cuvid \
-      --enable-libnpp \
-      # Intel VAAPI hardware acceleration
-      --enable-vaapi \
-      # CUDA paths
-      --extra-cflags="-I/usr/local/cuda/include" \
-      --extra-ldflags="-L/usr/local/cuda/lib64" \
-      --disable-doc \
-      --disable-debug && \
-    make -j$(nproc) && \
-    make install
-
-# =============================================================================
-# Stage 2: Runtime image with GPU support
-# =============================================================================
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
-
-# Prevent interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Python 3.10 (Ubuntu 22.04 default)
-    python3 \
-    python3-venv \
-    python3-pip \
-    # FFmpeg runtime libraries
-    libx264-163 \
-    libx265-199 \
-    libvpx7 \
-    libopus0 \
-    libfdk-aac2 \
-    libass9 \
-    libfreetype6 \
-    libmp3lame0 \
-    libtheora0 \
-    libvorbis0a \
-    libvorbisenc2 \
-    # Intel compute runtime for Arc/QuickSync
-    intel-opencl-icd \
-    intel-media-va-driver-non-free \
-    libva-drm2 \
-    libva2 \
-    vainfo \
-    # VAAPI utilities
-    i965-va-driver-shaders \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy FFmpeg binaries from builder
-COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/
-COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
-COPY --from=ffmpeg-builder /usr/local/lib/lib*.so* /usr/local/lib/
-
-# Update library path
-ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+# Install Python 3.12 and pip
+RUN dnf install -y \
+    python3.12 \
+    python3.12-pip \
+    python3.12-devel \
+    && dnf clean all && \
+    alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
+    alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.12 1
 
 # Create non-root user for security
 RUN useradd -m -u 1000 -s /bin/bash vlog && \
@@ -182,9 +94,11 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     # GPU detection (auto-detect by default)
     VLOG_HWACCEL_TYPE=auto \
     VLOG_HWACCEL_PREFERRED_CODEC=h264 \
-    # NVIDIA runtime
+    # NVIDIA runtime (nvidia-container-toolkit injects libraries)
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+    # Intel VAAPI - use renderD128 by default (can be overridden)
+    LIBVA_DRIVER_NAME=iHD \
     # Python settings
     PYTHONUNBUFFERED=1
 
