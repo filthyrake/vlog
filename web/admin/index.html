@@ -810,7 +810,7 @@
                         class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
                     >Cancel</button>
                     <button
-                        @click="retranscodeSelected()"
+                        @click="submitRetranscode()"
                         :disabled="retranscoding || retranscodeSelected.length === 0"
                         class="flex-1 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 rounded-lg font-medium transition"
                     >
@@ -1191,7 +1191,7 @@
                     }
                 },
 
-                async retranscodeSelected() {
+                async submitRetranscode() {
                     if (this.retranscodeSelected.length === 0) {
                         this.retranscodeMessage = 'Please select at least one quality';
                         this.retranscodeError = true;

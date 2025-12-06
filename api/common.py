@@ -135,8 +135,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         # Permissions policy (disable unnecessary browser features)
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        # Content Security Policy - restrict resource loading for API responses
-        response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
+        # Content Security Policy - restrict resource loading
+        # Skip CSP for HTML pages (they have their own CSP meta tag with Alpine.js support)
+        content_type = response.headers.get("content-type", "")
+        if "text/html" not in content_type:
+            # API responses get restrictive CSP
+            response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
         return response
 
 
