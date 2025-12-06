@@ -5,6 +5,7 @@ This module provides consistent patterns for exception handling across the API,
 ensuring HTTPExceptions are properly re-raised and errors are logged uniformly.
 """
 
+import functools
 import logging
 from typing import Any, Callable, Optional, TypeVar
 
@@ -42,6 +43,7 @@ def handle_api_exceptions(
             pass
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> T:
             try:
                 return await func(*args, **kwargs)
