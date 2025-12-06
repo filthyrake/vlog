@@ -18,6 +18,8 @@ from api.database import (
     transcriptions,
     video_qualities,
     videos,
+    worker_api_keys,
+    workers,
 )
 from api.enums import TranscriptionStatus, VideoStatus
 
@@ -1143,3 +1145,303 @@ class TestAdminSecurityHeaders:
         """Test that X-Content-Type-Options header is present."""
         response = admin_client.get("/health")
         assert response.headers.get("X-Content-Type-Options") == "nosniff"
+
+
+# ============================================================================
+# Worker Dashboard Tests
+# ============================================================================
+
+
+class TestWorkerDashboardEndpoints:
+    """HTTP-level tests for worker dashboard endpoints."""
+
+    def test_list_workers_empty(self, admin_client):
+        """Test listing workers when none exist."""
+        response = admin_client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_count"] == 0
+        assert data["workers"] == []
+        assert data["active_count"] == 0
+        assert data["idle_count"] == 0
+        assert data["offline_count"] == 0
+        assert data["disabled_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_list_workers_with_data(self, admin_client, test_database):
+        """Test listing workers with sample data."""
+        from datetime import timedelta
+
+        now = datetime.now(timezone.utc)
+
+        # Create a sample worker
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="test-worker-001",
+                worker_name="Test Worker",
+                worker_type="remote",
+                status="active",
+                registered_at=now,
+                last_heartbeat=now,
+                capabilities='{"hwaccel_enabled": true, "hwaccel_type": "nvidia", "gpu_name": "RTX 3090"}',
+            )
+        )
+
+        response = admin_client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_count"] == 1
+        assert len(data["workers"]) == 1
+
+        worker = data["workers"][0]
+        assert worker["worker_id"] == "test-worker-001"
+        assert worker["worker_name"] == "Test Worker"
+        assert worker["hwaccel_enabled"] is True
+        assert worker["hwaccel_type"] == "nvidia"
+        assert worker["gpu_name"] == "RTX 3090"
+
+    def test_list_active_jobs_empty(self, admin_client):
+        """Test listing active jobs when none exist."""
+        response = admin_client.get("/api/workers/active-jobs")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_count"] == 0
+        assert data["jobs"] == []
+        assert data["processing_count"] == 0
+        assert data["pending_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_list_active_jobs_with_data(self, admin_client, test_database, sample_pending_video):
+        """Test listing active jobs with pending video."""
+        now = datetime.now(timezone.utc)
+
+        # Create transcoding job for the pending video
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+                progress_percent=0,
+            )
+        )
+
+        response = admin_client.get("/api/workers/active-jobs")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_count"] == 1
+        assert data["pending_count"] == 1
+        assert data["processing_count"] == 0
+
+    def test_get_worker_detail_not_found(self, admin_client):
+        """Test getting detail for non-existent worker."""
+        response = admin_client.get("/api/workers/nonexistent-worker-id")
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_get_worker_detail(self, admin_client, test_database):
+        """Test getting worker detail."""
+        now = datetime.now(timezone.utc)
+
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="detail-test-worker",
+                worker_name="Detail Test Worker",
+                worker_type="remote",
+                status="active",
+                registered_at=now,
+                last_heartbeat=now,
+                capabilities='{"hwaccel_enabled": false}',
+            )
+        )
+
+        response = admin_client.get("/api/workers/detail-test-worker")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["worker_id"] == "detail-test-worker"
+        assert data["worker_name"] == "Detail Test Worker"
+        assert data["jobs_completed"] == 0
+        assert data["jobs_failed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_disable_worker(self, admin_client, test_database):
+        """Test disabling a worker."""
+        now = datetime.now(timezone.utc)
+
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="disable-test-worker",
+                worker_name="Disable Test",
+                worker_type="remote",
+                status="active",
+                registered_at=now,
+                last_heartbeat=now,
+            )
+        )
+
+        response = admin_client.put("/api/workers/disable-test-worker/disable")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+
+        # Verify worker is disabled
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == "disable-test-worker")
+        )
+        assert worker["status"] == "disabled"
+
+    @pytest.mark.asyncio
+    async def test_disable_worker_already_disabled(self, admin_client, test_database):
+        """Test disabling an already disabled worker fails."""
+        now = datetime.now(timezone.utc)
+
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="already-disabled-worker",
+                worker_name="Already Disabled",
+                worker_type="remote",
+                status="disabled",
+                registered_at=now,
+            )
+        )
+
+        response = admin_client.put("/api/workers/already-disabled-worker/disable")
+        assert response.status_code == 400
+        assert "already disabled" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_enable_worker(self, admin_client, test_database):
+        """Test enabling a disabled worker."""
+        now = datetime.now(timezone.utc)
+
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="enable-test-worker",
+                worker_name="Enable Test",
+                worker_type="remote",
+                status="disabled",
+                registered_at=now,
+            )
+        )
+
+        response = admin_client.put("/api/workers/enable-test-worker/enable")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+
+        # Verify worker is enabled (status set to 'active' by enable endpoint)
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == "enable-test-worker")
+        )
+        assert worker["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_enable_worker_not_disabled(self, admin_client, test_database):
+        """Test enabling a non-disabled worker fails."""
+        now = datetime.now(timezone.utc)
+
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="not-disabled-worker",
+                worker_name="Not Disabled",
+                worker_type="remote",
+                status="active",
+                registered_at=now,
+                last_heartbeat=now,
+            )
+        )
+
+        response = admin_client.put("/api/workers/not-disabled-worker/enable")
+        assert response.status_code == 400
+        assert "not disabled" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_worker(self, admin_client, test_database):
+        """Test deleting a worker."""
+        now = datetime.now(timezone.utc)
+
+        result = await test_database.execute(
+            workers.insert().values(
+                worker_id="delete-test-worker",
+                worker_name="Delete Test",
+                worker_type="remote",
+                status="idle",
+                registered_at=now,
+            )
+        )
+        worker_db_id = result
+
+        # Create an API key for the worker
+        await test_database.execute(
+            worker_api_keys.insert().values(
+                worker_id=worker_db_id,
+                key_hash="test-hash-value-for-testing-purposes",
+                key_prefix="testpfx1",
+                created_at=now,
+            )
+        )
+
+        response = admin_client.delete("/api/workers/delete-test-worker")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+
+        # Verify worker is deleted
+        worker = await test_database.fetch_one(
+            workers.select().where(workers.c.worker_id == "delete-test-worker")
+        )
+        assert worker is None
+
+        # Verify API key is revoked
+        api_key = await test_database.fetch_one(
+            worker_api_keys.select().where(worker_api_keys.c.worker_id == worker_db_id)
+        )
+        assert api_key["revoked_at"] is not None
+
+    def test_delete_worker_not_found(self, admin_client):
+        """Test deleting non-existent worker."""
+        response = admin_client.delete("/api/workers/nonexistent-worker")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_worker_status_determination(self, admin_client, test_database):
+        """Test that worker status is correctly determined based on heartbeat."""
+        from datetime import timedelta
+
+        now = datetime.now(timezone.utc)
+        old_heartbeat = now - timedelta(minutes=10)  # Old enough to be offline
+
+        # Create an idle worker (recent heartbeat, no job)
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="idle-worker",
+                worker_name="Idle Worker",
+                worker_type="remote",
+                status="active",
+                registered_at=now,
+                last_heartbeat=now,
+            )
+        )
+
+        # Create an offline worker (old heartbeat)
+        await test_database.execute(
+            workers.insert().values(
+                worker_id="offline-worker",
+                worker_name="Offline Worker",
+                worker_type="remote",
+                status="active",
+                registered_at=old_heartbeat,
+                last_heartbeat=old_heartbeat,
+            )
+        )
+
+        response = admin_client.get("/api/workers")
+        assert response.status_code == 200
+        data = response.json()
+
+        workers_by_id = {w["worker_id"]: w for w in data["workers"]}
+
+        assert workers_by_id["idle-worker"]["status"] == "idle"
+        assert workers_by_id["offline-worker"]["status"] == "offline"
+        assert data["idle_count"] >= 1
+        assert data["offline_count"] >= 1

@@ -369,3 +369,111 @@ class VideoQualitiesResponse(BaseModel):
     source_height: int
     available_qualities: List[str]  # What qualities could be generated based on source
     existing_qualities: List[VideoQualityInfo]  # Current transcoded qualities
+
+
+# ============ Worker Dashboard Models ============
+
+
+class WorkerDashboardStatus(BaseModel):
+    """Worker status for admin dashboard."""
+
+    id: int
+    worker_id: str
+    worker_name: Optional[str]
+    worker_type: str
+    status: str  # active, idle, offline, disabled
+    registered_at: datetime
+    last_heartbeat: Optional[datetime]
+    seconds_since_heartbeat: Optional[int] = None
+    current_job_id: Optional[int] = None
+    current_video_slug: Optional[str] = None
+    current_video_title: Optional[str] = None
+    current_step: Optional[str] = None
+    current_progress: Optional[int] = None
+    # Capabilities summary
+    hwaccel_enabled: bool = False
+    hwaccel_type: Optional[str] = None
+    gpu_name: Optional[str] = None
+    # Stats
+    jobs_completed: int = 0
+    jobs_failed: int = 0
+    last_job_completed_at: Optional[datetime] = None
+
+
+class WorkerDashboardResponse(BaseModel):
+    """Response for worker dashboard listing."""
+
+    workers: List[WorkerDashboardStatus]
+    total_count: int
+    active_count: int
+    idle_count: int
+    offline_count: int
+    disabled_count: int
+
+
+class ActiveJobWithWorker(BaseModel):
+    """Active transcoding job with worker details."""
+
+    job_id: int
+    video_id: int
+    video_slug: str
+    video_title: str
+    thumbnail_url: Optional[str] = None
+    # Worker info
+    worker_id: Optional[str] = None
+    worker_name: Optional[str] = None
+    worker_hwaccel_type: Optional[str] = None
+    # Progress info
+    status: str
+    current_step: Optional[str] = None
+    progress_percent: int = 0
+    qualities: List[QualityProgressResponse] = []
+    # Timing
+    started_at: Optional[datetime] = None
+    claimed_at: Optional[datetime] = None
+    attempt: int = 1
+    max_attempts: int = 3
+
+
+class ActiveJobsResponse(BaseModel):
+    """Response for active jobs with worker info."""
+
+    jobs: List[ActiveJobWithWorker]
+    total_count: int
+    processing_count: int
+    pending_count: int
+
+
+class WorkerJobHistory(BaseModel):
+    """Job history entry for a worker."""
+
+    job_id: int
+    video_id: int
+    video_slug: str
+    video_title: str
+    status: str  # completed, failed
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
+    error_message: Optional[str] = None
+
+
+class WorkerDetailResponse(BaseModel):
+    """Detailed worker info including job history."""
+
+    id: int
+    worker_id: str
+    worker_name: Optional[str]
+    worker_type: str
+    status: str
+    registered_at: datetime
+    last_heartbeat: Optional[datetime]
+    # Capabilities
+    capabilities: Optional[dict] = None
+    metadata: Optional[dict] = None
+    # Stats
+    jobs_completed: int = 0
+    jobs_failed: int = 0
+    avg_job_duration_seconds: Optional[float] = None
+    # Recent jobs
+    recent_jobs: List[WorkerJobHistory] = []

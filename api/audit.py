@@ -53,6 +53,9 @@ class AuditAction(str, Enum):
     # Worker actions
     WORKER_REGISTER = "worker_register"
     WORKER_REVOKE = "worker_revoke"
+    WORKER_DISABLE = "worker_disable"
+    WORKER_ENABLE = "worker_enable"
+    WORKER_DELETE = "worker_delete"
 
 
 class AuditLogger:
