@@ -22,7 +22,7 @@ class TestHandleAPIExceptions:
 
         with pytest.raises(HTTPException) as exc_info:
             await failing_func()
-        
+
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Not found"
 
@@ -35,7 +35,7 @@ class TestHandleAPIExceptions:
 
         with pytest.raises(HTTPException) as exc_info:
             await failing_func()
-        
+
         assert exc_info.value.status_code == 500
         assert exc_info.value.detail == "Operation failed"
 
@@ -48,7 +48,7 @@ class TestHandleAPIExceptions:
 
         with pytest.raises(HTTPException) as exc_info:
             await failing_func()
-        
+
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail == "Bad request"
 
@@ -62,7 +62,7 @@ class TestHandleAPIExceptions:
         with caplog.at_level(logging.ERROR):
             with pytest.raises(HTTPException):
                 await failing_func()
-        
+
         assert "Unexpected error in test_operation" in caplog.text
         assert "Internal error" in caplog.text
 
@@ -76,7 +76,7 @@ class TestHandleAPIExceptions:
         with caplog.at_level(logging.ERROR):
             with pytest.raises(HTTPException):
                 await failing_func()
-        
+
         assert "Unexpected error in test_operation" not in caplog.text
 
     @pytest.mark.asyncio
@@ -102,7 +102,7 @@ class TestHandleAPIExceptions:
 
         with pytest.raises(HTTPException) as exc_info:
             await failing_func()
-        
+
         assert exc_info.value.status_code == 503
         assert exc_info.value.detail == "Service unavailable"
         assert exc_info.value.headers == {"Retry-After": "30"}
@@ -116,7 +116,7 @@ class TestHandleAPIExceptions:
 
         with pytest.raises(HTTPException) as exc_info:
             await failing_func()
-        
+
         # Check that the original exception is preserved in the chain
         assert isinstance(exc_info.value.__cause__, ValueError)
         assert str(exc_info.value.__cause__) == "Original error"
@@ -128,7 +128,7 @@ class TestLogAndRaiseHTTPException:
     def test_logs_and_raises(self, caplog):
         """Should log the exception and raise HTTPException."""
         original_error = ValueError("Database error")
-        
+
         with caplog.at_level(logging.ERROR):
             with pytest.raises(HTTPException) as exc_info:
                 log_and_raise_http_exception(
@@ -137,7 +137,7 @@ class TestLogAndRaiseHTTPException:
                     "Internal server error",
                     "save_video"
                 )
-        
+
         assert exc_info.value.status_code == 500
         assert exc_info.value.detail == "Internal server error"
         assert "Error in save_video" in caplog.text
@@ -146,7 +146,7 @@ class TestLogAndRaiseHTTPException:
     def test_logs_without_operation_name(self, caplog):
         """Should log even without operation name."""
         original_error = ValueError("Some error")
-        
+
         with caplog.at_level(logging.ERROR):
             with pytest.raises(HTTPException):
                 log_and_raise_http_exception(
@@ -154,13 +154,13 @@ class TestLogAndRaiseHTTPException:
                     500,
                     "Error occurred"
                 )
-        
+
         assert "Some error" in caplog.text
 
     def test_custom_log_level(self, caplog):
         """Should support custom log levels."""
         original_error = ValueError("Warning level error")
-        
+
         with caplog.at_level(logging.WARNING):
             with pytest.raises(HTTPException):
                 log_and_raise_http_exception(
@@ -170,7 +170,7 @@ class TestLogAndRaiseHTTPException:
                     "validate_input",
                     log_level="warning"
                 )
-        
+
         assert "Error in validate_input" in caplog.text
         # Check it was logged at WARNING level
         assert any(record.levelname == "WARNING" for record in caplog.records)
@@ -178,14 +178,14 @@ class TestLogAndRaiseHTTPException:
     def test_exception_chaining(self):
         """Should maintain exception chain."""
         original_error = ValueError("Original error")
-        
+
         with pytest.raises(HTTPException) as exc_info:
             log_and_raise_http_exception(
                 original_error,
                 500,
                 "Error occurred"
             )
-        
+
         assert isinstance(exc_info.value.__cause__, ValueError)
         assert str(exc_info.value.__cause__) == "Original error"
 
@@ -204,7 +204,7 @@ class TestExceptionPatternConsistency:
         # Should convert to HTTPException with proper status and message
         with pytest.raises(HTTPException) as exc_info:
             await example_operation()
-        
+
         assert exc_info.value.status_code == 500
         assert exc_info.value.detail == "Operation failed"
 
@@ -218,6 +218,6 @@ class TestExceptionPatternConsistency:
         # HTTPException should pass through unchanged
         with pytest.raises(HTTPException) as exc_info:
             await operation_with_http_error()
-        
+
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Resource not found"
