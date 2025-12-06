@@ -343,3 +343,25 @@ class TestAnalyticsCache:
         stats = cache.get_stats()
         assert stats["entry_count"] <= 50
         assert stats["entry_count"] > 0  # Should have some entries
+
+    def test_overwrite_at_capacity_no_eviction(self):
+        """Test that overwriting an existing key at capacity doesn't trigger eviction."""
+        cache = AnalyticsCache(ttl_seconds=3600, max_size=10)
+
+        # Fill cache to capacity
+        for i in range(10):
+            cache.set(f"key_{i}", {"data": i})
+
+        # Verify we're at capacity
+        assert cache.get_stats()["entry_count"] == 10
+
+        # Overwrite an existing key - should not trigger eviction
+        cache.set("key_5", {"data": "updated"})
+
+        # All 10 entries should still exist (no eviction)
+        assert cache.get_stats()["entry_count"] == 10
+        assert cache.get("key_5") == {"data": "updated"}
+
+        # Verify all original keys are still present
+        for i in range(10):
+            assert cache.get(f"key_{i}") is not None
