@@ -216,6 +216,17 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
+
+# Middleware to ensure SQLite foreign keys are enabled for each request
+# SQLite's foreign_keys pragma is per-connection, and the databases library
+# may use different connections for different requests
+@app.middleware("http")
+async def ensure_sqlite_foreign_keys(request: Request, call_next):
+    """Ensure foreign key constraints are enabled for this request's connection."""
+    await database.execute("PRAGMA foreign_keys=ON")
+    return await call_next(request)
+
+
 # Allow CORS for admin UI (internal-only, not exposed externally)
 app.add_middleware(
     CORSMiddleware,
@@ -2014,6 +2025,7 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
                         try:
                             shutil.move(str(src), str(dst))
                         except Exception:
+                            # Ignore errors during rollback to avoid masking the original error
                             pass
                     # Rollback database change
                     await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
@@ -2205,7 +2217,11 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
                     )
                 )
 
-            # Delete quality files from disk
+                # If retranscoding all, delete transcription record (inside transaction)
+                if retranscode_all:
+                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+
+            # Delete quality files from disk (after transaction succeeds)
             video_dir = VIDEOS_DIR / slug
             if video_dir.exists():
                 for quality in qualities_to_delete:
@@ -2213,12 +2229,11 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
                         for f in video_dir.glob(pattern):
                             f.unlink()
 
-            # If retranscoding all, delete transcription
-            if retranscode_all:
-                await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
-                vtt_path = video_dir / "captions.vtt"
-                if vtt_path.exists():
-                    vtt_path.unlink()
+                # Delete VTT file if retranscoding all
+                if retranscode_all:
+                    vtt_path = video_dir / "captions.vtt"
+                    if vtt_path.exists():
+                        vtt_path.unlink()
 
             results.append(BulkOperationResult(video_id=video_id, success=True))
             queued_count += 1
@@ -2299,6 +2314,7 @@ async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> Bul
                     try:
                         shutil.move(str(src), str(dst))
                     except Exception:
+                        # Ignore errors during rollback to avoid masking the original error
                         pass
                 # Rollback database change
                 await database.execute(
@@ -2353,6 +2369,14 @@ async def export_videos(
     Supports filtering by status, category, and deleted state.
     For CSV export, use the JSON response and convert client-side.
     """
+    # Validate status if provided
+    valid_statuses = [s.value for s in VideoStatus]
+    if status and status not in valid_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status '{status}'. Valid options: {', '.join(valid_statuses)}",
+        )
+
     # Build query
     query = (
         sa.select(
