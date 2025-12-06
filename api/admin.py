@@ -294,6 +294,7 @@ async def create_category(request: Request, data: CategoryCreate) -> CategoryRes
     log_audit(
         AuditAction.CATEGORY_CREATE,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="category",
         resource_id=category_id,
         resource_name=slug,
@@ -329,6 +330,7 @@ async def delete_category(request: Request, category_id: int):
     log_audit(
         AuditAction.CATEGORY_DELETE,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="category",
         resource_id=category_id,
         resource_name=existing["slug"],
@@ -616,6 +618,7 @@ async def upload_video(
     log_audit(
         AuditAction.VIDEO_UPLOAD,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=slug,
@@ -685,6 +688,7 @@ async def update_video(
         log_audit(
             AuditAction.VIDEO_UPDATE,
             client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
             resource_type="video",
             resource_id=video_id,
             details={"updated_fields": list(update_data.keys())},
@@ -749,6 +753,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
         log_audit(
             AuditAction.VIDEO_DELETE,
             client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
             resource_type="video",
             resource_id=video_id,
             resource_name=row["slug"],
@@ -798,6 +803,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
         log_audit(
             AuditAction.VIDEO_DELETE,
             client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
             resource_type="video",
             resource_id=video_id,
             resource_name=row["slug"],
@@ -856,6 +862,7 @@ async def restore_video(request: Request, video_id: int):
     log_audit(
         AuditAction.VIDEO_RESTORE,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=row["slug"],
@@ -900,6 +907,7 @@ async def retry_video(request: Request, video_id: int):
     log_audit(
         AuditAction.VIDEO_RETRY,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=row["slug"],
@@ -1031,6 +1039,7 @@ async def re_upload_video(
     log_audit(
         AuditAction.VIDEO_REUPLOAD,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=slug,
@@ -1281,6 +1290,7 @@ async def retranscode_video(
     log_audit(
         AuditAction.VIDEO_RETRANSCODE,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=slug,
@@ -1370,6 +1380,7 @@ async def trigger_transcription(request: Request, video_id: int, data: Transcrip
         log_audit(
             AuditAction.TRANSCRIPTION_TRIGGER,
             client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
             resource_type="video",
             resource_id=video_id,
             resource_name=video["slug"],
@@ -1391,6 +1402,7 @@ async def trigger_transcription(request: Request, video_id: int, data: Transcrip
     log_audit(
         AuditAction.TRANSCRIPTION_TRIGGER,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=video["slug"],
@@ -1430,6 +1442,7 @@ async def update_transcript(request: Request, video_id: int, data: Transcription
     log_audit(
         AuditAction.TRANSCRIPTION_UPDATE,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=video["slug"],
@@ -1466,6 +1479,7 @@ async def delete_transcript(request: Request, video_id: int):
     log_audit(
         AuditAction.TRANSCRIPTION_DELETE,
         client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
         resource_type="video",
         resource_id=video_id,
         resource_name=video["slug"],

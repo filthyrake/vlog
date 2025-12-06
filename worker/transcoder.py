@@ -116,7 +116,11 @@ class WorkerState:
             self.new_upload_event.set()
 
     def reset(self):
-        """Reset state for testing purposes."""
+        """Reset state for testing purposes.
+
+        Note: worker_id is intentionally not reset to maintain worker identity
+        across test state resets.
+        """
         self.shutdown_requested = False
         self.new_upload_event = None
         self.gpu_caps = None

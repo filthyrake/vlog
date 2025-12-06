@@ -12,13 +12,9 @@ import logging
 import os
 from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path
 from typing import Any, Optional
 
-# Audit log configuration from environment
-AUDIT_LOG_ENABLED = os.getenv("VLOG_AUDIT_LOG_ENABLED", "true").lower() not in ("false", "0", "no")
-AUDIT_LOG_PATH = Path(os.getenv("VLOG_AUDIT_LOG_PATH", "/var/log/vlog/audit.log"))
-AUDIT_LOG_LEVEL = os.getenv("VLOG_AUDIT_LOG_LEVEL", "INFO").upper()
+from config import AUDIT_LOG_ENABLED, AUDIT_LOG_LEVEL, AUDIT_LOG_PATH
 
 # Ensure log directory exists (skip in test mode)
 if not os.environ.get("VLOG_TEST_MODE") and AUDIT_LOG_ENABLED:
