@@ -220,6 +220,32 @@ class TestPlaybackSchemas:
         data = PlaybackEnd(session_token="abc", position=50.0)
         assert data.completed is False
 
+    def test_playback_heartbeat_session_token_max_length(self):
+        """Test playback heartbeat with session token at max length (64 chars)."""
+        token = "a" * 64
+        data = PlaybackHeartbeat(session_token=token, position=10.0)
+        assert data.session_token == token
+        assert len(data.session_token) == 64
+
+    def test_playback_heartbeat_session_token_too_long_fails(self):
+        """Test playback heartbeat with session token exceeding max length fails."""
+        with pytest.raises(ValidationError) as exc_info:
+            PlaybackHeartbeat(session_token="a" * 65, position=10.0)
+        assert "max_length" in str(exc_info.value).lower() or "at most 64" in str(exc_info.value)
+
+    def test_playback_end_session_token_max_length(self):
+        """Test playback end with session token at max length (64 chars)."""
+        token = "a" * 64
+        data = PlaybackEnd(session_token=token, position=50.0)
+        assert data.session_token == token
+        assert len(data.session_token) == 64
+
+    def test_playback_end_session_token_too_long_fails(self):
+        """Test playback end with session token exceeding max length fails."""
+        with pytest.raises(ValidationError) as exc_info:
+            PlaybackEnd(session_token="a" * 65, position=50.0)
+        assert "max_length" in str(exc_info.value).lower() or "at most 64" in str(exc_info.value)
+
 
 class TestAnalyticsSchemas:
     """Tests for analytics response schemas."""
