@@ -22,13 +22,12 @@ class TestTranscriptionDatetimeHandling:
         """Test that started_at datetime is timezone-aware when processing begins."""
         # Import after setting up the database
         import worker.transcription
-        from worker.transcription import process_transcription, TranscriptionWorker
 
         # Patch the database in worker.transcription module
         monkeypatch.setattr(worker.transcription, "database", test_database)
 
         # Mock the worker's transcribe method to avoid needing the actual model
-        mock_worker = TranscriptionWorker()
+        mock_worker = worker.transcription.TranscriptionWorker()
         mock_worker.model_loaded = True
         mock_worker.transcribe = MagicMock(
             return_value={
@@ -60,7 +59,7 @@ class TestTranscriptionDatetimeHandling:
                 with patch("os.close"):
                     with patch("pathlib.Path.unlink"):
                         # Run the transcription
-                        await process_transcription(
+                        await worker.transcription.process_transcription(
                             {
                                 "id": sample_video["id"],
                                 "slug": sample_video["slug"],
@@ -98,13 +97,12 @@ class TestTranscriptionDatetimeHandling:
         """Test that completed_at datetime is timezone-aware when transcription completes."""
         # Import after setting up the database
         import worker.transcription
-        from worker.transcription import process_transcription, TranscriptionWorker
 
         # Patch the database in worker.transcription module
         monkeypatch.setattr(worker.transcription, "database", test_database)
 
         # Mock the worker's transcribe method
-        mock_worker = TranscriptionWorker()
+        mock_worker = worker.transcription.TranscriptionWorker()
         mock_worker.model_loaded = True
         mock_worker.transcribe = MagicMock(
             return_value={
@@ -136,7 +134,7 @@ class TestTranscriptionDatetimeHandling:
                 with patch("os.close"):
                     with patch("pathlib.Path.unlink"):
                         # Run the transcription
-                        await process_transcription(
+                        await worker.transcription.process_transcription(
                             {
                                 "id": sample_video["id"],
                                 "slug": sample_video["slug"],
@@ -173,13 +171,12 @@ class TestTranscriptionDatetimeHandling:
         """Test that both started_at and completed_at are valid and in correct order."""
         # Import after setting up the database
         import worker.transcription
-        from worker.transcription import process_transcription, TranscriptionWorker
 
         # Patch the database in worker.transcription module
         monkeypatch.setattr(worker.transcription, "database", test_database)
 
         # Mock the worker's transcribe method
-        mock_worker = TranscriptionWorker()
+        mock_worker = worker.transcription.TranscriptionWorker()
         mock_worker.model_loaded = True
         mock_worker.transcribe = MagicMock(
             return_value={
@@ -211,7 +208,7 @@ class TestTranscriptionDatetimeHandling:
                 with patch("os.close"):
                     with patch("pathlib.Path.unlink"):
                         # Run the transcription
-                        await process_transcription(
+                        await worker.transcription.process_transcription(
                             {
                                 "id": sample_video["id"],
                                 "slug": sample_video["slug"],
