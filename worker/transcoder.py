@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 from api.common import ensure_utc
 from api.database import (
-    configure_sqlite_pragmas,
+    configure_database,
     database,
     playback_sessions,
     quality_progress,
@@ -1996,7 +1996,7 @@ async def worker_loop(state: Optional[WorkerState] = None):
     signal.signal(signal.SIGINT, signal_handler)
 
     await database.connect()
-    await configure_sqlite_pragmas()
+    await configure_database()
     print(f"Transcoding worker started (ID: {state.worker_id[:8]})")
 
     # Detect GPU capabilities for hardware-accelerated encoding
