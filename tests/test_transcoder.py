@@ -346,6 +346,12 @@ class TestGenerateMasterPlaylist:
         with patch('worker.transcoder.get_output_dimensions', new=mock_get_dimensions):
             await generate_master_playlist(tmp_path, qualities)
 
+        # Verify the quality dictionaries are modified in-place
+        assert qualities[0]['width'] == 1728  # Modified from 1280
+        assert qualities[0]['height'] == 720  # Unchanged
+        assert qualities[1]['width'] == 1152  # Modified from 854
+        assert qualities[1]['height'] == 480  # Unchanged
+
         content = (tmp_path / "master.m3u8").read_text()
 
         # Verify the playlist uses actual dimensions, not preset dimensions
