@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, Tupl
 if TYPE_CHECKING:
     from worker.hwaccel import GPUCapabilities
 
+import sqlalchemy as sa
+
 from api.common import ensure_utc, validate_slug
 from api.database import (
     configure_database,
@@ -55,6 +57,7 @@ from config import (
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
+    WORKER_CLAIM_DURATION_MINUTES,
     WORKER_DEBOUNCE_DELAY,
     WORKER_FALLBACK_POLL_INTERVAL,
     WORKER_USE_FILESYSTEM_WATCHER,
@@ -1015,57 +1018,155 @@ async def cleanup_partial_output(
 
 
 async def get_existing_job(video_id: int) -> Optional[dict]:
-    """Get existing transcoding job for a video.
+    """Get and claim existing transcoding job for a video.
 
-    Returns None if no job exists - this indicates the upload is still in progress
-    and the admin API hasn't created the job yet. The local worker should skip
-    processing in this case to avoid race conditions.
+    Uses database-level locking to prevent race conditions with remote workers.
+    Returns None if:
+    - No job exists (upload still in progress)
+    - Job is already claimed by another worker
+    - Job is already completed
+
+    This function atomically claims the job for the local worker, preventing
+    remote workers from claiming it simultaneously.
 
     Args:
         video_id: Database ID of the video
 
     Returns:
-        Job dict if exists, None otherwise
+        Job dict if exists and successfully claimed, None otherwise
     """
-    query = transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-    job = await database.fetch_one(query)
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
 
-    if job:
-        return dict(job)
+    # Use LOCAL_WORKER as the worker_id for local workers
+    # This distinguishes local worker claims from remote workers
+    local_worker_id = "LOCAL_WORKER"
 
-    return None
+    result = {"job": None}
+
+    async def do_claim():
+        async with database.transaction():
+            # Check the database URL to determine if we need PostgreSQL-specific syntax
+            db_url = str(database.url)
+            is_postgresql = db_url.startswith("postgresql")
+
+            if is_postgresql:
+                # Use FOR UPDATE SKIP LOCKED to atomically claim the job
+                # This prevents race conditions with remote workers
+                job = await database.fetch_one(
+                    sa.text("""
+                        SELECT tj.*
+                        FROM transcoding_jobs tj
+                        WHERE tj.video_id = :video_id
+                          AND tj.completed_at IS NULL
+                          AND (
+                              tj.claimed_at IS NULL
+                              OR tj.claim_expires_at < :now
+                              OR tj.worker_id = :local_worker_id
+                          )
+                        FOR UPDATE SKIP LOCKED
+                    """).bindparams(
+                        video_id=video_id,
+                        now=now,
+                        local_worker_id=local_worker_id
+                    )
+                )
+            else:
+                # SQLite: use regular SELECT within transaction
+                # SQLite's transaction isolation prevents concurrent modifications
+                job = await database.fetch_one(
+                    sa.text("""
+                        SELECT *
+                        FROM transcoding_jobs
+                        WHERE video_id = :video_id
+                          AND completed_at IS NULL
+                          AND (
+                              claimed_at IS NULL
+                              OR claim_expires_at < :now
+                              OR worker_id = :local_worker_id
+                          )
+                    """).bindparams(
+                        video_id=video_id,
+                        now=now,
+                        local_worker_id=local_worker_id
+                    )
+                )
+
+            if not job:
+                # No job, or job is claimed by remote worker and not expired
+                result["job"] = None
+                return
+
+            # Claim the job for the local worker
+            await database.execute(
+                transcoding_jobs.update()
+                .where(transcoding_jobs.c.id == job["id"])
+                .values(
+                    worker_id=local_worker_id,
+                    claimed_at=now,
+                    claim_expires_at=expires_at,
+                )
+            )
+
+            result["job"] = dict(job)
+
+    try:
+        await do_claim()
+    except Exception as e:
+        logger.warning(f"Failed to claim job for video {video_id}: {e}")
+        return None
+
+    return result["job"]
 
 
 async def update_job_step(job_id: int, step: str):
-    """Update the current processing step."""
+    """Update the current processing step and extend claim."""
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
+
     await database.execute(
         transcoding_jobs.update()
         .where(transcoding_jobs.c.id == job_id)
         .values(
             current_step=step,
-            last_checkpoint=datetime.now(timezone.utc),
+            last_checkpoint=now,
+            claim_expires_at=expires_at,
         )
     )
 
 
 async def update_job_progress(job_id: int, progress: int):
-    """Update overall job progress percentage."""
+    """Update overall job progress percentage and extend claim."""
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
+
     await database.execute(
         transcoding_jobs.update()
         .where(transcoding_jobs.c.id == job_id)
         .values(
             progress_percent=progress,
-            last_checkpoint=datetime.now(timezone.utc),
+            last_checkpoint=now,
+            claim_expires_at=expires_at,
         )
     )
 
 
 async def checkpoint(job_id: int):
-    """Update the checkpoint timestamp."""
+    """Update the checkpoint timestamp and extend claim."""
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
+
     await database.execute(
         transcoding_jobs.update()
         .where(transcoding_jobs.c.id == job_id)
-        .values(last_checkpoint=datetime.now(timezone.utc))
+        .values(
+            last_checkpoint=now,
+            claim_expires_at=expires_at,
+        )
     )
 
 
