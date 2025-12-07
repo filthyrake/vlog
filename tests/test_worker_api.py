@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from api.database import transcoding_jobs, videos, worker_api_keys, workers
+from api.database import quality_progress, transcoding_jobs, videos, worker_api_keys, workers
 from api.worker_auth import get_key_prefix, hash_api_key
 
 # ============================================================================
@@ -907,6 +907,78 @@ class TestStaleJobDetection:
             # Restore original _api_start_time
             worker_api_module._api_start_time = old_start_time
 
+    @pytest.mark.asyncio
+    async def test_worker_offline_detection_null_heartbeat(
+        self, worker_client, test_database, sample_pending_video, worker_admin_headers
+    ):
+        """Test that workers with NULL last_heartbeat are detected as offline (issue #273).
+
+        Workers that register but never send a heartbeat (last_heartbeat=NULL) should
+        be detected as offline based on their registered_at timestamp.
+        """
+        import api.worker_api as worker_api_module
+        from api.worker_api import _detect_and_release_stale_jobs
+
+        # Set _api_start_time to the past to bypass startup grace period in tests
+        old_start_time = worker_api_module._api_start_time
+        worker_api_module._api_start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+        try:
+            # Register a worker
+            response = worker_client.post(
+                "/api/worker/register",
+                headers=worker_admin_headers,
+                json={"worker_name": "null-heartbeat-worker"},
+            )
+            assert response.status_code == 200
+            worker_data = response.json()
+
+            # Simulate a worker that never sent a heartbeat by setting
+            # last_heartbeat to NULL and registered_at to an old time
+            old_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+            await test_database.execute(
+                workers.update()
+                .where(workers.c.worker_id == worker_data["worker_id"])
+                .values(last_heartbeat=None, registered_at=old_time, status="active")
+            )
+
+            # Create a job claimed by this worker with an expired claim
+            job_id = await test_database.execute(
+                transcoding_jobs.insert().values(
+                    video_id=sample_pending_video["id"],
+                    worker_id=worker_data["worker_id"],
+                    claimed_at=old_time,
+                    claim_expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+                    current_step="transcode",
+                    attempt_number=1,
+                    max_attempts=3,
+                )
+            )
+
+            # Update video status to processing
+            await test_database.execute(
+                videos.update().where(videos.c.id == sample_pending_video["id"]).values(status="processing")
+            )
+
+            # Run the stale job detection
+            stale_count = await _detect_and_release_stale_jobs()
+            assert stale_count == 1, "Worker with NULL heartbeat should be detected as offline"
+
+            # Verify worker is marked offline
+            worker_record = await test_database.fetch_one(
+                workers.select().where(workers.c.worker_id == worker_data["worker_id"])
+            )
+            assert worker_record["status"] == "offline"
+
+            # Verify job is released
+            job_record = await test_database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+            )
+            assert job_record["claimed_at"] is None
+            assert job_record["worker_id"] is None
+        finally:
+            worker_api_module._api_start_time = old_start_time
+
 
 class TestProgressUpdates:
     """Tests for progress update endpoint."""
@@ -1224,6 +1296,64 @@ class TestJobFailure:
         assert response.status_code == 200
         data = response.json()
         assert data["will_retry"] is False
+
+    @pytest.mark.asyncio
+    async def test_fail_job_with_retry_cleans_quality_progress(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that quality_progress records are cleaned up on job retry (issue #272).
+
+        When a job fails and is retried, stale quality_progress records from the
+        previous attempt should be deleted to prevent data confusion.
+        """
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create quality_progress records that would exist from a failed attempt
+        await test_database.execute(
+            quality_progress.insert().values(
+                job_id=job_id,
+                quality="1080p",
+                status="completed",
+                progress_percent=100,
+            )
+        )
+        await test_database.execute(
+            quality_progress.insert().values(
+                job_id=job_id,
+                quality="720p",
+                status="in_progress",
+                progress_percent=50,
+            )
+        )
+
+        # Verify quality_progress records exist
+        records = await test_database.fetch_all(
+            quality_progress.select().where(quality_progress.c.job_id == job_id)
+        )
+        assert len(records) == 2
+
+        # Fail the job with retry
+        response = worker_client.post(
+            f"/api/worker/{job_id}/fail",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"error_message": "Transcoding failed", "retry": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["will_retry"] is True
+
+        # Verify quality_progress records are cleaned up
+        records = await test_database.fetch_all(
+            quality_progress.select().where(quality_progress.c.job_id == job_id)
+        )
+        assert len(records) == 0, "quality_progress should be cleaned up on job retry"
 
 
 class TestWorkerListing:
