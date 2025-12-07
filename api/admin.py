@@ -1949,12 +1949,12 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
     # Views over time (last 30 days)
     views_query = """
         SELECT
-            DATE(started_at) as date,
+            CAST(started_at AS DATE) as date,
             COUNT(*) as views
         FROM playback_sessions
         WHERE video_id = :video_id
-            AND started_at >= DATE('now', '-30 days')
-        GROUP BY DATE(started_at)
+            AND started_at >= CURRENT_DATE - INTERVAL '30 days'
+        GROUP BY CAST(started_at AS DATE)
         ORDER BY date
     """
     views_rows = await database.fetch_all(sa.text(views_query).bindparams(video_id=video_id))
@@ -2014,18 +2014,18 @@ async def analytics_trends(
 
     base_query = f"""
         SELECT
-            DATE(started_at) as date,
+            CAST(started_at AS DATE) as date,
             COUNT(*) as views,
             COUNT(DISTINCT viewer_id) as unique_viewers,
             COALESCE(SUM(duration_watched), 0) / 3600.0 as watch_time_hours
         FROM playback_sessions
-        WHERE started_at >= DATE('now', :days_offset)
+        WHERE started_at >= CURRENT_DATE - CAST(:days_offset AS INTEGER) * INTERVAL '1 day'
         {video_clause}
-        GROUP BY DATE(started_at)
+        GROUP BY CAST(started_at AS DATE)
         ORDER BY date
     """
 
-    params = {"days_offset": f"-{days} days"}
+    params = {"days_offset": days}
     if video_id:
         params["video_id"] = video_id
 
@@ -2896,10 +2896,10 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
         or 0
     )
 
-    # Get average job duration for completed jobs
+    # Get average job duration for completed jobs (in seconds)
     avg_duration = await database.fetch_val(
         sa.text("""
-            SELECT AVG(JULIANDAY(tj.completed_at) - JULIANDAY(tj.started_at)) * 86400
+            SELECT AVG(EXTRACT(EPOCH FROM (tj.completed_at - tj.started_at)))
             FROM transcoding_jobs tj
             JOIN videos v ON tj.video_id = v.id
             WHERE tj.worker_id = :worker_id
