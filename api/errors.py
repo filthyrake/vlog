@@ -23,8 +23,11 @@ INTERNAL_PATTERNS = [
     r"ffprobe:.*\.mp4",  # FFprobe with file paths
     r"Permission denied",  # System errors
     r"No such file or directory",  # System errors with paths
-    r"UNIQUE constraint failed",  # Database internals
+    r"UNIQUE constraint failed",  # SQLite database internals
+    r"duplicate key value violates unique constraint",  # PostgreSQL internals
     r"sqlite3?\.",  # SQLite details
+    r"asyncpg\.",  # PostgreSQL async driver details
+    r"psycopg2?\.",  # PostgreSQL sync driver details
     r"Error: .+\.py:\d+",  # Python error traces
 ]
 
@@ -86,7 +89,7 @@ def sanitize_error_message(error: Optional[str], log_original: bool = True, cont
     if "source file not found" in error_lower or "not found" in error_lower:
         return ERROR_MESSAGES["source_not_found"]
 
-    if "sqlite" in error_lower or "database" in error_lower or "constraint" in error_lower:
+    if any(term in error_lower for term in ["sqlite", "postgres", "asyncpg", "database", "constraint"]):
         return ERROR_MESSAGES["database"]
 
     if "permission" in error_lower:
@@ -104,6 +107,40 @@ def sanitize_error_message(error: Optional[str], log_original: bool = True, cont
 
     # Default to generic message for anything else
     return ERROR_MESSAGES["general"]
+
+
+def is_unique_violation(exc: Exception, column: Optional[str] = None) -> bool:
+    """
+    Check if an exception is a unique constraint violation.
+
+    Supports both SQLite and PostgreSQL error formats:
+    - SQLite: "UNIQUE constraint failed: table.column"
+    - PostgreSQL: "duplicate key value violates unique constraint"
+
+    Args:
+        exc: The exception to check
+        column: Optional column name to check for specific constraint
+
+    Returns:
+        True if this is a unique constraint violation (optionally on the specified column)
+    """
+    error_str = str(exc).lower()
+
+    # Check for SQLite-style errors
+    is_sqlite_unique = "unique constraint failed" in error_str
+
+    # Check for PostgreSQL-style errors
+    is_postgres_unique = "duplicate key value violates unique constraint" in error_str
+    is_postgres_unique = is_postgres_unique or "uniqueviolation" in error_str
+
+    if not (is_sqlite_unique or is_postgres_unique):
+        return False
+
+    # If a column name is specified, check if it's mentioned in the error
+    if column:
+        return column.lower() in error_str
+
+    return True
 
 
 def sanitize_progress_error(error: Optional[str]) -> Optional[str]:

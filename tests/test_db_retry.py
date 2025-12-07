@@ -1,4 +1,7 @@
-"""Tests for database retry functionality."""
+"""Tests for database retry functionality.
+
+Tests cover both SQLite and PostgreSQL error patterns.
+"""
 
 import sqlite3
 from unittest.mock import AsyncMock, patch
@@ -7,49 +10,87 @@ import pytest
 
 from api.db_retry import (
     DatabaseLockedError,
+    DatabaseRetryableError,
     execute_with_retry,
     is_database_locked_error,
+    is_retryable_database_error,
     with_db_retry,
 )
 
 
-class TestIsDatabaseLockedError:
-    """Tests for is_database_locked_error function."""
+class TestIsRetryableDatabaseError:
+    """Tests for is_retryable_database_error function (and its alias is_database_locked_error)."""
 
-    def test_database_is_locked_message(self):
-        """Should detect 'database is locked' message."""
+    # SQLite error patterns
+    def test_sqlite_database_is_locked_message(self):
+        """Should detect SQLite 'database is locked' message."""
         exc = sqlite3.OperationalError("database is locked")
-        assert is_database_locked_error(exc) is True
+        assert is_retryable_database_error(exc) is True
+        assert is_database_locked_error(exc) is True  # Test alias
 
-    def test_database_table_is_locked_message(self):
-        """Should detect 'database table is locked' message."""
+    def test_sqlite_database_table_is_locked_message(self):
+        """Should detect SQLite 'database table is locked' message."""
         exc = sqlite3.OperationalError("database table is locked")
-        assert is_database_locked_error(exc) is True
+        assert is_retryable_database_error(exc) is True
 
     def test_sqlite_busy_message(self):
-        """Should detect 'SQLITE_BUSY' message."""
+        """Should detect SQLite 'SQLITE_BUSY' message."""
         exc = Exception("SQLITE_BUSY: some other text")
-        assert is_database_locked_error(exc) is True
+        assert is_retryable_database_error(exc) is True
 
     def test_sqlite_locked_message(self):
-        """Should detect 'SQLITE_LOCKED' message."""
+        """Should detect SQLite 'SQLITE_LOCKED' message."""
         exc = Exception("Error: SQLITE_LOCKED")
-        assert is_database_locked_error(exc) is True
+        assert is_retryable_database_error(exc) is True
 
+    # PostgreSQL error patterns
+    def test_postgres_deadlock_detected(self):
+        """Should detect PostgreSQL deadlock error."""
+        exc = Exception("deadlock detected")
+        assert is_retryable_database_error(exc) is True
+
+    def test_postgres_serialization_failure(self):
+        """Should detect PostgreSQL serialization failure."""
+        exc = Exception("could not serialize access due to concurrent update")
+        assert is_retryable_database_error(exc) is True
+
+    def test_postgres_lock_timeout(self):
+        """Should detect PostgreSQL lock timeout error."""
+        exc = Exception("canceling statement due to lock timeout")
+        assert is_retryable_database_error(exc) is True
+
+    def test_postgres_could_not_obtain_lock(self):
+        """Should detect PostgreSQL lock contention error."""
+        exc = Exception("could not obtain lock on relation")
+        assert is_retryable_database_error(exc) is True
+
+    def test_postgres_connection_error(self):
+        """Should detect PostgreSQL connection errors."""
+        exc = Exception("server closed the connection unexpectedly")
+        assert is_retryable_database_error(exc) is True
+
+    # General tests
     def test_case_insensitive(self):
         """Should be case insensitive."""
         exc = Exception("DATABASE IS LOCKED")
-        assert is_database_locked_error(exc) is True
+        assert is_retryable_database_error(exc) is True
 
-    def test_non_locking_error(self):
-        """Should return False for non-locking errors."""
-        exc = Exception("connection refused")
-        assert is_database_locked_error(exc) is False
+        exc2 = Exception("DEADLOCK DETECTED")
+        assert is_retryable_database_error(exc2) is True
+
+    def test_non_retryable_error(self):
+        """Should return False for non-retryable errors."""
+        exc = Exception("syntax error at or near")
+        assert is_retryable_database_error(exc) is False
 
     def test_other_sqlite_error(self):
         """Should return False for other SQLite errors."""
         exc = sqlite3.OperationalError("no such table: users")
-        assert is_database_locked_error(exc) is False
+        assert is_retryable_database_error(exc) is False
+
+    def test_backwards_compatible_alias(self):
+        """DatabaseLockedError should be an alias for DatabaseRetryableError."""
+        assert DatabaseLockedError is DatabaseRetryableError
 
 
 class TestExecuteWithRetry:

@@ -5,15 +5,15 @@ from sqlalchemy import engine_from_config, pool
 
 # Import the project's database metadata and config
 from api.database import metadata as target_metadata
-from api.database import set_sqlite_pragmas_sync
-from config import DATABASE_PATH
+from config import DATABASE_URL
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
 # Set the database URL dynamically from project config
-config.set_main_option("sqlalchemy.url", f"sqlite:///{DATABASE_PATH}")
+# Supports both PostgreSQL (default) and SQLite
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -33,12 +33,17 @@ def run_migrations_offline() -> None:
     script output.
     """
     url = config.get_main_option("sqlalchemy.url")
+
+    # Use batch mode for SQLite (required for ALTER operations)
+    # PostgreSQL doesn't need this but it doesn't hurt
+    render_as_batch = url.startswith("sqlite")
+
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True,  # SQLite requires batch mode for ALTER operations
+        render_as_batch=render_as_batch,
     )
 
     with context.begin_transaction():
@@ -58,13 +63,16 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        # Set SQLite pragmas for optimal performance
-        set_sqlite_pragmas_sync(connection.connection.dbapi_connection, None)
+        url = config.get_main_option("sqlalchemy.url")
+
+        # Use batch mode for SQLite (required for ALTER operations)
+        # PostgreSQL doesn't need this but it doesn't hurt
+        render_as_batch = url.startswith("sqlite")
 
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            render_as_batch=True,  # SQLite requires batch mode for ALTER operations
+            render_as_batch=render_as_batch,
         )
 
         with context.begin_transaction():
