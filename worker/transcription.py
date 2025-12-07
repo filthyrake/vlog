@@ -437,8 +437,7 @@ def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
     print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
-    # Get the worker instance from the current event loop
-    # We'll need to store it globally for signal handler access
+    # Access global worker instance (may be None if called during startup/shutdown)
     global _worker_instance
     if _worker_instance:
         _worker_instance.request_shutdown()
