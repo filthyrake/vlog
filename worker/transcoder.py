@@ -1346,7 +1346,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
     # If no job exists, the upload is still in progress - skip and retry later
     job = await get_existing_job(video_id)
     if job is None:
-        print(f"  No transcoding job found - upload still in progress, will retry later")
+        print("  No transcoding job found - upload still in progress, will retry later")
         return False
     job_id = job["id"]
 
