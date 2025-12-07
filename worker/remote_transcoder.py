@@ -55,6 +55,10 @@ GPU_CAPS: Optional[GPUCapabilities] = None
 # Error messages
 CLAIM_EXPIRED_ERROR = "Claim expired - job may have been reassigned to another worker"
 
+# Retry settings for job completion
+COMPLETE_JOB_MAX_RETRIES = 3
+COMPLETE_JOB_RETRY_DELAY = 5  # seconds
+
 
 class ClaimExpiredError(Exception):
     """Raised when a job claim has expired and the job may have been reassigned."""
@@ -108,6 +112,10 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     output_dir.mkdir(exist_ok=True)
 
     source_path = work_dir / source_filename
+
+    # Track whether job was successfully completed on server
+    # Only cleanup work directory if completion was verified
+    completion_verified = False
 
     try:
         # Download source file
@@ -367,15 +375,39 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         await client.upload_finalize(video_id, output_dir)
         print("  Finalize files uploaded")
 
-        # Complete job
+        # Complete job with retry logic to ensure server-side completion is verified
+        # before cleaning up local work files (issue #271)
         print("  Marking job complete...")
-        await client.complete_job(
-            job_id,
-            successful_qualities,
-            duration=duration,
-            source_width=source_width,
-            source_height=source_height,
-        )
+        for attempt in range(COMPLETE_JOB_MAX_RETRIES):
+            try:
+                await client.complete_job(
+                    job_id,
+                    successful_qualities,
+                    duration=duration,
+                    source_width=source_width,
+                    source_height=source_height,
+                )
+                completion_verified = True
+                break
+            except WorkerAPIError as e:
+                if e.status_code == 409:
+                    # Claim expired - don't retry, job may have been reassigned
+                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
+                    print(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {e.message}")
+                    print(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
+                    await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
+                else:
+                    # Final attempt failed - don't cleanup, report failure
+                    raise
+            except Exception as e:
+                if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
+                    print(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {e}")
+                    print(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
+                    await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
+                else:
+                    raise
+
         print(f"  Done! Video {video_slug} is ready.")
 
         if failed_qualities:
@@ -387,6 +419,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Claim expired - job may have been reassigned
         print(f"  {CLAIM_EXPIRED_ERROR}")
         # Don't report failure - the job may already be claimed by another worker
+        # Safe to cleanup since we don't own this job anymore
+        completion_verified = True  # Mark for cleanup
         return False
 
     except WorkerAPIError as e:
@@ -394,9 +428,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         if e.status_code == 409:
             print(f"  {CLAIM_EXPIRED_ERROR}")
             # Don't report failure - the job may already be claimed by another worker
+            # Safe to cleanup since we don't own this job anymore
+            completion_verified = True  # Mark for cleanup
             return False
 
-        # Other API errors
+        # Other API errors - don't cleanup, files may be needed for manual recovery
         error_msg = f"API error: {e.message}"[:500]
         print(f"  Error: {error_msg}")
         try:
@@ -406,6 +442,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         return False
 
     except Exception as e:
+        # General errors - don't cleanup, files may be needed for manual recovery
         error_msg = str(e)[:500]
         print(f"  Error: {error_msg}")
         try:
@@ -415,9 +452,14 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         return False
 
     finally:
-        # Cleanup work directory
-        if work_dir.exists():
+        # Only cleanup work directory if:
+        # 1. Job completion was verified by the server, OR
+        # 2. Claim expired (job reassigned to another worker)
+        # This prevents data loss if completion fails - files remain for manual recovery
+        if completion_verified and work_dir.exists():
             shutil.rmtree(work_dir, ignore_errors=True)
+        elif work_dir.exists():
+            print(f"  Note: Work directory preserved at {work_dir} (completion not verified)")
 
 
 async def worker_loop():

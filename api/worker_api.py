@@ -168,8 +168,20 @@ async def _detect_and_release_stale_jobs():
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
 
     # Find workers that are not already offline but haven't sent heartbeat
+    # Also catch workers that never sent a heartbeat (last_heartbeat IS NULL)
+    # by checking if they were registered before the offline threshold
     stale_workers = await database.fetch_all(
-        workers.select().where(workers.c.status != "offline").where(workers.c.last_heartbeat < offline_threshold)
+        workers.select()
+        .where(workers.c.status != "offline")
+        .where(
+            sa.or_(
+                workers.c.last_heartbeat < offline_threshold,
+                sa.and_(
+                    workers.c.last_heartbeat.is_(None),
+                    workers.c.registered_at < offline_threshold,
+                ),
+            )
+        )
     )
 
     processed_count = 0
@@ -179,11 +191,20 @@ async def _detect_and_release_stale_jobs():
 
         # ATOMIC CONDITIONAL UPDATE: Only mark offline if last_heartbeat is STILL old
         # This prevents race condition where heartbeat arrives between our fetch and update
+        # Also handle workers that never sent a heartbeat (last_heartbeat IS NULL)
         result = await database.execute(
             workers.update()
             .where(workers.c.id == worker["id"])
-            .where(workers.c.last_heartbeat < offline_threshold)  # Re-check condition
             .where(workers.c.status != "offline")  # Don't update if already offline
+            .where(
+                sa.or_(
+                    workers.c.last_heartbeat < offline_threshold,
+                    sa.and_(
+                        workers.c.last_heartbeat.is_(None),
+                        workers.c.registered_at < offline_threshold,
+                    ),
+                )
+            )
             .values(status="offline", current_job_id=None)
         )
 
@@ -934,6 +955,11 @@ async def fail_job(
                         current_step=None,
                         attempt_number=job["attempt_number"] + 1,
                     )
+                )
+                # Clean up quality_progress records from previous attempt
+                # to prevent stale progress data affecting the retry
+                await database.execute(
+                    quality_progress.delete().where(quality_progress.c.job_id == job_id)
                 )
                 await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
             else:
