@@ -268,6 +268,40 @@ async def fetch_all_with_retry(
     )
 
 
+async def fetch_val_with_retry(
+    query,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+):
+    """
+    Execute a fetch_val query with retry logic for transient database errors.
+
+    Args:
+        query: SQLAlchemy query to execute
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+
+    Returns:
+        The query result (single scalar value or None)
+
+    Raises:
+        DatabaseRetryableError: If all retries are exhausted
+    """
+    from api.database import database
+
+    async def _fetch():
+        return await database.fetch_val(query)
+
+    return await execute_with_retry(
+        _fetch,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+    )
+
+
 async def db_execute_with_retry(
     query,
     values=None,
