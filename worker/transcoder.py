@@ -36,7 +36,7 @@ from api.database import (
     video_qualities,
     videos,
 )
-from api.db_retry import execute_with_retry
+from api.db_retry import DatabaseRetryableError, execute_with_retry
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from api.errors import truncate_error
 from config import (
@@ -1107,9 +1107,12 @@ async def get_existing_job(video_id: int) -> Optional[dict]:
     try:
         # Use execute_with_retry to handle transient database errors (deadlocks, locking)
         await execute_with_retry(do_claim)
-    except Exception as e:
-        logger.warning(f"Failed to claim job for video {video_id}: {e}")
+    except DatabaseRetryableError as e:
+        logger.warning(f"Failed to claim job for video {video_id} after retries: {e}")
         return None
+    except Exception as e:
+        logger.error(f"Unexpected error claiming job for video {video_id}: {e}")
+        raise
 
     return result["job"]
 
@@ -1120,15 +1123,22 @@ async def update_job_step(job_id: int, step: str):
     claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
     expires_at = now + claim_duration
 
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job_id)
-        .values(
-            current_step=step,
-            last_checkpoint=now,
-            claim_expires_at=expires_at,
+    async def do_update():
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job_id)
+            .values(
+                current_step=step,
+                last_checkpoint=now,
+                claim_expires_at=expires_at,
+            )
         )
-    )
+
+    try:
+        await execute_with_retry(do_update)
+    except Exception as e:
+        # Log but continue - progress update failure shouldn't stop the job
+        logger.warning(f"Failed to update job step for job {job_id}: {e}")
 
 
 async def update_job_progress(job_id: int, progress: int):
@@ -1137,15 +1147,22 @@ async def update_job_progress(job_id: int, progress: int):
     claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
     expires_at = now + claim_duration
 
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job_id)
-        .values(
-            progress_percent=progress,
-            last_checkpoint=now,
-            claim_expires_at=expires_at,
+    async def do_update():
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job_id)
+            .values(
+                progress_percent=progress,
+                last_checkpoint=now,
+                claim_expires_at=expires_at,
+            )
         )
-    )
+
+    try:
+        await execute_with_retry(do_update)
+    except Exception as e:
+        # Log but continue - progress update failure shouldn't stop the job
+        logger.warning(f"Failed to update job progress for job {job_id}: {e}")
 
 
 async def checkpoint(job_id: int):
@@ -1154,14 +1171,21 @@ async def checkpoint(job_id: int):
     claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
     expires_at = now + claim_duration
 
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job_id)
-        .values(
-            last_checkpoint=now,
-            claim_expires_at=expires_at,
+    async def do_update():
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job_id)
+            .values(
+                last_checkpoint=now,
+                claim_expires_at=expires_at,
+            )
         )
-    )
+
+    try:
+        await execute_with_retry(do_update)
+    except Exception as e:
+        # Log but continue - checkpoint failure shouldn't stop the job
+        logger.warning(f"Failed to update checkpoint for job {job_id}: {e}")
 
 
 async def mark_job_completed(job_id: int):

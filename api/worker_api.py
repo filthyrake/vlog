@@ -596,6 +596,7 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
             workers.select()
             .where(workers.c.status == "idle")
             .where(workers.c.id != worker["id"])  # Exclude self
+            .where(workers.c.last_heartbeat.isnot(None))  # Exclude workers without heartbeat
             .where(workers.c.last_heartbeat >= gpu_worker_active_threshold)  # Must have recent heartbeat
         )
 

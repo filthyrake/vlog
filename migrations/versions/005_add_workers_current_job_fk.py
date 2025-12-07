@@ -26,11 +26,15 @@ def upgrade() -> None:
     """
     # Clean up any invalid current_job_id values that reference non-existent jobs
     # This ensures the FK constraint can be added without errors
+    # Using NOT EXISTS instead of NOT IN for better performance and NULL handling
     op.execute("""
         UPDATE workers
         SET current_job_id = NULL
         WHERE current_job_id IS NOT NULL
-          AND current_job_id NOT IN (SELECT id FROM transcoding_jobs)
+          AND NOT EXISTS (
+              SELECT 1 FROM transcoding_jobs
+              WHERE transcoding_jobs.id = workers.current_job_id
+          )
     """)
 
     # Add the foreign key constraint with ON DELETE SET NULL
