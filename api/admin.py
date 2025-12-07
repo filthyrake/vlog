@@ -51,6 +51,7 @@ from api.db_retry import (
     db_execute_with_retry,
     fetch_all_with_retry,
     fetch_one_with_retry,
+    fetch_val_with_retry,
 )
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
@@ -442,7 +443,7 @@ async def list_archived_videos(
 
     # Get total count of archived videos
     count_query = sa.select(sa.func.count()).select_from(videos).where(videos.c.deleted_at.is_not(None))
-    total = await database.fetch_val(count_query)
+    total = await fetch_val_with_retry(count_query)
 
     return {
         "videos": [
@@ -697,7 +698,7 @@ async def update_video(
     if category_id is not None:
         if category_id > 0:
             # Validate category exists
-            existing_category = await database.fetch_one(categories.select().where(categories.c.id == category_id))
+            existing_category = await fetch_one_with_retry(categories.select().where(categories.c.id == category_id))
             if not existing_category:
                 raise HTTPException(status_code=400, detail=f"Category with ID {category_id} does not exist")
             update_data["category_id"] = category_id
@@ -747,7 +748,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
     - Cannot be undone
     """
     # Get video info
-    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -758,7 +759,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
             # Ensure foreign keys are enforced within this transaction
             await ensure_foreign_keys()
             # Get job ID for quality_progress cleanup
-            job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+            job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
             if job:
                 await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
             await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
@@ -863,7 +864,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def restore_video(request: Request, video_id: int):
     """Restore a soft-deleted video from archive."""
-    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -933,7 +934,7 @@ async def restore_video(request: Request, video_id: int):
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def retry_video(request: Request, video_id: int):
     """Retry processing a failed video."""
-    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1001,7 +1002,7 @@ async def re_upload_video(
         )
 
     # Get video info
-    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1036,7 +1037,7 @@ async def re_upload_video(
     # === DATABASE CLEANUP (atomic) ===
     async with database.transaction():
         # Delete transcoding job and quality_progress
-        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         if job:
             await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
         await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
@@ -1115,7 +1116,7 @@ async def re_upload_video(
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_progress(request: Request, video_id: int) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
 
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -1138,7 +1139,7 @@ async def get_video_progress(request: Request, video_id: int) -> TranscodingProg
         )
 
     # Get job info for processing videos
-    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+    job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
 
     if not job:
         return TranscodingProgressResponse(
@@ -1147,7 +1148,7 @@ async def get_video_progress(request: Request, video_id: int) -> TranscodingProg
         )
 
     # Get quality progress
-    quality_rows = await database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job["id"]))
+    quality_rows = await fetch_all_with_retry(quality_progress.select().where(quality_progress.c.job_id == job["id"]))
 
     qualities = [
         QualityProgressResponse(
@@ -1174,13 +1175,13 @@ async def get_video_progress(request: Request, video_id: int) -> TranscodingProg
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_qualities(request: Request, video_id: int) -> VideoQualitiesResponse:
     """Get available and existing qualities for a video."""
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
 
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get existing transcoded qualities
-    quality_rows = await database.fetch_all(video_qualities.select().where(video_qualities.c.video_id == video_id))
+    quality_rows = await fetch_all_with_retry(video_qualities.select().where(video_qualities.c.video_id == video_id))
 
     existing = [
         VideoQualityInfo(
@@ -1227,7 +1228,7 @@ async def retranscode_video(
     - Preserve: source file, metadata, thumbnail (unless re-transcoding all)
     """
     # Get video info
-    row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1289,7 +1290,7 @@ async def retranscode_video(
     # === DATABASE CLEANUP ===
     async with database.transaction():
         # Cancel any existing transcoding job
-        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         if job:
             # Delete quality_progress records
             if retranscode_all:
@@ -1370,12 +1371,12 @@ async def retranscode_video(
 async def get_video_transcript(request: Request, video_id: int) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
     # Get video
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get transcription record
-    transcription = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
+    transcription = await fetch_one_with_retry(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if not transcription:
         return TranscriptionResponse(status=TranscriptionStatus.NONE)
@@ -1402,7 +1403,7 @@ async def get_video_transcript(request: Request, video_id: int) -> Transcription
 async def trigger_transcription(request: Request, video_id: int, data: TranscriptionTrigger = None):
     """Manually trigger transcription for a video."""
     # Get video
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1410,7 +1411,7 @@ async def trigger_transcription(request: Request, video_id: int, data: Transcrip
         raise HTTPException(status_code=400, detail="Video must be ready before transcription")
 
     # Check if transcription already exists
-    existing = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
+    existing = await fetch_one_with_retry(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if existing:
         if existing["status"] == TranscriptionStatus.PROCESSING:
@@ -1474,12 +1475,12 @@ async def trigger_transcription(request: Request, video_id: int, data: Transcrip
 async def update_transcript(request: Request, video_id: int, data: TranscriptionUpdate):
     """Manually edit/correct transcript text and regenerate VTT."""
     # Get video
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get transcription
-    transcription = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
+    transcription = await fetch_one_with_retry(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if not transcription:
         raise HTTPException(status_code=404, detail="No transcription found for this video")
@@ -1514,12 +1515,12 @@ async def update_transcript(request: Request, video_id: int, data: Transcription
 async def delete_transcript(request: Request, video_id: int):
     """Delete transcription and VTT file for a video."""
     # Get video
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Get transcription
-    transcription = await database.fetch_one(transcriptions.select().where(transcriptions.c.video_id == video_id))
+    transcription = await fetch_one_with_retry(transcriptions.select().where(transcriptions.c.video_id == video_id))
 
     if not transcription:
         raise HTTPException(status_code=404, detail="No transcription found for this video")
@@ -1568,11 +1569,11 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
     month_start = today_start - timedelta(days=30)
 
     # Total views
-    total_views = await database.fetch_val(sa.select(sa.func.count()).select_from(playback_sessions)) or 0
+    total_views = await fetch_val_with_retry(sa.select(sa.func.count()).select_from(playback_sessions)) or 0
 
     # Unique viewers
     unique_viewers = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count(sa.distinct(playback_sessions.c.viewer_id)))
             .select_from(playback_sessions)
             .where(playback_sessions.c.viewer_id.isnot(None))
@@ -1582,7 +1583,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Total watch time
     total_watch_seconds = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.sum(playback_sessions.c.duration_watched)).select_from(playback_sessions)
         )
         or 0
@@ -1591,7 +1592,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Completion rate
     completed_count = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count()).select_from(playback_sessions).where(playback_sessions.c.completed.is_(True))
         )
         or 0
@@ -1600,7 +1601,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Average watch duration
     avg_watch = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.avg(playback_sessions.c.duration_watched)).select_from(playback_sessions)
         )
         or 0
@@ -1608,7 +1609,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Views today
     views_today = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(playback_sessions)
             .where(playback_sessions.c.started_at >= today_start)
@@ -1618,7 +1619,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Views this week
     views_week = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(playback_sessions)
             .where(playback_sessions.c.started_at >= week_start)
@@ -1628,7 +1629,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Views this month
     views_month = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(playback_sessions)
             .where(playback_sessions.c.started_at >= month_start)
@@ -1724,10 +1725,10 @@ async def analytics_videos(
     if period_filter:
         params["period_filter"] = period_filter.isoformat()
 
-    rows = await database.fetch_all(sa.text(base_query).bindparams(**params))
+    rows = await fetch_all_with_retry(sa.text(base_query).bindparams(**params))
 
     # Get total count
-    count_result = await database.fetch_val(
+    count_result = await fetch_val_with_retry(
         sa.select(sa.func.count()).select_from(videos).where(videos.c.status == VideoStatus.READY)
     )
 
@@ -1792,7 +1793,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
 
     # Cache miss - compute fresh data
     # Get video info
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1808,7 +1809,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         FROM playback_sessions
         WHERE video_id = :video_id
     """
-    stats = await database.fetch_one(
+    stats = await fetch_one_with_retry(
         sa.text(stats_query).bindparams(video_id=video_id, duration=video["duration"] or 1)
     )
 
@@ -1822,7 +1823,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         GROUP BY quality_used
         ORDER BY percentage DESC
     """
-    quality_rows = await database.fetch_all(sa.text(quality_query).bindparams(video_id=video_id))
+    quality_rows = await fetch_all_with_retry(sa.text(quality_query).bindparams(video_id=video_id))
 
     quality_breakdown = (
         [QualityBreakdown(quality=q["quality"], percentage=round(q["percentage"], 2)) for q in quality_rows]
@@ -1841,7 +1842,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
         GROUP BY DATE(started_at)
         ORDER BY date
     """
-    views_rows = await database.fetch_all(sa.text(views_query).bindparams(video_id=video_id))
+    views_rows = await fetch_all_with_retry(sa.text(views_query).bindparams(video_id=video_id))
 
     views_over_time = [DailyViews(date=str(v["date"]), views=v["views"]) for v in views_rows] if views_rows else []
 
@@ -1913,7 +1914,7 @@ async def analytics_trends(
     if video_id:
         params["video_id"] = video_id
 
-    rows = await database.fetch_all(sa.text(base_query).bindparams(**params))
+    rows = await fetch_all_with_retry(sa.text(base_query).bindparams(**params))
 
     data = [
         TrendDataPoint(
@@ -1958,7 +1959,7 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
     for video_id in data.video_ids:
         try:
             # Get video info
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
             if not row:
                 results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
                 failed_count += 1
@@ -1969,7 +1970,7 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
                 async with database.transaction():
                     # Ensure foreign keys are enforced within this transaction
                     await ensure_foreign_keys()
-                    job = await database.fetch_one(
+                    job = await fetch_one_with_retry(
                         transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
                     )
                     if job:
@@ -2072,7 +2073,7 @@ async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkU
 
     # Validate category exists if provided
     if data.category_id is not None and data.category_id > 0:
-        existing_category = await database.fetch_one(categories.select().where(categories.c.id == data.category_id))
+        existing_category = await fetch_one_with_retry(categories.select().where(categories.c.id == data.category_id))
         if not existing_category:
             raise HTTPException(status_code=400, detail=f"Category with ID {data.category_id} does not exist")
 
@@ -2091,7 +2092,7 @@ async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkU
     for video_id in data.video_ids:
         try:
             # Verify video exists
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
             if not row:
                 results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
                 failed_count += 1
@@ -2143,7 +2144,7 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
     for video_id in data.video_ids:
         try:
             # Get video info
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
             if not row:
                 results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
                 failed_count += 1
@@ -2177,7 +2178,7 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
 
             async with database.transaction():
                 # Cancel existing transcoding job
-                existing_job = await database.fetch_one(
+                existing_job = await fetch_one_with_retry(
                     transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
                 )
                 if existing_job:
@@ -2272,7 +2273,7 @@ async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> Bul
 
     for video_id in data.video_ids:
         try:
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
             if not row:
                 results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
                 failed_count += 1
@@ -2406,13 +2407,13 @@ async def export_videos(
     if conditions:
         query = query.where(sa.and_(*conditions))
 
-    rows = await database.fetch_all(query)
+    rows = await fetch_all_with_retry(query)
 
     # Get total count for the filter
     count_query = sa.select(sa.func.count()).select_from(videos)
     if conditions:
         count_query = count_query.where(sa.and_(*conditions))
-    total_count = await database.fetch_val(count_query)
+    total_count = await fetch_val_with_retry(count_query)
 
     export_items = [
         VideoExportItem(
@@ -2521,7 +2522,7 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
     current_job_ids = [row["current_job_id"] for row in worker_rows if row["current_job_id"]]
     current_jobs_info = {}
     if current_job_ids:
-        job_rows = await database.fetch_all(
+        job_rows = await fetch_all_with_retry(
             sa.select(
                 transcoding_jobs.c.id,
                 transcoding_jobs.c.current_step,
@@ -2672,7 +2673,7 @@ async def list_active_jobs(request: Request) -> ActiveJobsResponse:
     job_ids = [row["job_id"] for row in rows]
     quality_by_job = {}
     if job_ids:
-        all_quality_rows = await database.fetch_all(
+        all_quality_rows = await fetch_all_with_retry(
             quality_progress.select().where(quality_progress.c.job_id.in_(job_ids))
         )
         for q in all_quality_rows:
@@ -2767,7 +2768,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
             pass
 
     # Get job stats
-    jobs_completed = await database.fetch_val(
+    jobs_completed = await fetch_val_with_retry(
         sa.select(sa.func.count())
         .select_from(transcoding_jobs.join(videos))
         .where(transcoding_jobs.c.worker_id == worker_id)
@@ -2775,7 +2776,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
         .where(videos.c.status == "ready")
     ) or 0
 
-    jobs_failed = await database.fetch_val(
+    jobs_failed = await fetch_val_with_retry(
         sa.select(sa.func.count())
         .select_from(transcoding_jobs.join(videos))
         .where(transcoding_jobs.c.worker_id == worker_id)
@@ -2784,7 +2785,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
     ) or 0
 
     # Get average job duration for completed jobs
-    avg_duration = await database.fetch_val(
+    avg_duration = await fetch_val_with_retry(
         sa.text("""
             SELECT AVG(JULIANDAY(tj.completed_at) - JULIANDAY(tj.started_at)) * 86400
             FROM transcoding_jobs tj
@@ -2887,7 +2888,7 @@ async def disable_worker(request: Request, worker_id: str):
 
         # Release any claimed job
         if worker["current_job_id"]:
-            job = await database.fetch_one(
+            job = await fetch_one_with_retry(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == worker["current_job_id"])
             )
             if job and not job["completed_at"]:
@@ -2975,7 +2976,7 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
     async with database.transaction():
         # Release any claimed job
         if worker["current_job_id"]:
-            job = await database.fetch_one(
+            job = await fetch_one_with_retry(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == worker["current_job_id"])
             )
             if job and not job["completed_at"]:
