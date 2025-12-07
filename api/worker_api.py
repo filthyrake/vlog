@@ -887,7 +887,13 @@ async def complete_job(
                     )
 
             # Update video metadata if provided
-            video_updates = {"status": "ready", "published_at": now}
+            # Only set published_at if not already set (preserve date for re-transcoded videos)
+            video_row = await database.fetch_one(
+                videos.select().where(videos.c.id == job["video_id"])
+            )
+            video_updates = {"status": "ready"}
+            if video_row and video_row["published_at"] is None:
+                video_updates["published_at"] = now
             if data.duration is not None:
                 video_updates["duration"] = data.duration
             if data.source_width is not None:

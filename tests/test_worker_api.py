@@ -1317,6 +1317,66 @@ class TestJobCompletion:
         video = await test_database.fetch_one(videos.select().where(videos.c.id == sample_pending_video["id"]))
         assert video["status"] == "ready"
 
+    @pytest.mark.asyncio
+    async def test_complete_job_preserves_published_at(
+        self, worker_client, registered_worker, test_database, sample_category
+    ):
+        """Test that job completion preserves existing published_at for re-transcoded videos."""
+        from datetime import timedelta
+
+        # Create a video with an existing published_at (simulating re-transcode)
+        original_published = datetime.now(timezone.utc) - timedelta(days=30)
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Re-transcode Test",
+                slug="retranscode-published-at-test",
+                category_id=sample_category["id"],
+                status="pending",
+                published_at=original_published,
+            )
+        )
+
+        # Create and claim a job
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        response = worker_client.post(
+            f"/api/worker/{job_id}/complete",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "qualities": [
+                    {"name": "1080p", "width": 1920, "height": 1080, "bitrate": 5000},
+                ],
+                "duration": 60.0,
+                "source_width": 1920,
+                "source_height": 1080,
+            },
+        )
+        assert response.status_code == 200
+
+        # Verify video is ready and published_at is preserved
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
+        assert video["status"] == "ready"
+        # published_at should still be the original date, not overwritten
+        assert video["published_at"] is not None
+        # Compare timestamps (within 1 second tolerance for DB precision)
+        # Handle timezone-naive datetimes from SQLite test DB
+        db_published = video["published_at"]
+        if db_published.tzinfo is None:
+            db_published = db_published.replace(tzinfo=timezone.utc)
+        orig_published = original_published
+        if orig_published.tzinfo is None:
+            orig_published = orig_published.replace(tzinfo=timezone.utc)
+        time_diff = abs((db_published - orig_published).total_seconds())
+        assert time_diff < 1, f"published_at changed: was {original_published}, now {video['published_at']}"
+
 
 class TestJobFailure:
     """Tests for job failure endpoint."""
