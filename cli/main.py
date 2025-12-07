@@ -268,23 +268,47 @@ def cmd_upload(args):
 def cmd_list(args):
     """List videos."""
     try:
-        params = {}
-        if args.status:
-            params["status"] = args.status
+        if args.archived:
+            # List archived/deleted videos
+            if args.status:
+                print("Warning: --status is ignored when listing archived videos")
 
-        response = httpx.get(f"{API_BASE}/videos", params=params, timeout=DEFAULT_API_TIMEOUT)
-        videos = safe_json_response(response)
+            response = httpx.get(f"{API_BASE}/videos/archived", timeout=DEFAULT_API_TIMEOUT)
+            result = safe_json_response(response)
+            videos_list = result.get("videos", [])
+            total = result.get("total", len(videos_list))
 
-        if not videos:
-            print("No videos found.")
-            return
+            if not videos_list:
+                print("No archived videos found.")
+                return
 
-        print(f"{'ID':<5} {'Status':<12} {'Title':<40} {'Category':<15}")
-        print("-" * 75)
-        for v in videos:
-            title = v["title"][:38] + ".." if len(v["title"]) > 40 else v["title"]
-            cat = v["category_name"] or "-"
-            print(f"{v['id']:<5} {v['status']:<12} {title:<40} {cat:<15}")
+            print(f"Archived videos ({total} total):")
+            print(f"{'ID':<5} {'Deleted At':<20} {'Title':<40} {'Slug':<20}")
+            print("-" * 90)
+            for v in videos_list:
+                title = v["title"][:38] + ".." if len(v["title"]) > 40 else v["title"]
+                slug = v["slug"][:18] + ".." if len(v["slug"]) > 20 else v["slug"]
+                deleted_at = v["deleted_at"][:19] if v["deleted_at"] else "-"
+                print(f"{v['id']:<5} {deleted_at:<20} {title:<40} {slug:<20}")
+        else:
+            # List active videos
+            params = {}
+            if args.status:
+                params["status"] = args.status
+
+            response = httpx.get(f"{API_BASE}/videos", params=params, timeout=DEFAULT_API_TIMEOUT)
+            videos_list = safe_json_response(response)
+
+            if not videos_list:
+                print("No videos found.")
+                return
+
+            print(f"{'ID':<5} {'Status':<12} {'Title':<40} {'Category':<15}")
+            print("-" * 75)
+            for v in videos_list:
+                title = v["title"][:38] + ".." if len(v["title"]) > 40 else v["title"]
+                cat = v["category_name"] or "-"
+                print(f"{v['id']:<5} {v['status']:<12} {title:<40} {cat:<15}")
 
     except httpx.ConnectError:
         print(f"Error: Could not connect to admin API at {API_BASE}")
@@ -624,6 +648,9 @@ def main():
     list_parser = subparsers.add_parser("list", help="List videos")
     list_parser.add_argument(
         "-s", "--status", choices=["pending", "processing", "ready", "failed"], help="Filter by status"
+    )
+    list_parser.add_argument(
+        "--archived", action="store_true", help="List archived/deleted videos instead of active videos"
     )
     list_parser.set_defaults(func=cmd_list)
 
