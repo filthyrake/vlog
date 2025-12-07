@@ -4,6 +4,7 @@ Tests pure functions that don't require ffmpeg.
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -229,14 +230,14 @@ class TestCalculateFfmpegTimeout:
 class TestGenerateMasterPlaylist:
     """Tests for master playlist generation."""
 
-    def test_generate_basic_playlist(self, tmp_path: Path):
+    async def test_generate_basic_playlist(self, tmp_path: Path):
         """Test generating a basic master playlist."""
         qualities = [
             {"name": "1080p", "width": 1920, "height": 1080, "bitrate": "5000k"},
             {"name": "720p", "width": 1280, "height": 720, "bitrate": "2500k"},
         ]
 
-        generate_master_playlist(tmp_path, qualities)
+        await generate_master_playlist(tmp_path, qualities)
 
         master_path = tmp_path / "master.m3u8"
         assert master_path.exists()
@@ -251,19 +252,19 @@ class TestGenerateMasterPlaylist:
         assert "RESOLUTION=1920x1080" in content
         assert "RESOLUTION=1280x720" in content
 
-    def test_generate_single_quality_playlist(self, tmp_path: Path):
+    async def test_generate_single_quality_playlist(self, tmp_path: Path):
         """Test generating playlist with single quality."""
         qualities = [
             {"name": "360p", "width": 640, "height": 360, "bitrate": "600k"},
         ]
 
-        generate_master_playlist(tmp_path, qualities)
+        await generate_master_playlist(tmp_path, qualities)
 
         content = (tmp_path / "master.m3u8").read_text()
         assert "360p.m3u8" in content
         assert "BANDWIDTH=600000" in content
 
-    def test_qualities_sorted_by_bandwidth(self, tmp_path: Path):
+    async def test_qualities_sorted_by_bandwidth(self, tmp_path: Path):
         """Test that qualities are sorted by bandwidth (highest first)."""
         # Provide in random order
         qualities = [
@@ -272,7 +273,7 @@ class TestGenerateMasterPlaylist:
             {"name": "720p", "width": 1280, "height": 720, "bitrate": "2500k"},
         ]
 
-        generate_master_playlist(tmp_path, qualities)
+        await generate_master_playlist(tmp_path, qualities)
 
         content = (tmp_path / "master.m3u8").read_text()
         lines = content.split("\n")
@@ -286,7 +287,7 @@ class TestGenerateMasterPlaylist:
         # Should be sorted by bandwidth descending
         assert quality_order == ["1080p.m3u8", "720p.m3u8", "480p.m3u8"]
 
-    def test_original_quality_with_bitrate_bps(self, tmp_path: Path):
+    async def test_original_quality_with_bitrate_bps(self, tmp_path: Path):
         """Test original quality uses bitrate_bps field."""
         qualities = [
             {
@@ -300,21 +301,94 @@ class TestGenerateMasterPlaylist:
             {"name": "1080p", "width": 1920, "height": 1080, "bitrate": "5000k"},
         ]
 
-        generate_master_playlist(tmp_path, qualities)
+        await generate_master_playlist(tmp_path, qualities)
 
         content = (tmp_path / "master.m3u8").read_text()
         assert "original.m3u8" in content
         assert "BANDWIDTH=15000000" in content  # From bitrate_bps
 
-    def test_empty_qualities_creates_minimal_playlist(self, tmp_path: Path):
+    async def test_empty_qualities_creates_minimal_playlist(self, tmp_path: Path):
         """Test empty qualities list creates minimal playlist."""
-        generate_master_playlist(tmp_path, [])
+        await generate_master_playlist(tmp_path, [])
 
         content = (tmp_path / "master.m3u8").read_text()
         assert "#EXTM3U" in content
         assert "#EXT-X-VERSION:3" in content
         # No quality entries
         assert ".m3u8" not in content.split("\n")[2]  # After header
+
+    async def test_validates_dimensions_from_segments(self, tmp_path: Path):
+        """Test that actual dimensions are read from segment files when they exist."""
+        # Create fake segment files
+        segment_720p = tmp_path / "720p_0000.ts"
+        segment_480p = tmp_path / "480p_0000.ts"
+        segment_720p.write_bytes(b"fake video data")
+        segment_480p.write_bytes(b"fake video data")
+
+        # Quality presets with incorrect dimensions
+        # (simulating aspect ratio differences)
+        qualities = [
+            {"name": "720p", "width": 1280, "height": 720, "bitrate": "2500k"},  # Preset says 1280x720
+            {"name": "480p", "width": 854, "height": 480, "bitrate": "1000k"},   # Preset says 854x480
+        ]
+
+        # Mock get_output_dimensions to return actual dimensions
+        # Simulating a 2.4:1 aspect ratio source (like 1920x800)
+        # When scaled to 720p height: width = 720 * 2.4 = 1728 (rounded to even)
+        # When scaled to 480p height: width = 480 * 2.4 = 1152
+        async def mock_get_dimensions(path):
+            if "720p" in str(path):
+                return (1728, 720)  # Actual output is wider than preset
+            elif "480p" in str(path):
+                return (1152, 480)  # Actual output is wider than preset
+            return (0, 0)
+
+        with patch('worker.transcoder.get_output_dimensions', new=mock_get_dimensions):
+            await generate_master_playlist(tmp_path, qualities)
+
+        content = (tmp_path / "master.m3u8").read_text()
+
+        # Verify the playlist uses actual dimensions, not preset dimensions
+        assert "RESOLUTION=1728x720" in content  # Should use actual width from segment
+        assert "RESOLUTION=1152x480" in content  # Should use actual width from segment
+        assert "RESOLUTION=1280x720" not in content  # Should NOT use preset width
+        assert "RESOLUTION=854x480" not in content   # Should NOT use preset width
+
+    async def test_falls_back_to_preset_dimensions_when_segment_missing(self, tmp_path: Path):
+        """Test that preset dimensions are used when segment files don't exist."""
+        # Don't create any segment files
+        qualities = [
+            {"name": "720p", "width": 1280, "height": 720, "bitrate": "2500k"},
+        ]
+
+        await generate_master_playlist(tmp_path, qualities)
+
+        content = (tmp_path / "master.m3u8").read_text()
+
+        # Should use preset dimensions since no segments exist
+        assert "RESOLUTION=1280x720" in content
+
+    async def test_handles_ffprobe_failure_gracefully(self, tmp_path: Path):
+        """Test that ffprobe failures fall back to preset dimensions."""
+        # Create a segment file
+        segment_720p = tmp_path / "720p_0000.ts"
+        segment_720p.write_bytes(b"corrupted video data")
+
+        qualities = [
+            {"name": "720p", "width": 1280, "height": 720, "bitrate": "2500k"},
+        ]
+
+        # Mock get_output_dimensions to return (0, 0) indicating failure
+        async def mock_get_dimensions_fail(path):
+            return (0, 0)
+
+        with patch('worker.transcoder.get_output_dimensions', new=mock_get_dimensions_fail):
+            await generate_master_playlist(tmp_path, qualities)
+
+        content = (tmp_path / "master.m3u8").read_text()
+
+        # Should fall back to preset dimensions when ffprobe fails
+        assert "RESOLUTION=1280x720" in content
 
 
 class TestQualityPresets:
