@@ -52,9 +52,7 @@ class TestWorkerJobClaiming:
         video_id = upload_response.json()["video_id"]
 
         # Verify transcoding job exists
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         assert job is not None
 
         # Worker claims the job
@@ -68,16 +66,12 @@ class TestWorkerJobClaiming:
         assert "claim_expires_at" in data
 
         # Verify job is now claimed
-        updated_job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job["id"])
-        )
+        updated_job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job["id"]))
         assert updated_job["worker_id"] == registered_worker["worker_id"]
         assert updated_job["claimed_at"] is not None
 
     @pytest.mark.asyncio
-    async def test_no_job_available_returns_empty(
-        self, worker_client, registered_worker, test_database
-    ):
+    async def test_no_job_available_returns_empty(self, worker_client, registered_worker, test_database):
         """Test that claiming when no jobs available returns appropriate response."""
         headers = {"X-Worker-API-Key": registered_worker["api_key"]}
         response = worker_client.post("/api/worker/claim", headers=headers)
@@ -139,9 +133,7 @@ class TestQualityProgressUpdates:
         assert response.status_code == 200
 
         # Verify quality_progress records were created
-        progress = await test_database.fetch_all(
-            quality_progress.select().where(quality_progress.c.job_id == job_id)
-        )
+        progress = await test_database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job_id))
 
         assert len(progress) == 2, "Two quality progress records should be created"
 
@@ -225,9 +217,7 @@ class TestQualityProgressUpdates:
         assert response3.status_code == 200
 
         # Verify only one quality_progress record exists (not duplicates)
-        progress = await test_database.fetch_all(
-            quality_progress.select().where(quality_progress.c.job_id == job_id)
-        )
+        progress = await test_database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job_id))
 
         assert len(progress) == 1, "Should have exactly one record, not duplicates"
         assert progress[0]["status"] == "completed"
@@ -284,9 +274,7 @@ class TestQualityProgressUpdates:
 
         # Verify all qualities are tracked
         progress = await test_database.fetch_all(
-            quality_progress.select()
-            .where(quality_progress.c.job_id == job_id)
-            .order_by(quality_progress.c.id)
+            quality_progress.select().where(quality_progress.c.job_id == job_id).order_by(quality_progress.c.id)
         )
 
         assert len(progress) == len(qualities)
@@ -382,17 +370,13 @@ class TestJobCompletion:
         assert quality_map["720p"]["width"] == 1280
 
         # Verify video status is ready
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["status"] == VideoStatus.READY
         assert video["duration"] == 120.5
         assert video["published_at"] is not None
 
         # Verify job is marked complete
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["completed_at"] is not None
         assert job["progress_percent"] == 100
 
@@ -527,6 +511,11 @@ class TestWorkerProgressVisibility:
             )
         )
 
+        # Update video status to PROCESSING so quality_progress is returned
+        await test_database.execute(
+            videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PROCESSING)
+        )
+
         # Create quality_progress records
         await test_database.execute(
             quality_progress.insert().values(
@@ -544,14 +533,6 @@ class TestWorkerProgressVisibility:
                 progress_percent=50,
             )
         )
-        await test_database.execute(
-            quality_progress.insert().values(
-                job_id=job_id,
-                quality="480p",
-                status="pending",
-                progress_percent=0,
-            )
-        )
 
         # Get progress via admin API
         response = admin_client.get(f"/api/videos/{video_id}/progress")
@@ -559,10 +540,22 @@ class TestWorkerProgressVisibility:
 
         data = response.json()
 
-        # Verify quality_progress is included and correct
-        # The exact response format depends on the implementation
-        # but we should see the quality data somewhere
-        assert "progress_percent" in data or "qualities" in data or "quality_progress" in data
+        # Verify response matches TranscodingProgressResponse schema
+        assert "status" in data
+        assert "progress_percent" in data
+        assert "qualities" in data
+        assert isinstance(data["qualities"], list)
+
+        # Verify quality_progress data is included
+        assert len(data["qualities"]) == 2
+        quality_names = {q["name"] for q in data["qualities"]}
+        assert quality_names == {"1080p", "720p"}
+
+        # Verify each quality has required fields
+        for quality in data["qualities"]:
+            assert "name" in quality
+            assert "status" in quality
+            assert "progress" in quality
 
     @pytest.mark.asyncio
     async def test_worker_dashboard_shows_active_jobs(
@@ -677,9 +670,7 @@ class TestStaleJobRecovery:
         assert data.get("video_id") == video_id
 
         # Verify database updated
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["worker_id"] == worker2["worker_id"]
 
 
@@ -723,16 +714,12 @@ class TestJobFailure:
         assert response.status_code == 200
 
         # Verify job was updated
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["last_error"] == "FFmpeg crashed unexpectedly"
         # Job should be available for retry since attempt_number < max_attempts
 
         # Verify video status
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         # Status depends on whether we've exceeded max attempts
         # With attempt 1/3, video should still be pending for retry
         assert video["status"] in [VideoStatus.PENDING, VideoStatus.FAILED]
