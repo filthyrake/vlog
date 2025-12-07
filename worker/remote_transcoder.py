@@ -389,23 +389,18 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 )
                 completion_verified = True
                 break
-            except WorkerAPIError as e:
-                if e.status_code == 409:
-                    # Claim expired - don't retry, job may have been reassigned
+            except Exception as e:
+                # Check for claim expiration (409) - don't retry, job may have been reassigned
+                if isinstance(e, WorkerAPIError) and e.status_code == 409:
                     raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                # Retry on other errors
                 if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
-                    print(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {e.message}")
+                    error_msg = e.message if isinstance(e, WorkerAPIError) else str(e)
+                    print(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}")
                     print(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
                     await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
                 else:
                     # Final attempt failed - don't cleanup, report failure
-                    raise
-            except Exception as e:
-                if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
-                    print(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {e}")
-                    print(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
-                    await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
-                else:
                     raise
 
         print(f"  Done! Video {video_slug} is ready.")
