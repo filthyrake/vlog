@@ -429,6 +429,10 @@ def worker_client(test_storage: dict, test_db_url: str, monkeypatch):
     if "api.database" in sys.modules:
         importlib.reload(sys.modules["api.database"])
 
+    # Force reload common to pick up new database and storage paths (needed for health checks)
+    if "api.common" in sys.modules:
+        importlib.reload(sys.modules["api.common"])
+
     # Force reload worker_auth to pick up the new database
     if "api.worker_auth" in sys.modules:
         importlib.reload(sys.modules["api.worker_auth"])

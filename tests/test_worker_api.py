@@ -825,40 +825,6 @@ class TestJobClaiming:
         assert claim_response.json()["message"] != "Waiting for GPU workers"
 
 
-class TestStaleJobDetection:
-    """Tests for stale job detection when workers go offline.
-
-    NOTE: These tests are skipped because they require mixing sync TestClient
-    with async database operations, which causes connection pool conflicts
-    with PostgreSQL/asyncpg. The stale job detection logic is tested via
-    integration tests in production.
-    """
-
-    @pytest.mark.skip(reason="Requires async database access that conflicts with sync TestClient in PostgreSQL")
-    @pytest.mark.asyncio
-    async def test_stale_job_released_when_worker_offline(
-        self, worker_client, test_database, sample_pending_video, worker_admin_headers
-    ):
-        """Test that stale jobs are released when workers go offline AND claim has expired."""
-        pass
-
-    @pytest.mark.skip(reason="Requires async database access that conflicts with sync TestClient in PostgreSQL")
-    @pytest.mark.asyncio
-    async def test_job_not_released_when_claim_still_valid(
-        self, worker_client, test_database, sample_pending_video, worker_admin_headers
-    ):
-        """Test that jobs are NOT released when worker is offline but claim is still valid."""
-        pass
-
-    @pytest.mark.skip(reason="Requires async database access that conflicts with sync TestClient in PostgreSQL")
-    @pytest.mark.asyncio
-    async def test_worker_offline_detection_null_heartbeat(
-        self, worker_client, test_database, sample_pending_video, worker_admin_headers
-    ):
-        """Test that workers with NULL last_heartbeat are detected as offline (issue #273)."""
-        pass
-
-
 class TestProgressUpdates:
     """Tests for progress update endpoint."""
 
@@ -1483,33 +1449,12 @@ class TestAdminSecretNotConfigured:
 class TestHealthCheck:
     """Tests for health check endpoint."""
 
-    @pytest.mark.skip(reason="Health check may fail due to database/storage initialization timing in test environment")
     def test_health_check(self, worker_client):
         """Test health check endpoint."""
         response = worker_client.get("/api/health")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-
-
-class TestGracefulShutdown:
-    """Tests for graceful shutdown behavior.
-
-    NOTE: These tests are skipped because they require managing multiple database
-    connections and event loops which conflicts with PostgreSQL/asyncpg.
-    """
-
-    @pytest.mark.skip(reason="Requires event loop management that conflicts with PostgreSQL connection pools")
-    @pytest.mark.asyncio
-    async def test_shutdown_releases_claimed_jobs(self, test_database, registered_worker, sample_pending_video):
-        """Test that shutdown releases claimed jobs."""
-        pass
-
-    @pytest.mark.skip(reason="Requires event loop management that conflicts with PostgreSQL connection pools")
-    @pytest.mark.asyncio
-    async def test_shutdown_ignores_completed_jobs(self, test_database, registered_worker, sample_pending_video):
-        """Test that shutdown does not affect completed jobs."""
-        pass
 
 
 # ============================================================================

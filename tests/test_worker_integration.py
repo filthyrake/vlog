@@ -556,19 +556,6 @@ class TestWorkerProgressVisibility:
             assert "status" in quality
             assert "progress" in quality
 
-    @pytest.mark.skip(reason="Requires async database access that conflicts with sync TestClient in PostgreSQL")
-    @pytest.mark.asyncio
-    async def test_worker_dashboard_shows_active_jobs(
-        self,
-        admin_client,
-        worker_client,
-        registered_worker,
-        test_database,
-        sample_pending_video,
-    ):
-        """Test that the worker dashboard shows active job information."""
-        pass
-
 
 class TestStaleJobRecovery:
     """Test stale job detection and recovery."""
