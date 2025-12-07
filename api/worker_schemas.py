@@ -19,7 +19,7 @@ def validate_uuid4(value: str) -> str:
 
 
 # Type alias for worker_id fields with UUID4 validation
-WorkerIdStr = Annotated[str, Field(min_length=36, max_length=36, description="Worker UUID4 identifier")]
+WorkerIdStr = Annotated[str, Field(description="Worker UUID4 identifier")]
 
 
 # GPU and Hardware Acceleration Capabilities
