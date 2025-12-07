@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from api.database import configure_sqlite_pragmas, database, transcriptions
+from api.db_retry import fetch_all_with_retry, fetch_one_with_retry
 from api.enums import TranscriptionStatus
 from config import (
     AUDIO_EXTRACTION_TIMEOUT,
@@ -125,7 +126,7 @@ class TranscriptionWorker:
 async def get_or_create_transcription(video_id: int) -> dict:
     """Get existing transcription or create a new pending one."""
     query = transcriptions.select().where(transcriptions.c.video_id == video_id)
-    row = await database.fetch_one(query)
+    row = await fetch_one_with_retry(query)
 
     if row:
         return dict(row)
@@ -139,7 +140,7 @@ async def get_or_create_transcription(video_id: int) -> dict:
     )
 
     query = transcriptions.select().where(transcriptions.c.id == result)
-    return dict(await database.fetch_one(query))
+    return dict(await fetch_one_with_retry(query))
 
 
 async def update_transcription_status(transcription_id: int, status: str, **kwargs):
@@ -165,7 +166,7 @@ async def get_videos_needing_transcription() -> List[dict]:
     """
     import sqlalchemy as sa
 
-    rows = await database.fetch_all(sa.text(query))
+    rows = await fetch_all_with_retry(sa.text(query))
     return [dict(row) for row in rows]
 
 

@@ -35,6 +35,7 @@ from api.database import (
     video_qualities,
     videos,
 )
+from api.db_retry import fetch_all_with_retry, fetch_one_with_retry
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from config import (
     ARCHIVE_DIR,
@@ -1000,7 +1001,7 @@ async def get_or_create_job(video_id: int, state: Optional[WorkerState] = None) 
 
     # Check for existing job
     query = transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-    job = await database.fetch_one(query)
+    job = await fetch_one_with_retry(query)
 
     if job:
         return dict(job)
@@ -1021,10 +1022,10 @@ async def get_or_create_job(video_id: int, state: Optional[WorkerState] = None) 
         )
 
         job_query = transcoding_jobs.select().where(transcoding_jobs.c.id == result)
-        return dict(await database.fetch_one(job_query))
+        return dict(await fetch_one_with_retry(job_query))
     except IntegrityError:
         # Another worker created it first, fetch the existing job by video_id
-        job = await database.fetch_one(query)
+        job = await fetch_one_with_retry(query)
         if job:
             return dict(job)
         # Re-raise if still not found (shouldn't happen but handle defensively)
@@ -1106,7 +1107,7 @@ async def reset_job_for_retry(job_id: int, state: Optional[WorkerState] = None):
     if state is None:
         state = get_worker_state()
 
-    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+    job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
     if not job:
         return
@@ -1135,7 +1136,7 @@ async def init_quality_progress(job_id: int, qualities: List[dict]):
     """Initialize progress records for all qualities."""
     for quality in qualities:
         # Check if record already exists
-        existing = await database.fetch_one(
+        existing = await fetch_one_with_retry(
             quality_progress.select().where(
                 (quality_progress.c.job_id == job_id) & (quality_progress.c.quality == quality["name"])
             )
@@ -1154,7 +1155,7 @@ async def init_quality_progress(job_id: int, qualities: List[dict]):
 
 async def get_quality_status(job_id: int, quality_name: str) -> Optional[dict]:
     """Get the progress status for a specific quality."""
-    row = await database.fetch_one(
+    row = await fetch_one_with_retry(
         quality_progress.select().where(
             (quality_progress.c.job_id == job_id) & (quality_progress.c.quality == quality_name)
         )
@@ -1194,7 +1195,7 @@ async def update_quality_progress(job_id: int, quality_name: str, progress: int)
 
 async def get_completed_qualities(job_id: int) -> List[str]:
     """Get list of completed quality names for a job."""
-    rows = await database.fetch_all(
+    rows = await fetch_all_with_retry(
         quality_progress.select().where(
             (quality_progress.c.job_id == job_id) & (quality_progress.c.status == QualityStatus.COMPLETED)
         )
@@ -1223,7 +1224,7 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
     # Find jobs that have a checkpoint but no completion and are stale
     stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
 
-    stale_jobs = await database.fetch_all(
+    stale_jobs = await fetch_all_with_retry(
         transcoding_jobs.select().where(
             transcoding_jobs.c.completed_at.is_(None)
             & transcoding_jobs.c.last_checkpoint.isnot(None)
@@ -1241,7 +1242,7 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             # Not actually stale after timezone normalization
             continue
 
-        video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+        video = await fetch_one_with_retry(videos.select().where(videos.c.id == job["video_id"]))
 
         if not video:
             continue
@@ -1380,7 +1381,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 return False
         else:
             # Load existing video info
-            video_row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            video_row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
             info = {
                 "width": video_row["source_width"],
                 "height": video_row["source_height"],
@@ -1791,7 +1792,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # Save quality info to database
         for q in successful_qualities:
             # Check if quality record already exists
-            existing = await database.fetch_one(
+            existing = await fetch_one_with_retry(
                 video_qualities.select().where(
                     (video_qualities.c.video_id == video_id) & (video_qualities.c.quality == q["name"])
                 )
@@ -1830,7 +1831,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         print(f"  Error: {e}")
 
         # Check if we should retry
-        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+        job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
         if job and job["attempt_number"] < job["max_attempts"]:
             # Will be retried on next worker restart or stale job check
@@ -1872,7 +1873,7 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
 
     stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
 
-    stale_jobs = await database.fetch_all(
+    stale_jobs = await fetch_all_with_retry(
         transcoding_jobs.select().where(
             transcoding_jobs.c.completed_at.is_(None)
             & transcoding_jobs.c.last_checkpoint.isnot(None)
@@ -1891,7 +1892,7 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
             # Not actually stale after timezone normalization
             continue
 
-        video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+        video = await fetch_one_with_retry(videos.select().where(videos.c.id == job["video_id"]))
 
         if not video:
             continue
@@ -1924,7 +1925,7 @@ async def cleanup_expired_archives():
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=ARCHIVE_RETENTION_DAYS)
 
-    expired = await database.fetch_all(
+    expired = await fetch_all_with_retry(
         videos.select().where(videos.c.deleted_at.isnot(None) & (videos.c.deleted_at < cutoff))
     )
 
@@ -1941,7 +1942,7 @@ async def cleanup_expired_archives():
             # Delete database records atomically
             async with database.transaction():
                 # Get job ID for quality_progress cleanup
-                job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+                job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
                 if job:
                     await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
                 await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
@@ -2048,7 +2049,7 @@ async def worker_loop(state: Optional[WorkerState] = None):
         while not state.shutdown_requested:
             # Find pending videos
             query = videos.select().where(videos.c.status == VideoStatus.PENDING).order_by(videos.c.created_at)
-            pending = await database.fetch_all(query)
+            pending = await fetch_all_with_retry(query)
 
             for video in pending:
                 if state.shutdown_requested:
@@ -2108,7 +2109,7 @@ async def worker_loop(state: Optional[WorkerState] = None):
             jobs_query = transcoding_jobs.select().where(
                 (transcoding_jobs.c.worker_id == state.worker_id) & (transcoding_jobs.c.completed_at.is_(None))
             )
-            jobs = await database.fetch_all(jobs_query)
+            jobs = await fetch_all_with_retry(jobs_query)
 
             reset_count = 0
             for job in jobs:
@@ -2116,7 +2117,7 @@ async def worker_loop(state: Optional[WorkerState] = None):
                 job_id = job["id"]
 
                 # Reset video status to pending (only if still processing)
-                video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+                video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
                 if video and video["status"] == VideoStatus.PROCESSING:
                     await database.execute(
                         videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PENDING)
