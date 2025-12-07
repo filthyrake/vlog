@@ -323,7 +323,7 @@ class TestTranscriptionShutdown:
                 assert mock_get_videos.call_count <= 1
 
     async def test_worker_loop_with_signals_registers_handlers(self, monkeypatch):
-        """Test that worker_loop_with_signals registers signal handlers."""
+        """Test that worker_loop registers signal handlers."""
         import worker.transcription
 
         # Track signal.signal calls
@@ -360,7 +360,7 @@ class TestTranscriptionShutdown:
         )
 
         with patch("signal.signal", side_effect=mock_signal):
-            await worker.transcription.worker_loop_with_signals()
+            await worker.transcription.worker_loop()
 
         # Verify signal handlers were registered
         signal_sigs = [sig for sig, handler in signal_calls]
