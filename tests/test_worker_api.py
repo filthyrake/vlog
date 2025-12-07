@@ -751,6 +751,79 @@ class TestJobClaiming:
         assert claim_response.status_code == 200
         assert claim_response.json()["job_id"] is not None
 
+    @pytest.mark.asyncio
+    async def test_cpu_worker_claims_when_gpu_worker_has_stale_heartbeat(
+        self, worker_client, test_database, sample_pending_video, worker_admin_headers
+    ):
+        """Test that CPU workers can claim when GPU workers have stale heartbeats.
+
+        This tests the fix for issue #264: GPU worker priority causing CPU worker starvation.
+        CPU workers should not wait for GPU workers that haven't sent heartbeats recently
+        (within 2 * WORKER_HEARTBEAT_INTERVAL seconds).
+        """
+        from config import WORKER_HEARTBEAT_INTERVAL
+
+        # Create a transcoding job
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Register a CPU worker (no GPU)
+        cpu_response = worker_client.post(
+            "/api/worker/register",
+            headers=worker_admin_headers,
+            json={
+                "worker_name": "cpu-worker-stale-test",
+                "capabilities": {
+                    "hwaccel_enabled": False,
+                    "hwaccel_type": "none",
+                    "supported_codecs": ["h264"],
+                },
+            },
+        )
+        assert cpu_response.status_code == 200
+        cpu_worker = cpu_response.json()
+
+        # Register a GPU worker
+        gpu_response = worker_client.post(
+            "/api/worker/register",
+            headers=worker_admin_headers,
+            json={
+                "worker_name": "gpu-worker-stale",
+                "capabilities": {
+                    "hwaccel_enabled": True,
+                    "hwaccel_type": "nvidia",
+                    "gpu_name": "Test GPU",
+                    "supported_codecs": ["h264", "hevc"],
+                },
+            },
+        )
+        assert gpu_response.status_code == 200
+        gpu_worker = gpu_response.json()
+
+        # Mark GPU worker as idle but with a STALE heartbeat
+        # Heartbeat older than 2 * WORKER_HEARTBEAT_INTERVAL means GPU worker is unresponsive
+        stale_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=WORKER_HEARTBEAT_INTERVAL * 3)
+        await test_database.execute(
+            workers.update()
+            .where(workers.c.worker_id == gpu_worker["worker_id"])
+            .values(status="idle", last_heartbeat=stale_heartbeat)
+        )
+
+        # CPU worker tries to claim - should succeed because GPU worker has stale heartbeat
+        claim_response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": cpu_worker["api_key"]},
+        )
+        assert claim_response.status_code == 200
+        # The CPU worker should be able to claim the job, not wait for the stale GPU worker
+        assert claim_response.json()["job_id"] is not None
+        assert claim_response.json()["message"] != "Waiting for GPU workers"
+
 
 class TestStaleJobDetection:
     """Tests for stale job detection when workers go offline."""
@@ -891,9 +964,7 @@ class TestStaleJobDetection:
             assert worker_record["status"] == "offline"
 
             # Verify job is NOT released (claim still valid)
-            job_record = await test_database.fetch_one(
-                transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-            )
+            job_record = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
             assert job_record["claimed_at"] is not None  # Still claimed
             assert job_record["worker_id"] == worker_data["worker_id"]  # Still assigned
             assert job_record["current_step"] == "transcode"  # Still in progress
@@ -971,9 +1042,7 @@ class TestStaleJobDetection:
             assert worker_record["status"] == "offline"
 
             # Verify job is released
-            job_record = await test_database.fetch_one(
-                transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-            )
+            job_record = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
             assert job_record["claimed_at"] is None
             assert job_record["worker_id"] is None
         finally:
@@ -1335,9 +1404,7 @@ class TestJobFailure:
         )
 
         # Verify quality_progress records exist
-        records = await test_database.fetch_all(
-            quality_progress.select().where(quality_progress.c.job_id == job_id)
-        )
+        records = await test_database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job_id))
         assert len(records) == 2
 
         # Fail the job with retry
@@ -1350,9 +1417,7 @@ class TestJobFailure:
         assert response.json()["will_retry"] is True
 
         # Verify quality_progress records are cleaned up
-        records = await test_database.fetch_all(
-            quality_progress.select().where(quality_progress.c.job_id == job_id)
-        )
+        records = await test_database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job_id))
         assert len(records) == 0, "quality_progress should be cleaned up on job retry"
 
 

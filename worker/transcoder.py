@@ -20,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, Tuple
 
+import sqlalchemy as sa
+
 if TYPE_CHECKING:
     from worker.hwaccel import GPUCapabilities
 
@@ -34,6 +36,7 @@ from api.database import (
     video_qualities,
     videos,
 )
+from api.db_retry import DatabaseRetryableError, execute_with_retry
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from api.errors import truncate_error
 from config import (
@@ -55,6 +58,7 @@ from config import (
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
+    WORKER_CLAIM_DURATION_MINUTES,
     WORKER_DEBOUNCE_DELAY,
     WORKER_FALLBACK_POLL_INTERVAL,
     WORKER_USE_FILESYSTEM_WATCHER,
@@ -579,7 +583,7 @@ async def generate_thumbnail(input_path: Path, output_path: Path, timestamp: flo
         raise RuntimeError(f"Thumbnail generation timed out after {timeout}s")
 
     if process.returncode != 0:
-        error_msg = truncate_error(stderr.decode('utf-8', errors='ignore'), ERROR_DETAIL_MAX_LENGTH)
+        error_msg = truncate_error(stderr.decode("utf-8", errors="ignore"), ERROR_DETAIL_MAX_LENGTH)
         raise RuntimeError(f"Thumbnail generation failed: {error_msg}")
 
 
@@ -928,8 +932,8 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
         if first_segment.exists():
             actual_width, actual_height = await get_output_dimensions(first_segment)
             if actual_width > 0 and actual_height > 0:
-                quality['width'] = actual_width
-                quality['height'] = actual_height
+                quality["width"] = actual_width
+                quality["height"] = actual_height
 
     master_content = "#EXTM3U\n#EXT-X-VERSION:3\n\n"
 
@@ -1015,58 +1019,173 @@ async def cleanup_partial_output(
 
 
 async def get_existing_job(video_id: int) -> Optional[dict]:
-    """Get existing transcoding job for a video.
+    """Get and claim existing transcoding job for a video.
 
-    Returns None if no job exists - this indicates the upload is still in progress
-    and the admin API hasn't created the job yet. The local worker should skip
-    processing in this case to avoid race conditions.
+    Uses database-level locking to prevent race conditions with remote workers.
+    Returns None if:
+    - No job exists (upload still in progress)
+    - Job is already claimed by another worker
+    - Job is already completed
+
+    This function atomically claims the job for the local worker, preventing
+    remote workers from claiming it simultaneously.
 
     Args:
         video_id: Database ID of the video
 
     Returns:
-        Job dict if exists, None otherwise
+        Job dict if exists and successfully claimed, None otherwise
     """
-    query = transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-    job = await database.fetch_one(query)
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
 
-    if job:
-        return dict(job)
+    # Use LOCAL_WORKER as the worker_id for local workers
+    # This distinguishes local worker claims from remote workers
+    local_worker_id = "LOCAL_WORKER"
 
-    return None
+    result = {"job": None}
+
+    async def do_claim():
+        async with database.transaction():
+            # Check the database URL to determine if we need PostgreSQL-specific syntax
+            db_url = str(database.url)
+            is_postgresql = db_url.startswith("postgresql")
+
+            if is_postgresql:
+                # Use FOR UPDATE SKIP LOCKED to atomically claim the job
+                # This prevents race conditions with remote workers
+                job = await database.fetch_one(
+                    sa.text("""
+                        SELECT tj.*
+                        FROM transcoding_jobs tj
+                        WHERE tj.video_id = :video_id
+                          AND tj.completed_at IS NULL
+                          AND (
+                              tj.claimed_at IS NULL
+                              OR tj.claim_expires_at < :now
+                              OR tj.worker_id = :local_worker_id
+                          )
+                        FOR UPDATE SKIP LOCKED
+                    """).bindparams(video_id=video_id, now=now, local_worker_id=local_worker_id)
+                )
+            else:
+                # SQLite: use regular SELECT within transaction
+                # SQLite's transaction isolation prevents concurrent modifications
+                job = await database.fetch_one(
+                    sa.text("""
+                        SELECT *
+                        FROM transcoding_jobs
+                        WHERE video_id = :video_id
+                          AND completed_at IS NULL
+                          AND (
+                              claimed_at IS NULL
+                              OR claim_expires_at < :now
+                              OR worker_id = :local_worker_id
+                          )
+                    """).bindparams(video_id=video_id, now=now, local_worker_id=local_worker_id)
+                )
+
+            if not job:
+                # No job, or job is claimed by remote worker and not expired
+                result["job"] = None
+                return
+
+            # Claim the job for the local worker
+            await database.execute(
+                transcoding_jobs.update()
+                .where(transcoding_jobs.c.id == job["id"])
+                .values(
+                    worker_id=local_worker_id,
+                    claimed_at=now,
+                    claim_expires_at=expires_at,
+                )
+            )
+
+            result["job"] = dict(job)
+
+    try:
+        # Use execute_with_retry to handle transient database errors (deadlocks, locking)
+        await execute_with_retry(do_claim)
+    except DatabaseRetryableError as e:
+        logger.warning(f"Failed to claim job for video {video_id} after retries: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error claiming job for video {video_id}: {e}")
+        raise
+
+    return result["job"]
 
 
 async def update_job_step(job_id: int, step: str):
-    """Update the current processing step."""
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job_id)
-        .values(
-            current_step=step,
-            last_checkpoint=datetime.now(timezone.utc),
+    """Update the current processing step and extend claim."""
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
+
+    async def do_update():
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job_id)
+            .values(
+                current_step=step,
+                last_checkpoint=now,
+                claim_expires_at=expires_at,
+            )
         )
-    )
+
+    try:
+        await execute_with_retry(do_update)
+    except Exception as e:
+        # Log but continue - progress update failure shouldn't stop the job
+        logger.warning(f"Failed to update job step for job {job_id}: {e}")
 
 
 async def update_job_progress(job_id: int, progress: int):
-    """Update overall job progress percentage."""
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job_id)
-        .values(
-            progress_percent=progress,
-            last_checkpoint=datetime.now(timezone.utc),
+    """Update overall job progress percentage and extend claim."""
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
+
+    async def do_update():
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job_id)
+            .values(
+                progress_percent=progress,
+                last_checkpoint=now,
+                claim_expires_at=expires_at,
+            )
         )
-    )
+
+    try:
+        await execute_with_retry(do_update)
+    except Exception as e:
+        # Log but continue - progress update failure shouldn't stop the job
+        logger.warning(f"Failed to update job progress for job {job_id}: {e}")
 
 
 async def checkpoint(job_id: int):
-    """Update the checkpoint timestamp."""
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job_id)
-        .values(last_checkpoint=datetime.now(timezone.utc))
-    )
+    """Update the checkpoint timestamp and extend claim."""
+    now = datetime.now(timezone.utc)
+    claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    expires_at = now + claim_duration
+
+    async def do_update():
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job_id)
+            .values(
+                last_checkpoint=now,
+                claim_expires_at=expires_at,
+            )
+        )
+
+    try:
+        await execute_with_retry(do_update)
+    except Exception as e:
+        # Log but continue - checkpoint failure shouldn't stop the job
+        logger.warning(f"Failed to update checkpoint for job {job_id}: {e}")
 
 
 async def mark_job_completed(job_id: int):
@@ -1600,7 +1719,11 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
             try:
                 success, error_detail = await transcode_quality_with_progress(
-                    source_file, output_dir, quality, info["duration"], progress_cb,
+                    source_file,
+                    output_dir,
+                    quality,
+                    info["duration"],
+                    progress_cb,
                     gpu_caps=state.gpu_caps,
                 )
 
@@ -1739,7 +1862,11 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             print(f"    {quality_name}: Failed")
                     else:
                         success, error_detail = await transcode_quality_with_progress(
-                            source_file, output_dir, quality, info["duration"], None,
+                            source_file,
+                            output_dir,
+                            quality,
+                            info["duration"],
+                            None,
                             gpu_caps=state.gpu_caps,
                         )
                         if success:
