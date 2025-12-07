@@ -57,7 +57,7 @@ def truncate_string(text: Optional[str], max_length: int) -> Optional[str]:
 
     Args:
         text: The text to truncate (can be None)
-        max_length: Maximum length
+        max_length: Maximum length (must be at least 4 for truncation with ellipsis)
 
     Returns:
         The truncated text with "..." appended if it was truncated, or None if input was None
@@ -66,6 +66,9 @@ def truncate_string(text: Optional[str], max_length: int) -> Optional[str]:
         return None
     if not text or len(text) <= max_length:
         return text
+    # Ensure we have enough space for ellipsis (...)
+    if max_length < 4:
+        return text[:max_length]
     return text[:max_length - 3] + "..."
 
 
