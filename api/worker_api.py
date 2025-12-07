@@ -75,6 +75,7 @@ from config import (
     WORKER_ADMIN_SECRET,
     WORKER_API_PORT,
     WORKER_CLAIM_DURATION_MINUTES,
+    WORKER_HEARTBEAT_INTERVAL,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
 
@@ -586,15 +587,23 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
     requesting_worker_has_gpu = worker_has_gpu(worker)
 
     if not requesting_worker_has_gpu:
-        # This is a CPU worker - check if any GPU workers are idle
+        # This is a CPU worker - check if any GPU workers are idle AND recently active
+        # Only defer to GPU workers that have sent a heartbeat within 2x the heartbeat interval
+        # This prevents CPU workers from being starved by unresponsive GPU workers
+        gpu_worker_active_threshold = now - timedelta(seconds=WORKER_HEARTBEAT_INTERVAL * 2)
+
         idle_gpu_workers = await database.fetch_all(
-            workers.select().where(workers.c.status == "idle").where(workers.c.id != worker["id"])  # Exclude self
+            workers.select()
+            .where(workers.c.status == "idle")
+            .where(workers.c.id != worker["id"])  # Exclude self
+            .where(workers.c.last_heartbeat.isnot(None))  # Exclude workers without heartbeat
+            .where(workers.c.last_heartbeat >= gpu_worker_active_threshold)  # Must have recent heartbeat
         )
 
         # Check if any idle workers have GPU
         for idle_worker in idle_gpu_workers:
             if worker_has_gpu(dict(idle_worker)):
-                # GPU worker is available, CPU worker should wait
+                # GPU worker is available and recently active, CPU worker should wait
                 return ClaimJobResponse(message="Waiting for GPU workers")
 
     # Store job data in mutable container for the transaction

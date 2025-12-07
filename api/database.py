@@ -174,7 +174,12 @@ workers = sa.Table(
     sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_heartbeat", sa.DateTime(timezone=True), nullable=True),
     sa.Column("status", sa.String(20), default="active"),  # 'active', 'offline', 'disabled'
-    sa.Column("current_job_id", sa.Integer, nullable=True),
+    sa.Column(
+        "current_job_id",
+        sa.Integer,
+        sa.ForeignKey("transcoding_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Column("capabilities", sa.Text, nullable=True),  # JSON
     sa.Column("metadata", sa.Text, nullable=True),  # JSON (k8s pod info, etc.)
     sa.Index("ix_workers_status", "status"),

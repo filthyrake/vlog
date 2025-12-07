@@ -972,3 +972,235 @@ class TestTranscodingPipelineMocked:
         job = await integration_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["attempt_number"] == 2
         assert job["worker_id"] == "worker-2"
+
+
+# ============================================================================
+# Local Worker Job Claiming Tests
+# ============================================================================
+
+
+class TestLocalWorkerJobClaiming:
+    """Tests for local worker job claiming (get_existing_job function)."""
+
+    @pytest.mark.asyncio
+    async def test_local_worker_claims_unclaimed_job(self, integration_database, integration_video):
+        """Test that local worker can successfully claim an unclaimed job."""
+        from unittest.mock import patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create an unclaimed job (claimed_at is NULL)
+        now = datetime.now(timezone.utc)
+        job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id=None,
+                current_step=None,
+                progress_percent=0,
+                started_at=now,
+                last_checkpoint=now,
+                attempt_number=1,
+                max_attempts=3,
+                claimed_at=None,
+                claim_expires_at=None,
+            )
+        )
+
+        # Patch the database in the transcoder module
+        with patch.object(transcoder_module, "database", integration_database):
+            job = await transcoder_module.get_existing_job(integration_video["id"])
+
+            # Verify job was returned and claimed
+            assert job is not None
+            assert job["id"] == job_id
+            assert job["video_id"] == integration_video["id"]
+
+        # Verify claim fields were set in the database
+        updated_job = await integration_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert updated_job["worker_id"] == "LOCAL_WORKER"
+        assert updated_job["claimed_at"] is not None
+        assert updated_job["claim_expires_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_local_worker_cannot_claim_job_claimed_by_remote_worker(
+        self, integration_database, integration_video
+    ):
+        """Test that local worker cannot claim a job already claimed by a remote worker."""
+        from unittest.mock import patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a job claimed by a remote worker with non-expired claim
+        now = datetime.now(timezone.utc)
+        claim_expires = now + timedelta(minutes=30)  # Claim expires in 30 minutes
+        job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="remote-worker-001",
+                current_step="transcode",
+                progress_percent=50,
+                started_at=now,
+                last_checkpoint=now,
+                attempt_number=1,
+                max_attempts=3,
+                claimed_at=now,
+                claim_expires_at=claim_expires,
+            )
+        )
+
+        # Patch the database in the transcoder module
+        with patch.object(transcoder_module, "database", integration_database):
+            job = await transcoder_module.get_existing_job(integration_video["id"])
+
+            # Should return None because job is claimed by another worker
+            assert job is None
+
+        # Verify the original claim is unchanged
+        unchanged_job = await integration_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert unchanged_job["worker_id"] == "remote-worker-001"
+
+    @pytest.mark.asyncio
+    async def test_local_worker_can_reclaim_own_job(self, integration_database, integration_video):
+        """Test that local worker can reclaim a job it previously claimed."""
+        from unittest.mock import patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a job previously claimed by local worker
+        now = datetime.now(timezone.utc)
+        old_claim_expires = now + timedelta(minutes=10)  # Old claim still valid
+        job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="LOCAL_WORKER",  # Same as local worker ID
+                current_step="transcode",
+                progress_percent=50,
+                started_at=now,
+                last_checkpoint=now,
+                attempt_number=1,
+                max_attempts=3,
+                claimed_at=now,
+                claim_expires_at=old_claim_expires,
+            )
+        )
+
+        # Patch the database in the transcoder module
+        with patch.object(transcoder_module, "database", integration_database):
+            job = await transcoder_module.get_existing_job(integration_video["id"])
+
+            # Should return the job since it's claimed by the same worker
+            assert job is not None
+            assert job["id"] == job_id
+            assert job["worker_id"] == "LOCAL_WORKER"
+
+        # Verify claim was extended (new claim_expires_at)
+        updated_job = await integration_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        # Make both datetimes offset-aware for comparison (SQLite may return naive datetimes)
+        updated_expires = updated_job["claim_expires_at"]
+        if updated_expires.tzinfo is None:
+            updated_expires = updated_expires.replace(tzinfo=timezone.utc)
+        old_expires = old_claim_expires
+        if old_expires.tzinfo is None:
+            old_expires = old_expires.replace(tzinfo=timezone.utc)
+        assert updated_expires > old_expires
+
+    @pytest.mark.asyncio
+    async def test_local_worker_can_claim_expired_remote_claim(self, integration_database, integration_video):
+        """Test that local worker can claim a job with an expired claim from a remote worker."""
+        from unittest.mock import patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a job with expired claim from remote worker
+        now = datetime.now(timezone.utc)
+        expired_claim = now - timedelta(minutes=5)  # Claim expired 5 minutes ago
+        job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="remote-worker-001",
+                current_step="transcode",
+                progress_percent=50,
+                started_at=now - timedelta(hours=1),
+                last_checkpoint=now - timedelta(hours=1),
+                attempt_number=1,
+                max_attempts=3,
+                claimed_at=now - timedelta(minutes=35),
+                claim_expires_at=expired_claim,  # Expired!
+            )
+        )
+
+        # Patch the database in the transcoder module
+        with patch.object(transcoder_module, "database", integration_database):
+            job = await transcoder_module.get_existing_job(integration_video["id"])
+
+            # Should return the job since the claim has expired
+            assert job is not None
+            assert job["id"] == job_id
+
+        # Verify local worker now owns the claim
+        updated_job = await integration_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert updated_job["worker_id"] == "LOCAL_WORKER"
+        # Make both datetimes offset-aware for comparison (SQLite may return naive datetimes)
+        updated_expires = updated_job["claim_expires_at"]
+        if updated_expires.tzinfo is None:
+            updated_expires = updated_expires.replace(tzinfo=timezone.utc)
+        compare_now = now
+        if compare_now.tzinfo is None:
+            compare_now = compare_now.replace(tzinfo=timezone.utc)
+        assert updated_expires > compare_now
+
+    @pytest.mark.asyncio
+    async def test_local_worker_returns_none_for_completed_job(self, integration_database, integration_video):
+        """Test that local worker returns None for completed jobs."""
+        from unittest.mock import patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a completed job
+        now = datetime.now(timezone.utc)
+        await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="completed-worker",
+                current_step="finished",
+                progress_percent=100,
+                started_at=now - timedelta(hours=1),
+                last_checkpoint=now,
+                attempt_number=1,
+                max_attempts=3,
+                claimed_at=now - timedelta(hours=1),
+                claim_expires_at=now - timedelta(minutes=30),
+                completed_at=now,  # Job is completed
+            )
+        )
+
+        # Patch the database in the transcoder module
+        with patch.object(transcoder_module, "database", integration_database):
+            job = await transcoder_module.get_existing_job(integration_video["id"])
+
+            # Should return None because job is completed
+            assert job is None
+
+    @pytest.mark.asyncio
+    async def test_local_worker_returns_none_for_nonexistent_job(self, integration_database, integration_video):
+        """Test that local worker returns None when no job exists."""
+        from unittest.mock import patch
+
+        import worker.transcoder as transcoder_module
+
+        # Don't create any job for this video
+
+        # Patch the database in the transcoder module
+        with patch.object(transcoder_module, "database", integration_database):
+            job = await transcoder_module.get_existing_job(integration_video["id"])
+
+            # Should return None because no job exists
+            assert job is None
