@@ -60,6 +60,9 @@ MAX_RETRY_ATTEMPTS = int(os.getenv("VLOG_MAX_RETRY_ATTEMPTS", "3"))
 RETRY_BACKOFF_BASE = int(os.getenv("VLOG_RETRY_BACKOFF_BASE", "60"))
 CLEANUP_PARTIAL_ON_FAILURE = os.getenv("VLOG_CLEANUP_PARTIAL_ON_FAILURE", "true").lower() == "true"
 KEEP_COMPLETED_QUALITIES = os.getenv("VLOG_KEEP_COMPLETED_QUALITIES", "true").lower() == "true"
+CLEANUP_SOURCE_ON_PERMANENT_FAILURE = (
+    os.getenv("VLOG_CLEANUP_SOURCE_ON_PERMANENT_FAILURE", "true").lower() == "true"
+)
 
 # FFmpeg timeout settings (prevents stuck transcoding jobs)
 # Base multiplier applied to video duration (scaled by resolution)

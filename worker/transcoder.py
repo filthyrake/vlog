@@ -43,6 +43,7 @@ from config import (
     ARCHIVE_DIR,
     ARCHIVE_RETENTION_DAYS,
     CLEANUP_PARTIAL_ON_FAILURE,
+    CLEANUP_SOURCE_ON_PERMANENT_FAILURE,
     ERROR_DETAIL_MAX_LENGTH,
     ERROR_SUMMARY_MAX_LENGTH,
     FFMPEG_TIMEOUT_BASE_MULTIPLIER,
@@ -1013,6 +1014,35 @@ async def cleanup_partial_output(
         master_path.unlink()
 
 
+def cleanup_source_file(video_id: int) -> bool:
+    """
+    Clean up source file from uploads directory for a video.
+
+    Called when a transcoding job permanently fails (max retries exceeded).
+    Controlled by CLEANUP_SOURCE_ON_PERMANENT_FAILURE config option.
+
+    Args:
+        video_id: The video ID to clean up source file for
+
+    Returns:
+        True if a file was deleted, False otherwise
+    """
+    if not CLEANUP_SOURCE_ON_PERMANENT_FAILURE:
+        return False
+
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
+        source_file = UPLOADS_DIR / f"{video_id}{ext}"
+        if source_file.exists():
+            try:
+                source_file.unlink()
+                logger.info(f"Cleaned up source file for failed video {video_id}: {source_file}")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to clean up source file {source_file}: {e}")
+                return False
+    return False
+
+
 # ============================================================================
 # Job Management Functions
 # ============================================================================
@@ -1384,6 +1414,9 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
                     .where(videos.c.id == job["video_id"])
                     .values(status=VideoStatus.FAILED, error_message="Max retry attempts exceeded")
                 )
+            # Clean up source file after permanent failure
+            if cleanup_source_file(job["video_id"]):
+                print(f"    Cleaned up source file for video {job['video_id']}")
         else:
             # Reset for retry - use transaction to ensure consistency
             print(f"    Resetting for retry (attempt {job['attempt_number'] + 1})")
@@ -2055,6 +2088,9 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
                     .where(videos.c.id == job["video_id"])
                     .values(status=VideoStatus.FAILED, error_message="Max retry attempts exceeded")
                 )
+            # Clean up source file after permanent failure
+            if cleanup_source_file(job["video_id"]):
+                print(f"  Cleaned up source file for video {job['video_id']}")
         else:
             print(f"Found stale job for '{video['slug']}', resetting for retry")
             async with database.transaction():

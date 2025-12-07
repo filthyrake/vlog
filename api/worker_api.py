@@ -1131,6 +1131,12 @@ async def fail_job(
             detail="Database temporarily unavailable, please retry",
         ) from e
 
+    # Clean up source file after permanent failure (outside transaction)
+    if not will_retry:
+        from worker.transcoder import cleanup_source_file
+
+        cleanup_source_file(job["video_id"])
+
     return FailJobResponse(
         status="ok",
         will_retry=will_retry,

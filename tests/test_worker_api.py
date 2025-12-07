@@ -1368,6 +1368,88 @@ class TestJobFailure:
         records = await test_database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job_id))
         assert len(records) == 0, "quality_progress should be cleaned up on job retry"
 
+    @pytest.mark.asyncio
+    async def test_fail_job_final_cleans_source_file(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage, monkeypatch
+    ):
+        """Test that fail_job cleans up source file on permanent failure (issue #265)."""
+        import config
+
+        monkeypatch.setattr(config, "CLEANUP_SOURCE_ON_PERMANENT_FAILURE", True)
+
+        # Also patch the transcoder module since it's imported dynamically
+        import worker.transcoder
+
+        monkeypatch.setattr(worker.transcoder, "CLEANUP_SOURCE_ON_PERMANENT_FAILURE", True)
+        monkeypatch.setattr(worker.transcoder, "UPLOADS_DIR", test_storage["uploads"])
+
+        # Create a source file for this video
+        video_id = sample_pending_video["id"]
+        source_file = test_storage["uploads"] / f"{video_id}.mp4"
+        source_file.write_bytes(b"fake video content for testing cleanup")
+        assert source_file.exists()
+
+        # Create a job at max attempts
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=3,
+                max_attempts=3,
+            )
+        )
+
+        # Fail the job with retry=True, but since attempt_number >= max_attempts, will_retry should be False
+        response = worker_client.post(
+            f"/api/worker/{job_id}/fail",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"error_message": "Transcoding failed permanently", "retry": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["will_retry"] is False
+
+        # Source file should be cleaned up
+        assert not source_file.exists(), "Source file should be deleted on permanent failure"
+
+    @pytest.mark.asyncio
+    async def test_fail_job_retry_preserves_source_file(
+        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage, monkeypatch
+    ):
+        """Test that fail_job preserves source file when job will be retried."""
+        import config
+
+        monkeypatch.setattr(config, "CLEANUP_SOURCE_ON_PERMANENT_FAILURE", True)
+
+        # Create a source file for this video
+        video_id = sample_pending_video["id"]
+        source_file = test_storage["uploads"] / f"{video_id}.mp4"
+        source_file.write_bytes(b"fake video content for testing cleanup")
+        assert source_file.exists()
+
+        # Create a job that can still be retried
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                worker_id=registered_worker["worker_id"],
+                claimed_at=datetime.now(timezone.utc),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Fail the job with retry=True
+        response = worker_client.post(
+            f"/api/worker/{job_id}/fail",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"error_message": "Temporary failure", "retry": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["will_retry"] is True
+
+        # Source file should still exist
+        assert source_file.exists(), "Source file should be preserved when job will be retried"
+
 
 class TestWorkerListing:
     """Tests for worker listing endpoint."""
