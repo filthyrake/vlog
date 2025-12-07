@@ -38,13 +38,13 @@ SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 def validate_slug(slug: str) -> bool:
     r"""
     Validate slug contains only safe characters and has no path traversal attempts.
-    
+
     Args:
         slug: The slug string to validate
-        
+
     Returns:
         True if slug is valid, False otherwise
-        
+
     Security:
         - Prevents path traversal attacks (../, ..\, etc.)
         - Ensures slug matches safe character pattern (lowercase alphanumeric with hyphens)

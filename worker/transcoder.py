@@ -960,7 +960,7 @@ async def cleanup_partial_output(
     if not validate_slug(video_slug):
         logger.error(f"Invalid video slug in cleanup_partial_output: {video_slug}")
         return
-    
+
     output_dir = VIDEOS_DIR / video_slug
 
     if not output_dir.exists():
