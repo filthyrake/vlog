@@ -244,11 +244,6 @@ class TestTranscodingJobDatabase:
         assert len(completed_qualities) == 1
         assert completed_qualities[0]["quality"] == "1080p"
 
-    @pytest.mark.skip(reason="get_or_create_job function no longer exists in transcoder module")
-    @pytest.mark.asyncio
-    async def test_get_or_create_job_race_condition(self, integration_database, integration_video):
-        """Test that get_or_create_job handles race condition gracefully."""
-        pass
 
 
 class TestVideoStatusTransitions:
