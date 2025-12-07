@@ -7,6 +7,7 @@ Uses PostgreSQL for testing to match production database.
 
 import asyncio
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -48,6 +49,12 @@ TEST_UPLOADS_DIR = Path(_test_temp_dir) / "uploads"
 TEST_ARCHIVE_DIR = Path(_test_temp_dir) / "archive"
 
 
+def _validate_db_name(db_name: str) -> None:
+    """Validate database name contains only safe characters to prevent SQL injection."""
+    if not re.match(r"^[a-zA-Z0-9_]+$", db_name):
+        raise ValueError(f"Invalid database name: {db_name}")
+
+
 def _generate_test_db_name() -> str:
     """Generate a unique test database name."""
     # Use a UUID suffix to ensure uniqueness across parallel test runs
@@ -57,6 +64,7 @@ def _generate_test_db_name() -> str:
 
 def _create_test_database(db_name: str) -> str:
     """Create a test database and return its URL."""
+    _validate_db_name(db_name)
     admin_engine = sa.create_engine(TEST_PG_ADMIN_URL, isolation_level="AUTOCOMMIT")
     with admin_engine.connect() as conn:
         # Drop if exists (shouldn't happen but just in case)
@@ -68,18 +76,20 @@ def _create_test_database(db_name: str) -> str:
 
 def _drop_test_database(db_name: str) -> None:
     """Drop a test database."""
+    _validate_db_name(db_name)
     admin_engine = sa.create_engine(TEST_PG_ADMIN_URL, isolation_level="AUTOCOMMIT")
     with admin_engine.connect() as conn:
         # Try to terminate connections (may fail if not superuser, which is ok)
         try:
             conn.execute(
                 sa.text(
-                    f"""
+                    """
                     SELECT pg_terminate_backend(pid)
                     FROM pg_stat_activity
-                    WHERE datname = '{db_name}' AND pid <> pg_backend_pid()
+                    WHERE datname = :db_name AND pid <> pg_backend_pid()
                     """
-                )
+                ),
+                {"db_name": db_name},
             )
         except Exception:
             # Not a superuser, can't terminate connections - that's ok

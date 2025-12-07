@@ -2019,7 +2019,7 @@ async def analytics_trends(
             COUNT(DISTINCT viewer_id) as unique_viewers,
             COALESCE(SUM(duration_watched), 0) / 3600.0 as watch_time_hours
         FROM playback_sessions
-        WHERE started_at >= CURRENT_DATE - CAST(:days_offset AS INTEGER) * INTERVAL '1 day'
+        WHERE started_at >= CURRENT_DATE - :days_offset * INTERVAL '1 day'
         {video_clause}
         GROUP BY CAST(started_at AS DATE)
         ORDER BY date
