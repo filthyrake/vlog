@@ -84,6 +84,20 @@ class TestProgressFileWrapper:
                 data = wrapper.read()
                 assert data == b"Test content"
 
+    def test_wrapper_has_close_method(self, tmp_path):
+        """Test that ProgressFileWrapper has a close() method."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"Test content")
+
+        mock_progress = mock.Mock()
+        task_id = 1
+
+        with open(test_file, "rb") as f:
+            wrapper = ProgressFileWrapper(f, mock_progress, task_id)
+            # Verify close method exists and can be called
+            assert hasattr(wrapper, "close")
+            assert callable(wrapper.close)
+
 
 class TestCLIError:
     """Test the custom CLIError exception."""

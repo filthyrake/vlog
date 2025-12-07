@@ -71,13 +71,17 @@ class ProgressFileWrapper:
         """Forward tell to the underlying file."""
         return self.file.tell()
 
+    def close(self):
+        """Close method - does not close the underlying file as it's managed externally."""
+        pass
+
     def __enter__(self):
         """Context manager entry."""
         return self
 
     def __exit__(self, *args):
-        """Context manager exit."""
-        return self.file.__exit__(*args)
+        """Context manager exit - does not close the file as it's managed externally."""
+        pass
 
 
 def safe_json_response(response, default_error="Request failed"):
