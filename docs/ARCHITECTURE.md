@@ -97,6 +97,20 @@ Central coordinator for distributed transcoding:
 - Prefix-based key lookup
 - Per-worker revocation
 
+### Shared API Utilities
+
+**Location:** `api/` directory
+
+| Module | Purpose |
+|--------|---------|
+| `common.py` | Security middleware, health checks, rate limiting helpers |
+| `analytics_cache.py` | In-memory caching for analytics queries |
+| `audit.py` | Audit logging for security-relevant operations |
+| `db_retry.py` | Database retry logic for SQLite locking |
+| `enums.py` | Enum definitions (VideoStatus, TranscriptionStatus) |
+| `errors.py` | Error message sanitization utilities |
+| `exception_utils.py` | Exception handling decorators |
+
 ### 4. Local Transcoding Worker
 
 **Location:** `worker/transcoder.py`

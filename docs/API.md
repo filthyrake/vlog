@@ -496,11 +496,185 @@ Query parameters:
 | period | string | "30d" | Period: 7d/30d/90d |
 | video_id | int | null | Filter by video |
 
+### Video Qualities
+
+#### Get Video Qualities
+```
+GET /api/videos/{video_id}/qualities
+```
+
+Response:
+```json
+{
+  "video_id": 1,
+  "qualities": [
+    {"name": "1080p", "width": 1920, "height": 1080, "bitrate": 5000},
+    {"name": "720p", "width": 1280, "height": 720, "bitrate": 2500}
+  ]
+}
+```
+
+#### Retranscode Video
+```
+POST /api/videos/{video_id}/retranscode
+```
+
+Request body (optional):
+```json
+{
+  "qualities": ["1080p", "720p"],
+  "force": false
+}
+```
+
+Triggers retranscoding of specific qualities or all qualities if not specified.
+
+### Batch Operations
+
+#### Bulk Delete Videos
+```
+POST /api/videos/bulk/delete
+```
+
+Request body:
+```json
+{
+  "video_ids": [1, 2, 3]
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "total": 3,
+  "succeeded": 3,
+  "failed": 0,
+  "results": [
+    {"video_id": 1, "success": true, "message": "Video deleted"},
+    {"video_id": 2, "success": true, "message": "Video deleted"},
+    {"video_id": 3, "success": true, "message": "Video deleted"}
+  ]
+}
+```
+
+#### Bulk Update Videos
+```
+POST /api/videos/bulk/update
+```
+
+Request body:
+```json
+{
+  "video_ids": [1, 2, 3],
+  "category_id": 5,
+  "published_at": "2024-01-15T12:00:00"
+}
+```
+
+#### Bulk Retranscode Videos
+```
+POST /api/videos/bulk/retranscode
+```
+
+Request body:
+```json
+{
+  "video_ids": [1, 2, 3],
+  "qualities": ["1080p", "720p"]
+}
+```
+
+#### Bulk Restore Videos
+```
+POST /api/videos/bulk/restore
+```
+
+Request body:
+```json
+{
+  "video_ids": [1, 2, 3]
+}
+```
+
+Restores multiple soft-deleted videos from archive.
+
+### Video Export
+
+#### Export Video List
+```
+GET /api/videos/export
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| format | string | "json" | Export format: json/csv |
+| status | string | null | Filter by status |
+| category_id | int | null | Filter by category |
+
+Returns a downloadable export of video metadata.
+
+### Worker Management (Admin)
+
+#### List All Workers
+```
+GET /api/workers
+```
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "worker_id": "uuid-string",
+    "worker_name": "k8s-worker-1",
+    "status": "active",
+    "current_job_id": 16
+  }
+]
+```
+
+#### Get Active Jobs
+```
+GET /api/workers/active-jobs
+```
+
+Returns list of currently processing transcoding jobs with worker info.
+
+#### Get Worker Details
+```
+GET /api/workers/{worker_id}
+```
+
+Response includes worker info, capabilities, and job history.
+
+#### Disable Worker
+```
+PUT /api/workers/{worker_id}/disable
+```
+
+Prevents worker from claiming new jobs.
+
+#### Enable Worker
+```
+PUT /api/workers/{worker_id}/enable
+```
+
+Re-enables a disabled worker.
+
+#### Delete Worker
+```
+DELETE /api/workers/{worker_id}
+```
+
+Removes worker registration (does not revoke API key).
+
 ---
 
 ## Rate Limiting
 
-Both APIs implement rate limiting via slowapi. Default limits:
+All APIs implement rate limiting via slowapi. Default limits:
 
 **Public API:**
 - Default: 100 requests/minute
@@ -510,6 +684,11 @@ Both APIs implement rate limiting via slowapi. Default limits:
 **Admin API:**
 - Default: 200 requests/minute
 - Uploads: 10 requests/hour
+
+**Worker API:**
+- Default: 300 requests/minute
+- Registration: 5 requests/hour
+- Progress updates: 600 requests/minute
 
 When rate limited, the response includes:
 ```json
@@ -701,7 +880,7 @@ GET /api/worker/source/{video_id}
 
 Returns the source video file as a streaming download.
 
-#### Upload HLS Output
+#### Upload HLS Output (Single Archive)
 ```
 POST /api/worker/upload/{video_id}
 ```
@@ -711,6 +890,37 @@ Upload a tar.gz archive containing:
 - `{quality}.m3u8` files
 - `{quality}_XXXX.ts` segments
 - `thumbnail.jpg`
+
+#### Upload Per-Quality Output
+```
+POST /api/worker/upload/{video_id}/quality/{quality_name}
+```
+
+Upload a tar.gz archive containing files for a single quality:
+- `{quality}.m3u8` playlist
+- `{quality}_XXXX.ts` segments
+- `thumbnail.jpg` (optional, included with first quality)
+
+This endpoint supports streaming uploads for large files.
+
+#### Finalize Upload
+```
+POST /api/worker/upload/{video_id}/finalize
+```
+
+After uploading all qualities via per-quality endpoint, call this to:
+- Generate the master.m3u8 playlist
+- Mark the video as ready
+
+Request body:
+```json
+{
+  "qualities": [
+    {"name": "1080p", "width": 1920, "height": 1080, "bitrate": 5000},
+    {"name": "720p", "width": 1280, "height": 720, "bitrate": 2500}
+  ]
+}
+```
 
 ### Admin Endpoints
 
