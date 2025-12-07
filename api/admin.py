@@ -759,7 +759,7 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
             # Ensure foreign keys are enforced within this transaction
             await ensure_foreign_keys()
             # Get job ID for quality_progress cleanup
-            job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+            job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
             if job:
                 await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
             await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
@@ -1037,7 +1037,7 @@ async def re_upload_video(
     # === DATABASE CLEANUP (atomic) ===
     async with database.transaction():
         # Delete transcoding job and quality_progress
-        job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         if job:
             await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
         await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
@@ -1290,7 +1290,7 @@ async def retranscode_video(
     # === DATABASE CLEANUP ===
     async with database.transaction():
         # Cancel any existing transcoding job
-        job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         if job:
             # Delete quality_progress records
             if retranscode_all:
@@ -1970,7 +1970,7 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
                 async with database.transaction():
                     # Ensure foreign keys are enforced within this transaction
                     await ensure_foreign_keys()
-                    job = await fetch_one_with_retry(
+                    job = await database.fetch_one(
                         transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
                     )
                     if job:
@@ -2178,7 +2178,7 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
 
             async with database.transaction():
                 # Cancel existing transcoding job
-                existing_job = await fetch_one_with_retry(
+                existing_job = await database.fetch_one(
                     transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
                 )
                 if existing_job:
@@ -2888,7 +2888,7 @@ async def disable_worker(request: Request, worker_id: str):
 
         # Release any claimed job
         if worker["current_job_id"]:
-            job = await fetch_one_with_retry(
+            job = await database.fetch_one(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == worker["current_job_id"])
             )
             if job and not job["completed_at"]:
@@ -2976,7 +2976,7 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
     async with database.transaction():
         # Release any claimed job
         if worker["current_job_id"]:
-            job = await fetch_one_with_retry(
+            job = await database.fetch_one(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == worker["current_job_id"])
             )
             if job and not job["completed_at"]:

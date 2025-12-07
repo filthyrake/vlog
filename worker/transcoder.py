@@ -1942,7 +1942,7 @@ async def cleanup_expired_archives():
             # Delete database records atomically
             async with database.transaction():
                 # Get job ID for quality_progress cleanup
-                job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+                job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
                 if job:
                     await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
                 await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))

@@ -792,7 +792,7 @@ async def complete_job(
         async with database.transaction():
             # Save quality info
             for q in data.qualities:
-                existing = await fetch_one_with_retry(
+                existing = await database.fetch_one(
                     video_qualities.select()
                     .where(video_qualities.c.video_id == job["video_id"])
                     .where(video_qualities.c.quality == q.name)
