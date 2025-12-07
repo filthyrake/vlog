@@ -20,10 +20,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, Tuple
 
+import sqlalchemy as sa
+
 if TYPE_CHECKING:
     from worker.hwaccel import GPUCapabilities
-
-import sqlalchemy as sa
 
 from api.common import ensure_utc, validate_slug
 from api.database import (
@@ -36,6 +36,7 @@ from api.database import (
     video_qualities,
     videos,
 )
+from api.db_retry import execute_with_retry
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from api.errors import truncate_error
 from config import (
@@ -582,7 +583,7 @@ async def generate_thumbnail(input_path: Path, output_path: Path, timestamp: flo
         raise RuntimeError(f"Thumbnail generation timed out after {timeout}s")
 
     if process.returncode != 0:
-        error_msg = truncate_error(stderr.decode('utf-8', errors='ignore'), ERROR_DETAIL_MAX_LENGTH)
+        error_msg = truncate_error(stderr.decode("utf-8", errors="ignore"), ERROR_DETAIL_MAX_LENGTH)
         raise RuntimeError(f"Thumbnail generation failed: {error_msg}")
 
 
@@ -931,8 +932,8 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
         if first_segment.exists():
             actual_width, actual_height = await get_output_dimensions(first_segment)
             if actual_width > 0 and actual_height > 0:
-                quality['width'] = actual_width
-                quality['height'] = actual_height
+                quality["width"] = actual_width
+                quality["height"] = actual_height
 
     master_content = "#EXTM3U\n#EXT-X-VERSION:3\n\n"
 
@@ -1066,11 +1067,7 @@ async def get_existing_job(video_id: int) -> Optional[dict]:
                               OR tj.worker_id = :local_worker_id
                           )
                         FOR UPDATE SKIP LOCKED
-                    """).bindparams(
-                        video_id=video_id,
-                        now=now,
-                        local_worker_id=local_worker_id
-                    )
+                    """).bindparams(video_id=video_id, now=now, local_worker_id=local_worker_id)
                 )
             else:
                 # SQLite: use regular SELECT within transaction
@@ -1086,11 +1083,7 @@ async def get_existing_job(video_id: int) -> Optional[dict]:
                               OR claim_expires_at < :now
                               OR worker_id = :local_worker_id
                           )
-                    """).bindparams(
-                        video_id=video_id,
-                        now=now,
-                        local_worker_id=local_worker_id
-                    )
+                    """).bindparams(video_id=video_id, now=now, local_worker_id=local_worker_id)
                 )
 
             if not job:
@@ -1112,7 +1105,8 @@ async def get_existing_job(video_id: int) -> Optional[dict]:
             result["job"] = dict(job)
 
     try:
-        await do_claim()
+        # Use execute_with_retry to handle transient database errors (deadlocks, locking)
+        await execute_with_retry(do_claim)
     except Exception as e:
         logger.warning(f"Failed to claim job for video {video_id}: {e}")
         return None
@@ -1701,7 +1695,11 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
             try:
                 success, error_detail = await transcode_quality_with_progress(
-                    source_file, output_dir, quality, info["duration"], progress_cb,
+                    source_file,
+                    output_dir,
+                    quality,
+                    info["duration"],
+                    progress_cb,
                     gpu_caps=state.gpu_caps,
                 )
 
@@ -1840,7 +1838,11 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             print(f"    {quality_name}: Failed")
                     else:
                         success, error_detail = await transcode_quality_with_progress(
-                            source_file, output_dir, quality, info["duration"], None,
+                            source_file,
+                            output_dir,
+                            quality,
+                            info["duration"],
+                            None,
                             gpu_caps=state.gpu_caps,
                         )
                         if success:
