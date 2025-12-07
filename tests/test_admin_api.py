@@ -1056,6 +1056,110 @@ class TestTranscodingJobs:
         result = await test_database.fetch_all(quality_progress.select().where(quality_progress.c.job_id == job_id))
         assert len(result) == 3
 
+    @pytest.mark.asyncio
+    async def test_create_or_reset_job_creates_new(self, test_database, sample_pending_video, monkeypatch):
+        """Test create_or_reset_transcoding_job creates a new job when none exists."""
+        import api.admin
+        import api.database
+        from api.admin import create_or_reset_transcoding_job
+
+        # Patch the database reference in both modules (db_retry imports from api.database)
+        monkeypatch.setattr(api.admin, "database", test_database)
+        monkeypatch.setattr(api.database, "database", test_database)
+
+        video_id = sample_pending_video["id"]
+
+        # Verify no job exists
+        existing = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+        )
+        assert existing is None
+
+        # Create job using helper
+        await create_or_reset_transcoding_job(video_id)
+
+        # Verify job was created with correct values
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        assert job is not None
+        assert job["video_id"] == video_id
+        assert job["current_step"] == "pending"
+        assert job["progress_percent"] == 0
+        assert job["attempt_number"] == 1
+        assert job["max_attempts"] == 3
+
+    @pytest.mark.asyncio
+    async def test_create_or_reset_job_resets_existing(self, test_database, sample_pending_video, monkeypatch):
+        """Test create_or_reset_transcoding_job resets an existing job."""
+        import api.admin
+        import api.database
+        from api.admin import create_or_reset_transcoding_job
+
+        # Patch the database reference in both modules (db_retry imports from api.database)
+        monkeypatch.setattr(api.admin, "database", test_database)
+        monkeypatch.setattr(api.database, "database", test_database)
+
+        video_id = sample_pending_video["id"]
+        now = datetime.now(timezone.utc)
+
+        # Create an existing job with progress
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                worker_id="test-worker",
+                current_step="transcode",
+                progress_percent=75,
+                attempt_number=1,
+                max_attempts=3,
+                claimed_at=now,
+                claim_expires_at=now,
+                started_at=now,
+                last_error="Previous error",
+            )
+        )
+
+        # Reset using helper (should handle conflict)
+        await create_or_reset_transcoding_job(video_id)
+
+        # Verify job was reset
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        assert job["current_step"] == "pending"
+        assert job["progress_percent"] == 0
+        assert job["attempt_number"] == 2  # Incremented
+        assert job["worker_id"] is None
+        assert job["claimed_at"] is None
+        assert job["claim_expires_at"] is None
+        assert job["started_at"] is None
+        assert job["completed_at"] is None
+        assert job["last_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_or_reset_job_increments_attempt(self, test_database, sample_pending_video, monkeypatch):
+        """Test that attempt_number increments correctly on each reset."""
+        import api.admin
+        import api.database
+        from api.admin import create_or_reset_transcoding_job
+
+        # Patch the database reference in both modules (db_retry imports from api.database)
+        monkeypatch.setattr(api.admin, "database", test_database)
+        monkeypatch.setattr(api.database, "database", test_database)
+
+        video_id = sample_pending_video["id"]
+
+        # Create initial job
+        await create_or_reset_transcoding_job(video_id)
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        assert job["attempt_number"] == 1
+
+        # Reset again
+        await create_or_reset_transcoding_job(video_id)
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        assert job["attempt_number"] == 2
+
+        # Reset once more
+        await create_or_reset_transcoding_job(video_id)
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        assert job["attempt_number"] == 3
+
 
 class TestArchivedVideos:
     """Tests for archived (soft-deleted) video management."""
@@ -1287,9 +1391,7 @@ class TestWorkerDashboardEndpoints:
         assert data["status"] == "ok"
 
         # Verify worker is disabled
-        worker = await test_database.fetch_one(
-            workers.select().where(workers.c.worker_id == "disable-test-worker")
-        )
+        worker = await test_database.fetch_one(workers.select().where(workers.c.worker_id == "disable-test-worker"))
         assert worker["status"] == "disabled"
 
     @pytest.mark.asyncio
@@ -1332,9 +1434,7 @@ class TestWorkerDashboardEndpoints:
         assert data["status"] == "ok"
 
         # Verify worker is enabled (status set to 'active' by enable endpoint)
-        worker = await test_database.fetch_one(
-            workers.select().where(workers.c.worker_id == "enable-test-worker")
-        )
+        worker = await test_database.fetch_one(workers.select().where(workers.c.worker_id == "enable-test-worker"))
         assert worker["status"] == "active"
 
     @pytest.mark.asyncio
@@ -1389,9 +1489,7 @@ class TestWorkerDashboardEndpoints:
         assert data["status"] == "ok"
 
         # Verify worker is deleted
-        worker = await test_database.fetch_one(
-            workers.select().where(workers.c.worker_id == "delete-test-worker")
-        )
+        worker = await test_database.fetch_one(workers.select().where(workers.c.worker_id == "delete-test-worker"))
         assert worker is None
 
         # Verify API key is revoked
