@@ -52,7 +52,6 @@ from api.db_retry import (
     db_execute_with_retry,
     fetch_all_with_retry,
     fetch_one_with_retry,
-    is_retryable_database_error,
 )
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
@@ -269,7 +268,7 @@ async def create_or_reset_transcoding_job(video_id: int) -> None:
                     claim_expires_at = NULL,
                     started_at = NULL,
                     completed_at = NULL,
-                    error_message = NULL
+                    last_error = NULL
             """).bindparams(video_id=video_id)
         )
     else:
@@ -301,14 +300,11 @@ async def create_or_reset_transcoding_job(video_id: int) -> None:
                         claim_expires_at=None,
                         started_at=None,
                         completed_at=None,
-                        error_message=None,
+                        last_error=None,
                     )
                 )
-            elif is_retryable_database_error(e):
-                # Re-raise retryable errors (handled by caller)
-                raise
             else:
-                # Re-raise other errors
+                # Re-raise other errors (retryable errors are handled by db_execute_with_retry)
                 raise
 
 
