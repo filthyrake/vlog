@@ -57,14 +57,25 @@ class ProgressFileWrapper:
         self.task_id = task_id
 
     def read(self, size=-1):
-        """Read from the file and update progress."""
+        """
+        Read from the file and update progress.
+
+        Only updates progress when data is actually read (non-empty).
+        Empty reads at EOF don't advance progress as no bytes were transferred.
+        """
         data = self.file.read(size)
         if data:
             self.progress.update(self.task_id, advance=len(data))
         return data
 
     def seek(self, *args, **kwargs):
-        """Forward seek to the underlying file."""
+        """
+        Forward seek to the underlying file.
+
+        Note: Seek does not affect progress tracking. Progress is only
+        advanced when bytes are read via read(), ensuring accurate tracking
+        even if the file position changes.
+        """
         return self.file.seek(*args, **kwargs)
 
     def tell(self):
