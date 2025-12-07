@@ -23,6 +23,7 @@ dependencies = [
     "faster-whisper>=1.0.0",
     "watchdog>=3.0.0",
     "slowapi>=0.1.9",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]

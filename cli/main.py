@@ -10,7 +10,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
+from rich.progress import (
+    BarColumn,
+    FileSizeColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+    TotalFileSizeColumn,
+    TransferSpeedColumn,
+)
 
 from api.errors import truncate_error
 from config import ADMIN_PORT, ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH, WORKER_ADMIN_SECRET, WORKER_API_PORT
@@ -220,7 +228,9 @@ def cmd_upload(args):
         with Progress(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
-            DownloadColumn(),
+            FileSizeColumn(),
+            TextColumn("/"),
+            TotalFileSizeColumn(),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
         ) as progress:
@@ -439,7 +449,9 @@ def cmd_download(args):
             with Progress(
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
-                DownloadColumn(),
+                FileSizeColumn(),
+                TextColumn("/"),
+                TotalFileSizeColumn(),
                 TransferSpeedColumn(),
                 TimeRemainingColumn(),
             ) as progress:

@@ -98,6 +98,28 @@ class TestProgressFileWrapper:
             assert hasattr(wrapper, "close")
             assert callable(wrapper.close)
 
+    def test_wrapper_empty_read_at_eof(self, tmp_path):
+        """Test that empty reads at EOF don't update progress."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"data")
+
+        mock_progress = mock.Mock()
+        task_id = 1
+
+        with open(test_file, "rb") as f:
+            wrapper = ProgressFileWrapper(f, mock_progress, task_id)
+            # Read all data
+            data = wrapper.read()
+            assert data == b"data"
+            mock_progress.update.assert_called_once_with(task_id, advance=4)
+
+            # Reset mock and try empty read at EOF
+            mock_progress.reset_mock()
+            data = wrapper.read()
+            assert data == b""
+            # Verify progress was NOT updated for empty read
+            mock_progress.update.assert_not_called()
+
 
 class TestCLIError:
     """Test the custom CLIError exception."""
@@ -1100,6 +1122,60 @@ class TestCmdDownload:
         assert "Downloading" in captured.out
         # Should see download error (not URL validation error)
         assert "Error downloading" in captured.out
+
+    def test_download_with_progress_wrapper(self, capsys, tmp_path):
+        """Test that download upload phase uses ProgressFileWrapper for tracking."""
+        from cli.main import ProgressFileWrapper, cmd_download
+
+        args = mock.Mock()
+        args.url = "https://youtube.com/watch?v=test"
+        args.title = "Test Video"
+        args.description = ""
+        args.category = None
+
+        # Mock yt-dlp version check
+        version_result = mock.Mock()
+        version_result.returncode = 0
+
+        # Mock successful download
+        download_result = mock.Mock()
+        download_result.returncode = 0
+
+        def run_side_effect(*args, **kwargs):
+            if "--version" in args[0]:
+                return version_result
+            return download_result
+
+        # Create fake downloaded file
+        test_file = tmp_path / "downloaded_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        # Mock successful upload
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "video_id": 1,
+            "slug": "test-video",
+        }
+
+        mock_client = mock.Mock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("subprocess.run", side_effect=run_side_effect):
+            with mock.patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+                mock_tmpdir.return_value.__enter__ = mock.Mock(return_value=str(tmp_path))
+                mock_tmpdir.return_value.__exit__ = mock.Mock(return_value=False)
+                with mock.patch("httpx.Client", return_value=mock_client):
+                    # Track if ProgressFileWrapper was instantiated
+                    with mock.patch("cli.main.ProgressFileWrapper", wraps=ProgressFileWrapper) as mock_wrapper:
+                        cmd_download(args)
+                        # Verify ProgressFileWrapper was called for upload phase
+                        assert mock_wrapper.call_count == 1
+
+        captured = capsys.readouterr()
+        assert "Success" in captured.out
 
 
 class TestMainParser:
