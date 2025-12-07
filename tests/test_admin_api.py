@@ -1492,11 +1492,11 @@ class TestWorkerDashboardEndpoints:
         worker = await test_database.fetch_one(workers.select().where(workers.c.worker_id == "delete-test-worker"))
         assert worker is None
 
-        # Verify API key is revoked
+        # Verify API key is deleted (CASCADE delete from worker deletion)
         api_key = await test_database.fetch_one(
             worker_api_keys.select().where(worker_api_keys.c.worker_id == worker_db_id)
         )
-        assert api_key["revoked_at"] is not None
+        assert api_key is None
 
     def test_delete_worker_not_found(self, admin_client):
         """Test deleting non-existent worker."""

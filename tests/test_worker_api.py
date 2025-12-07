@@ -1560,7 +1560,7 @@ class TestAdminSecretNotConfigured:
     """Tests for when WORKER_ADMIN_SECRET is not configured (503 errors)."""
 
     def test_register_returns_503_when_secret_not_configured(
-        self, test_database, test_storage, test_db_path, monkeypatch
+        self, test_storage, test_db_url, monkeypatch
     ):
         """Test registration returns 503 when admin secret is not configured."""
         import importlib
@@ -1568,32 +1568,25 @@ class TestAdminSecretNotConfigured:
 
         from fastapi.testclient import TestClient
 
-        import api.database
         import config
 
         # Patch config with empty secret
         monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
         monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
         monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
-        monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
         monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", "")  # Empty secret
 
-        monkeypatch.setattr(api.database, "database", test_database)
-        monkeypatch.setattr(api.database, "create_tables", lambda: None)
+        # Reload api.database to pick up new URL
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
 
         if "api.worker_auth" in sys.modules:
             importlib.reload(sys.modules["api.worker_auth"])
-        import api.worker_auth
-
-        monkeypatch.setattr(api.worker_auth, "database", test_database)
 
         if "api.worker_api" in sys.modules:
             importlib.reload(sys.modules["api.worker_api"])
-        import api.worker_api
         from api.worker_api import app
-
-        monkeypatch.setattr(api.worker_api, "database", test_database)
-        monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", "")
 
         with TestClient(app, raise_server_exceptions=True) as client:
             response = client.post(
@@ -1605,7 +1598,7 @@ class TestAdminSecretNotConfigured:
             assert "VLOG_WORKER_ADMIN_SECRET" in response.json()["detail"]
 
     def test_list_workers_returns_503_when_secret_not_configured(
-        self, test_database, test_storage, test_db_path, monkeypatch
+        self, test_storage, test_db_url, monkeypatch
     ):
         """Test listing workers returns 503 when admin secret is not configured."""
         import importlib
@@ -1613,31 +1606,24 @@ class TestAdminSecretNotConfigured:
 
         from fastapi.testclient import TestClient
 
-        import api.database
         import config
 
         monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
         monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
         monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
-        monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
         monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", "")
 
-        monkeypatch.setattr(api.database, "database", test_database)
-        monkeypatch.setattr(api.database, "create_tables", lambda: None)
+        # Reload api.database to pick up new URL
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
 
         if "api.worker_auth" in sys.modules:
             importlib.reload(sys.modules["api.worker_auth"])
-        import api.worker_auth
-
-        monkeypatch.setattr(api.worker_auth, "database", test_database)
 
         if "api.worker_api" in sys.modules:
             importlib.reload(sys.modules["api.worker_api"])
-        import api.worker_api
         from api.worker_api import app
-
-        monkeypatch.setattr(api.worker_api, "database", test_database)
-        monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", "")
 
         with TestClient(app, raise_server_exceptions=True) as client:
             response = client.get(
@@ -1648,7 +1634,7 @@ class TestAdminSecretNotConfigured:
             assert "VLOG_WORKER_ADMIN_SECRET" in response.json()["detail"]
 
     def test_revoke_returns_503_when_secret_not_configured(
-        self, test_database, test_storage, test_db_path, monkeypatch
+        self, test_storage, test_db_url, monkeypatch
     ):
         """Test revoking returns 503 when admin secret is not configured."""
         import importlib
@@ -1656,31 +1642,24 @@ class TestAdminSecretNotConfigured:
 
         from fastapi.testclient import TestClient
 
-        import api.database
         import config
 
         monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
         monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
         monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
-        monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
         monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", "")
 
-        monkeypatch.setattr(api.database, "database", test_database)
-        monkeypatch.setattr(api.database, "create_tables", lambda: None)
+        # Reload api.database to pick up new URL
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
 
         if "api.worker_auth" in sys.modules:
             importlib.reload(sys.modules["api.worker_auth"])
-        import api.worker_auth
-
-        monkeypatch.setattr(api.worker_auth, "database", test_database)
 
         if "api.worker_api" in sys.modules:
             importlib.reload(sys.modules["api.worker_api"])
-        import api.worker_api
         from api.worker_api import app
-
-        monkeypatch.setattr(api.worker_api, "database", test_database)
-        monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", "")
 
         with TestClient(app, raise_server_exceptions=True) as client:
             response = client.post(
