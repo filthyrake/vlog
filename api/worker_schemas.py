@@ -1,10 +1,25 @@
 """Pydantic schemas for Worker API endpoints."""
 
 import json
+import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# UUID4 regex pattern for validation
+UUID4_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def validate_uuid4(value: str) -> str:
+    """Validate that a string is a valid UUID4 format."""
+    if not UUID4_PATTERN.match(value):
+        raise ValueError(f"Invalid UUID4 format: {value}")
+    return value.lower()  # Normalize to lowercase
+
+
+# Type alias for worker_id fields with UUID4 validation
+WorkerIdStr = Annotated[str, Field(description="Worker UUID4 identifier")]
 
 
 # GPU and Hardware Acceleration Capabilities
@@ -122,9 +137,15 @@ class WorkerRegisterRequest(BaseModel):
 
 
 class WorkerRegisterResponse(BaseModel):
-    worker_id: str
+    worker_id: WorkerIdStr
     api_key: str  # Only returned once at registration
     message: str
+
+    @field_validator("worker_id")
+    @classmethod
+    def validate_worker_id(cls, v):
+        """Ensure worker_id is a valid UUID4."""
+        return validate_uuid4(v)
 
 
 # Heartbeat
@@ -240,7 +261,7 @@ class FailJobResponse(BaseModel):
 # Worker listing (for admin/CLI)
 class WorkerStatusResponse(BaseModel):
     id: int
-    worker_id: str
+    worker_id: WorkerIdStr
     worker_name: Optional[str]
     worker_type: str
     status: str
@@ -250,6 +271,12 @@ class WorkerStatusResponse(BaseModel):
     current_video_slug: Optional[str] = None
     capabilities: Optional[Dict] = None
     metadata: Optional[Dict] = None
+
+    @field_validator("worker_id")
+    @classmethod
+    def validate_worker_id(cls, v):
+        """Ensure worker_id is a valid UUID4."""
+        return validate_uuid4(v)
 
 
 class WorkerListResponse(BaseModel):
