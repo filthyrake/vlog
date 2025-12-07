@@ -1099,6 +1099,9 @@ async def get_existing_job(video_id: int) -> Optional[dict]:
                     worker_id=local_worker_id,
                     claimed_at=now,
                     claim_expires_at=expires_at,
+                    # Permanent record of which worker processed this job
+                    processed_by_worker_id=local_worker_id,
+                    processed_by_worker_name="Local Worker",
                 )
             )
 

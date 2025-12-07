@@ -804,7 +804,10 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
 
             claim_result["job"] = dict(job)
 
-            # Update job with claim
+            # Get worker name for permanent record
+            worker_name = worker["worker_name"] or f"worker-{worker['worker_id'][:8]}"
+
+            # Update job with claim and permanent worker record
             await database.execute(
                 transcoding_jobs.update()
                 .where(transcoding_jobs.c.id == job["id"])
@@ -814,6 +817,9 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
                     claim_expires_at=expires_at,
                     started_at=now,
                     current_step="claimed",
+                    # Permanent record of which worker processed this job
+                    processed_by_worker_id=worker["worker_id"],
+                    processed_by_worker_name=worker_name,
                 )
             )
 
