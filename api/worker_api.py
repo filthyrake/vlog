@@ -606,20 +606,51 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
                 """).bindparams(now=now)
             )
 
-            # Find oldest unclaimed pending job
-            job = await database.fetch_one(
-                sa.text("""
-                    SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
-                    FROM transcoding_jobs tj
-                    JOIN videos v ON tj.video_id = v.id
-                    WHERE v.status = 'pending'
-                      AND v.deleted_at IS NULL
-                      AND tj.claimed_at IS NULL
-                      AND tj.completed_at IS NULL
-                    ORDER BY v.created_at ASC
-                    LIMIT 1
-                """)
-            )
+            # Find oldest unclaimed pending job with row locking
+            # FOR UPDATE SKIP LOCKED is critical for distributed workers:
+            # - FOR UPDATE: locks the selected row for the transaction duration
+            # - SKIP LOCKED: if another worker already locked a row, skip it
+            # Without this, multiple workers can SELECT the same job simultaneously,
+            # then both UPDATE it, with the second overwriting the first's claim.
+            #
+            # Note: FOR UPDATE SKIP LOCKED is PostgreSQL-specific. SQLite uses
+            # database-level locking via transactions, which is sufficient for
+            # single-instance testing but not for distributed workers.
+            # Check the actual database URL being used (tests may patch this)
+            db_url = str(database.url)
+            is_postgresql = db_url.startswith("postgresql")
+
+            if is_postgresql:
+                job = await database.fetch_one(
+                    sa.text("""
+                        SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                        FROM transcoding_jobs tj
+                        JOIN videos v ON tj.video_id = v.id
+                        WHERE v.status = 'pending'
+                          AND v.deleted_at IS NULL
+                          AND tj.claimed_at IS NULL
+                          AND tj.completed_at IS NULL
+                        ORDER BY v.created_at ASC
+                        LIMIT 1
+                        FOR UPDATE OF tj SKIP LOCKED
+                    """)
+                )
+            else:
+                # SQLite: use regular SELECT within transaction
+                # SQLite's transaction isolation prevents concurrent modifications
+                job = await database.fetch_one(
+                    sa.text("""
+                        SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                        FROM transcoding_jobs tj
+                        JOIN videos v ON tj.video_id = v.id
+                        WHERE v.status = 'pending'
+                          AND v.deleted_at IS NULL
+                          AND tj.claimed_at IS NULL
+                          AND tj.completed_at IS NULL
+                        ORDER BY v.created_at ASC
+                        LIMIT 1
+                    """)
+                )
 
             if not job:
                 claim_result["job"] = None
@@ -705,7 +736,7 @@ async def update_progress(
     # Check if claim has already expired
     now = datetime.now(timezone.utc)
     if job["claim_expires_at"]:
-        # Handle both timezone-aware and naive datetimes from SQLite
+        # Normalize datetime to ensure timezone awareness (defensive programming)
         claim_expiry = job["claim_expires_at"]
         if claim_expiry.tzinfo is None:
             claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
@@ -731,6 +762,7 @@ async def update_progress(
 
     # Update quality progress if provided
     if data.quality_progress:
+        logger.info(f"Job {job_id}: Updating quality progress with {len(data.quality_progress)} items")
         for qp in data.quality_progress:
             # Try to update existing record
             result = await database.execute(
@@ -739,8 +771,11 @@ async def update_progress(
                 .where(quality_progress.c.quality == qp.name)
                 .values(status=qp.status, progress_percent=qp.progress)
             )
+            logger.info(f"Job {job_id}: Update {qp.name} returned {result} (type: {type(result)})")
             # If no record exists, create one
-            if result == 0:
+            # PostgreSQL returns a string like "UPDATE X" instead of rowcount
+            if result == 0 or (isinstance(result, str) and result.startswith("UPDATE 0")):
+                logger.info(f"Job {job_id}: Inserting new record for {qp.name}")
                 await database.execute(
                     quality_progress.insert().values(
                         job_id=job_id,
@@ -1384,7 +1419,7 @@ async def list_workers(
         # Determine status
         status = row["status"]
         if status == "active" and row["last_heartbeat"]:
-            # Handle both timezone-aware and naive datetimes from SQLite
+            # Normalize datetime to ensure timezone awareness (defensive programming)
             last_hb = ensure_utc(row["last_heartbeat"])
             if last_hb < offline_threshold:
                 status = "offline"
