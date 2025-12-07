@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 
 from api.errors import truncate_error
 from config import ADMIN_PORT, ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH, WORKER_ADMIN_SECRET, WORKER_API_PORT
@@ -37,6 +38,46 @@ class CLIError(Exception):
     """Custom exception for CLI errors."""
 
     pass
+
+
+class ProgressFileWrapper:
+    """Wrapper for file objects that reports upload progress."""
+
+    def __init__(self, file, progress, task_id):
+        """
+        Initialize the progress file wrapper.
+
+        Args:
+            file: The file object to wrap
+            progress: The rich Progress instance
+            task_id: The task ID from progress.add_task()
+        """
+        self.file = file
+        self.progress = progress
+        self.task_id = task_id
+
+    def read(self, size=-1):
+        """Read from the file and update progress."""
+        data = self.file.read(size)
+        if data:
+            self.progress.update(self.task_id, advance=len(data))
+        return data
+
+    def seek(self, *args, **kwargs):
+        """Forward seek to the underlying file."""
+        return self.file.seek(*args, **kwargs)
+
+    def tell(self):
+        """Forward tell to the underlying file."""
+        return self.file.tell()
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, *args):
+        """Context manager exit."""
+        return self.file.__exit__(*args)
 
 
 def safe_json_response(response, default_error="Request failed"):
@@ -130,44 +171,58 @@ def cmd_upload(args):
     """Upload a video."""
     try:
         file_path = Path(args.file)
-        validate_file(file_path)
+        file_size = validate_file(file_path)
 
         title = args.title or file_path.stem.replace("-", " ").replace("_", " ").title()
 
         print(f"Uploading: {file_path.name}")
         print(f"Title: {title}")
 
-        with open(file_path, "rb") as f:
-            files = {"file": (file_path.name, f)}
-            data = {
-                "title": title,
-                "description": args.description or "",
-            }
-            if args.category:
-                # Look up category ID by name/slug
-                try:
-                    response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
-                    cats = safe_json_response(response)
-                    cat_match = None
-                    for cat in cats:
-                        if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
-                            cat_match = cat
-                            break
-                    if cat_match:
-                        data["category_id"] = cat_match["id"]
-                    else:
-                        print(f"Warning: Category '{args.category}' not found, uploading without category")
-                except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
-                    print(f"Warning: Could not fetch categories: {e}")
-                    print("Uploading without category")
+        # Prepare data payload
+        data = {
+            "title": title,
+            "description": args.description or "",
+        }
+        if args.category:
+            # Look up category ID by name/slug
+            try:
+                response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+                cats = safe_json_response(response)
+                cat_match = None
+                for cat in cats:
+                    if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
+                        cat_match = cat
+                        break
+                if cat_match:
+                    data["category_id"] = cat_match["id"]
+                else:
+                    print(f"Warning: Category '{args.category}' not found, uploading without category")
+            except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
+                print(f"Warning: Could not fetch categories: {e}")
+                print("Uploading without category")
 
-            with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT)) as client:
-                response = client.post(f"{API_BASE}/videos", files=files, data=data)
+        # Upload with progress indicator
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task_id = progress.add_task("Uploading...", total=file_size)
 
-            result = safe_json_response(response)
-            print("Success! Video queued for processing.")
-            print(f"  ID: {result['video_id']}")
-            print(f"  Slug: {result['slug']}")
+            with open(file_path, "rb") as f:
+                # Wrap the file object with progress tracking
+                wrapped_file = ProgressFileWrapper(f, progress, task_id)
+                files = {"file": (file_path.name, wrapped_file)}
+
+                with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT)) as client:
+                    response = client.post(f"{API_BASE}/videos", files=files, data=data)
+
+        result = safe_json_response(response)
+        print("Success! Video queued for processing.")
+        print(f"  ID: {result['video_id']}")
+        print(f"  Slug: {result['slug']}")
 
     except httpx.ConnectError:
         print(f"Error: Could not connect to admin API at {API_BASE}")
@@ -341,39 +396,52 @@ def cmd_download(args):
             video_file = downloaded[0]
 
             # Validate the downloaded file
-            validate_file(video_file)
+            file_size = validate_file(video_file)
 
             title = args.title or video_file.stem
 
             print(f"Downloaded: {video_file.name}")
             print(f"Uploading as: {title}")
 
-            # Upload the video
-            with open(video_file, "rb") as f:
-                files = {"file": (video_file.name, f)}
-                data = {
-                    "title": title,
-                    "description": args.description or "",
-                }
-                if args.category:
-                    try:
-                        response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
-                        cats = safe_json_response(response)
-                        for cat in cats:
-                            if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
-                                data["category_id"] = cat["id"]
-                                break
-                    except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
-                        print(f"Warning: Could not fetch categories: {e}")
-                        print("Uploading without category")
+            # Prepare data payload
+            data = {
+                "title": title,
+                "description": args.description or "",
+            }
+            if args.category:
+                try:
+                    response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+                    cats = safe_json_response(response)
+                    for cat in cats:
+                        if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
+                            data["category_id"] = cat["id"]
+                            break
+                except (CLIError, httpx.ConnectError, httpx.TimeoutException) as e:
+                    print(f"Warning: Could not fetch categories: {e}")
+                    print("Uploading without category")
 
-                with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT)) as client:
-                    response = client.post(f"{API_BASE}/videos", files=files, data=data)
+            # Upload with progress indicator
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                DownloadColumn(),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                task_id = progress.add_task("Uploading...", total=file_size)
 
-                result = safe_json_response(response)
-                print("Success! Video queued for processing.")
-                print(f"  ID: {result['video_id']}")
-                print(f"  Slug: {result['slug']}")
+                with open(video_file, "rb") as f:
+                    # Wrap the file object with progress tracking
+                    wrapped_file = ProgressFileWrapper(f, progress, task_id)
+                    files = {"file": (video_file.name, wrapped_file)}
+
+                    with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT)) as client:
+                        response = client.post(f"{API_BASE}/videos", files=files, data=data)
+
+            result = safe_json_response(response)
+            print("Success! Video queued for processing.")
+            print(f"  ID: {result['video_id']}")
+            print(f"  Slug: {result['slug']}")
 
     except httpx.ConnectError:
         print(f"Error: Could not connect to admin API at {API_BASE}")

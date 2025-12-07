@@ -10,7 +10,79 @@ import httpx
 import pytest
 
 # Import CLI functions and classes
-from cli.main import CLIError, safe_json_response, validate_file, validate_url
+from cli.main import CLIError, ProgressFileWrapper, safe_json_response, validate_file, validate_url
+
+
+class TestProgressFileWrapper:
+    """Test the ProgressFileWrapper class for upload progress tracking."""
+
+    def test_wrapper_reads_and_updates_progress(self, tmp_path):
+        """Test that ProgressFileWrapper reads data and updates progress."""
+        # Create a test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"Hello, World!")
+
+        # Mock progress and task_id
+        mock_progress = mock.Mock()
+        task_id = 1
+
+        with open(test_file, "rb") as f:
+            wrapper = ProgressFileWrapper(f, mock_progress, task_id)
+
+            # Read some data
+            data = wrapper.read(5)
+            assert data == b"Hello"
+            mock_progress.update.assert_called_once_with(task_id, advance=5)
+
+            # Read more data
+            mock_progress.reset_mock()
+            data = wrapper.read(8)
+            assert data == b", World!"
+            mock_progress.update.assert_called_once_with(task_id, advance=8)
+
+    def test_wrapper_forwards_seek(self, tmp_path):
+        """Test that ProgressFileWrapper forwards seek to underlying file."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"0123456789")
+
+        mock_progress = mock.Mock()
+        task_id = 1
+
+        with open(test_file, "rb") as f:
+            wrapper = ProgressFileWrapper(f, mock_progress, task_id)
+
+            # Seek to position 5
+            wrapper.seek(5)
+            data = wrapper.read(5)
+            assert data == b"56789"
+
+    def test_wrapper_forwards_tell(self, tmp_path):
+        """Test that ProgressFileWrapper forwards tell to underlying file."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"0123456789")
+
+        mock_progress = mock.Mock()
+        task_id = 1
+
+        with open(test_file, "rb") as f:
+            wrapper = ProgressFileWrapper(f, mock_progress, task_id)
+
+            assert wrapper.tell() == 0
+            wrapper.read(5)
+            assert wrapper.tell() == 5
+
+    def test_wrapper_context_manager(self, tmp_path):
+        """Test that ProgressFileWrapper works as a context manager."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_bytes(b"Test content")
+
+        mock_progress = mock.Mock()
+        task_id = 1
+
+        with open(test_file, "rb") as f:
+            with ProgressFileWrapper(f, mock_progress, task_id) as wrapper:
+                data = wrapper.read()
+                assert data == b"Test content"
 
 
 class TestCLIError:
@@ -809,6 +881,42 @@ class TestCmdUpload:
             assert "timeout" in call_args[1]
             # Verify it's not None (previously was None)
             assert call_args[1]["timeout"] is not None
+
+    def test_upload_with_progress_wrapper(self, capsys, tmp_path):
+        """Test that upload uses ProgressFileWrapper for tracking."""
+        from cli.main import ProgressFileWrapper, cmd_upload
+
+        # Create a test file
+        test_file = tmp_path / "test_video.mp4"
+        test_file.write_bytes(b"fake video content")
+
+        args = mock.Mock()
+        args.file = str(test_file)
+        args.title = "Test Video"
+        args.description = ""
+        args.category = None
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "video_id": 1,
+            "slug": "test-video",
+        }
+
+        mock_client = mock.Mock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = mock.Mock(return_value=mock_client)
+        mock_client.__exit__ = mock.Mock(return_value=False)
+
+        # We'll track if ProgressFileWrapper was instantiated
+        with mock.patch("httpx.Client", return_value=mock_client):
+            with mock.patch("cli.main.ProgressFileWrapper", wraps=ProgressFileWrapper) as mock_wrapper:
+                cmd_upload(args)
+                # Verify ProgressFileWrapper was called
+                assert mock_wrapper.call_count == 1
+
+        captured = capsys.readouterr()
+        assert "Success" in captured.out
 
 
 class TestCmdDownload:
