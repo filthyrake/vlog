@@ -52,6 +52,7 @@ from api.db_retry import (
     db_execute_with_retry,
     fetch_all_with_retry,
     fetch_one_with_retry,
+    fetch_val_with_retry,
 )
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
@@ -574,7 +575,7 @@ async def list_archived_videos(
 
     # Get total count of archived videos
     count_query = sa.select(sa.func.count()).select_from(videos).where(videos.c.deleted_at.is_not(None))
-    total = await database.fetch_val(count_query)
+    total = await fetch_val_with_retry(count_query)
 
     return {
         "videos": [
@@ -1684,11 +1685,11 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
     month_start = today_start - timedelta(days=30)
 
     # Total views
-    total_views = await database.fetch_val(sa.select(sa.func.count()).select_from(playback_sessions)) or 0
+    total_views = await fetch_val_with_retry(sa.select(sa.func.count()).select_from(playback_sessions)) or 0
 
     # Unique viewers
     unique_viewers = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count(sa.distinct(playback_sessions.c.viewer_id)))
             .select_from(playback_sessions)
             .where(playback_sessions.c.viewer_id.isnot(None))
@@ -1698,7 +1699,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Total watch time
     total_watch_seconds = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.sum(playback_sessions.c.duration_watched)).select_from(playback_sessions)
         )
         or 0
@@ -1707,7 +1708,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Completion rate
     completed_count = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count()).select_from(playback_sessions).where(playback_sessions.c.completed.is_(True))
         )
         or 0
@@ -1716,7 +1717,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Average watch duration
     avg_watch = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.avg(playback_sessions.c.duration_watched)).select_from(playback_sessions)
         )
         or 0
@@ -1724,7 +1725,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Views today
     views_today = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(playback_sessions)
             .where(playback_sessions.c.started_at >= today_start)
@@ -1734,7 +1735,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Views this week
     views_week = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(playback_sessions)
             .where(playback_sessions.c.started_at >= week_start)
@@ -1744,7 +1745,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 
     # Views this month
     views_month = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(playback_sessions)
             .where(playback_sessions.c.started_at >= month_start)
@@ -1843,7 +1844,7 @@ async def analytics_videos(
     rows = await database.fetch_all(sa.text(base_query).bindparams(**params))
 
     # Get total count
-    count_result = await database.fetch_val(
+    count_result = await fetch_val_with_retry(
         sa.select(sa.func.count()).select_from(videos).where(videos.c.status == VideoStatus.READY)
     )
 
@@ -2521,7 +2522,7 @@ async def export_videos(
     count_query = sa.select(sa.func.count()).select_from(videos)
     if conditions:
         count_query = count_query.where(sa.and_(*conditions))
-    total_count = await database.fetch_val(count_query)
+    total_count = await fetch_val_with_retry(count_query)
 
     export_items = [
         VideoExportItem(
@@ -2875,7 +2876,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
 
     # Get job stats
     jobs_completed = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(transcoding_jobs.join(videos))
             .where(transcoding_jobs.c.worker_id == worker_id)
@@ -2886,7 +2887,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
     )
 
     jobs_failed = (
-        await database.fetch_val(
+        await fetch_val_with_retry(
             sa.select(sa.func.count())
             .select_from(transcoding_jobs.join(videos))
             .where(transcoding_jobs.c.worker_id == worker_id)
@@ -2897,7 +2898,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
     )
 
     # Get average job duration for completed jobs (in seconds)
-    avg_duration = await database.fetch_val(
+    avg_duration = await fetch_val_with_retry(
         sa.text("""
             SELECT AVG(EXTRACT(EPOCH FROM (tj.completed_at - tj.started_at)))
             FROM transcoding_jobs tj
