@@ -11,7 +11,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import ADMIN_PORT, WORKER_ADMIN_SECRET, WORKER_API_PORT
+from api.errors import truncate_error
+from config import ADMIN_PORT, ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH, WORKER_ADMIN_SECRET, WORKER_API_PORT
 
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
@@ -58,14 +59,14 @@ def safe_json_response(response, default_error="Request failed"):
             detail = response.json().get("detail", response.text)
         except (ValueError, httpx.ResponseNotRead):
             # If JSON parsing fails, use raw text or default
-            detail = response.text[:200] if response.text else default_error
+            detail = truncate_error(response.text, ERROR_DETAIL_MAX_LENGTH) if response.text else default_error
         raise CLIError(f"API error ({response.status_code}): {detail}")
 
     # Try to parse JSON from successful response
     try:
         return response.json()
     except (ValueError, httpx.ResponseNotRead):
-        raise CLIError(f"Invalid JSON response: {response.text[:100]}")
+        raise CLIError(f"Invalid JSON response: {truncate_error(response.text, ERROR_SUMMARY_MAX_LENGTH)}")
 
 
 def validate_file(file_path):

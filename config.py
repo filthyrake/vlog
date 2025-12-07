@@ -211,3 +211,9 @@ STORAGE_CHECK_TIMEOUT = int(os.getenv("VLOG_STORAGE_CHECK_TIMEOUT", "2"))
 AUDIT_LOG_ENABLED = os.getenv("VLOG_AUDIT_LOG_ENABLED", "true").lower() not in ("false", "0", "no")
 AUDIT_LOG_PATH = Path(os.getenv("VLOG_AUDIT_LOG_PATH", "/var/log/vlog/audit.log"))
 AUDIT_LOG_LEVEL = os.getenv("VLOG_AUDIT_LOG_LEVEL", "INFO").upper()
+
+# Error Message Truncation Limits
+# Standardized limits for consistent debugging experience across the codebase
+ERROR_SUMMARY_MAX_LENGTH = int(os.getenv("VLOG_ERROR_SUMMARY_MAX_LENGTH", "100"))  # Brief error summaries
+ERROR_DETAIL_MAX_LENGTH = int(os.getenv("VLOG_ERROR_DETAIL_MAX_LENGTH", "500"))  # Detailed error messages
+ERROR_LOG_MAX_LENGTH = int(os.getenv("VLOG_ERROR_LOG_MAX_LENGTH", "2000"))  # Full error logs
