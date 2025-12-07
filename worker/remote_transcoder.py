@@ -156,84 +156,101 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             # Use lowest quality if source is very small
             qualities = [QUALITY_PRESETS[-1]]
 
+        # Get existing qualities to skip (for selective re-transcode)
+        existing_qualities = set(job.get("existing_qualities") or [])
+        if existing_qualities:
+            print(f"  Skipping existing qualities: {sorted(existing_qualities)}")
+
         quality_names = [q["name"] for q in qualities]
         print(f"  Transcoding to: original + {quality_names}")
         await client.update_progress(job_id, "transcode", 15)
 
         successful_qualities: List[dict] = []
         failed_qualities: List[str] = []
-        total_qualities = len(qualities) + 1  # +1 for original
+        # Count only qualities that need processing (for progress calculation)
+        qualities_to_process = len([q for q in qualities if q["name"] not in existing_qualities])
+        if "original" not in existing_qualities:
+            qualities_to_process += 1
+        total_qualities = max(qualities_to_process, 1)  # At least 1 to avoid division by zero
 
         # Initialize quality progress tracking
-        quality_progress_list = [{"name": "original", "status": "pending", "progress": 0}]
+        # Mark existing qualities as "skipped"
+        original_status = "skipped" if "original" in existing_qualities else "pending"
+        quality_progress_list = [{"name": "original", "status": original_status, "progress": 0}]
         for q in qualities:
-            quality_progress_list.append({"name": q["name"], "status": "pending", "progress": 0})
+            status = "skipped" if q["name"] in existing_qualities else "pending"
+            quality_progress_list.append({"name": q["name"], "status": status, "progress": 0})
 
-        # Create original quality (remux)
-        print("    original: Remuxing...")
-        quality_progress_list[0] = {"name": "original", "status": "in_progress", "progress": 0}
-        await client.update_progress(job_id, "transcode", 15, quality_progress_list)
+        # Create original quality (remux) - skip if already exists
+        if "original" in existing_qualities:
+            print("    original: Skipping (already exists)")
+            quality_progress_list[0] = {"name": "original", "status": "skipped", "progress": 100}
+            # Don't process, don't add to successful_qualities - server already has it
+        else:
+            print("    original: Remuxing...")
+            quality_progress_list[0] = {"name": "original", "status": "in_progress", "progress": 0}
+            await client.update_progress(job_id, "transcode", 15, quality_progress_list)
 
-        success, error, quality_info = await create_original_quality(source_path, output_dir, duration, None)
-        if success:
-            # Get actual bitrate from quality_info
-            bitrate_bps = quality_info.get("bitrate_bps", 0) if quality_info else 0
-            successful_qualities.append(
-                {
-                    "name": "original",
-                    "width": source_width,
-                    "height": source_height,
-                    "bitrate": bitrate_bps // 1000,  # Convert to kbps
-                }
-            )
-            print("    original: Done")
+            success, error, quality_info = await create_original_quality(source_path, output_dir, duration, None)
+            if success:
+                # Get actual bitrate from quality_info
+                bitrate_bps = quality_info.get("bitrate_bps", 0) if quality_info else 0
+                successful_qualities.append(
+                    {
+                        "name": "original",
+                        "width": source_width,
+                        "height": source_height,
+                        "bitrate": bitrate_bps // 1000,  # Convert to kbps
+                    }
+                )
+                print("    original: Done")
 
-            # Validate HLS playlist before upload (issue #166)
-            playlist_path = output_dir / "original.m3u8"
-            is_valid, validation_error = validate_hls_playlist(playlist_path)
-            if not is_valid:
-                print(f"    original: HLS validation failed - {validation_error}")
+                # Validate HLS playlist before upload (issue #166)
+                playlist_path = output_dir / "original.m3u8"
+                is_valid, validation_error = validate_hls_playlist(playlist_path)
+                if not is_valid:
+                    print(f"    original: HLS validation failed - {validation_error}")
+                    quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
+                    failed_qualities.append("original")
+                else:
+                    # Upload original quality immediately
+                    print("    original: Uploading...")
+                    try:
+                        # Define progress callback to extend claim during upload (issue #266)
+                        async def upload_progress_callback_original(bytes_sent: int, total_bytes: int):
+                            try:
+                                quality_progress_list[0] = {
+                                    "name": "original",
+                                    "status": "uploading",
+                                    "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                                }
+                                await client.update_progress(job_id, "upload", 90, quality_progress_list)
+                            except WorkerAPIError as e:
+                                if e.status_code == 409:
+                                    # Claim expired - stop upload
+                                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                                print(f"      Upload progress update failed: {e.message}")
+
+                        await client.upload_quality(
+                            video_id, "original", output_dir, progress_callback=upload_progress_callback_original
+                        )
+                        quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
+                        print("    original: Uploaded")
+
+                        # Delete local files to free disk space
+                        playlist_file = output_dir / "original.m3u8"
+                        if playlist_file.exists():
+                            playlist_file.unlink()
+                        for segment in output_dir.glob("original_*.ts"):
+                            segment.unlink()
+                        print("    original: Local files cleaned up")
+                    except WorkerAPIError as e:
+                        quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
+                        print(f"    original: Upload failed - {e.message}")
+            else:
                 quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
                 failed_qualities.append("original")
-            else:
-                # Upload original quality immediately
-                print("    original: Uploading...")
-                try:
-                    # Define progress callback to extend claim during upload (issue #266)
-                    async def upload_progress_callback_original(bytes_sent: int, total_bytes: int):
-                        try:
-                            quality_progress_list[0] = {
-                                "name": "original",
-                                "status": "uploading",
-                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
-                            }
-                            await client.update_progress(job_id, "upload", 90, quality_progress_list)
-                        except WorkerAPIError as e:
-                            if e.status_code == 409:
-                                # Claim expired - stop upload
-                                raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                            print(f"      Upload progress update failed: {e.message}")
-
-                    await client.upload_quality(
-                        video_id, "original", output_dir, progress_callback=upload_progress_callback_original
-                    )
-                    quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
-                    print("    original: Uploaded")
-
-                    # Delete local files to free disk space
-                    playlist_file = output_dir / "original.m3u8"
-                    if playlist_file.exists():
-                        playlist_file.unlink()
-                    for segment in output_dir.glob("original_*.ts"):
-                        segment.unlink()
-                    print("    original: Local files cleaned up")
-                except WorkerAPIError as e:
-                    quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
-                    print(f"    original: Upload failed - {e.message}")
-        else:
-            quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
-            failed_qualities.append("original")
-            print(f"    original: Failed - {error}")
+                print(f"    original: Failed - {error}")
 
         # Transcode other qualities
         for idx, quality in enumerate(qualities):
@@ -242,6 +259,12 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
             quality_name = quality["name"]
             quality_idx = idx + 1  # +1 because original is at index 0
+
+            # Skip if this quality already exists (selective re-transcode)
+            if quality_name in existing_qualities:
+                print(f"    {quality_name}: Skipping (already exists)")
+                quality_progress_list[quality_idx] = {"name": quality_name, "status": "skipped", "progress": 100}
+                continue
 
             # Calculate progress for this quality step
             progress_base = 15 + int((idx + 1) / total_qualities * 75)
@@ -374,45 +397,62 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 failed_qualities.append(quality_name)
                 print(f"    {quality_name}: Failed - {error}")
 
-        # Check if we have any successful qualities
-        if not successful_qualities:
+        # Check if we have any successful qualities (or all were skipped)
+        # If all qualities were skipped, we still need to complete the job
+        all_skipped = not successful_qualities and not failed_qualities
+        if not successful_qualities and not all_skipped:
             raise Exception(f"All quality variants failed: {', '.join(failed_qualities)}")
 
-        # Generate master playlist
-        print("  Generating master playlist...")
-        await client.update_progress(job_id, "master_playlist", 95, quality_progress_list)
+        # Determine if this is a selective retranscode (some qualities skipped)
+        # If so, don't regenerate master playlist - the existing one is correct
+        is_selective_retranscode = bool(existing_qualities)
 
-        # Convert successful_qualities to format expected by generate_master_playlist
-        master_qualities = []
-        for q in successful_qualities:
-            mq = {
-                "name": q["name"],
-                "width": q["width"],
-                "height": q["height"],
-                "bitrate": f"{q['bitrate']}k" if q["name"] != "original" else "0k",
-            }
-            if q["name"] == "original":
-                mq["is_original"] = True
-                mq["bitrate_bps"] = q["bitrate"] * 1000
-            master_qualities.append(mq)
+        if is_selective_retranscode and all_skipped:
+            # All qualities already existed - nothing to do, just complete the job
+            print("  All qualities already exist, skipping master playlist generation")
+        elif is_selective_retranscode:
+            # Selective retranscode - upload new qualities but keep existing master playlist
+            print("  Selective retranscode - keeping existing master playlist")
+            # Still upload thumbnail if it was regenerated
+            print("  Uploading thumbnail...")
+            await client.update_progress(job_id, "upload", 98, quality_progress_list)
+            await client.upload_finalize(video_id, output_dir, skip_master=True)
+        else:
+            # Full transcode - generate and upload new master playlist
+            print("  Generating master playlist...")
+            await client.update_progress(job_id, "master_playlist", 95, quality_progress_list)
 
-        await generate_master_playlist(output_dir, master_qualities)
+            # Convert successful_qualities to format expected by generate_master_playlist
+            master_qualities = []
+            for q in successful_qualities:
+                mq = {
+                    "name": q["name"],
+                    "width": q["width"],
+                    "height": q["height"],
+                    "bitrate": f"{q['bitrate']}k" if q["name"] != "original" else "0k",
+                }
+                if q["name"] == "original":
+                    mq["is_original"] = True
+                    mq["bitrate_bps"] = q["bitrate"] * 1000
+                master_qualities.append(mq)
 
-        # Validate master playlist before upload (issue #166)
-        master_playlist_path = output_dir / "master.m3u8"
-        if not master_playlist_path.exists():
-            raise Exception("Master playlist was not generated")
-        master_content = master_playlist_path.read_text()
-        if not master_content.startswith("#EXTM3U"):
-            raise Exception("Master playlist is malformed (missing #EXTM3U header)")
-        if "#EXT-X-STREAM-INF" not in master_content:
-            raise Exception("Master playlist is malformed (no stream variants)")
+            await generate_master_playlist(output_dir, master_qualities)
 
-        # Upload finalize files (master.m3u8 + thumbnail.jpg)
-        # Quality files were already uploaded incrementally after each transcode
-        print("  Uploading master playlist and thumbnail...")
-        await client.update_progress(job_id, "upload", 98, quality_progress_list)
-        await client.upload_finalize(video_id, output_dir)
+            # Validate master playlist before upload (issue #166)
+            master_playlist_path = output_dir / "master.m3u8"
+            if not master_playlist_path.exists():
+                raise Exception("Master playlist was not generated")
+            master_content = master_playlist_path.read_text()
+            if not master_content.startswith("#EXTM3U"):
+                raise Exception("Master playlist is malformed (missing #EXTM3U header)")
+            if "#EXT-X-STREAM-INF" not in master_content:
+                raise Exception("Master playlist is malformed (no stream variants)")
+
+            # Upload finalize files (master.m3u8 + thumbnail.jpg)
+            # Quality files were already uploaded incrementally after each transcode
+            print("  Uploading master playlist and thumbnail...")
+            await client.update_progress(job_id, "upload", 98, quality_progress_list)
+            await client.upload_finalize(video_id, output_dir)
         print("  Finalize files uploaded")
 
         # Complete job with retry logic to ensure server-side completion is verified

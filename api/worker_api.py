@@ -845,6 +845,12 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
             source_filename = candidate.name
             break
 
+    # Query existing qualities to skip during transcoding (for selective re-transcode)
+    existing_quality_rows = await database.fetch_all(
+        video_qualities.select().where(video_qualities.c.video_id == job["video_id"])
+    )
+    existing_qualities = [row["quality"] for row in existing_quality_rows] if existing_quality_rows else None
+
     return ClaimJobResponse(
         job_id=job["id"],
         video_id=job["video_id"],
@@ -854,6 +860,7 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
         source_height=job["source_height"],
         source_filename=source_filename,
         claim_expires_at=expires_at,
+        existing_qualities=existing_qualities,
         message="Job claimed successfully",
     )
 
