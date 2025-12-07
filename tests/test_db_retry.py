@@ -1,7 +1,7 @@
 """Tests for database retry functionality."""
 
 import sqlite3
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -260,7 +260,6 @@ class TestDatabaseOperationWrappers:
     @pytest.mark.asyncio
     async def test_fetch_one_with_retry_success(self):
         """Should successfully fetch one row."""
-        from unittest.mock import MagicMock
 
         mock_query = MagicMock()
         mock_row = {"id": 1, "name": "test"}
@@ -275,7 +274,6 @@ class TestDatabaseOperationWrappers:
     @pytest.mark.asyncio
     async def test_fetch_one_with_retry_handles_lock(self):
         """Should retry on database locked error."""
-        from unittest.mock import MagicMock
 
         mock_query = MagicMock()
         mock_row = {"id": 1, "name": "test"}
@@ -296,7 +294,6 @@ class TestDatabaseOperationWrappers:
     @pytest.mark.asyncio
     async def test_fetch_all_with_retry_success(self):
         """Should successfully fetch all rows."""
-        from unittest.mock import MagicMock
 
         mock_query = MagicMock()
         mock_rows = [{"id": 1}, {"id": 2}]
@@ -311,7 +308,6 @@ class TestDatabaseOperationWrappers:
     @pytest.mark.asyncio
     async def test_fetch_all_with_retry_handles_lock(self):
         """Should retry on database locked error."""
-        from unittest.mock import MagicMock
 
         mock_query = MagicMock()
         mock_rows = [{"id": 1}]
@@ -332,7 +328,6 @@ class TestDatabaseOperationWrappers:
     @pytest.mark.asyncio
     async def test_fetch_val_with_retry_success(self):
         """Should successfully fetch a single value."""
-        from unittest.mock import MagicMock
 
         mock_query = MagicMock()
         mock_value = 42
@@ -347,7 +342,6 @@ class TestDatabaseOperationWrappers:
     @pytest.mark.asyncio
     async def test_fetch_val_with_retry_handles_lock(self):
         """Should retry on database locked error."""
-        from unittest.mock import MagicMock
 
         mock_query = MagicMock()
         mock_value = 100
@@ -368,7 +362,6 @@ class TestDatabaseOperationWrappers:
     @pytest.mark.asyncio
     async def test_fetch_val_with_retry_returns_none(self):
         """Should return None when no value found."""
-        from unittest.mock import MagicMock
 
         mock_query = MagicMock()
 
