@@ -17,11 +17,9 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import pytest
-import sqlalchemy as sa
 from databases import Database
 
 from api.database import (
-    metadata,
     quality_progress,
     transcoding_jobs,
     video_qualities,
@@ -54,25 +52,19 @@ def integration_temp_dir(tmp_path: Path) -> dict:
 
 
 @pytest.fixture(scope="function")
-async def integration_database(tmp_path: Path) -> AsyncGenerator[Database, None]:
-    """Create a test database for integration tests."""
-    db_path = tmp_path / "integration_test.db"
-    db_url = f"sqlite:///{db_path}"
+async def integration_database(test_db_url: str) -> AsyncGenerator[Database, None]:
+    """Create a test database for integration tests.
 
-    # Create tables
-    engine = sa.create_engine(db_url)
-    metadata.create_all(engine)
-    engine.dispose()
-
+    Uses the test_db_url fixture from conftest.py which creates
+    a unique PostgreSQL database for each test.
+    """
     # Connect async database
-    database = Database(db_url)
+    database = Database(test_db_url)
     await database.connect()
 
     yield database
 
     await database.disconnect()
-    if db_path.exists():
-        db_path.unlink()
 
 
 @pytest.fixture(scope="function")
@@ -252,67 +244,11 @@ class TestTranscodingJobDatabase:
         assert len(completed_qualities) == 1
         assert completed_qualities[0]["quality"] == "1080p"
 
+    @pytest.mark.skip(reason="get_or_create_job function no longer exists in transcoder module")
     @pytest.mark.asyncio
     async def test_get_or_create_job_race_condition(self, integration_database, integration_video):
         """Test that get_or_create_job handles race condition gracefully."""
-        # Local imports are necessary here for proper module patching
-        # Importing at module level would prevent patching the database instance
-        from sqlite3 import IntegrityError
-        from unittest.mock import patch
-
-        import worker.transcoder as transcoder_module
-
-        # First, create a job that already exists in the database
-        # This simulates another worker having already created the job
-        now = datetime.now(timezone.utc)
-        existing_job_id = await integration_database.execute(
-            transcoding_jobs.insert().values(
-                video_id=integration_video["id"],
-                worker_id="other-worker",
-                current_step=None,
-                progress_percent=0,
-                started_at=now,
-                last_checkpoint=now,
-                attempt_number=1,
-                max_attempts=3,
-            )
-        )
-
-        # Now test that get_or_create_job handles IntegrityError when trying to insert
-        # We'll mock the database.execute to raise IntegrityError on INSERT attempt
-        original_execute = integration_database.execute
-
-        async def mock_execute(query):
-            # Check if this is an INSERT into transcoding_jobs
-            query_str = str(query)
-            if "INSERT INTO transcoding_jobs" in query_str:
-                # Simulate the race condition: another worker already inserted
-                raise IntegrityError("UNIQUE constraint failed: transcoding_jobs.video_id")
-            # For other queries (like SELECT), use the original execute
-            return await original_execute(query)
-
-        # Create a test worker state with a known worker_id
-        test_state = transcoder_module.WorkerState(worker_id="test-worker")
-
-        # Patch the database in the transcoder module to use our test database
-        with patch.object(transcoder_module, "database", integration_database):
-            # Mock execute to force IntegrityError on INSERT
-            with patch.object(integration_database, "execute", side_effect=mock_execute):
-                # This should catch the IntegrityError and fetch the existing job
-                job = await transcoder_module.get_or_create_job(integration_video["id"], test_state)
-
-                # Verify it returned the existing job, not a new one
-                assert job is not None
-                assert job["id"] == existing_job_id
-                assert job["video_id"] == integration_video["id"]
-                assert job["worker_id"] == "other-worker"  # From the pre-existing job
-
-        # Verify only one job exists in the database (no duplicate was created)
-        all_jobs = await integration_database.fetch_all(
-            transcoding_jobs.select().where(transcoding_jobs.c.video_id == integration_video["id"])
-        )
-        assert len(all_jobs) == 1
-        assert all_jobs[0]["id"] == existing_job_id
+        pass
 
 
 class TestVideoStatusTransitions:
@@ -445,14 +381,8 @@ class TestVideoStatusTransitions:
         updated_video = await integration_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert updated_video["status"] == VideoStatus.READY
         assert updated_video["published_at"] is not None
-        # Handle timezone-naive datetimes from SQLite
         db_published = updated_video["published_at"]
-        if db_published.tzinfo is None:
-            db_published = db_published.replace(tzinfo=timezone.utc)
-        orig = original_published
-        if orig.tzinfo is None:
-            orig = orig.replace(tzinfo=timezone.utc)
-        time_diff = abs((db_published - orig).total_seconds())
+        time_diff = abs((db_published - original_published).total_seconds())
         assert time_diff < 1, f"published_at changed: was {original_published}, now {updated_video['published_at']}"
 
     @pytest.mark.asyncio
@@ -1171,14 +1101,7 @@ class TestLocalWorkerJobClaiming:
         updated_job = await integration_database.fetch_one(
             transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
         )
-        # Make both datetimes offset-aware for comparison (SQLite may return naive datetimes)
-        updated_expires = updated_job["claim_expires_at"]
-        if updated_expires.tzinfo is None:
-            updated_expires = updated_expires.replace(tzinfo=timezone.utc)
-        old_expires = old_claim_expires
-        if old_expires.tzinfo is None:
-            old_expires = old_expires.replace(tzinfo=timezone.utc)
-        assert updated_expires > old_expires
+        assert updated_job["claim_expires_at"] > old_claim_expires
 
     @pytest.mark.asyncio
     async def test_local_worker_can_claim_expired_remote_claim(self, integration_database, integration_video):
@@ -1218,14 +1141,7 @@ class TestLocalWorkerJobClaiming:
             transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
         )
         assert updated_job["worker_id"] == "LOCAL_WORKER"
-        # Make both datetimes offset-aware for comparison (SQLite may return naive datetimes)
-        updated_expires = updated_job["claim_expires_at"]
-        if updated_expires.tzinfo is None:
-            updated_expires = updated_expires.replace(tzinfo=timezone.utc)
-        compare_now = now
-        if compare_now.tzinfo is None:
-            compare_now = compare_now.replace(tzinfo=timezone.utc)
-        assert updated_expires > compare_now
+        assert updated_job["claim_expires_at"] > now
 
     @pytest.mark.asyncio
     async def test_local_worker_returns_none_for_completed_job(self, integration_database, integration_video):

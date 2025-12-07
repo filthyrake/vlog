@@ -338,9 +338,9 @@ class TestTranscriptionShutdown:
         mock_db.disconnect = AsyncMock()
         monkeypatch.setattr(worker.transcription, "database", mock_db)
 
-        # Mock configure_sqlite_pragmas
+        # Mock configure_database
         monkeypatch.setattr(
-            worker.transcription, "configure_sqlite_pragmas", AsyncMock()
+            worker.transcription, "configure_database", AsyncMock()
         )
 
         # Mock get_videos_needing_transcription to return empty and trigger shutdown
