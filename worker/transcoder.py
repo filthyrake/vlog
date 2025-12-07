@@ -915,6 +915,13 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
     The 'original' quality uses bitrate_bps if available, others use bitrate string.
 
     Verifies actual dimensions from first segment of each quality to ensure accuracy.
+
+    Note: This function modifies the quality dictionaries in-place to update width/height
+    with actual values from the transcoded segments.
+
+    Args:
+        output_dir: Directory containing the HLS segments and playlists
+        completed_qualities: List of quality dicts with name, width, height, bitrate fields
     """
     # Verify actual dimensions from first segment of each quality
     for quality in completed_qualities:

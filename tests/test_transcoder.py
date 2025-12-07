@@ -337,9 +337,9 @@ class TestGenerateMasterPlaylist:
         # When scaled to 720p height: width = 720 * 2.4 = 1728 (rounded to even)
         # When scaled to 480p height: width = 480 * 2.4 = 1152
         async def mock_get_dimensions(path):
-            if "720p" in str(path):
+            if path == segment_720p:
                 return (1728, 720)  # Actual output is wider than preset
-            elif "480p" in str(path):
+            elif path == segment_480p:
                 return (1152, 480)  # Actual output is wider than preset
             return (0, 0)
 
