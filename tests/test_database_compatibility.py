@@ -187,9 +187,7 @@ class TestDatetimeHandling:
             )
         )
 
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
 
         # The datetime should be retrievable and comparable
         created_at = video["created_at"]
@@ -232,9 +230,7 @@ class TestDatetimeHandling:
 
         # This query should find our job
         stale_jobs = await test_database.fetch_all(
-            transcoding_jobs.select().where(
-                transcoding_jobs.c.last_checkpoint < stale_threshold
-            )
+            transcoding_jobs.select().where(transcoding_jobs.c.last_checkpoint < stale_threshold)
         )
 
         assert len(stale_jobs) >= 1
@@ -260,16 +256,12 @@ class TestNullHandling:
             )
         )
 
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
 
         assert video["category_id"] is None
 
     @pytest.mark.asyncio
-    async def test_null_deleted_at_for_active_videos(
-        self, test_database, sample_category
-    ):
+    async def test_null_deleted_at_for_active_videos(self, test_database, sample_category):
         """Test filtering for non-deleted videos (deleted_at IS NULL)."""
         now = datetime.now(timezone.utc)
 
@@ -298,9 +290,7 @@ class TestNullHandling:
         )
 
         # Query active videos only
-        active_videos = await test_database.fetch_all(
-            videos.select().where(videos.c.deleted_at.is_(None))
-        )
+        active_videos = await test_database.fetch_all(videos.select().where(videos.c.deleted_at.is_(None)))
 
         active_ids = [v["id"] for v in active_videos]
         assert active_id in active_ids
@@ -331,9 +321,7 @@ class TestJoinQueries:
         assert result["category_name"] == "Test Category"
 
     @pytest.mark.asyncio
-    async def test_video_with_qualities_join(
-        self, test_database, sample_video_with_qualities
-    ):
+    async def test_video_with_qualities_join(self, test_database, sample_video_with_qualities):
         """Test joining videos with video_qualities."""
         video_id = sample_video_with_qualities["id"]
 
@@ -345,9 +333,7 @@ class TestJoinQueries:
                 video_qualities.c.width,
                 video_qualities.c.height,
             )
-            .select_from(
-                videos.join(video_qualities, videos.c.id == video_qualities.c.video_id)
-            )
+            .select_from(videos.join(video_qualities, videos.c.id == video_qualities.c.video_id))
             .where(videos.c.id == video_id)
         )
 
@@ -391,11 +377,7 @@ class TestJoinQueries:
                 quality_progress.c.status,
                 quality_progress.c.progress_percent,
             )
-            .select_from(
-                transcoding_jobs.join(
-                    quality_progress, transcoding_jobs.c.id == quality_progress.c.job_id
-                )
-            )
+            .select_from(transcoding_jobs.join(quality_progress, transcoding_jobs.c.id == quality_progress.c.job_id))
             .where(transcoding_jobs.c.id == job_id)
         )
 
@@ -414,9 +396,7 @@ class TestAggregateQueries:
         now = datetime.now(timezone.utc)
 
         # Create videos with different statuses
-        for i, status in enumerate(
-            [VideoStatus.PENDING, VideoStatus.PENDING, VideoStatus.READY, VideoStatus.FAILED]
-        ):
+        for i, status in enumerate([VideoStatus.PENDING, VideoStatus.PENDING, VideoStatus.READY, VideoStatus.FAILED]):
             await test_database.execute(
                 videos.insert().values(
                     title=f"Video {i}",
@@ -684,13 +664,9 @@ class TestForeignKeyBehavior:
 
         # Manual cleanup (order matters for FK constraints)
         # 1. Delete quality_progress first (child of transcoding_jobs)
-        await test_database.execute(
-            quality_progress.delete().where(quality_progress.c.job_id == job_id)
-        )
+        await test_database.execute(quality_progress.delete().where(quality_progress.c.job_id == job_id))
         # 2. Delete transcoding_jobs (child of videos)
-        await test_database.execute(
-            transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id)
-        )
+        await test_database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
         # 3. Now safe to delete video
         await test_database.execute(videos.delete().where(videos.c.id == video_id))
 
