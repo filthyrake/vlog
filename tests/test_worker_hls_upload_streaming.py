@@ -258,7 +258,7 @@ class TestHLSUploadStreaming:
         )
 
         assert response.status_code == 400
-        assert "unexpected file type" in response.json()["detail"].lower()
+        assert "invalid file type" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_upload_hls_resets_permissions(
