@@ -1,5 +1,7 @@
 """HTTP client for worker-to-API communication."""
 
+import asyncio
+import random
 import tarfile
 import tempfile
 import time
@@ -19,59 +21,138 @@ class WorkerAPIError(Exception):
         super().__init__(f"API error {status_code}: {message}")
 
 
+# Retry configuration
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BASE_DELAY = 1.0  # seconds
+DEFAULT_RETRY_MAX_DELAY = 30.0  # seconds
+
+# Timeout presets (seconds)
+TIMEOUT_HEARTBEAT = 15.0  # Short timeout for lightweight ops
+TIMEOUT_CLAIM = 30.0  # Moderate timeout for claim
+TIMEOUT_PROGRESS = 15.0  # Short timeout for progress updates
+TIMEOUT_DEFAULT = 60.0  # Default for most operations
+TIMEOUT_FILE_TRANSFER = 300.0  # Long timeout for file transfers
+
+
 class WorkerAPIClient:
     """HTTP client for communicating with the Worker API."""
 
-    def __init__(self, base_url: str, api_key: str, timeout: float = 300.0):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float = TIMEOUT_FILE_TRANSFER,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+    ):
         """
         Initialize the worker API client.
 
         Args:
             base_url: Base URL of the Worker API (e.g., http://localhost:9002)
             api_key: Worker API key for authentication
-            timeout: Request timeout in seconds (default 5 minutes for file transfers)
+            timeout: Default request timeout in seconds (5 minutes for file transfers)
+            max_retries: Max retry attempts for transient errors
         """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.headers = {"X-Worker-API-Key": api_key}
         self.timeout = timeout
+        self.max_retries = max_retries
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client."""
+        """Get or create the HTTP client with connection pooling."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            # Configure connection limits for reliability
+            limits = httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,  # Keep connections alive longer
+            )
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=limits,
+            )
         return self._client
+
+    def _is_retryable_error(self, exc: Exception) -> bool:
+        """Check if an error is transient and should be retried."""
+        if isinstance(exc, httpx.TimeoutException):
+            return True
+        if isinstance(exc, httpx.ConnectError):
+            return True
+        if isinstance(exc, httpx.ReadError):
+            return True
+        if isinstance(exc, httpx.WriteError):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            # Retry on server errors (5xx) but not client errors (4xx)
+            return exc.response.status_code >= 500
+        return False
 
     async def _request(
         self,
         method: str,
         path: str,
         json: Optional[dict] = None,
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
         **kwargs,
     ) -> dict:
-        """Make an API request and handle errors."""
+        """Make an API request with retry logic for transient errors."""
         client = await self._get_client()
         url = f"{self.base_url}{path}"
+        retries = max_retries if max_retries is not None else self.max_retries
+        req_timeout = timeout if timeout is not None else self.timeout
 
-        try:
-            resp = await client.request(
-                method,
-                url,
-                headers=self.headers,
-                json=json,
-                **kwargs,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as e:
+        last_error: Optional[Exception] = None
+
+        for attempt in range(retries + 1):
             try:
-                detail = e.response.json().get("detail", str(e))
+                resp = await client.request(
+                    method,
+                    url,
+                    headers=self.headers,
+                    json=json,
+                    timeout=req_timeout,
+                    **kwargs,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                # Don't retry 4xx errors (except 429 rate limit)
+                if e.response.status_code < 500 and e.response.status_code != 429:
+                    try:
+                        detail = e.response.json().get("detail", str(e))
+                    except Exception:
+                        detail = str(e)
+                    raise WorkerAPIError(e.response.status_code, detail)
+                # Will retry on 5xx or 429
+            except httpx.RequestError as e:
+                last_error = e
+                if not self._is_retryable_error(e):
+                    raise WorkerAPIError(0, f"Connection error: {e}")
+
+            # Calculate backoff with jitter
+            if attempt < retries:
+                delay = min(
+                    DEFAULT_RETRY_BASE_DELAY * (2**attempt),
+                    DEFAULT_RETRY_MAX_DELAY,
+                )
+                # Add jitter (±25%)
+                delay = delay * (0.75 + random.random() * 0.5)
+                await asyncio.sleep(delay)
+
+        # All retries exhausted
+        if isinstance(last_error, httpx.HTTPStatusError):
+            try:
+                detail = last_error.response.json().get("detail", str(last_error))
             except Exception:
-                detail = str(e)
-            raise WorkerAPIError(e.response.status_code, detail)
-        except httpx.RequestError as e:
-            raise WorkerAPIError(0, f"Connection error: {e}")
+                detail = str(last_error)
+            raise WorkerAPIError(last_error.response.status_code, detail)
+        else:
+            raise WorkerAPIError(0, f"Connection error after {retries + 1} attempts: {last_error}")
 
     async def heartbeat(
         self,
@@ -91,7 +172,12 @@ class WorkerAPIClient:
         data = {"status": status}
         if metadata:
             data["metadata"] = metadata
-        return await self._request("POST", "/api/worker/heartbeat", json=data)
+        return await self._request(
+            "POST",
+            "/api/worker/heartbeat",
+            json=data,
+            timeout=TIMEOUT_HEARTBEAT,
+        )
 
     async def claim_job(self) -> dict:
         """
@@ -100,7 +186,11 @@ class WorkerAPIClient:
         Returns:
             Job info if claimed, or message indicating no jobs available
         """
-        return await self._request("POST", "/api/worker/claim")
+        return await self._request(
+            "POST",
+            "/api/worker/claim",
+            timeout=TIMEOUT_CLAIM,
+        )
 
     async def update_progress(
         self,
@@ -139,7 +229,12 @@ class WorkerAPIClient:
             data["source_width"] = source_width
         if source_height is not None:
             data["source_height"] = source_height
-        return await self._request("POST", f"/api/worker/{job_id}/progress", json=data)
+        return await self._request(
+            "POST",
+            f"/api/worker/{job_id}/progress",
+            json=data,
+            timeout=TIMEOUT_PROGRESS,
+        )
 
     async def download_source(self, video_id: int, dest_path: Path) -> None:
         """
@@ -482,7 +577,12 @@ class WorkerAPIClient:
             data["source_width"] = source_width
         if source_height is not None:
             data["source_height"] = source_height
-        return await self._request("POST", f"/api/worker/{job_id}/complete", json=data)
+        return await self._request(
+            "POST",
+            f"/api/worker/{job_id}/complete",
+            json=data,
+            timeout=TIMEOUT_DEFAULT,
+        )
 
     async def fail_job(
         self,
@@ -505,7 +605,12 @@ class WorkerAPIClient:
             "error_message": error[:500],
             "retry": retry,
         }
-        return await self._request("POST", f"/api/worker/{job_id}/fail", json=data)
+        return await self._request(
+            "POST",
+            f"/api/worker/{job_id}/fail",
+            json=data,
+            timeout=TIMEOUT_DEFAULT,
+        )
 
     async def close(self) -> None:
         """Close the HTTP client."""

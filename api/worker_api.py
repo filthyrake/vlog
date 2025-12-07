@@ -11,6 +11,7 @@ Run with: uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
 """
 
 import asyncio
+import functools
 import hmac
 import json
 import logging
@@ -18,6 +19,7 @@ import secrets
 import tarfile
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,6 +82,124 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Thread pool for blocking I/O operations (tar extraction to NAS)
+# This prevents slow NAS operations from blocking the event loop and
+# causing heartbeat failures. See issue: tar extraction to slow NAS
+# was blocking entire API for 3+ minutes.
+_io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="worker_api_io")
+
+
+def _extract_tar_sync(
+    tmp_path: Path,
+    output_dir: Path,
+    allowed_extensions: tuple,
+    max_files: int,
+    max_size: int,
+    max_single_file: int,
+    strict_filenames: Optional[tuple] = None,
+) -> None:
+    """
+    Synchronous tar extraction - runs in thread pool to avoid blocking event loop.
+
+    Args:
+        tmp_path: Path to the tar.gz file
+        output_dir: Directory to extract to
+        allowed_extensions: Tuple of allowed file extensions
+        max_files: Maximum number of files allowed
+        max_size: Maximum total extracted size
+        max_single_file: Maximum size per file
+        strict_filenames: If set, only allow these exact filenames (for finalize)
+
+    Raises:
+        ValueError: If validation fails
+    """
+    output_dir_resolved = output_dir.resolve()
+    extracted_count = 0
+    extracted_size = 0
+
+    with tarfile.open(tmp_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            extracted_count += 1
+            if extracted_count > max_files:
+                raise ValueError(f"Archive contains too many files (limit: {max_files})")
+
+            if member.isfile() and member.size > max_single_file:
+                raise ValueError(f"File too large: {member.name} ({member.size} bytes)")
+
+            extracted_size += member.size
+            if extracted_size > max_size:
+                raise ValueError(f"Archive too large (limit: {max_size} bytes)")
+
+            if member.issym() or member.islnk():
+                raise ValueError(f"Invalid archive: symlinks not allowed ({member.name})")
+
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(f"Invalid archive: unsupported file type ({member.name})")
+
+            if member.isfile():
+                # Check strict filenames if specified
+                if strict_filenames and member.name not in strict_filenames:
+                    raise ValueError(f"Unexpected file in archive: {member.name}")
+                # Check extensions
+                if not any(member.name.endswith(ext) for ext in allowed_extensions):
+                    raise ValueError(f"Invalid file type: {member.name}")
+
+            # Validate path traversal
+            member_path = output_dir / member.name
+            try:
+                if member_path.exists():
+                    dest_resolved = member_path.resolve()
+                else:
+                    dest_resolved = member_path.parent.resolve() / member_path.name
+            except (ValueError, OSError) as e:
+                raise ValueError(f"Invalid path {member.name}: {e}")
+
+            try:
+                dest_resolved.relative_to(output_dir_resolved)
+            except ValueError:
+                raise ValueError(f"Path traversal detected ({member.name})")
+
+            # Extract and fix permissions
+            tar.extract(member, output_dir)
+            extracted_path = output_dir / member.name
+            if extracted_path.is_file():
+                extracted_path.chmod(0o644)
+            elif extracted_path.is_dir():
+                extracted_path.chmod(0o755)
+
+
+async def extract_tar_async(
+    tmp_path: Path,
+    output_dir: Path,
+    allowed_extensions: tuple,
+    max_files: int,
+    max_size: int,
+    max_single_file: int,
+    strict_filenames: Optional[tuple] = None,
+) -> None:
+    """
+    Async wrapper for tar extraction - runs in thread pool.
+
+    This is critical for reliability: tar extraction to NAS can take minutes
+    when NAS is slow. Running it synchronously blocks the entire event loop,
+    preventing heartbeat processing and causing workers to go offline.
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        _io_executor,
+        functools.partial(
+            _extract_tar_sync,
+            tmp_path,
+            output_dir,
+            allowed_extensions,
+            max_files,
+            max_size,
+            max_single_file,
+            strict_filenames,
+        ),
+    )
+
 
 # Initialize rate limiter
 limiter = Limiter(
@@ -211,9 +331,7 @@ async def _detect_and_release_stale_jobs():
 
         if result == 0:
             # Worker was updated (heartbeat received) between fetch and update
-            logger.info(
-                f"Worker '{worker_name}' recovered (heartbeat received since stale check started)"
-            )
+            logger.info(f"Worker '{worker_name}' recovered (heartbeat received since stale check started)")
             continue
 
         processed_count += 1
@@ -236,8 +354,7 @@ async def _detect_and_release_stale_jobs():
         for job in stale_jobs:
             claim_expires = job["claim_expires_at"]
             logger.info(
-                f"Releasing stale job {job['id']} from offline worker '{worker_name}' "
-                f"(claim expired: {claim_expires})"
+                f"Releasing stale job {job['id']} from offline worker '{worker_name}' (claim expired: {claim_expires})"
             )
 
             # Release the job claim
@@ -303,8 +420,7 @@ async def lifespan(app: FastAPI):
     await database.connect()
     await configure_database()
     logger.info(
-        f"Worker API started - database connected. "
-        f"Stale check grace period: {STALE_CHECK_STARTUP_GRACE_PERIOD}s"
+        f"Worker API started - database connected. Stale check grace period: {STALE_CHECK_STARTUP_GRACE_PERIOD}s"
     )
 
     # Start background task for stale job detection
@@ -888,9 +1004,7 @@ async def complete_job(
 
             # Update video metadata if provided
             # Only set published_at if not already set (preserve date for re-transcoded videos)
-            video_row = await database.fetch_one(
-                videos.select().where(videos.c.id == job["video_id"])
-            )
+            video_row = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
             video_updates = {"status": "ready"}
             if video_row and video_row["published_at"] is None:
                 video_updates["published_at"] = now
@@ -973,9 +1087,7 @@ async def fail_job(
                 )
                 # Clean up quality_progress records from previous attempt
                 # to prevent stale progress data affecting the retry
-                await database.execute(
-                    quality_progress.delete().where(quality_progress.c.job_id == job_id)
-                )
+                await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job_id))
                 await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
             else:
                 # Final failure
@@ -1110,80 +1222,18 @@ async def upload_quality(
         raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
-        with tarfile.open(tmp_path, "r:gz") as tar:
-            output_dir_resolved = output_dir.resolve()
-            extracted_count = 0
-            extracted_size = 0
-
-            for member in tar.getmembers():
-                extracted_count += 1
-                if extracted_count > MAX_HLS_ARCHIVE_FILES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Archive contains too many files (limit: {MAX_HLS_ARCHIVE_FILES})",
-                    )
-
-                if member.isfile() and member.size > MAX_HLS_SINGLE_FILE_SIZE:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"File too large: {member.name} ({member.size} bytes)",
-                    )
-
-                extracted_size += member.size
-                if extracted_size > MAX_HLS_ARCHIVE_SIZE:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Archive too large (limit: {MAX_HLS_ARCHIVE_SIZE} bytes)",
-                    )
-
-                if member.issym() or member.islnk():
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid archive: symlinks not allowed ({member.name})",
-                    )
-
-                if not (member.isfile() or member.isdir()):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid archive: unsupported file type ({member.name})",
-                    )
-
-                # Validate file belongs to this quality
-                if member.isfile():
-                    valid_extensions = (".m3u8", ".ts", ".jpg", ".vtt")
-                    if not member.name.endswith(valid_extensions):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Invalid file type: {member.name}",
-                        )
-
-                member_path = output_dir / member.name
-                try:
-                    if member_path.exists():
-                        dest_resolved = member_path.resolve()
-                    else:
-                        dest_resolved = member_path.parent.resolve() / member_path.name
-                except (ValueError, OSError) as e:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid path {member.name}: {e}",
-                    )
-
-                try:
-                    dest_resolved.relative_to(output_dir_resolved)
-                except ValueError:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Path traversal detected ({member.name})",
-                    )
-
-                tar.extract(member, output_dir)
-                # Reset permissions to safe defaults (issue #164)
-                extracted_path = output_dir / member.name
-                if extracted_path.is_file():
-                    extracted_path.chmod(0o644)  # rw-r--r-- for files
-                elif extracted_path.is_dir():
-                    extracted_path.chmod(0o755)  # rwxr-xr-x for directories
+        # Run tar extraction in thread pool to avoid blocking event loop
+        # This is critical: slow NAS I/O was blocking the entire API for minutes
+        await extract_tar_async(
+            tmp_path,
+            output_dir,
+            allowed_extensions=(".m3u8", ".ts", ".jpg", ".vtt"),
+            max_files=MAX_HLS_ARCHIVE_FILES,
+            max_size=MAX_HLS_ARCHIVE_SIZE,
+            max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -1246,42 +1296,18 @@ async def upload_finalize(
         raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
-        with tarfile.open(tmp_path, "r:gz") as tar:
-            output_dir_resolved = output_dir.resolve()
-
-            for member in tar.getmembers():
-                if member.issym() or member.islnk():
-                    raise HTTPException(status_code=400, detail="Symlinks not allowed")
-
-                if member.isfile():
-                    # Only allow master.m3u8 and thumbnail.jpg
-                    if member.name not in ("master.m3u8", "thumbnail.jpg"):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Unexpected file in finalize: {member.name}",
-                        )
-
-                member_path = output_dir / member.name
-                try:
-                    if member_path.exists():
-                        dest_resolved = member_path.resolve()
-                    else:
-                        dest_resolved = member_path.parent.resolve() / member_path.name
-                except (ValueError, OSError) as e:
-                    raise HTTPException(status_code=400, detail=f"Invalid path: {e}")
-
-                try:
-                    dest_resolved.relative_to(output_dir_resolved)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Path traversal detected")
-
-                tar.extract(member, output_dir)
-                # Reset permissions to safe defaults (issue #164)
-                extracted_path = output_dir / member.name
-                if extracted_path.is_file():
-                    extracted_path.chmod(0o644)  # rw-r--r-- for files
-                elif extracted_path.is_dir():
-                    extracted_path.chmod(0o755)  # rwxr-xr-x for directories
+        # Run tar extraction in thread pool to avoid blocking event loop
+        await extract_tar_async(
+            tmp_path,
+            output_dir,
+            allowed_extensions=(".m3u8", ".jpg"),
+            max_files=10,  # Only master.m3u8 and thumbnail.jpg
+            max_size=MAX_HLS_SINGLE_FILE_SIZE,  # Small files
+            max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
+            strict_filenames=("master.m3u8", "thumbnail.jpg"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -1344,101 +1370,20 @@ async def upload_hls(
         raise HTTPException(status_code=500, detail="Failed to save upload")
 
     try:
-        with tarfile.open(tmp_path, "r:gz") as tar:
-            # Security: validate and extract files safely (CVE-2007-4559 mitigation)
-            # We extract each member individually after validating the resolved path
-            output_dir_resolved = output_dir.resolve()
-
-            # Track extraction counts and sizes to prevent tar bomb attacks
-            extracted_count = 0
-            extracted_size = 0
-
-            for member in tar.getmembers():
-                # Check file count limit
-                extracted_count += 1
-                if extracted_count > MAX_HLS_ARCHIVE_FILES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Archive contains too many files (limit: {MAX_HLS_ARCHIVE_FILES})",
-                    )
-
-                # Check individual file size (for regular files)
-                if member.isfile() and member.size > MAX_HLS_SINGLE_FILE_SIZE:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"File too large: {member.name} ({member.size} bytes, limit: {MAX_HLS_SINGLE_FILE_SIZE})",
-                    )
-
-                # Track cumulative extracted size
-                extracted_size += member.size
-                if extracted_size > MAX_HLS_ARCHIVE_SIZE:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Archive too large (limit: {MAX_HLS_ARCHIVE_SIZE} bytes)",
-                    )
-
-                # Reject symlinks and hardlinks (could point outside target)
-                if member.issym() or member.islnk():
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid archive: symlinks not allowed ({member.name})",
-                    )
-
-                # Reject device files, fifos, etc.
-                if not (member.isfile() or member.isdir()):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid archive: unsupported file type ({member.name})",
-                    )
-
-                # Only allow expected file extensions for regular files
-                if member.isfile() and not (
-                    member.name.endswith(".m3u8")
-                    or member.name.endswith(".ts")
-                    or member.name.endswith(".jpg")
-                    or member.name.endswith(".vtt")
-                ):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid archive: unexpected file type {member.name}",
-                    )
-
-                # Compute the resolved destination path
-                # This catches path traversal via "..", absolute paths, etc.
-                member_path = output_dir / member.name
-                try:
-                    # For existing paths, resolve() works directly
-                    # For new paths, we need to resolve the parent and append the name
-                    if member_path.exists():
-                        dest_resolved = member_path.resolve()
-                    else:
-                        # Resolve parent (must exist after mkdir) and join with name
-                        dest_resolved = member_path.parent.resolve() / member_path.name
-                except (ValueError, OSError) as e:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid archive: cannot resolve path {member.name}: {e}",
-                    )
-
-                # Verify the destination is within the output directory
-                try:
-                    dest_resolved.relative_to(output_dir_resolved)
-                except ValueError:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid archive: path traversal detected ({member.name})",
-                    )
-
-                # Safe to extract this member
-                tar.extract(member, output_dir)
-                # Reset permissions to safe defaults (issue #164)
-                extracted_path = output_dir / member.name
-                if extracted_path.is_file():
-                    extracted_path.chmod(0o644)  # rw-r--r-- for files
-                elif extracted_path.is_dir():
-                    extracted_path.chmod(0o755)  # rwxr-xr-x for directories
+        # Run tar extraction in thread pool to avoid blocking event loop
+        # This is critical: slow NAS I/O was blocking the entire API for minutes
+        await extract_tar_async(
+            tmp_path,
+            output_dir,
+            allowed_extensions=(".m3u8", ".ts", ".jpg", ".vtt"),
+            max_files=MAX_HLS_ARCHIVE_FILES,
+            max_size=MAX_HLS_ARCHIVE_SIZE,
+            max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
-        tmp_path.unlink()
+        tmp_path.unlink(missing_ok=True)
 
     return StatusResponse(status="ok", message="HLS files uploaded successfully")
 
