@@ -762,7 +762,6 @@ async def update_progress(
 
     # Update quality progress if provided
     if data.quality_progress:
-        logger.info(f"Job {job_id}: Updating quality progress with {len(data.quality_progress)} items")
         for qp in data.quality_progress:
             # Try to update existing record
             result = await database.execute(
@@ -771,10 +770,10 @@ async def update_progress(
                 .where(quality_progress.c.quality == qp.name)
                 .values(status=qp.status, progress_percent=qp.progress)
             )
-            logger.info(f"Job {job_id}: Update {qp.name} returned {result} (type: {type(result)})")
             # If no record exists, create one
-            # PostgreSQL returns a string like "UPDATE X" instead of rowcount
-            if result == 0 or (isinstance(result, str) and result.startswith("UPDATE 0")):
+            # PostgreSQL with databases library returns None for UPDATE when no rows affected
+            # SQLite returns 0
+            if result is None or result == 0 or (isinstance(result, str) and result.startswith("UPDATE 0")):
                 logger.info(f"Job {job_id}: Inserting new record for {qp.name}")
                 await database.execute(
                     quality_progress.insert().values(
