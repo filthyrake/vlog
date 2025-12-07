@@ -42,6 +42,17 @@ class TestTruncateString:
         assert len(result) == 100
         assert result.endswith("...")
 
+    def test_truncate_string_small_max_length(self):
+        """Test truncation with max_length less than 4 (no space for ellipsis)."""
+        text = "abcdefgh"
+        # With max_length < 4, should truncate without ellipsis
+        result = truncate_string(text, 3)
+        assert result == "abc"
+        assert len(result) == 3
+        result = truncate_string(text, 1)
+        assert result == "a"
+        assert len(result) == 1
+
 
 class TestTruncateError:
     """Tests for the truncate_error function."""
