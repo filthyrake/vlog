@@ -165,7 +165,118 @@ class TestPublicAPISlugValidation:
         response = public_client.get("/api/videos/test-video")
         assert response.status_code in [200, 404]
 
-        if response.status_code != 400:
+        if response.status_code == 404:
             # Should not be a validation error
-            if response.status_code != 200:
-                assert "Invalid video slug" not in response.json().get("detail", "")
+            assert "Invalid video slug" not in response.json().get("detail", "")
+
+
+class TestWorkerTranscoderSlugValidation:
+    """Tests for slug validation in worker transcoder functions."""
+
+    @pytest.mark.asyncio
+    async def test_process_video_resumable_invalid_slug(self, test_database, monkeypatch):
+        """Test that process_video_resumable rejects invalid slugs."""
+        # Patch the database connection
+        import worker.transcoder
+        from api.database import videos
+        from api.enums import VideoStatus
+        from worker.transcoder import process_video_resumable
+        monkeypatch.setattr(worker.transcoder, "database", test_database)
+
+        # Create a video with a valid slug in database
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Test Video",
+                slug="test-video",  # This will be in database
+                description="Test",
+                duration=0,
+                status=VideoStatus.PENDING,
+            )
+        )
+
+        # Try to process with an invalid slug
+        invalid_slug = "../etc/passwd"
+        result = await process_video_resumable(video_id, invalid_slug)
+
+        # Should return False
+        assert result is False
+
+        # Check that video status is set to FAILED
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
+        assert video["status"] == VideoStatus.FAILED
+        assert video["error_message"] == "Invalid video slug"
+
+    @pytest.mark.asyncio
+    async def test_process_video_resumable_valid_slug_fails_gracefully(self, test_database, test_storage, monkeypatch):
+        """Test that process_video_resumable works with valid slugs."""
+        # Patch the database and storage directories
+        import worker.transcoder
+        from api.database import videos
+        from api.enums import VideoStatus
+        from worker.transcoder import process_video_resumable
+        monkeypatch.setattr(worker.transcoder, "database", test_database)
+        monkeypatch.setattr("worker.transcoder.UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr("worker.transcoder.VIDEOS_DIR", test_storage["videos"])
+
+        # Create a video with a valid slug
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Test Video",
+                slug="test-video",
+                description="Test",
+                duration=0,
+                status=VideoStatus.PENDING,
+            )
+        )
+
+        # Try to process with a valid slug (will fail due to missing source file, but slug validation should pass)
+        result = await process_video_resumable(video_id, "test-video")
+
+        # Should return False due to missing source file, not slug validation
+        assert result is False
+
+        # Check that error is about missing file, not invalid slug
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
+        assert video["error_message"] != "Invalid video slug"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_partial_output_invalid_slug(self, caplog, test_storage, monkeypatch):
+        """Test that cleanup_partial_output rejects invalid slugs."""
+        from worker.transcoder import cleanup_partial_output
+
+        # Patch the storage directories
+        monkeypatch.setattr("worker.transcoder.VIDEOS_DIR", test_storage["videos"])
+
+        # Try to cleanup with an invalid slug
+        invalid_slug = "../etc/passwd"
+
+        # Should log error and return early
+        await cleanup_partial_output(invalid_slug)
+
+        # Check that error was logged
+        assert "Invalid video slug in cleanup_partial_output" in caplog.text
+        assert invalid_slug in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_cleanup_partial_output_valid_slug(self, test_storage, monkeypatch):
+        """Test that cleanup_partial_output works with valid slugs."""
+        from worker.transcoder import cleanup_partial_output
+
+        # Patch the storage directories
+        monkeypatch.setattr("worker.transcoder.VIDEOS_DIR", test_storage["videos"])
+
+        # Create a test directory
+        valid_slug = "test-video"
+        video_dir = test_storage["videos"] / valid_slug
+        video_dir.mkdir(parents=True, exist_ok=True)
+        test_file = video_dir / "test.txt"
+        test_file.write_text("test content")
+
+        # Should successfully cleanup with valid slug
+        await cleanup_partial_output(valid_slug, keep_completed_qualities=False)
+
+        # Directory should exist but be empty
+        assert video_dir.exists()
+        assert len(list(video_dir.iterdir())) == 0
+
+
