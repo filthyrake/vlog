@@ -199,7 +199,24 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 # Upload original quality immediately
                 print("    original: Uploading...")
                 try:
-                    await client.upload_quality(video_id, "original", output_dir)
+                    # Define progress callback to extend claim during upload (issue #266)
+                    async def upload_progress_callback_original(bytes_sent: int, total_bytes: int):
+                        try:
+                            quality_progress_list[0] = {
+                                "name": "original",
+                                "status": "uploading",
+                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                            }
+                            await client.update_progress(job_id, "upload", 90, quality_progress_list)
+                        except WorkerAPIError as e:
+                            if e.status_code == 409:
+                                # Claim expired - stop upload
+                                raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                            print(f"      Upload progress update failed: {e.message}")
+
+                    await client.upload_quality(
+                        video_id, "original", output_dir, progress_callback=upload_progress_callback_original
+                    )
                     quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
                     print("    original: Uploaded")
 
@@ -306,7 +323,30 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     # Upload this quality immediately to free disk space
                     print(f"    {quality_name}: Uploading...")
                     try:
-                        await client.upload_quality(video_id, quality_name, output_dir)
+                        # Define progress callback to extend claim during upload (issue #266)
+                        # Use default arguments to capture loop variables by value
+                        async def upload_progress_callback(
+                            bytes_sent: int,
+                            total_bytes: int,
+                            qidx: int = quality_idx,
+                            qname: str = quality_name,
+                        ):
+                            try:
+                                quality_progress_list[qidx] = {
+                                    "name": qname,
+                                    "status": "uploading",
+                                    "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                                }
+                                await client.update_progress(job_id, "upload", 90, quality_progress_list)
+                            except WorkerAPIError as e:
+                                if e.status_code == 409:
+                                    # Claim expired - stop upload
+                                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                                print(f"      Upload progress update failed: {e.message}")
+
+                        await client.upload_quality(
+                            video_id, quality_name, output_dir, progress_callback=upload_progress_callback
+                        )
                         quality_progress_list[quality_idx] = {
                             "name": quality_name,
                             "status": "uploaded",
