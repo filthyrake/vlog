@@ -32,8 +32,6 @@ from config import (
 class TranscriptionCancelled(Exception):
     """Raised when transcription is cancelled due to shutdown request."""
 
-    pass
-
 
 def format_timestamp(seconds: float) -> str:
     """Format seconds as WebVTT timestamp (HH:MM:SS.mmm)."""

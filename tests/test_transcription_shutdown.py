@@ -5,11 +5,8 @@ Ensures that the transcription worker properly handles SIGTERM/SIGINT signals
 and performs graceful shutdown with cleanup of resources.
 """
 
-import asyncio
 import signal
-from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
