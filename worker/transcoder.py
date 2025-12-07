@@ -1954,13 +1954,16 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 )
 
         # Mark video as ready
+        # Only set published_at if not already set (preserve date for re-transcoded videos)
+        video_row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+        video_updates = {"status": VideoStatus.READY}
+        if video_row and video_row["published_at"] is None:
+            video_updates["published_at"] = datetime.now(timezone.utc)
+
         await database.execute(
             videos.update()
             .where(videos.c.id == video_id)
-            .values(
-                status=VideoStatus.READY,
-                published_at=datetime.now(timezone.utc),
-            )
+            .values(**video_updates)
         )
 
         # Mark job completed
