@@ -39,6 +39,9 @@ QUALITY_PRESETS = [
     {"name": "360p", "height": 360, "bitrate": "600k", "audio_bitrate": "96k"},
 ]
 
+# All quality names including "original" (used for pattern matching)
+QUALITY_NAMES = frozenset([q["name"] for q in QUALITY_PRESETS] + ["original"])
+
 # HLS settings
 HLS_SEGMENT_DURATION = int(os.getenv("VLOG_HLS_SEGMENT_DURATION", "6"))
 
