@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, Tupl
 if TYPE_CHECKING:
     from worker.hwaccel import GPUCapabilities
 
-from api.common import ensure_utc
+from api.common import ensure_utc, validate_slug
 from api.database import (
     configure_sqlite_pragmas,
     database,
@@ -956,6 +956,11 @@ async def cleanup_partial_output(
     video_slug: str, keep_completed_qualities: bool = True, completed_quality_names: Optional[List[str]] = None
 ):
     """Clean up partial transcoding output."""
+    # Validate slug to prevent path traversal attacks
+    if not validate_slug(video_slug):
+        logger.error(f"Invalid video slug in cleanup_partial_output: {video_slug}")
+        return
+    
     output_dir = VIDEOS_DIR / video_slug
 
     if not output_dir.exists():
@@ -1306,6 +1311,16 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         state = get_worker_state()
 
     print(f"Processing video: {video_slug} (id={video_id})")
+
+    # Validate slug to prevent path traversal attacks
+    if not validate_slug(video_slug):
+        logger.error(f"Invalid video slug: {video_slug}")
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(status=VideoStatus.FAILED, error_message="Invalid video slug")
+        )
+        return False
 
     # Check for shutdown at the start
     if state.shutdown_requested:

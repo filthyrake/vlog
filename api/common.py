@@ -6,6 +6,7 @@ This module contains shared code to avoid duplication (DRY principle).
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -25,6 +26,38 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Slug validation pattern: lowercase alphanumeric with hyphens only
+# Pattern: ^[a-z0-9]+(?:-[a-z0-9]+)*$
+# - Must start with alphanumeric
+# - Can contain hyphens between alphanumeric segments
+# - No consecutive hyphens, no leading/trailing hyphens
+SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
+
+
+def validate_slug(slug: str) -> bool:
+    r"""
+    Validate slug contains only safe characters and has no path traversal attempts.
+    
+    Args:
+        slug: The slug string to validate
+        
+    Returns:
+        True if slug is valid, False otherwise
+        
+    Security:
+        - Prevents path traversal attacks (../, ..\, etc.)
+        - Ensures slug matches safe character pattern (lowercase alphanumeric with hyphens)
+        - Defense in depth: slugs are generated server-side but this validates user input
+    """
+    if not slug:
+        return False
+    # Check for path traversal sequences
+    if '..' in slug:
+        return False
+    # Check against allowed pattern
+    return bool(SLUG_PATTERN.match(slug))
+
 
 # Cache for storage health status to avoid hammering storage on every request
 _storage_health_cache = {
