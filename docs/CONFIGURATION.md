@@ -87,11 +87,19 @@ QUALITY_PRESETS = [
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_FFMPEG_TIMEOUT_MULTIPLIER` | `3` | Multiply video duration by this for timeout |
+| `VLOG_FFMPEG_TIMEOUT_BASE_MULTIPLIER` | `2.0` | Base multiplier applied to video duration |
 | `VLOG_FFMPEG_TIMEOUT_MINIMUM` | `300` | Minimum timeout in seconds (5 min) |
-| `VLOG_FFMPEG_TIMEOUT_MAXIMUM` | `3600` | Maximum timeout in seconds (1 hour) |
+| `VLOG_FFMPEG_TIMEOUT_MAXIMUM` | `14400` | Maximum timeout in seconds (4 hours) |
 
-Timeout calculation: `min(max(duration * multiplier, minimum), maximum)`
+Timeout calculation includes per-resolution multipliers that adjust based on quality level. Lower resolutions encode faster, higher resolutions (4K) need more time.
+
+**Per-Resolution Multipliers (applied on top of base):**
+- 360p: 1.0x
+- 480p: 1.25x
+- 720p: 1.5x
+- 1080p: 2.0x
+- 1440p: 2.5x
+- 2160p (4K): 3.5x
 
 ### Transcription Settings
 
@@ -204,6 +212,9 @@ VLOG_ADMIN_CORS_ORIGINS=http://your-server:9001,http://192.168.1.100:9001
 | `VLOG_RATE_LIMIT_PUBLIC_ANALYTICS` | `120/minute` | Limit for analytics endpoints |
 | `VLOG_RATE_LIMIT_ADMIN_DEFAULT` | `200/minute` | Default limit for admin API endpoints |
 | `VLOG_RATE_LIMIT_ADMIN_UPLOAD` | `10/hour` | Limit for upload endpoint |
+| `VLOG_RATE_LIMIT_WORKER_DEFAULT` | `300/minute` | Default limit for worker API endpoints |
+| `VLOG_RATE_LIMIT_WORKER_REGISTER` | `5/hour` | Limit for worker registration |
+| `VLOG_RATE_LIMIT_WORKER_PROGRESS` | `600/minute` | Limit for progress update endpoints |
 | `VLOG_RATE_LIMIT_STORAGE_URL` | `memory://` | Storage backend URL |
 
 **Rate Limit Format:** `count/period` where period is `second`, `minute`, `hour`, or `day`
@@ -314,6 +325,73 @@ VLOG_JOB_STALE_TIMEOUT=900
 VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379
 VLOG_RATE_LIMIT_PUBLIC_DEFAULT=200/minute
 ```
+
+---
+
+## Security Settings
+
+### Trusted Proxies
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_TRUSTED_PROXIES` | (empty) | Comma-separated list of trusted proxy IPs |
+
+Only trust X-Forwarded-For header from these IPs. If empty, X-Forwarded-For is never trusted (prevents rate limit bypass).
+
+```bash
+VLOG_TRUSTED_PROXIES=127.0.0.1,10.0.0.1
+```
+
+### Cookie Security
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_SECURE_COOKIES` | `true` | Use secure cookies (HTTPS only) |
+
+Set to `false` for local development without HTTPS.
+
+---
+
+## HLS Archive Settings
+
+Security limits for worker upload tar.gz archives:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_MAX_HLS_ARCHIVE_FILES` | `50000` | Max number of files in HLS archive |
+| `VLOG_MAX_HLS_ARCHIVE_SIZE` | `200GB` | Max total extracted size |
+| `VLOG_MAX_HLS_SINGLE_FILE_SIZE` | `500MB` | Max size per individual file |
+
+These limits prevent tar bomb attacks during worker uploads.
+
+---
+
+## Storage Health Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_STORAGE_CHECK_TIMEOUT` | `2` | Timeout for health check storage test (seconds) |
+
+Reduced from 5 to 2 for faster failure detection on stale NFS mounts.
+
+---
+
+## Audit Logging
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_AUDIT_LOG_ENABLED` | `true` | Enable audit logging |
+| `VLOG_AUDIT_LOG_PATH` | `/var/log/vlog/audit.log` | Path to audit log file |
+| `VLOG_AUDIT_LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
+
+---
+
+## Worker Monitoring
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_WORKER_OFFLINE_THRESHOLD` | `2` | Minutes before worker marked offline |
+| `VLOG_STALE_JOB_CHECK_INTERVAL` | `60` | Seconds between stale job checks |
 
 ---
 

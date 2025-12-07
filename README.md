@@ -104,6 +104,7 @@ vlog/
 ├── worker/
 │   ├── transcoder.py     # Local HLS transcoding worker
 │   ├── remote_transcoder.py  # Containerized remote worker
+│   ├── hwaccel.py        # GPU detection and hardware encoder selection
 │   ├── http_client.py    # Worker API client
 │   └── transcription.py  # Whisper transcription worker
 ├── web/
@@ -114,7 +115,8 @@ vlog/
 ├── k8s/                  # Kubernetes manifests for workers
 ├── systemd/              # Systemd service files
 ├── docs/                 # Documentation
-├── Dockerfile.worker     # Container image for remote workers
+├── Dockerfile.worker     # Container image for CPU-only workers
+├── Dockerfile.worker.gpu # GPU-enabled container (Rocky Linux 10, NVENC/VAAPI)
 ├── config.py             # Central configuration (env var support)
 ├── vlog.db               # SQLite database (local)
 └── start.sh              # Development startup script
