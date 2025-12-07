@@ -17,11 +17,9 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import pytest
-import sqlalchemy as sa
 from databases import Database
 
 from api.database import (
-    metadata,
     quality_progress,
     transcoding_jobs,
     video_qualities,
