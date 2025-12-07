@@ -511,6 +511,11 @@ class TestWorkerProgressVisibility:
             )
         )
 
+        # Update video status to PROCESSING so quality_progress is returned
+        await test_database.execute(
+            videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PROCESSING)
+        )
+
         # Create quality_progress records
         await test_database.execute(
             quality_progress.insert().values(
@@ -528,14 +533,6 @@ class TestWorkerProgressVisibility:
                 progress_percent=50,
             )
         )
-        await test_database.execute(
-            quality_progress.insert().values(
-                job_id=job_id,
-                quality="480p",
-                status="pending",
-                progress_percent=0,
-            )
-        )
 
         # Get progress via admin API
         response = admin_client.get(f"/api/videos/{video_id}/progress")
@@ -543,10 +540,22 @@ class TestWorkerProgressVisibility:
 
         data = response.json()
 
-        # Verify quality_progress is included and correct
-        # The exact response format depends on the implementation
-        # but we should see the quality data somewhere
-        assert "progress_percent" in data or "qualities" in data or "quality_progress" in data
+        # Verify response matches TranscodingProgressResponse schema
+        assert "status" in data
+        assert "progress_percent" in data
+        assert "qualities" in data
+        assert isinstance(data["qualities"], list)
+
+        # Verify quality_progress data is included
+        assert len(data["qualities"]) == 2
+        quality_names = {q["name"] for q in data["qualities"]}
+        assert quality_names == {"1080p", "720p"}
+
+        # Verify each quality has required fields
+        for quality in data["qualities"]:
+            assert "name" in quality
+            assert "status" in quality
+            assert "progress" in quality
 
     @pytest.mark.asyncio
     async def test_worker_dashboard_shows_active_jobs(

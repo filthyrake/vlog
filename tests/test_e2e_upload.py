@@ -82,29 +82,25 @@ class TestEndToEndUpload:
         assert video["category_id"] == sample_category["id"]
 
     @pytest.mark.asyncio
-    async def test_upload_cleanup_on_failure_preserves_atomicity(
-        self, admin_client, test_database, test_storage, monkeypatch
+    async def test_upload_creates_video_and_job_atomically(
+        self, admin_client, test_database, test_storage
     ):
         """
-        Test that if transcoding job creation fails, the video record is cleaned up.
+        Test that upload creates both video and transcoding job together.
 
-        This ensures atomic behavior - either both video and job are created, or neither.
+        This verifies the atomicity of the upload operation - both records
+        must be created together to prevent race conditions with the worker.
         """
         initial_video_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
         initial_job_count = await test_database.fetch_val("SELECT COUNT(*) FROM transcoding_jobs")
-
-        # Make the file save succeed but simulate job creation failure in a way
-        # that gets past the retry logic - we'll verify through the outcome
-        # that the cleanup logic works correctly
 
         file_content = b"test video"
         response = admin_client.post(
             "/api/videos",
             files={"file": ("test.mp4", io.BytesIO(file_content), "video/mp4")},
-            data={"title": "Cleanup Test", "description": "test"},
+            data={"title": "Atomicity Test", "description": "test"},
         )
 
-        # In normal operation, both should be created
         assert response.status_code == 200
         video_id = response.json()["video_id"]
 
@@ -116,11 +112,13 @@ class TestEndToEndUpload:
         assert final_job_count == initial_job_count + 1
 
         # Verify they're linked
-        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+        job = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+        )
         assert job is not None
 
 
-class TestUploadReUpload:
+class TestReUpload:
     """Test re-upload functionality creates new transcoding jobs correctly."""
 
     @pytest.mark.asyncio
@@ -368,6 +366,11 @@ class TestProgressTracking:
             )
         )
 
+        # Update video status to PROCESSING so quality_progress is returned
+        await test_database.execute(
+            videos.update().where(videos.c.id == video_id).values(status=VideoStatus.PROCESSING)
+        )
+
         # Create some quality progress
         await test_database.execute(
             quality_progress.insert().values(
@@ -391,4 +394,27 @@ class TestProgressTracking:
         assert response.status_code == 200
 
         data = response.json()
-        assert "progress_percent" in data or "current_step" in data
+
+        # Verify response matches TranscodingProgressResponse schema
+        assert "status" in data
+        assert "progress_percent" in data
+        assert "current_step" in data
+        assert "qualities" in data
+        assert isinstance(data["qualities"], list)
+
+        # Verify our quality_progress entries are included
+        assert len(data["qualities"]) == 2
+        quality_names = {q["name"] for q in data["qualities"]}
+        assert quality_names == {"1080p", "720p"}
+
+        # Verify quality data matches what we inserted
+        for quality in data["qualities"]:
+            assert "name" in quality
+            assert "status" in quality
+            assert "progress" in quality
+            if quality["name"] == "1080p":
+                assert quality["status"] == "completed"
+                assert quality["progress"] == 100
+            elif quality["name"] == "720p":
+                assert quality["status"] == "in_progress"
+                assert quality["progress"] == 50
