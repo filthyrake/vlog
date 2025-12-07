@@ -36,6 +36,7 @@ from api.database import (
     configure_sqlite_pragmas,
     create_tables,
     database,
+    ensure_foreign_keys,
     playback_sessions,
     quality_progress,
     transcoding_jobs,
@@ -215,16 +216,6 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
-
-
-# Middleware to ensure SQLite foreign keys are enabled for each request
-# SQLite's foreign_keys pragma is per-connection, and the databases library
-# may use different connections for different requests
-@app.middleware("http")
-async def ensure_sqlite_foreign_keys(request: Request, call_next):
-    """Ensure foreign key constraints are enabled for this request's connection."""
-    await database.execute("PRAGMA foreign_keys=ON")
-    return await call_next(request)
 
 
 # Allow CORS for admin UI (internal-only, not exposed externally)
@@ -764,6 +755,8 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
         # PERMANENT DELETE - remove everything
         # First, delete all database records atomically
         async with database.transaction():
+            # Ensure foreign keys are enforced within this transaction
+            await ensure_foreign_keys()
             # Get job ID for quality_progress cleanup
             job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
             if job:
@@ -1974,6 +1967,8 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
             if data.permanent:
                 # PERMANENT DELETE
                 async with database.transaction():
+                    # Ensure foreign keys are enforced within this transaction
+                    await ensure_foreign_keys()
                     job = await database.fetch_one(
                         transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
                     )

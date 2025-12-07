@@ -61,6 +61,22 @@ def set_sqlite_pragmas_sync(dbapi_conn, connection_record):
     cursor.close()
 
 
+async def ensure_foreign_keys():
+    """
+    Ensure foreign key constraints are enabled for the current connection.
+    Call this at the start of any transaction that modifies data.
+
+    The databases library creates a new connection per query by default,
+    but within a transaction context, the same connection is reused.
+    So call this at the start of your transaction block:
+
+        async with database.transaction():
+            await ensure_foreign_keys()
+            # ... your queries
+    """
+    await database.execute("PRAGMA foreign_keys=ON")
+
+
 categories = sa.Table(
     "categories",
     metadata,
