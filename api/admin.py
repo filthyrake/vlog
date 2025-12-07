@@ -159,6 +159,29 @@ async def delete_video_and_job(video_id: int) -> None:
     await database.execute(videos.delete().where(videos.c.id == video_id))
 
 
+def validate_content_length(request: Request) -> None:
+    """
+    Validate Content-Length header against MAX_UPLOAD_SIZE.
+
+    This provides early rejection of oversized uploads before the transfer starts,
+    saving bandwidth for both client and server.
+
+    Raises:
+        HTTPException: 413 if Content-Length exceeds MAX_UPLOAD_SIZE
+    """
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_UPLOAD_SIZE:
+                max_size_gb = MAX_UPLOAD_SIZE / (1024 * 1024 * 1024)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum upload size is {max_size_gb:.0f} GB",
+                )
+        except ValueError:
+            pass  # Invalid Content-Length header, continue with streaming validation
+
+
 async def save_upload_with_size_limit(file: UploadFile, upload_path: Path, max_size: int = MAX_UPLOAD_SIZE) -> int:
     """
     Stream upload to disk with size validation.
@@ -652,18 +675,7 @@ async def upload_video(
 ):
     """Upload a new video for processing."""
     # Early rejection based on Content-Length header (if provided)
-    # This saves bandwidth by rejecting before transfer starts
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > MAX_UPLOAD_SIZE:
-                max_size_gb = MAX_UPLOAD_SIZE / (1024 * 1024 * 1024)
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large. Maximum upload size is {max_size_gb:.0f} GB",
-                )
-        except ValueError:
-            pass  # Invalid Content-Length header, continue with streaming validation
+    validate_content_length(request)
 
     # Check storage availability before accepting upload
     if not await check_storage_available():
@@ -1136,17 +1148,7 @@ async def re_upload_video(
     - Preserve: title, description, category, published_at, created_at, slug
     """
     # Early rejection based on Content-Length header (if provided)
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > MAX_UPLOAD_SIZE:
-                max_size_gb = MAX_UPLOAD_SIZE / (1024 * 1024 * 1024)
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large. Maximum upload size is {max_size_gb:.0f} GB",
-                )
-        except ValueError:
-            pass  # Invalid Content-Length header, continue with streaming validation
+    validate_content_length(request)
 
     # Validate file extension
     file_ext = Path(file.filename).suffix.lower() if file.filename else ""

@@ -190,7 +190,9 @@ class TestVideoUploadHTTP:
             headers={"Content-Length": "10000"},  # Exactly at limit
         )
         # Should not be rejected for Content-Length (may succeed or fail for other reasons)
-        assert response.status_code != 413 or "File too large" not in response.json().get("detail", "")
+        assert response.status_code != 413
+        if response.status_code >= 400:
+            assert "File too large" not in response.json().get("detail", "")
 
     @pytest.mark.asyncio
     async def test_upload_cleanup_on_file_save_failure(self, admin_client, test_database, test_storage, monkeypatch):
