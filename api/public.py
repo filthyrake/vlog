@@ -25,6 +25,7 @@ from api.common import (
     get_real_ip,
     get_storage_status,
     rate_limit_exceeded_handler,
+    validate_slug,
 )
 from api.database import (
     categories,
@@ -275,6 +276,10 @@ async def list_videos(
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video(request: Request, slug: str) -> VideoResponse:
     """Get a single video by slug."""
+    # Validate slug to prevent path traversal attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
     query = (
         sa.select(
             videos,
@@ -343,6 +348,10 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video_progress(request: Request, slug: str) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
+    # Validate slug to prevent path traversal attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
     video = await fetch_one_with_retry(video_query)
@@ -406,6 +415,10 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
+    # Validate slug to prevent path traversal attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
     video = await fetch_one_with_retry(video_query)
@@ -468,6 +481,10 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_category(request: Request, slug: str) -> CategoryResponse:
     """Get a single category by slug."""
+    # Validate slug to prevent path traversal attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid category slug")
+
     query = categories.select().where(categories.c.slug == slug)
     row = await fetch_one_with_retry(query)
     if not row:
