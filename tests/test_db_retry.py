@@ -12,6 +12,7 @@ from api.db_retry import (
     DatabaseLockedError,
     DatabaseRetryableError,
     execute_with_retry,
+    fetch_val_with_retry,
     is_database_locked_error,
     is_retryable_database_error,
     with_db_retry,
@@ -337,3 +338,69 @@ class TestDatabaseLockedErrorExceptionHandler:
         assert response.status_code == 503
         assert "Retry-After" in response.headers
         assert response.headers["Retry-After"] == "1"
+
+
+class TestFetchValWithRetry:
+    """Tests for fetch_val_with_retry function."""
+
+    @pytest.mark.asyncio
+    async def test_success_on_first_try(self):
+        """Should return result immediately on success."""
+        mock_db = AsyncMock()
+        mock_db.fetch_val = AsyncMock(return_value=42)
+
+        with patch("api.database.database", mock_db):
+            result = await fetch_val_with_retry("SELECT COUNT(*)")
+
+        assert result == 42
+        assert mock_db.fetch_val.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_on_database_error_then_succeed(self):
+        """Should retry on database error and return result on success."""
+        mock_db = AsyncMock()
+        mock_db.fetch_val = AsyncMock(
+            side_effect=[
+                sqlite3.OperationalError("database is locked"),
+                sqlite3.OperationalError("database is locked"),
+                100,
+            ]
+        )
+
+        with patch("api.database.database", mock_db):
+            with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+                result = await fetch_val_with_retry(
+                    "SELECT COUNT(*)", max_retries=3, base_delay=0.01
+                )
+
+        assert result == 100
+        assert mock_db.fetch_val.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_exhaust_retries_raises_error(self):
+        """Should raise DatabaseRetryableError after exhausting retries."""
+        mock_db = AsyncMock()
+        mock_db.fetch_val = AsyncMock(
+            side_effect=sqlite3.OperationalError("database is locked")
+        )
+
+        with patch("api.database.database", mock_db):
+            with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(DatabaseRetryableError) as exc_info:
+                    await fetch_val_with_retry(
+                        "SELECT COUNT(*)", max_retries=2, base_delay=0.01
+                    )
+
+        assert "3 attempts" in str(exc_info.value)
+        assert mock_db.fetch_val.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_null_value(self):
+        """Should properly return None for NULL database values."""
+        mock_db = AsyncMock()
+        mock_db.fetch_val = AsyncMock(return_value=None)
+
+        with patch("api.database.database", mock_db):
+            result = await fetch_val_with_retry("SELECT NULL")
+
+        assert result is None
