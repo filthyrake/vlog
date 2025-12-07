@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from api.database import configure_sqlite_pragmas, database, transcriptions
+from api.database import configure_database, database, transcriptions
 from api.enums import TranscriptionStatus
 from config import (
     AUDIO_EXTRACTION_TIMEOUT,
@@ -400,7 +400,7 @@ async def worker_loop():
         return
 
     await database.connect()
-    await configure_sqlite_pragmas()
+    await configure_database()
     print("Transcription worker started")
     print(f"Model: {WHISPER_MODEL}, Compute type: {TRANSCRIPTION_COMPUTE_TYPE}")
     print("Watching for videos needing transcription...")

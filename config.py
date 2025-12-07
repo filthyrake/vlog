@@ -11,6 +11,14 @@ NAS_STORAGE = Path(os.getenv("VLOG_STORAGE_PATH", "/mnt/nas/vlog-storage"))
 VIDEOS_DIR = NAS_STORAGE / os.getenv("VLOG_VIDEOS_SUBDIR", "videos")
 UPLOADS_DIR = NAS_STORAGE / os.getenv("VLOG_UPLOADS_SUBDIR", "uploads")
 ARCHIVE_DIR = NAS_STORAGE / os.getenv("VLOG_ARCHIVE_SUBDIR", "archive")
+# Database configuration - PostgreSQL is the default
+# Set VLOG_DATABASE_URL to override (e.g., for SQLite: sqlite:///./vlog.db)
+DATABASE_URL = os.getenv(
+    "VLOG_DATABASE_URL",
+    "postgresql://vlog:vlog_password@localhost/vlog"
+)
+
+# Legacy SQLite path (kept for migration scripts)
 DATABASE_PATH = Path(os.getenv("VLOG_DATABASE_PATH", str(BASE_DIR / "vlog.db")))
 
 # Ensure directories exist (skip in test/CI environments)

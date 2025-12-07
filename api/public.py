@@ -28,7 +28,7 @@ from api.common import (
 )
 from api.database import (
     categories,
-    configure_sqlite_pragmas,
+    configure_database,
     database,
     playback_sessions,
     quality_progress,
@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
             "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379"
         )
     await database.connect()
-    await configure_sqlite_pragmas()
+    await configure_database()
     yield
     await database.disconnect()
 

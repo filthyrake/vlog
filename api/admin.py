@@ -33,10 +33,9 @@ from api.common import (
 )
 from api.database import (
     categories,
-    configure_sqlite_pragmas,
+    configure_database,
     create_tables,
     database,
-    ensure_foreign_keys,
     playback_sessions,
     quality_progress,
     transcoding_jobs,
@@ -136,6 +135,29 @@ MAX_TITLE_LENGTH = 255
 MAX_DESCRIPTION_LENGTH = 5000
 
 
+async def delete_video_and_job(video_id: int) -> None:
+    """
+    Delete a video and its transcoding job safely.
+
+    IMPORTANT: Always use this instead of videos.delete() directly!
+    SQLite foreign key CASCADE is unreliable with the async databases library
+    because foreign_keys pragma is per-connection and connections are pooled.
+
+    This explicitly deletes related records to prevent orphaned data.
+    """
+    # Get job_id first (if exists)
+    job = await database.fetch_one(
+        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+    )
+    if job:
+        # Delete quality_progress entries first (FK to transcoding_jobs)
+        await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+        # Delete transcoding job
+        await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.id == job["id"]))
+    # Now delete the video
+    await database.execute(videos.delete().where(videos.c.id == video_id))
+
+
 async def save_upload_with_size_limit(file: UploadFile, upload_path: Path, max_size: int = MAX_UPLOAD_SIZE) -> int:
     """
     Stream upload to disk with size validation.
@@ -180,6 +202,39 @@ async def save_upload_with_size_limit(file: UploadFile, upload_path: Path, max_s
     return total_size
 
 
+async def cleanup_orphaned_jobs() -> int:
+    """
+    Remove transcoding jobs that reference non-existent videos.
+
+    This can happen when CASCADE deletes fail due to SQLite foreign_keys
+    pragma not being enabled on all connections (a limitation of the
+    async databases library with connection pooling).
+
+    Returns the number of orphaned jobs deleted.
+    """
+    # Find orphaned jobs (video_id doesn't exist in videos table)
+    orphaned = await database.fetch_all(
+        sa.text("""
+            SELECT tj.id, tj.video_id
+            FROM transcoding_jobs tj
+            LEFT JOIN videos v ON tj.video_id = v.id
+            WHERE v.id IS NULL
+        """)
+    )
+
+    if not orphaned:
+        return 0
+
+    for job in orphaned:
+        # Delete quality_progress first
+        await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+        # Delete the orphaned job
+        await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.id == job["id"]))
+
+    logger.warning(f"Cleaned up {len(orphaned)} orphaned transcoding job(s)")
+    return len(orphaned)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
@@ -192,7 +247,11 @@ async def lifespan(app: FastAPI):
         )
     create_tables()
     await database.connect()
-    await configure_sqlite_pragmas()
+    await configure_database()
+
+    # Clean up any orphaned transcoding jobs from previous crashes/bugs
+    await cleanup_orphaned_jobs()
+
     yield
     await database.disconnect()
 
@@ -593,11 +652,11 @@ async def upload_video(
         (VIDEOS_DIR / slug).mkdir(parents=True, exist_ok=True)
     except HTTPException:
         # Clean up orphan database record on upload failure
-        await database.execute(videos.delete().where(videos.c.id == video_id))
+        await delete_video_and_job(video_id)
         raise
     except (OSError, IOError, PermissionError) as e:
         # Storage-related errors - clean up and return 503
-        await database.execute(videos.delete().where(videos.c.id == video_id))
+        await delete_video_and_job(video_id)
         logger.warning(f"Storage error during video upload (video_id={video_id}): {e}")
         raise HTTPException(
             status_code=503,
@@ -623,8 +682,9 @@ async def upload_video(
 
     # Create transcoding job for remote workers to claim
     # If this fails, clean up to avoid orphaned video record (issue #162)
+    # Use retry logic to handle transient SQLite locking errors
     try:
-        await database.execute(
+        await db_execute_with_retry(
             transcoding_jobs.insert().values(
                 video_id=video_id,
                 current_step="pending",
@@ -635,14 +695,25 @@ async def upload_video(
         )
     except HTTPException:
         # Clean up on HTTP errors
-        await database.execute(videos.delete().where(videos.c.id == video_id))
+        await delete_video_and_job(video_id)
         upload_path.unlink(missing_ok=True)
         shutil.rmtree(VIDEOS_DIR / slug, ignore_errors=True)
         raise
+    except DatabaseLockedError as e:
+        # Database locked after all retries - clean up and return 503 (retryable)
+        logger.error(f"Database locked creating transcoding job for video {video_id}: {e}")
+        await delete_video_and_job(video_id)
+        upload_path.unlink(missing_ok=True)
+        shutil.rmtree(VIDEOS_DIR / slug, ignore_errors=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily busy. Please try again.",
+            headers={"Retry-After": "5"},
+        )
     except Exception as e:
         # Clean up video record and uploaded file on job creation failure
         logger.exception(f"Failed to create transcoding job for video {video_id}: {e}")
-        await database.execute(videos.delete().where(videos.c.id == video_id))
+        await delete_video_and_job(video_id)
         upload_path.unlink(missing_ok=True)
         shutil.rmtree(VIDEOS_DIR / slug, ignore_errors=True)
         raise HTTPException(status_code=500, detail="Failed to create transcoding job")
@@ -755,8 +826,6 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
         # PERMANENT DELETE - remove everything
         # First, delete all database records atomically
         async with database.transaction():
-            # Ensure foreign keys are enforced within this transaction
-            await ensure_foreign_keys()
             # Get job ID for quality_progress cleanup
             job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
             if job:
@@ -1061,7 +1130,8 @@ async def re_upload_video(
         )
 
         # Create new transcoding job for remote workers to claim
-        await database.execute(
+        # Use retry logic to handle transient SQLite locking errors
+        await db_execute_with_retry(
             transcoding_jobs.insert().values(
                 video_id=video_id,
                 current_step="pending",
@@ -1333,7 +1403,8 @@ async def retranscode_video(
         )
 
         # Create new transcoding job for remote workers to claim
-        await database.execute(
+        # Use retry logic to handle transient SQLite locking errors
+        await db_execute_with_retry(
             transcoding_jobs.insert().values(
                 video_id=video_id,
                 current_step="pending",
@@ -1967,8 +2038,6 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
             if data.permanent:
                 # PERMANENT DELETE
                 async with database.transaction():
-                    # Ensure foreign keys are enforced within this transaction
-                    await ensure_foreign_keys()
                     job = await database.fetch_one(
                         transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
                     )
@@ -2202,7 +2271,8 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
                 )
 
                 # Create new transcoding job
-                await database.execute(
+                # Use retry logic to handle transient SQLite locking errors
+                await db_execute_with_retry(
                     transcoding_jobs.insert().values(
                         video_id=video_id,
                         current_step="pending",

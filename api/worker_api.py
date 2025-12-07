@@ -32,7 +32,7 @@ from slowapi.errors import RateLimitExceeded
 
 from api.common import check_health, ensure_utc, get_real_ip, get_storage_status, rate_limit_exceeded_handler
 from api.database import (
-    configure_sqlite_pragmas,
+    configure_database,
     database,
     quality_progress,
     transcoding_jobs,
@@ -279,7 +279,7 @@ async def lifespan(app: FastAPI):
 
     # Startup
     await database.connect()
-    await configure_sqlite_pragmas()
+    await configure_database()
     logger.info(
         f"Worker API started - database connected. "
         f"Stale check grace period: {STALE_CHECK_STARTUP_GRACE_PERIOD}s"

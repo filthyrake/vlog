@@ -3,78 +3,21 @@ from datetime import datetime, timezone
 import sqlalchemy as sa
 from databases import Database
 
-from config import DATABASE_PATH
+from config import DATABASE_URL
 
-DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
-
-# SQLite connection timeout (seconds) - passed to sqlite3 connection
-# This is the timeout for acquiring locks, not for query execution
-SQLITE_TIMEOUT = 30.0
-
-# Note: SQLite per-connection pragmas are configured in configure_sqlite_pragmas()
-# The timeout kwarg is passed to aiosqlite/sqlite3 and sets the connection busy_timeout
-# Note: min_size/max_size pool parameters are NOT supported by the SQLite backend
-# of the databases library - aiosqlite handles connections differently
-database = Database(
-    DATABASE_URL,
-    timeout=SQLITE_TIMEOUT,
-)
+# Create database instance - works with PostgreSQL or SQLite
+# PostgreSQL is the default and recommended database
+database = Database(DATABASE_URL)
 metadata = sa.MetaData()
 
 
-async def configure_sqlite_pragmas():
+async def configure_database():
     """
-    Configure SQLite pragmas for optimal performance and data integrity.
-    Should be called after database.connect() in API startup.
-
-    Pragmas configured:
-    - journal_mode=WAL: Write-Ahead Logging for better concurrency (persistent)
-    - synchronous=NORMAL: Balance between safety and speed (WAL mode makes this safe)
-    - foreign_keys=ON: Enforce foreign key constraints
-    - cache_size=-64000: 64MB cache for better read performance
-    - busy_timeout=30000: Wait 30 seconds on locked database before failing
-
-    Note: journal_mode and busy_timeout work reliably. Other per-connection
-    pragmas may not persist across connection pool reuse in the async library.
+    Configure database-specific settings after connection.
+    For PostgreSQL, this is a no-op since FK constraints are always enforced.
     """
-    # WAL mode is persistent - only needs to be set once per database file
-    await database.execute("PRAGMA journal_mode=WAL")
-    # busy_timeout works with the connection pool (30 seconds to match SQLITE_TIMEOUT)
-    await database.execute("PRAGMA busy_timeout=30000")
-    # These are per-connection but we set them for the initial connection
-    await database.execute("PRAGMA synchronous=NORMAL")
-    await database.execute("PRAGMA foreign_keys=ON")
-    await database.execute("PRAGMA cache_size=-64000")
-
-
-def set_sqlite_pragmas_sync(dbapi_conn, connection_record):
-    """
-    Synchronous pragma configuration for SQLAlchemy engine connections.
-    Used by create_tables() and other sync operations.
-    """
-    cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.execute("PRAGMA cache_size=-64000")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.close()
-
-
-async def ensure_foreign_keys():
-    """
-    Ensure foreign key constraints are enabled for the current connection.
-    Call this at the start of any transaction that modifies data.
-
-    The databases library creates a new connection per query by default,
-    but within a transaction context, the same connection is reused.
-    So call this at the start of your transaction block:
-
-        async with database.transaction():
-            await ensure_foreign_keys()
-            # ... your queries
-    """
-    await database.execute("PRAGMA foreign_keys=ON")
+    # PostgreSQL enforces foreign keys by default - no configuration needed
+    pass
 
 
 categories = sa.Table(
@@ -84,7 +27,7 @@ categories = sa.Table(
     sa.Column("name", sa.String(100), nullable=False),
     sa.Column("slug", sa.String(100), unique=True, nullable=False),
     sa.Column("description", sa.Text, default=""),
-    sa.Column("created_at", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
 )
 
 videos = sa.Table(
@@ -100,9 +43,9 @@ videos = sa.Table(
     sa.Column("source_height", sa.Integer, default=0),
     sa.Column("status", sa.String(20), default="pending"),  # pending, processing, ready, failed
     sa.Column("error_message", sa.Text, nullable=True),
-    sa.Column("created_at", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
-    sa.Column("published_at", sa.DateTime, nullable=True),
-    sa.Column("deleted_at", sa.DateTime, nullable=True),  # Soft-delete timestamp (NULL = not deleted)
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft-delete timestamp (NULL = not deleted)
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
@@ -129,8 +72,8 @@ viewers = sa.Table(
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("session_id", sa.String(64), unique=True, nullable=False),
-    sa.Column("first_seen", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
-    sa.Column("last_seen", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
+    sa.Column("first_seen", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("last_seen", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
 )
 
 # Analytics: playback sessions
@@ -141,8 +84,8 @@ playback_sessions = sa.Table(
     sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False),
     sa.Column("viewer_id", sa.Integer, sa.ForeignKey("viewers.id", ondelete="SET NULL"), nullable=True),
     sa.Column("session_token", sa.String(64), unique=True, nullable=False),
-    sa.Column("started_at", sa.DateTime, default=lambda: datetime.now(timezone.utc)),
-    sa.Column("ended_at", sa.DateTime, nullable=True),
+    sa.Column("started_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("duration_watched", sa.Float, default=0),  # seconds actually watched
     sa.Column("max_position", sa.Float, default=0),  # furthest point reached
     sa.Column("quality_used", sa.String(10), nullable=True),  # primary quality
@@ -163,12 +106,12 @@ transcoding_jobs = sa.Table(
     sa.Column("current_step", sa.String(50), nullable=True),  # probe, thumbnail, transcode, master_playlist, finalize
     sa.Column("progress_percent", sa.Integer, default=0),
     # Timing
-    sa.Column("started_at", sa.DateTime, nullable=True),
-    sa.Column("last_checkpoint", sa.DateTime, nullable=True),
-    sa.Column("completed_at", sa.DateTime, nullable=True),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_checkpoint", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     # Job claiming for distributed workers
-    sa.Column("claimed_at", sa.DateTime, nullable=True),
-    sa.Column("claim_expires_at", sa.DateTime, nullable=True),
+    sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("claim_expires_at", sa.DateTime(timezone=True), nullable=True),
     # Retry tracking
     sa.Column("attempt_number", sa.Integer, default=1),
     sa.Column("max_attempts", sa.Integer, default=3),
@@ -191,8 +134,8 @@ quality_progress = sa.Table(
     sa.Column("segments_total", sa.Integer, nullable=True),
     sa.Column("segments_completed", sa.Integer, default=0),
     sa.Column("progress_percent", sa.Integer, default=0),
-    sa.Column("started_at", sa.DateTime, nullable=True),
-    sa.Column("completed_at", sa.DateTime, nullable=True),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("error_message", sa.Text, nullable=True),
     sa.Index("ix_quality_progress_job_id", "job_id"),
     sa.UniqueConstraint("job_id", "quality", name="uq_job_quality"),
@@ -208,8 +151,8 @@ transcriptions = sa.Table(
     sa.Column("status", sa.String(20), nullable=False, default="pending"),  # pending, processing, completed, failed
     sa.Column("language", sa.String(10), default="en"),  # detected or specified language
     # Timing
-    sa.Column("started_at", sa.DateTime, nullable=True),
-    sa.Column("completed_at", sa.DateTime, nullable=True),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("duration_seconds", sa.Float, nullable=True),  # how long transcription took
     # Output
     sa.Column("transcript_text", sa.Text, nullable=True),  # full transcript as plain text
@@ -228,8 +171,8 @@ workers = sa.Table(
     sa.Column("worker_id", sa.String(36), unique=True, nullable=False),  # UUID
     sa.Column("worker_name", sa.String(100), nullable=True),
     sa.Column("worker_type", sa.String(20), default="remote"),  # 'local' or 'remote'
-    sa.Column("registered_at", sa.DateTime, nullable=False),
-    sa.Column("last_heartbeat", sa.DateTime, nullable=True),
+    sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_heartbeat", sa.DateTime(timezone=True), nullable=True),
     sa.Column("status", sa.String(20), default="active"),  # 'active', 'offline', 'disabled'
     sa.Column("current_job_id", sa.Integer, nullable=True),
     sa.Column("capabilities", sa.Text, nullable=True),  # JSON
@@ -247,10 +190,10 @@ worker_api_keys = sa.Table(
     sa.Column("worker_id", sa.Integer, sa.ForeignKey("workers.id", ondelete="CASCADE"), nullable=False),
     sa.Column("key_hash", sa.String(64), nullable=False),  # SHA-256 hash
     sa.Column("key_prefix", sa.String(8), nullable=False),  # First 8 chars for lookup
-    sa.Column("created_at", sa.DateTime, nullable=False),
-    sa.Column("expires_at", sa.DateTime, nullable=True),
-    sa.Column("revoked_at", sa.DateTime, nullable=True),
-    sa.Column("last_used_at", sa.DateTime, nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
     sa.Index("ix_worker_api_keys_key_prefix", "key_prefix"),
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
 )
@@ -258,65 +201,14 @@ worker_api_keys = sa.Table(
 
 def create_tables():
     """
-    Create/update database schema using Alembic migrations.
-
-    This function runs any pending migrations to bring the database up to date.
-    For new databases, this creates all tables. For existing databases, it
-    applies any new schema changes.
+    Create database tables directly using SQLAlchemy metadata.
+    This creates all tables if they don't exist.
     """
-    from alembic import command
-    from alembic.config import Config
-
-    # Get the alembic config from the project root
-    from config import BASE_DIR
-
-    alembic_cfg = Config(str(BASE_DIR / "alembic.ini"))
-    alembic_cfg.set_main_option("script_location", str(BASE_DIR / "migrations"))
-    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
-
-    # Run migrations to head
-    command.upgrade(alembic_cfg, "head")
-
-
-def stamp_database(revision: str = "head"):
-    """
-    Stamp an existing database with a migration revision without running migrations.
-
-    Use this for existing databases that already have the schema but weren't
-    using Alembic migrations yet. Example: stamp_database("001")
-    """
-    from alembic import command
-    from alembic.config import Config
-
-    from config import BASE_DIR
-
-    alembic_cfg = Config(str(BASE_DIR / "alembic.ini"))
-    alembic_cfg.set_main_option("script_location", str(BASE_DIR / "migrations"))
-    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
-
-    command.stamp(alembic_cfg, revision)
-
-
-def get_current_revision():
-    """Get the current migration revision of the database."""
-    import sqlalchemy as sa
-    from alembic.runtime.migration import MigrationContext
-
     engine = sa.create_engine(DATABASE_URL)
-    with engine.connect() as conn:
-        context = MigrationContext.configure(conn)
-        return context.get_current_revision()
+    metadata.create_all(engine)
+    engine.dispose()
 
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "stamp":
-        # Stamp existing database: python api/database.py stamp [revision]
-        revision = sys.argv[2] if len(sys.argv) > 2 else "head"
-        stamp_database(revision)
-        print(f"Database stamped at revision: {revision}")
-    else:
-        # Run migrations
-        create_tables()
-        print("Database migrations applied successfully!")
+    create_tables()
+    print("Database tables created successfully!")
