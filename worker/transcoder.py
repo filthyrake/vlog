@@ -47,6 +47,7 @@ from config import (
     JOB_STALE_TIMEOUT,
     KEEP_COMPLETED_QUALITIES,
     PROGRESS_UPDATE_INTERVAL,
+    QUALITY_NAMES,
     QUALITY_PRESETS,
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
@@ -988,10 +989,15 @@ async def cleanup_partial_output(
         output_dir.mkdir(exist_ok=True)
         return
 
+    # Build dynamic regex pattern from QUALITY_NAMES
+    # Escape each quality name and join with | for alternation
+    quality_pattern = "|".join(re.escape(name) for name in sorted(QUALITY_NAMES))
+    # Match quality files like "1080p.m3u8", "1080p_0001.ts", "original.m3u8", "original_0001.ts"
+    file_pattern = re.compile(f"({quality_pattern})(_\\d+\\.ts|\\.m3u8)$")
+
     # Selective cleanup - keep completed quality files
     for file in output_dir.iterdir():
-        # Match quality files like "1080p.m3u8", "1080p_0001.ts", "original.m3u8", "original_0001.ts"
-        quality_match = re.match(r"(\d+p|original)(_\d+\.ts|\.m3u8)$", file.name)
+        quality_match = file_pattern.match(file.name)
         if quality_match:
             quality = quality_match.group(1)
             if quality not in completed_quality_names:
