@@ -433,50 +433,6 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
                 print(f"  Warning: Failed to delete temp file {temp_wav}: {e}")
 
 
-async def worker_loop():
-    """Main transcription worker loop."""
-    if not TRANSCRIPTION_ENABLED:
-        print("Transcription is disabled in config. Exiting.")
-        return
-
-    await database.connect()
-    await configure_sqlite_pragmas()
-    print("Transcription worker started")
-    print(f"Model: {WHISPER_MODEL}, Compute type: {TRANSCRIPTION_COMPUTE_TYPE}")
-    print("Watching for videos needing transcription...")
-
-    worker = TranscriptionWorker()
-
-    try:
-        while not worker.shutdown_requested:
-            # Find videos needing transcription
-            videos_to_process = await get_videos_needing_transcription()
-
-            if videos_to_process:
-                print(f"Found {len(videos_to_process)} video(s) needing transcription")
-
-                for video in videos_to_process:
-                    if worker.shutdown_requested:
-                        print("Shutdown requested, stopping worker loop...")
-                        break
-
-                    try:
-                        await process_transcription(video, worker)
-                    except TranscriptionCancelled:
-                        # Shutdown requested during processing
-                        print("Processing cancelled due to shutdown")
-                        break
-
-            # Wait before checking again (exit early if shutdown requested)
-            if not worker.shutdown_requested:
-                await asyncio.sleep(30)
-
-    except KeyboardInterrupt:
-        print("\nTranscription worker stopped.")
-    finally:
-        await database.disconnect()
-
-
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
@@ -492,7 +448,7 @@ def signal_handler(sig, frame):
 _worker_instance: Optional[TranscriptionWorker] = None
 
 
-async def worker_loop_with_signals():
+async def worker_loop():
     """Main transcription worker loop with signal handler registration."""
     global _worker_instance
 
@@ -545,4 +501,4 @@ async def worker_loop_with_signals():
 
 
 if __name__ == "__main__":
-    asyncio.run(worker_loop_with_signals())
+    asyncio.run(worker_loop())
