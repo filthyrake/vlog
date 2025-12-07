@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from config import AUDIT_LOG_ENABLED, AUDIT_LOG_LEVEL, AUDIT_LOG_PATH
+from api.errors import truncate_string
+from config import AUDIT_LOG_ENABLED, AUDIT_LOG_LEVEL, AUDIT_LOG_PATH, ERROR_DETAIL_MAX_LENGTH
 
 # Ensure log directory exists (skip in test mode)
 if not os.environ.get("VLOG_TEST_MODE") and AUDIT_LOG_ENABLED:
@@ -138,7 +139,7 @@ class AuditLogger:
         if client_ip:
             entry["client_ip"] = client_ip
         if user_agent:
-            entry["user_agent"] = user_agent[:200]  # Truncate long user agents
+            entry["user_agent"] = truncate_string(user_agent, ERROR_DETAIL_MAX_LENGTH)  # Truncate long user agents
         if resource_type:
             entry["resource_type"] = resource_type
         if resource_id is not None:

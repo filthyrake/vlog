@@ -35,10 +35,13 @@ from api.database import (
     videos,
 )
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
+from api.errors import truncate_error
 from config import (
     ARCHIVE_DIR,
     ARCHIVE_RETENTION_DAYS,
     CLEANUP_PARTIAL_ON_FAILURE,
+    ERROR_DETAIL_MAX_LENGTH,
+    ERROR_SUMMARY_MAX_LENGTH,
     FFMPEG_TIMEOUT_BASE_MULTIPLIER,
     FFMPEG_TIMEOUT_MAXIMUM,
     FFMPEG_TIMEOUT_MINIMUM,
@@ -75,10 +78,6 @@ logger = logging.getLogger(__name__)
 
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
-
-# Error message truncation limits for logging
-MAX_ERROR_SUMMARY_LENGTH = 100  # Characters per quality in total failure summary
-MAX_ERROR_DETAIL_LENGTH = 200  # Characters per quality in partial failure details
 
 
 class WorkerState:
@@ -580,7 +579,8 @@ async def generate_thumbnail(input_path: Path, output_path: Path, timestamp: flo
         raise RuntimeError(f"Thumbnail generation timed out after {timeout}s")
 
     if process.returncode != 0:
-        raise RuntimeError(f"Thumbnail generation failed: {stderr.decode('utf-8', errors='ignore')[:200]}")
+        error_msg = truncate_error(stderr.decode('utf-8', errors='ignore'), ERROR_DETAIL_MAX_LENGTH)
+        raise RuntimeError(f"Thumbnail generation failed: {error_msg}")
 
 
 async def transcode_quality_with_progress(
@@ -1346,7 +1346,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
     # If no job exists, the upload is still in progress - skip and retry later
     job = await get_existing_job(video_id)
     if job is None:
-        print(f"  No transcoding job found - upload still in progress, will retry later")
+        print("  No transcoding job found - upload still in progress, will retry later")
         return False
     job_id = job["id"]
 
@@ -1515,7 +1515,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     error_msg = error_detail or "Remux failed"
                     await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
                     failed_qualities.append({"name": "original", "error": error_msg})
-                    print(f"    original: Failed - {error_msg[:100]}")
+                    print(f"    original: Failed - {truncate_error(error_msg, ERROR_SUMMARY_MAX_LENGTH)}")
             except Exception as e:
                 error_msg = str(e)
                 await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
@@ -1778,7 +1778,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         if not successful_qualities:
             # All quality variants failed
             failed_summary = ", ".join(
-                [f"{q['name']}: {q['error'][:MAX_ERROR_SUMMARY_LENGTH]}" for q in failed_qualities]
+                [f"{q['name']}: {truncate_error(q['error'], ERROR_SUMMARY_MAX_LENGTH)}" for q in failed_qualities]
             )
             error_message = f"All {len(failed_qualities)} quality variant(s) failed. Details: {failed_summary}"
             print(f"  FAILURE: {error_message}")
@@ -1790,7 +1790,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             )
             print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
-                print(f"    - {failed['name']}: {failed['error'][:MAX_ERROR_DETAIL_LENGTH]}")
+                print(f"    - {failed['name']}: {truncate_error(failed['error'], ERROR_DETAIL_MAX_LENGTH)}")
 
         # ----------------------------------------------------------------
         # Step 4: Generate master playlist
