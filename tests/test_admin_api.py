@@ -156,6 +156,44 @@ class TestVideoUploadHTTP:
             )
             assert response.status_code == 200, f"Failed for extension {ext}"
 
+    def test_upload_content_length_too_large_rejected_early(self, admin_client, monkeypatch):
+        """Test that uploads with Content-Length exceeding MAX_UPLOAD_SIZE are rejected early."""
+        import api.admin
+
+        # Patch MAX_UPLOAD_SIZE in the admin module (where it's imported)
+        monkeypatch.setattr(api.admin, "MAX_UPLOAD_SIZE", 1000)  # 1KB limit
+
+        # Send request with Content-Length header larger than limit
+        file_content = b"x" * 100  # Small actual content
+        response = admin_client.post(
+            "/api/videos",
+            files={"file": ("test.mp4", io.BytesIO(file_content), "video/mp4")},
+            data={"title": "Test", "description": "test"},
+            headers={"Content-Length": "2000"},  # Larger than 1KB limit
+        )
+        assert response.status_code == 413
+        assert "File too large" in response.json()["detail"]
+
+    def test_upload_content_length_at_limit_allowed(self, admin_client, test_storage, monkeypatch):
+        """Test that uploads with Content-Length at exactly MAX_UPLOAD_SIZE are allowed."""
+        import api.admin
+
+        # Patch MAX_UPLOAD_SIZE in the admin module
+        monkeypatch.setattr(api.admin, "MAX_UPLOAD_SIZE", 10000)  # 10KB limit
+
+        # Send request with Content-Length header at limit
+        file_content = b"fake video content"
+        response = admin_client.post(
+            "/api/videos",
+            files={"file": ("test.mp4", io.BytesIO(file_content), "video/mp4")},
+            data={"title": "Test At Limit", "description": "test"},
+            headers={"Content-Length": "10000"},  # Exactly at limit
+        )
+        # Should not be rejected for Content-Length (may succeed or fail for other reasons)
+        assert response.status_code != 413
+        if response.status_code >= 400:
+            assert "File too large" not in response.json().get("detail", "")
+
     @pytest.mark.asyncio
     async def test_upload_cleanup_on_file_save_failure(self, admin_client, test_database, test_storage, monkeypatch):
         """Test that database record is cleaned up when file save fails."""

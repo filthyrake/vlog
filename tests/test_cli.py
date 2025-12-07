@@ -293,6 +293,46 @@ class TestValidateFile:
             assert "11.00 GB" in captured.out
             assert file_size == 11 * 1024 * 1024 * 1024
 
+    def test_file_exceeds_max_upload_size(self, tmp_path):
+        """Test that files exceeding MAX_UPLOAD_SIZE are rejected."""
+        from config import MAX_UPLOAD_SIZE
+
+        test_file = tmp_path / "huge.mp4"
+        test_file.write_bytes(b"x")
+
+        # Get real stat to copy attributes from
+        real_stat = test_file.stat()
+
+        # Mock Path.stat to return a stat result larger than MAX_UPLOAD_SIZE
+        mock_stat = mock.Mock()
+        mock_stat.st_mode = real_stat.st_mode
+        mock_stat.st_size = MAX_UPLOAD_SIZE + 1  # Just over the limit
+
+        with mock.patch.object(Path, "stat", return_value=mock_stat):
+            with pytest.raises(CLIError) as exc_info:
+                validate_file(test_file)
+            assert "File too large" in str(exc_info.value)
+            assert "Maximum upload size" in str(exc_info.value)
+
+    def test_file_at_max_upload_size_is_allowed(self, tmp_path, capsys):
+        """Test that files exactly at MAX_UPLOAD_SIZE are allowed."""
+        from config import MAX_UPLOAD_SIZE
+
+        test_file = tmp_path / "max_size.mp4"
+        test_file.write_bytes(b"x")
+
+        # Get real stat to copy attributes from
+        real_stat = test_file.stat()
+
+        # Mock Path.stat to return exactly MAX_UPLOAD_SIZE
+        mock_stat = mock.Mock()
+        mock_stat.st_mode = real_stat.st_mode
+        mock_stat.st_size = MAX_UPLOAD_SIZE  # Exactly at limit
+
+        with mock.patch.object(Path, "stat", return_value=mock_stat):
+            file_size = validate_file(test_file)
+            assert file_size == MAX_UPLOAD_SIZE
+
 
 class TestValidateUrl:
     """Test the validate_url function."""
