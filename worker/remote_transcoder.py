@@ -348,7 +348,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 mq["bitrate_bps"] = q["bitrate"] * 1000
             master_qualities.append(mq)
 
-        generate_master_playlist(output_dir, master_qualities)
+        await generate_master_playlist(output_dir, master_qualities)
 
         # Validate master playlist before upload (issue #166)
         master_playlist_path = output_dir / "master.m3u8"
