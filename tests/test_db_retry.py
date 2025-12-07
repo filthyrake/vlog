@@ -8,6 +8,9 @@ import pytest
 from api.db_retry import (
     DatabaseLockedError,
     execute_with_retry,
+    fetch_all_with_retry,
+    fetch_one_with_retry,
+    fetch_val_with_retry,
     is_database_locked_error,
     with_db_retry,
 )
@@ -249,6 +252,132 @@ class TestWithDbRetryDecorator:
             pass
 
         assert original_function_name.__name__ == "original_function_name"
+
+
+class TestDatabaseOperationWrappers:
+    """Tests for database operation wrapper functions."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_one_with_retry_success(self):
+        """Should successfully fetch one row."""
+        from unittest.mock import MagicMock
+
+        mock_query = MagicMock()
+        mock_row = {"id": 1, "name": "test"}
+
+        with patch("api.database.database") as mock_db:
+            mock_db.fetch_one = AsyncMock(return_value=mock_row)
+            result = await fetch_one_with_retry(mock_query)
+
+        assert result == mock_row
+        mock_db.fetch_one.assert_called_once_with(mock_query)
+
+    @pytest.mark.asyncio
+    async def test_fetch_one_with_retry_handles_lock(self):
+        """Should retry on database locked error."""
+        from unittest.mock import MagicMock
+
+        mock_query = MagicMock()
+        mock_row = {"id": 1, "name": "test"}
+
+        with patch("api.database.database") as mock_db:
+            mock_db.fetch_one = AsyncMock(
+                side_effect=[
+                    sqlite3.OperationalError("database is locked"),
+                    mock_row,
+                ]
+            )
+            with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+                result = await fetch_one_with_retry(mock_query, max_retries=3)
+
+        assert result == mock_row
+        assert mock_db.fetch_one.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_with_retry_success(self):
+        """Should successfully fetch all rows."""
+        from unittest.mock import MagicMock
+
+        mock_query = MagicMock()
+        mock_rows = [{"id": 1}, {"id": 2}]
+
+        with patch("api.database.database") as mock_db:
+            mock_db.fetch_all = AsyncMock(return_value=mock_rows)
+            result = await fetch_all_with_retry(mock_query)
+
+        assert result == mock_rows
+        mock_db.fetch_all.assert_called_once_with(mock_query)
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_with_retry_handles_lock(self):
+        """Should retry on database locked error."""
+        from unittest.mock import MagicMock
+
+        mock_query = MagicMock()
+        mock_rows = [{"id": 1}]
+
+        with patch("api.database.database") as mock_db:
+            mock_db.fetch_all = AsyncMock(
+                side_effect=[
+                    sqlite3.OperationalError("database is locked"),
+                    mock_rows,
+                ]
+            )
+            with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+                result = await fetch_all_with_retry(mock_query, max_retries=3)
+
+        assert result == mock_rows
+        assert mock_db.fetch_all.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_val_with_retry_success(self):
+        """Should successfully fetch a single value."""
+        from unittest.mock import MagicMock
+
+        mock_query = MagicMock()
+        mock_value = 42
+
+        with patch("api.database.database") as mock_db:
+            mock_db.fetch_val = AsyncMock(return_value=mock_value)
+            result = await fetch_val_with_retry(mock_query)
+
+        assert result == mock_value
+        mock_db.fetch_val.assert_called_once_with(mock_query)
+
+    @pytest.mark.asyncio
+    async def test_fetch_val_with_retry_handles_lock(self):
+        """Should retry on database locked error."""
+        from unittest.mock import MagicMock
+
+        mock_query = MagicMock()
+        mock_value = 100
+
+        with patch("api.database.database") as mock_db:
+            mock_db.fetch_val = AsyncMock(
+                side_effect=[
+                    sqlite3.OperationalError("database is locked"),
+                    mock_value,
+                ]
+            )
+            with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+                result = await fetch_val_with_retry(mock_query, max_retries=3)
+
+        assert result == mock_value
+        assert mock_db.fetch_val.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_val_with_retry_returns_none(self):
+        """Should return None when no value found."""
+        from unittest.mock import MagicMock
+
+        mock_query = MagicMock()
+
+        with patch("api.database.database") as mock_db:
+            mock_db.fetch_val = AsyncMock(return_value=None)
+            result = await fetch_val_with_retry(mock_query)
+
+        assert result is None
+        mock_db.fetch_val.assert_called_once_with(mock_query)
 
 
 class TestDatabaseLockedErrorExceptionHandler:
