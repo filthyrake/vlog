@@ -177,6 +177,7 @@ class ClaimJobResponse(BaseModel):
     source_height: Optional[int] = None
     source_filename: Optional[str] = None
     claim_expires_at: Optional[datetime] = None
+    existing_qualities: Optional[List[str]] = None  # Qualities already transcoded (skip these)
     message: str
 
 

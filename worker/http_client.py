@@ -383,6 +383,7 @@ class WorkerAPIClient:
         self,
         video_id: int,
         output_dir: Path,
+        skip_master: bool = False,
     ) -> dict:
         """
         Upload final files (master.m3u8 and thumbnail.jpg) after all qualities uploaded.
@@ -390,6 +391,7 @@ class WorkerAPIClient:
         Args:
             video_id: The video ID
             output_dir: Directory containing the files
+            skip_master: If True, don't upload master.m3u8 (for selective retranscode)
 
         Returns:
             Server response
@@ -399,10 +401,11 @@ class WorkerAPIClient:
 
         try:
             with tarfile.open(tmp_path, "w:gz") as tar:
-                # Add master playlist
-                master = output_dir / "master.m3u8"
-                if master.exists():
-                    tar.add(master, arcname=master.name)
+                # Add master playlist (unless skipped for selective retranscode)
+                if not skip_master:
+                    master = output_dir / "master.m3u8"
+                    if master.exists():
+                        tar.add(master, arcname=master.name)
 
                 # Add thumbnail
                 thumb = output_dir / "thumbnail.jpg"
