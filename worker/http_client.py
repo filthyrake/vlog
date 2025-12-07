@@ -170,14 +170,21 @@ class WorkerAPIClient:
         video_id: int,
         quality_name: str,
         output_dir: Path,
+        progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
     ) -> dict:
         """
         Upload a single quality's HLS files after transcoding completes.
+
+        Uses streaming upload with progress tracking to support extending job
+        claims during large uploads (issue #266).
 
         Args:
             video_id: The video ID
             quality_name: Quality name (e.g., "original", "2160p", "1080p")
             output_dir: Directory containing HLS files
+            progress_callback: Optional async callback(bytes_sent, total_bytes)
+                               called periodically during upload to allow
+                               extending job claims for long uploads.
 
         Returns:
             Server response
@@ -205,20 +212,64 @@ class WorkerAPIClient:
             upload_timeout = max(300, 300 + (file_size // (100 * 1024 * 1024)) * 60)
             upload_timeout = min(upload_timeout, 3600)  # Cap at 1 hour
 
-            # Upload using multipart form
             client = await self._get_client()
             url = f"{self.base_url}/api/worker/upload/{video_id}/quality/{quality_name}"
 
-            with open(tmp_path, "rb") as f:
-                files = {"file": ("quality.tar.gz", f, "application/gzip")}
-                resp = await client.post(
-                    url,
-                    files=files,
-                    headers=self.headers,
-                    timeout=upload_timeout,
-                )
-                resp.raise_for_status()
-                return resp.json()
+            # Use streaming upload with progress callback (like upload_hls)
+            # This allows extending job claims during large quality uploads
+            boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+
+            # Multipart header for file field
+            multipart_header = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="quality.tar.gz"\r\n'
+                f"Content-Type: application/gzip\r\n\r\n"
+            ).encode()
+
+            # Multipart footer
+            multipart_footer = f"\r\n--{boundary}--\r\n".encode()
+
+            # Calculate total content length for progress tracking
+            content_length = len(multipart_header) + file_size + len(multipart_footer)
+
+            async def multipart_stream():
+                """Stream the multipart form data with progress tracking."""
+                yield multipart_header
+
+                chunk_size = 1024 * 1024  # 1MB chunks
+                bytes_sent = len(multipart_header)
+                last_callback_time = time.time()
+                callback_interval = 60.0  # Call progress callback every 60 seconds
+
+                with open(tmp_path, "rb") as f:
+                    while chunk := f.read(chunk_size):
+                        yield chunk
+                        bytes_sent += len(chunk)
+
+                        # Call progress callback periodically to extend claim
+                        if progress_callback:
+                            now = time.time()
+                            if now - last_callback_time >= callback_interval:
+                                # Let exceptions propagate - ClaimExpiredError needs to stop the upload
+                                await progress_callback(bytes_sent, content_length)
+                                last_callback_time = now
+
+                yield multipart_footer
+
+            headers = {
+                **self.headers,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(content_length),
+            }
+
+            resp = await client.post(
+                url,
+                content=multipart_stream(),
+                headers=headers,
+                timeout=upload_timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
         except httpx.HTTPStatusError as e:
             try:
                 detail = e.response.json().get("detail", str(e))

@@ -148,9 +148,7 @@ async def delete_video_and_job(video_id: int) -> None:
     This explicitly deletes related records to prevent orphaned data.
     """
     # Get job_id first (if exists)
-    job = await database.fetch_one(
-        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-    )
+    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
     if job:
         # Delete quality_progress entries first (FK to transcoding_jobs)
         await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
@@ -235,6 +233,79 @@ async def cleanup_orphaned_jobs() -> int:
 
     logger.warning(f"Cleaned up {len(orphaned)} orphaned transcoding job(s)")
     return len(orphaned)
+
+
+async def create_or_reset_transcoding_job(video_id: int) -> None:
+    """
+    Create a new transcoding job or reset an existing one for a video.
+
+    Uses ON CONFLICT DO UPDATE for PostgreSQL to handle the case where a job
+    already exists (e.g., due to upload retry, duplicate submission, or
+    re-transcode of a video with existing job). For SQLite (tests), catches
+    IntegrityError and updates the existing job.
+
+    This prevents HTTP 500 errors from unique constraint violations (issue #270).
+
+    Args:
+        video_id: The video ID to create/reset a job for
+    """
+    db_url = str(database.url)
+    is_postgresql = db_url.startswith("postgresql")
+
+    if is_postgresql:
+        # PostgreSQL: Use INSERT ON CONFLICT DO UPDATE to atomically
+        # create or reset the job in a single statement
+        await db_execute_with_retry(
+            sa.text("""
+                INSERT INTO transcoding_jobs (video_id, current_step, progress_percent, attempt_number, max_attempts)
+                VALUES (:video_id, 'pending', 0, 1, 3)
+                ON CONFLICT (video_id) DO UPDATE SET
+                    current_step = 'pending',
+                    progress_percent = 0,
+                    attempt_number = transcoding_jobs.attempt_number + 1,
+                    worker_id = NULL,
+                    claimed_at = NULL,
+                    claim_expires_at = NULL,
+                    started_at = NULL,
+                    completed_at = NULL,
+                    last_error = NULL
+            """).bindparams(video_id=video_id)
+        )
+    else:
+        # SQLite: Try insert, catch IntegrityError and update instead
+        try:
+            await db_execute_with_retry(
+                transcoding_jobs.insert().values(
+                    video_id=video_id,
+                    current_step="pending",
+                    progress_percent=0,
+                    attempt_number=1,
+                    max_attempts=3,
+                )
+            )
+        except Exception as e:
+            # Check if it's a unique constraint violation
+            error_str = str(e).lower()
+            if "unique constraint" in error_str or "unique" in error_str:
+                # Job already exists - reset it
+                await db_execute_with_retry(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.video_id == video_id)
+                    .values(
+                        current_step="pending",
+                        progress_percent=0,
+                        attempt_number=transcoding_jobs.c.attempt_number + 1,
+                        worker_id=None,
+                        claimed_at=None,
+                        claim_expires_at=None,
+                        started_at=None,
+                        completed_at=None,
+                        last_error=None,
+                    )
+                )
+            else:
+                # Re-raise other errors (retryable errors are handled by db_execute_with_retry)
+                raise
 
 
 @asynccontextmanager
@@ -680,17 +751,9 @@ async def upload_video(
 
     # Create transcoding job for remote workers to claim
     # If this fails, clean up to avoid orphaned video record (issue #162)
-    # Use retry logic to handle transient SQLite locking errors
+    # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
     try:
-        await db_execute_with_retry(
-            transcoding_jobs.insert().values(
-                video_id=video_id,
-                current_step="pending",
-                progress_percent=0,
-                attempt_number=1,
-                max_attempts=3,
-            )
-        )
+        await create_or_reset_transcoding_job(video_id)
     except HTTPException:
         # Clean up on HTTP errors
         await delete_video_and_job(video_id)
@@ -1128,16 +1191,8 @@ async def re_upload_video(
         )
 
         # Create new transcoding job for remote workers to claim
-        # Use retry logic to handle transient SQLite locking errors
-        await db_execute_with_retry(
-            transcoding_jobs.insert().values(
-                video_id=video_id,
-                current_step="pending",
-                progress_percent=0,
-                attempt_number=1,
-                max_attempts=3,
-            )
-        )
+        # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
+        await create_or_reset_transcoding_job(video_id)
 
     # === UPLOAD NEW FILE === (file_ext already validated above)
     # Done after transaction so DB state is consistent even if upload fails
@@ -1401,16 +1456,8 @@ async def retranscode_video(
         )
 
         # Create new transcoding job for remote workers to claim
-        # Use retry logic to handle transient SQLite locking errors
-        await db_execute_with_retry(
-            transcoding_jobs.insert().values(
-                video_id=video_id,
-                current_step="pending",
-                progress_percent=0,
-                attempt_number=1,
-                max_attempts=3,
-            )
-        )
+        # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
+        await create_or_reset_transcoding_job(video_id)
 
     # Audit log
     log_audit(
@@ -2091,7 +2138,9 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
                             pass
                     # Rollback database change
                     await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
-                    results.append(BulkOperationResult(video_id=video_id, success=False, error=f"Failed to archive: {e}"))
+                    results.append(
+                        BulkOperationResult(video_id=video_id, success=False, error=f"Failed to archive: {e}")
+                    )
                     failed_count += 1
                     continue
 
@@ -2269,16 +2318,8 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
                 )
 
                 # Create new transcoding job
-                # Use retry logic to handle transient SQLite locking errors
-                await db_execute_with_retry(
-                    transcoding_jobs.insert().values(
-                        video_id=video_id,
-                        current_step="pending",
-                        progress_percent=0,
-                        attempt_number=1,
-                        max_attempts=3,
-                    )
-                )
+                # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
+                await create_or_reset_transcoding_job(video_id)
 
                 # If retranscoding all, delete transcription record (inside transaction)
                 if retranscode_all:
@@ -2625,9 +2666,7 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
 
     for row in worker_rows:
         caps = parse_worker_capabilities(row["metadata"])
-        status = determine_worker_status(
-            row["status"], row["last_heartbeat"], row["current_job_id"], offline_threshold
-        )
+        status = determine_worker_status(row["status"], row["last_heartbeat"], row["current_job_id"], offline_threshold)
 
         # Count by status
         if status == "active":
@@ -2835,21 +2874,27 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
             pass
 
     # Get job stats
-    jobs_completed = await database.fetch_val(
-        sa.select(sa.func.count())
-        .select_from(transcoding_jobs.join(videos))
-        .where(transcoding_jobs.c.worker_id == worker_id)
-        .where(transcoding_jobs.c.completed_at.isnot(None))
-        .where(videos.c.status == "ready")
-    ) or 0
+    jobs_completed = (
+        await database.fetch_val(
+            sa.select(sa.func.count())
+            .select_from(transcoding_jobs.join(videos))
+            .where(transcoding_jobs.c.worker_id == worker_id)
+            .where(transcoding_jobs.c.completed_at.isnot(None))
+            .where(videos.c.status == "ready")
+        )
+        or 0
+    )
 
-    jobs_failed = await database.fetch_val(
-        sa.select(sa.func.count())
-        .select_from(transcoding_jobs.join(videos))
-        .where(transcoding_jobs.c.worker_id == worker_id)
-        .where(transcoding_jobs.c.completed_at.isnot(None))
-        .where(videos.c.status == "failed")
-    ) or 0
+    jobs_failed = (
+        await database.fetch_val(
+            sa.select(sa.func.count())
+            .select_from(transcoding_jobs.join(videos))
+            .where(transcoding_jobs.c.worker_id == worker_id)
+            .where(transcoding_jobs.c.completed_at.isnot(None))
+            .where(videos.c.status == "failed")
+        )
+        or 0
+    )
 
     # Get average job duration for completed jobs
     avg_duration = await database.fetch_val(
@@ -2948,9 +2993,7 @@ async def disable_worker(request: Request, worker_id: str):
     async with database.transaction():
         # Mark worker as disabled
         await database.execute(
-            workers.update()
-            .where(workers.c.id == worker["id"])
-            .values(status="disabled", current_job_id=None)
+            workers.update().where(workers.c.id == worker["id"]).values(status="disabled", current_job_id=None)
         )
 
         # Release any claimed job
@@ -2971,9 +3014,7 @@ async def disable_worker(request: Request, worker_id: str):
                     )
                 )
                 # Reset video status
-                await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(status="pending")
-                )
+                await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
 
     # Audit log
     log_audit(
@@ -3003,11 +3044,7 @@ async def enable_worker(request: Request, worker_id: str):
         raise HTTPException(status_code=400, detail="Worker is not disabled")
 
     # Re-enable worker
-    await db_execute_with_retry(
-        workers.update()
-        .where(workers.c.id == worker["id"])
-        .values(status="active")
-    )
+    await db_execute_with_retry(workers.update().where(workers.c.id == worker["id"]).values(status="active"))
 
     # Audit log
     log_audit(
@@ -3057,9 +3094,7 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
                         current_step=None,
                     )
                 )
-                await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(status="pending")
-                )
+                await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
 
         # Revoke API keys if requested
         if revoke_keys:
@@ -3072,9 +3107,7 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
 
         # Nullify worker_id in all historical transcoding_jobs to prevent orphaned references
         await database.execute(
-            transcoding_jobs.update()
-            .where(transcoding_jobs.c.worker_id == worker_id)
-            .values(worker_id=None)
+            transcoding_jobs.update().where(transcoding_jobs.c.worker_id == worker_id).values(worker_id=None)
         )
 
         # Delete the worker record
