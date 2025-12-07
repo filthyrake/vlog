@@ -1,11 +1,15 @@
 """
 Pytest fixtures for VLog tests.
 Provides test database, test clients, and sample data.
+
+Uses PostgreSQL for testing to match production database.
 """
 
 import asyncio
 import os
+import re
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator
@@ -28,14 +32,82 @@ from api.database import (  # noqa: E402
 )
 from api.enums import VideoStatus  # noqa: E402
 
-# Test database path
-TEST_DB_PATH = Path(_test_temp_dir) / "test_vlog.db"
-TEST_DB_URL = f"sqlite:///{TEST_DB_PATH}"
+# PostgreSQL test database configuration
+# Uses environment variable or falls back to local development defaults
+TEST_PG_HOST = os.environ.get("VLOG_TEST_PG_HOST", "localhost")
+TEST_PG_PORT = os.environ.get("VLOG_TEST_PG_PORT", "5432")
+TEST_PG_USER = os.environ.get("VLOG_TEST_PG_USER", "vlog")
+TEST_PG_PASSWORD = os.environ.get("VLOG_TEST_PG_PASSWORD", "vlog_password")
+TEST_PG_ADMIN_DB = os.environ.get("VLOG_TEST_PG_ADMIN_DB", "postgres")
+
+# Base URL for connecting to PostgreSQL (used to create/drop test databases)
+TEST_PG_ADMIN_URL = f"postgresql://{TEST_PG_USER}:{TEST_PG_PASSWORD}@{TEST_PG_HOST}:{TEST_PG_PORT}/{TEST_PG_ADMIN_DB}"
 
 # Test storage paths
 TEST_VIDEOS_DIR = Path(_test_temp_dir) / "videos"
 TEST_UPLOADS_DIR = Path(_test_temp_dir) / "uploads"
 TEST_ARCHIVE_DIR = Path(_test_temp_dir) / "archive"
+
+
+def _validate_db_name(db_name: str) -> None:
+    """Validate database name contains only safe characters to prevent SQL injection."""
+    if not re.match(r"^[a-zA-Z0-9_]+$", db_name):
+        raise ValueError(f"Invalid database name: {db_name}")
+
+
+def _generate_test_db_name() -> str:
+    """Generate a unique test database name."""
+    # Use a UUID suffix to ensure uniqueness across parallel test runs
+    suffix = uuid.uuid4().hex[:8]
+    return f"vlog_test_{suffix}"
+
+
+def _create_test_database(db_name: str) -> str:
+    """Create a test database and return its URL."""
+    _validate_db_name(db_name)
+    admin_engine = sa.create_engine(TEST_PG_ADMIN_URL, isolation_level="AUTOCOMMIT")
+    with admin_engine.connect() as conn:
+        # Drop if exists (shouldn't happen but just in case)
+        conn.execute(sa.text(f'DROP DATABASE IF EXISTS "{db_name}"'))
+        conn.execute(sa.text(f'CREATE DATABASE "{db_name}"'))
+    admin_engine.dispose()
+    return f"postgresql://{TEST_PG_USER}:{TEST_PG_PASSWORD}@{TEST_PG_HOST}:{TEST_PG_PORT}/{db_name}"
+
+
+def _drop_test_database(db_name: str) -> None:
+    """Drop a test database."""
+    _validate_db_name(db_name)
+    admin_engine = sa.create_engine(TEST_PG_ADMIN_URL, isolation_level="AUTOCOMMIT")
+    with admin_engine.connect() as conn:
+        # Try to terminate connections (may fail if not superuser, which is ok)
+        try:
+            conn.execute(
+                sa.text(
+                    """
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = :db_name AND pid <> pg_backend_pid()
+                    """
+                ),
+                {"db_name": db_name},
+            )
+        except Exception:
+            # Not a superuser, can't terminate connections - that's ok
+            pass
+        # Drop the database (may need to retry if connections still exist)
+        try:
+            conn.execute(sa.text(f'DROP DATABASE IF EXISTS "{db_name}"'))
+        except Exception:
+            # Database may still have connections, ignore cleanup failure
+            pass
+    admin_engine.dispose()
+
+
+def _create_tables(db_url: str) -> None:
+    """Create all tables in the test database."""
+    engine = sa.create_engine(db_url)
+    metadata.create_all(engine)
+    engine.dispose()
 
 
 @pytest.fixture(scope="session")
@@ -47,9 +119,18 @@ def event_loop():
 
 
 @pytest.fixture(scope="function")
-def test_db_path(tmp_path: Path) -> Path:
-    """Create a unique test database path for each test."""
-    return tmp_path / "test_vlog.db"
+def test_db_name() -> str:
+    """Generate a unique test database name for each test."""
+    return _generate_test_db_name()
+
+
+@pytest.fixture(scope="function")
+def test_db_url(test_db_name: str) -> str:
+    """Create a test database and return its URL. Cleans up after test."""
+    db_url = _create_test_database(test_db_name)
+    _create_tables(db_url)
+    yield db_url
+    _drop_test_database(test_db_name)
 
 
 @pytest.fixture(scope="function")
@@ -71,26 +152,15 @@ def test_storage(tmp_path: Path) -> dict:
 
 
 @pytest.fixture(scope="function")
-async def test_database(test_db_path: Path) -> AsyncGenerator[Database, None]:
+async def test_database(test_db_url: str) -> AsyncGenerator[Database, None]:
     """Create a fresh test database for each test."""
-    db_url = f"sqlite:///{test_db_path}"
-
-    # Create tables using sync engine
-    engine = sa.create_engine(db_url)
-    metadata.create_all(engine)
-    engine.dispose()
-
     # Connect async database
-    database = Database(db_url)
+    database = Database(test_db_url)
     await database.connect()
 
     yield database
 
     await database.disconnect()
-
-    # Clean up
-    if test_db_path.exists():
-        test_db_path.unlink()
 
 
 @pytest.fixture(scope="function")
@@ -254,10 +324,11 @@ async def sample_playback_session(test_database: Database, sample_video: dict) -
 
 
 @pytest.fixture(scope="function")
-def public_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
+def public_client(test_storage: dict, test_db_url: str, monkeypatch):
     """
     Create a test client for the public API.
     Patches config to use test paths.
+    The app manages its own database connection through its lifespan.
     """
     import importlib
     import sys
@@ -270,35 +341,29 @@ def public_client(test_database: Database, test_storage: dict, test_db_path: Pat
     monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
     monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
-    monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+    monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
 
-    # Patch database in api.database module
-    import api.database
+    # Reload api.database to create a new Database instance with the test URL
+    if "api.database" in sys.modules:
+        importlib.reload(sys.modules["api.database"])
 
-    monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
-    monkeypatch.setattr(api.database, "database", test_database)
-
-    # Force reload the public module to pick up the patched database
+    # Force reload the public module to pick up the new database
     if "api.public" in sys.modules:
-        # Re-patch the module's database reference after reload
         importlib.reload(sys.modules["api.public"])
 
-    # Patch the app's database reference directly
-    import api.public
     from api.public import app
 
-    monkeypatch.setattr(api.public, "database", test_database)
-
-    # Create test client without lifespan (we manage database ourselves)
+    # Create test client with lifespan so the app manages its own database
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
 
 
 @pytest.fixture(scope="function")
-def admin_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
+def admin_client(test_storage: dict, test_db_url: str, monkeypatch):
     """
     Create a test client for the admin API.
     Patches config to use test paths.
+    The app manages its own database connection through its lifespan.
     """
     import importlib
     import sys
@@ -311,29 +376,19 @@ def admin_client(test_database: Database, test_storage: dict, test_db_path: Path
     monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
     monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
-    monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+    monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
 
-    # Patch database in api.database module
-    import api.database
+    # Reload api.database to create a new Database instance with the test URL
+    if "api.database" in sys.modules:
+        importlib.reload(sys.modules["api.database"])
 
-    monkeypatch.setattr(api.database, "DATABASE_URL", f"sqlite:///{test_db_path}")
-    monkeypatch.setattr(api.database, "database", test_database)
-    # Patch create_tables to no-op since test_database fixture already created tables
-    monkeypatch.setattr(api.database, "create_tables", lambda: None)
-
-    # Force reload the admin module to pick up the patched database
+    # Force reload the admin module to pick up the new database
     if "api.admin" in sys.modules:
         importlib.reload(sys.modules["api.admin"])
 
-    # Patch the app's database reference directly
-    import api.admin
     from api.admin import app
 
-    monkeypatch.setattr(api.admin, "database", test_database)
-    # Also patch create_tables in admin module (after reload)
-    monkeypatch.setattr(api.admin, "create_tables", lambda: None)
-
-    # Create test client without lifespan
+    # Create test client with lifespan so the app manages its own database
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
 
@@ -349,10 +404,11 @@ def worker_admin_headers():
 
 
 @pytest.fixture(scope="function")
-def worker_client(test_database: Database, test_storage: dict, test_db_path: Path, monkeypatch):
+def worker_client(test_storage: dict, test_db_url: str, monkeypatch):
     """
     Create a test client for the Worker API.
     Patches config to use test paths.
+    The app manages its own database connection through its lifespan.
     """
     import importlib
     import sys
@@ -365,38 +421,25 @@ def worker_client(test_database: Database, test_storage: dict, test_db_path: Pat
     monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
     monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
-    monkeypatch.setattr(config, "DATABASE_PATH", test_db_path)
+    monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
     # Set the worker admin secret for testing
     monkeypatch.setattr(config, "WORKER_ADMIN_SECRET", TEST_WORKER_ADMIN_SECRET)
 
-    # Patch the database module
-    import api.database
+    # Reload api.database to create a new Database instance with the test URL
+    if "api.database" in sys.modules:
+        importlib.reload(sys.modules["api.database"])
 
-    monkeypatch.setattr(api.database, "database", test_database)
-    monkeypatch.setattr(api.database, "create_tables", lambda: None)
-
-    # Force reload worker_auth to pick up the patched database
+    # Force reload worker_auth to pick up the new database
     if "api.worker_auth" in sys.modules:
         importlib.reload(sys.modules["api.worker_auth"])
 
-    # Patch worker_auth's database reference
-    import api.worker_auth
-
-    monkeypatch.setattr(api.worker_auth, "database", test_database)
-
-    # Force reload the worker_api module to pick up the patched database
+    # Force reload the worker_api module to pick up the new database
     if "api.worker_api" in sys.modules:
         importlib.reload(sys.modules["api.worker_api"])
 
-    # Patch the app's database reference directly
-    import api.worker_api
     from api.worker_api import app
 
-    monkeypatch.setattr(api.worker_api, "database", test_database)
-    # Also patch the admin secret after reload
-    monkeypatch.setattr(api.worker_api, "WORKER_ADMIN_SECRET", TEST_WORKER_ADMIN_SECRET)
-
-    # Create test client without lifespan
+    # Create test client with lifespan so the app manages its own database
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
 
