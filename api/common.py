@@ -103,9 +103,8 @@ def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
     """
     Ensure datetime is timezone-aware UTC.
 
-    SQLite doesn't store timezone info, so datetimes retrieved from the database
-    may be timezone-naive even though they were stored as UTC. This function
-    ensures consistent timezone handling for datetime comparisons.
+    This function ensures consistent timezone handling for datetime comparisons,
+    handling both timezone-aware and timezone-naive datetime objects.
 
     Args:
         dt: A datetime object (may be None, timezone-aware, or timezone-naive)
@@ -126,7 +125,7 @@ def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt is None:
         return None
     if dt.tzinfo is None:
-        # Assume naive datetimes from SQLite are UTC
+        # Assume naive datetimes are UTC
         return dt.replace(tzinfo=timezone.utc)
     # Convert timezone-aware datetimes to UTC
     return dt.astimezone(timezone.utc)

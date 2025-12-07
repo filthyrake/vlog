@@ -22,6 +22,7 @@ from api.database import (
     workers,
 )
 from api.enums import TranscriptionStatus, VideoStatus
+from api.errors import is_unique_violation
 
 # ============================================================================
 # HTTP-Level Tests using FastAPI TestClient
@@ -682,7 +683,7 @@ class TestCategoryManagement:
     @pytest.mark.asyncio
     async def test_create_category_duplicate_slug_fails(self, test_database, sample_category):
         """Test creating category with duplicate slug fails."""
-        with pytest.raises(Exception):  # sqlite3.IntegrityError wrapped
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(
                 categories.insert().values(
                     name="Another Category",
@@ -690,6 +691,9 @@ class TestCategoryManagement:
                     created_at=datetime.now(timezone.utc),
                 )
             )
+
+        # Verify it's a unique constraint violation
+        assert is_unique_violation(exc_info.value, column="slug")
 
     @pytest.mark.asyncio
     async def test_delete_category(self, test_database, sample_category):

@@ -1,18 +1,23 @@
 """
-Database retry utilities for handling SQLite locking errors.
+Database retry utilities for handling transient database errors.
 
-SQLite has limited concurrent write support, and when multiple services
-(worker API, local worker, public/admin API) access the same database,
-'database is locked' errors can occur despite WAL mode and busy_timeout.
+This module provides retry logic with exponential backoff to handle transient
+errors gracefully, supporting both SQLite and PostgreSQL backends:
 
-This module provides retry logic with exponential backoff to handle these
-transient locking errors gracefully.
+SQLite errors:
+- "database is locked" - concurrent write contention
+- "SQLITE_BUSY" / "SQLITE_LOCKED" - database busy states
+
+PostgreSQL errors:
+- Deadlocks (40P01)
+- Serialization failures (40001)
+- Connection errors
+- "could not obtain lock" - lock contention
 """
 
 import asyncio
 import functools
 import logging
-import sqlite3
 from typing import Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -27,22 +32,71 @@ DEFAULT_MAX_DELAY = 2.0  # 2 seconds
 DEFAULT_EXPONENTIAL_BASE = 2
 
 
-class DatabaseLockedError(Exception):
-    """Raised when database is locked after all retries exhausted."""
+class DatabaseRetryableError(Exception):
+    """Raised when a database operation fails after all retries exhausted."""
 
     pass
 
 
-def is_database_locked_error(exc: Exception) -> bool:
-    """Check if an exception is a database locked error."""
-    error_messages = [
+# Keep the old name as an alias for backwards compatibility
+DatabaseLockedError = DatabaseRetryableError
+
+
+def is_retryable_database_error(exc: Exception) -> bool:
+    """
+    Check if an exception is a retryable database error.
+
+    Supports both SQLite and PostgreSQL error patterns.
+    """
+    error_str = str(exc).lower()
+
+    # SQLite error patterns
+    sqlite_patterns = [
         "database is locked",
         "database table is locked",
-        "SQLITE_BUSY",
-        "SQLITE_LOCKED",
+        "sqlite_busy",
+        "sqlite_locked",
     ]
-    error_str = str(exc).lower()
-    return any(msg.lower() in error_str for msg in error_messages)
+
+    # PostgreSQL error patterns
+    postgres_patterns = [
+        "deadlock detected",  # 40P01
+        "could not serialize access",  # 40001 serialization failure
+        "could not obtain lock",  # Lock contention
+        "connection refused",  # Transient connection error
+        "connection reset",  # Connection dropped
+        "server closed the connection unexpectedly",
+        "canceling statement due to lock timeout",
+        "lock timeout",
+    ]
+
+    # Check for SQLite errors
+    for pattern in sqlite_patterns:
+        if pattern in error_str:
+            return True
+
+    # Check for PostgreSQL errors
+    for pattern in postgres_patterns:
+        if pattern in error_str:
+            return True
+
+    # Check for PostgreSQL error codes in exception attributes
+    # asyncpg and psycopg2 may expose these
+    if hasattr(exc, "sqlstate"):
+        sqlstate = getattr(exc, "sqlstate", "")
+        # 40P01 = deadlock, 40001 = serialization failure
+        if sqlstate in ("40P01", "40001"):
+            return True
+
+    # Check wrapped exceptions (databases library wraps underlying driver exceptions)
+    if hasattr(exc, "__cause__") and exc.__cause__ is not None:
+        return is_retryable_database_error(exc.__cause__)
+
+    return False
+
+
+# Keep the old function name as an alias for backwards compatibility
+is_database_locked_error = is_retryable_database_error
 
 
 async def execute_with_retry(
@@ -54,7 +108,7 @@ async def execute_with_retry(
     **kwargs,
 ) -> T:
     """
-    Execute an async function with retry logic for database locking errors.
+    Execute an async function with retry logic for transient database errors.
 
     Uses exponential backoff with jitter to reduce contention.
 
@@ -70,8 +124,8 @@ async def execute_with_retry(
         Result of the function
 
     Raises:
-        DatabaseLockedError: If all retries are exhausted
-        Other exceptions: Non-locking errors are re-raised immediately
+        DatabaseRetryableError: If all retries are exhausted
+        Other exceptions: Non-retryable errors are re-raised immediately
     """
     import random
 
@@ -80,8 +134,8 @@ async def execute_with_retry(
     for attempt in range(max_retries + 1):
         try:
             return await func(*args, **kwargs)
-        except (sqlite3.OperationalError, Exception) as e:
-            if not is_database_locked_error(e):
+        except Exception as e:
+            if not is_retryable_database_error(e):
                 raise
 
             last_exception = e
@@ -97,13 +151,13 @@ async def execute_with_retry(
                 delay = max(0.01, delay + jitter)
 
                 logger.warning(
-                    f"Database locked (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.2f}s: {e}"
+                    f"Database error (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.2f}s: {e}"
                 )
                 await asyncio.sleep(delay)
             else:
-                logger.error(f"Database locked after {max_retries + 1} attempts, giving up: {e}")
+                logger.error(f"Database error after {max_retries + 1} attempts, giving up: {e}")
 
-    raise DatabaseLockedError(f"Database operation failed after {max_retries + 1} attempts: {last_exception}")
+    raise DatabaseRetryableError(f"Database operation failed after {max_retries + 1} attempts: {last_exception}")
 
 
 def with_db_retry(
@@ -153,7 +207,7 @@ async def fetch_one_with_retry(
     max_delay: float = DEFAULT_MAX_DELAY,
 ):
     """
-    Execute a fetch_one query with retry logic for database locking errors.
+    Execute a fetch_one query with retry logic for transient database errors.
 
     Args:
         query: SQLAlchemy query to execute
@@ -165,7 +219,7 @@ async def fetch_one_with_retry(
         The query result (single row or None)
 
     Raises:
-        DatabaseLockedError: If all retries are exhausted
+        DatabaseRetryableError: If all retries are exhausted
     """
     from api.database import database
 
@@ -187,7 +241,7 @@ async def fetch_all_with_retry(
     max_delay: float = DEFAULT_MAX_DELAY,
 ):
     """
-    Execute a fetch_all query with retry logic for database locking errors.
+    Execute a fetch_all query with retry logic for transient database errors.
 
     Args:
         query: SQLAlchemy query to execute
@@ -199,7 +253,7 @@ async def fetch_all_with_retry(
         The query result (list of rows)
 
     Raises:
-        DatabaseLockedError: If all retries are exhausted
+        DatabaseRetryableError: If all retries are exhausted
     """
     from api.database import database
 
@@ -222,7 +276,7 @@ async def db_execute_with_retry(
     max_delay: float = DEFAULT_MAX_DELAY,
 ):
     """
-    Execute a database write query with retry logic for database locking errors.
+    Execute a database write query with retry logic for transient database errors.
 
     Args:
         query: SQLAlchemy query to execute
@@ -235,7 +289,7 @@ async def db_execute_with_retry(
         The query result (typically row ID for inserts)
 
     Raises:
-        DatabaseLockedError: If all retries are exhausted
+        DatabaseRetryableError: If all retries are exhausted
     """
     from api.database import database
 

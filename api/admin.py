@@ -9,7 +9,8 @@ import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from sqlite3 import IntegrityError
+# Note: IntegrityError handling is done via exception message inspection
+# to support both SQLite and PostgreSQL backends
 from typing import List, Optional
 
 import sqlalchemy as sa
@@ -52,7 +53,7 @@ from api.db_retry import (
     fetch_one_with_retry,
 )
 from api.enums import TranscriptionStatus, VideoStatus
-from api.errors import sanitize_error_message, sanitize_progress_error
+from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.schemas import (
     ActiveJobsResponse,
     ActiveJobWithWorker,
@@ -627,13 +628,9 @@ async def upload_video(
             video_id = await database.execute(query)
         except HTTPException:
             raise
-        except IntegrityError:
-            # Slug collision - try with incremented counter
-            counter += 1
-            slug = f"{base_slug}-{counter}"
         except Exception as e:
-            # Check if it's a wrapped IntegrityError (databases library wraps exceptions)
-            if "UNIQUE constraint failed" in str(e) and "slug" in str(e):
+            # Check for unique constraint violation on slug (works with SQLite and PostgreSQL)
+            if is_unique_violation(e, column="slug"):
                 counter += 1
                 slug = f"{base_slug}-{counter}"
             else:

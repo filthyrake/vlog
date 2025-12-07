@@ -1,6 +1,6 @@
 """
 Centralized enums for status values used throughout the application.
-Using str-based enums for SQLite/database compatibility.
+Using str-based enums for database compatibility.
 """
 
 from enum import Enum
