@@ -651,6 +651,20 @@ async def upload_video(
     category_id: Optional[int] = Form(None),
 ):
     """Upload a new video for processing."""
+    # Early rejection based on Content-Length header (if provided)
+    # This saves bandwidth by rejecting before transfer starts
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_UPLOAD_SIZE:
+                max_size_gb = MAX_UPLOAD_SIZE / (1024 * 1024 * 1024)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum upload size is {max_size_gb:.0f} GB",
+                )
+        except ValueError:
+            pass  # Invalid Content-Length header, continue with streaming validation
+
     # Check storage availability before accepting upload
     if not await check_storage_available():
         raise HTTPException(
@@ -1121,6 +1135,19 @@ async def re_upload_video(
     - Save the new file and queue for reprocessing
     - Preserve: title, description, category, published_at, created_at, slug
     """
+    # Early rejection based on Content-Length header (if provided)
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_UPLOAD_SIZE:
+                max_size_gb = MAX_UPLOAD_SIZE / (1024 * 1024 * 1024)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum upload size is {max_size_gb:.0f} GB",
+                )
+        except ValueError:
+            pass  # Invalid Content-Length header, continue with streaming validation
+
     # Validate file extension
     file_ext = Path(file.filename).suffix.lower() if file.filename else ""
     if not file_ext:

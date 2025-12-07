@@ -21,7 +21,14 @@ from rich.progress import (
 )
 
 from api.errors import truncate_error
-from config import ADMIN_PORT, ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH, WORKER_ADMIN_SECRET, WORKER_API_PORT
+from config import (
+    ADMIN_PORT,
+    ERROR_DETAIL_MAX_LENGTH,
+    ERROR_SUMMARY_MAX_LENGTH,
+    MAX_UPLOAD_SIZE,
+    WORKER_ADMIN_SECRET,
+    WORKER_API_PORT,
+)
 
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
@@ -160,7 +167,16 @@ def validate_file(file_path):
     if file_size == 0:
         raise CLIError(f"File is empty: {file_path}")
 
-    # Warn about very large files (> 10GB)
+    # Enforce max upload size limit
+    if file_size > MAX_UPLOAD_SIZE:
+        max_size_gb = MAX_UPLOAD_SIZE / (1024 * 1024 * 1024)
+        file_size_gb = file_size / (1024 * 1024 * 1024)
+        raise CLIError(
+            f"File too large ({file_size_gb:.2f} GB). "
+            f"Maximum upload size is {max_size_gb:.0f} GB"
+        )
+
+    # Warn about large files (> 10GB) that may take a while to upload
     if file_size > 10 * 1024 * 1024 * 1024:
         print(f"Warning: Large file detected ({file_size / (1024**3):.2f} GB). Upload may take a while.")
 
