@@ -1,11 +1,46 @@
 """
 Tests for error message truncation utilities.
 
-Validates the truncate_error function and consistent error length limits.
+Validates the truncate_error and truncate_string functions and consistent error length limits.
 """
 
-from api.errors import truncate_error
+from api.errors import truncate_error, truncate_string
 from config import ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH
+
+
+class TestTruncateString:
+    """Tests for the generic truncate_string function."""
+
+    def test_truncate_string_short_text(self):
+        """Test that short text is not truncated."""
+        text = "Short text"
+        result = truncate_string(text, 50)
+        assert result == text
+
+    def test_truncate_string_long_text(self):
+        """Test that long text is truncated with ellipsis."""
+        text = "a" * 100
+        result = truncate_string(text, 50)
+        assert result.endswith("...")
+        assert len(result) == 50
+        assert result == "a" * 47 + "..."
+
+    def test_truncate_string_none_input(self):
+        """Test that None input returns None."""
+        result = truncate_string(None, 50)
+        assert result is None
+
+    def test_truncate_string_empty_string(self):
+        """Test that empty string is handled."""
+        result = truncate_string("", 50)
+        assert result == ""
+
+    def test_truncate_string_user_agent(self):
+        """Test truncating a user agent string (non-error use case)."""
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " * 10
+        result = truncate_string(user_agent, 100)
+        assert len(result) == 100
+        assert result.endswith("...")
 
 
 class TestTruncateError:
@@ -37,6 +72,11 @@ class TestTruncateError:
         """Test that empty string is handled."""
         result = truncate_error("")
         assert result == ""
+
+    def test_truncate_error_none_input(self):
+        """Test that None input returns None."""
+        result = truncate_error(None)
+        assert result is None
 
     def test_truncate_error_custom_length(self):
         """Test truncation with custom max length."""
