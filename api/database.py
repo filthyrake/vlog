@@ -117,6 +117,9 @@ transcoding_jobs = sa.Table(
     sa.Column("max_attempts", sa.Integer, default=3),
     # Error tracking
     sa.Column("last_error", sa.Text, nullable=True),
+    # Permanent record of which worker processed this job (for audit/debugging)
+    sa.Column("processed_by_worker_id", sa.String(36), nullable=True),
+    sa.Column("processed_by_worker_name", sa.String(100), nullable=True),
     sa.Index("ix_transcoding_jobs_video_id", "video_id"),
     sa.Index("ix_transcoding_jobs_claim_expires", "claim_expires_at"),
 )

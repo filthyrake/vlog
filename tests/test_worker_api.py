@@ -714,6 +714,118 @@ class TestJobClaiming:
         assert gpu_claim_response.json()["job_id"] is not None
 
     @pytest.mark.asyncio
+    async def test_claim_job_records_processed_by_worker(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that claiming a job records processed_by_worker_id and processed_by_worker_name (Issue #254)."""
+        # Create a transcoding job for the pending video
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] is not None
+
+        # Verify processed_by fields were set in the database
+        job = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == data["job_id"])
+        )
+        assert job["processed_by_worker_id"] == registered_worker["worker_id"]
+        assert job["processed_by_worker_name"] is not None
+        assert len(job["processed_by_worker_name"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_processed_by_worker_persists_after_completion(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that processed_by_worker info persists after job completion (Issue #254)."""
+        # Create and claim a job
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        claim_response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert claim_response.status_code == 200
+        job_id = claim_response.json()["job_id"]
+
+        # Complete the job
+        complete_response = worker_client.post(
+            f"/api/worker/{job_id}/complete",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={
+                "qualities": [
+                    {"name": "1080p", "width": 1920, "height": 1080, "bitrate": 5000},
+                ],
+                "duration": 60.0,
+                "source_width": 1920,
+                "source_height": 1080,
+            },
+        )
+        assert complete_response.status_code == 200
+
+        # Verify processed_by fields are still present after completion
+        job = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert job["completed_at"] is not None
+        assert job["processed_by_worker_id"] == registered_worker["worker_id"]
+        assert job["processed_by_worker_name"] is not None
+
+    @pytest.mark.asyncio
+    async def test_processed_by_worker_persists_after_failure(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that processed_by_worker info persists after job failure (Issue #254)."""
+        # Create and claim a job
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=3,  # Last attempt
+                max_attempts=3,
+            )
+        )
+
+        claim_response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert claim_response.status_code == 200
+        job_id = claim_response.json()["job_id"]
+
+        # Fail the job permanently
+        fail_response = worker_client.post(
+            f"/api/worker/{job_id}/fail",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+            json={"error_message": "Permanent failure", "retry": False},
+        )
+        assert fail_response.status_code == 200
+        assert fail_response.json()["will_retry"] is False
+
+        # Verify processed_by fields are still present after failure
+        job = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert job["completed_at"] is not None  # Failed jobs also set completed_at
+        assert job["processed_by_worker_id"] == registered_worker["worker_id"]
+        assert job["processed_by_worker_name"] is not None
+
+    @pytest.mark.asyncio
     async def test_cpu_worker_claims_when_no_gpu_available(
         self, worker_client, test_database, sample_pending_video, worker_admin_headers
     ):
