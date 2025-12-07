@@ -371,6 +371,120 @@ class VideoQualitiesResponse(BaseModel):
     existing_qualities: List[VideoQualityInfo]  # Current transcoded qualities
 
 
+# ============ Bulk Operation Models ============
+
+
+# Maximum videos per bulk operation to prevent abuse
+MAX_BULK_VIDEOS = 100
+
+
+class BulkOperationResult(BaseModel):
+    """Result for a single item in a bulk operation."""
+
+    video_id: int
+    success: bool
+    error: Optional[str] = None
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request to delete multiple videos."""
+
+    video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
+    permanent: bool = Field(default=False, description="Permanently delete instead of soft-delete")
+
+
+class BulkDeleteResponse(BaseModel):
+    """Response from bulk delete operation."""
+
+    status: str
+    deleted: int
+    failed: int
+    results: List[BulkOperationResult]
+
+
+class BulkUpdateRequest(BaseModel):
+    """Request to update multiple videos with the same values."""
+
+    video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
+    category_id: Optional[int] = Field(default=None, description="Set category (use 0 or null to remove)")
+    published_at: Optional[datetime] = Field(default=None, description="Set published date")
+    unpublish: bool = Field(default=False, description="Remove published date (set to null)")
+
+
+class BulkUpdateResponse(BaseModel):
+    """Response from bulk update operation."""
+
+    status: str
+    updated: int
+    failed: int
+    results: List[BulkOperationResult]
+
+
+class BulkRetranscodeRequest(BaseModel):
+    """Request to retranscode multiple videos."""
+
+    video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
+    qualities: List[str] = Field(default=["all"], min_length=1)
+
+    @field_validator("qualities")
+    @classmethod
+    def validate_qualities(cls, v: List[str]) -> List[str]:
+        valid_qualities = {"all", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p"}
+        for q in v:
+            if q not in valid_qualities:
+                raise ValueError(f"Invalid quality '{q}'. Valid options: {', '.join(sorted(valid_qualities))}")
+        return v
+
+
+class BulkRetranscodeResponse(BaseModel):
+    """Response from bulk retranscode operation."""
+
+    status: str
+    queued: int
+    failed: int
+    results: List[BulkOperationResult]
+
+
+class BulkRestoreRequest(BaseModel):
+    """Request to restore multiple soft-deleted videos."""
+
+    video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
+
+
+class BulkRestoreResponse(BaseModel):
+    """Response from bulk restore operation."""
+
+    status: str
+    restored: int
+    failed: int
+    results: List[BulkOperationResult]
+
+
+class VideoExportItem(BaseModel):
+    """Single video item for export."""
+
+    id: int
+    title: str
+    slug: str
+    description: str
+    category_id: Optional[int]
+    category_name: Optional[str]
+    duration: float
+    source_width: int
+    source_height: int
+    status: str
+    created_at: datetime
+    published_at: Optional[datetime]
+
+
+class VideoExportResponse(BaseModel):
+    """Response containing exported video metadata."""
+
+    videos: List[VideoExportItem]
+    total_count: int
+    exported_at: datetime
+
+
 # ============ Worker Dashboard Models ============
 
 
