@@ -9,6 +9,8 @@ import logging
 import re
 from typing import Optional
 
+from config import ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH
+
 logger = logging.getLogger(__name__)
 
 # Patterns that indicate internal details
@@ -44,6 +46,45 @@ ERROR_MESSAGES = {
     "permission": "A file access error occurred. Please contact support.",
     "general": "An error occurred while processing your request. Please try again.",
 }
+
+
+def truncate_string(text: Optional[str], max_length: int) -> Optional[str]:
+    """
+    Truncate a string to a maximum length.
+
+    Generic string truncation utility that can be used for any text,
+    not just error messages.
+
+    Args:
+        text: The text to truncate (can be None)
+        max_length: Maximum length (must be at least 4 for truncation with ellipsis)
+
+    Returns:
+        The truncated text with "..." appended if it was truncated, or None if input was None
+    """
+    if text is None:
+        return None
+    if not text or len(text) <= max_length:
+        return text
+    # Ensure we have enough space for ellipsis (...)
+    if max_length < 4:
+        return text[:max_length]
+    return text[:max_length - 3] + "..."
+
+
+def truncate_error(msg: Optional[str], max_length: int = ERROR_DETAIL_MAX_LENGTH) -> Optional[str]:
+    """
+    Truncate an error message to a maximum length.
+
+    Args:
+        msg: The error message to truncate (can be None)
+        max_length: Maximum length (default: ERROR_DETAIL_MAX_LENGTH)
+
+    Returns:
+        The truncated message with "..." appended if it was truncated, or None if input was None
+    """
+    return truncate_string(msg, max_length)
+
 
 
 def sanitize_error_message(error: Optional[str], log_original: bool = True, context: str = "") -> Optional[str]:
@@ -102,7 +143,7 @@ def sanitize_error_message(error: Optional[str], log_original: bool = True, cont
 
     # If the error message is short and doesn't match patterns, it might be safe
     # But truncate and remove any path-like segments just in case
-    if len(error) < 100 and "/" not in error and "\\" not in error:
+    if len(error) < ERROR_SUMMARY_MAX_LENGTH and "/" not in error and "\\" not in error:
         return error
 
     # Default to generic message for anything else
