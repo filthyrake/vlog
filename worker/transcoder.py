@@ -906,12 +906,30 @@ async def create_original_quality(
     return True, None, {"bitrate_bps": bitrate_bps}
 
 
-def generate_master_playlist(output_dir: Path, completed_qualities: List[dict]):
+async def generate_master_playlist(output_dir: Path, completed_qualities: List[dict]):
     """Generate master HLS playlist from completed quality variants.
 
     Qualities are sorted by bandwidth (highest first) so players pick the best quality.
     The 'original' quality uses bitrate_bps if available, others use bitrate string.
+
+    Verifies actual dimensions from first segment of each quality to ensure accuracy.
+
+    Note: This function modifies the quality dictionaries in-place to update width/height
+    with actual values from the transcoded segments.
+
+    Args:
+        output_dir: Directory containing the HLS segments and playlists
+        completed_qualities: List of quality dicts with name, width, height, bitrate fields
     """
+    # Verify actual dimensions from first segment of each quality
+    for quality in completed_qualities:
+        first_segment = output_dir / f"{quality['name']}_0000.ts"
+        if first_segment.exists():
+            actual_width, actual_height = await get_output_dimensions(first_segment)
+            if actual_width > 0 and actual_height > 0:
+                quality['width'] = actual_width
+                quality['height'] = actual_height
+
     master_content = "#EXTM3U\n#EXT-X-VERSION:3\n\n"
 
     # Calculate bandwidth for each quality and sort by bandwidth (highest first)
@@ -1774,7 +1792,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # ----------------------------------------------------------------
         await update_job_step(job_id, TranscodingStep.MASTER_PLAYLIST)
         print("  Step 4: Generating master playlist...")
-        generate_master_playlist(output_dir, successful_qualities)
+        await generate_master_playlist(output_dir, successful_qualities)
         await checkpoint(job_id)
 
         # ----------------------------------------------------------------
