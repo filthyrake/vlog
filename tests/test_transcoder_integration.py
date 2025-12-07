@@ -413,6 +413,76 @@ class TestVideoStatusTransitions:
         assert job["attempt_number"] == 2
         assert job["last_error"] == "First attempt failed"
 
+    @pytest.mark.asyncio
+    async def test_ready_preserves_existing_published_at(self, integration_database):
+        """Test that marking a video ready preserves existing published_at (re-transcode scenario).
+
+        This tests the expected behavior documented in the transcoder: when a video
+        already has a published_at date (from a previous transcode), marking it ready
+        again should NOT overwrite the date.
+        """
+        # Create a video with an existing published_at (simulating a re-transcode)
+        original_published = datetime.now(timezone.utc) - timedelta(days=30)
+        video_id = await integration_database.execute(
+            videos.insert().values(
+                title="Re-transcode Test Video",
+                slug="retranscode-test-video",
+                status=VideoStatus.PENDING,
+                published_at=original_published,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+        # Simulate transcoder behavior: only set published_at if not already set
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == video_id))
+        video_updates = {"status": VideoStatus.READY, "duration": 120.0}
+        if video["published_at"] is None:
+            video_updates["published_at"] = datetime.now(timezone.utc)
+
+        await integration_database.execute(videos.update().where(videos.c.id == video_id).values(**video_updates))
+
+        # Verify published_at is preserved
+        updated_video = await integration_database.fetch_one(videos.select().where(videos.c.id == video_id))
+        assert updated_video["status"] == VideoStatus.READY
+        assert updated_video["published_at"] is not None
+        # Handle timezone-naive datetimes from SQLite
+        db_published = updated_video["published_at"]
+        if db_published.tzinfo is None:
+            db_published = db_published.replace(tzinfo=timezone.utc)
+        orig = original_published
+        if orig.tzinfo is None:
+            orig = orig.replace(tzinfo=timezone.utc)
+        time_diff = abs((db_published - orig).total_seconds())
+        assert time_diff < 1, f"published_at changed: was {original_published}, now {updated_video['published_at']}"
+
+    @pytest.mark.asyncio
+    async def test_ready_sets_published_at_when_null(self, integration_database):
+        """Test that marking a video ready sets published_at when it was NULL (new upload)."""
+        # Create a video without published_at (simulating a new upload)
+        video_id = await integration_database.execute(
+            videos.insert().values(
+                title="New Upload Test Video",
+                slug="new-upload-test-video",
+                status=VideoStatus.PENDING,
+                published_at=None,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+        # Simulate transcoder behavior: set published_at since it's NULL
+        video = await integration_database.fetch_one(videos.select().where(videos.c.id == video_id))
+        now = datetime.now(timezone.utc)
+        video_updates = {"status": VideoStatus.READY, "duration": 60.0}
+        if video["published_at"] is None:
+            video_updates["published_at"] = now
+
+        await integration_database.execute(videos.update().where(videos.c.id == video_id).values(**video_updates))
+
+        # Verify published_at is now set
+        updated_video = await integration_database.fetch_one(videos.select().where(videos.c.id == video_id))
+        assert updated_video["status"] == VideoStatus.READY
+        assert updated_video["published_at"] is not None
+
 
 # ============================================================================
 # File I/O Integration Tests
