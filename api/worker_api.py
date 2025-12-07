@@ -62,7 +62,6 @@ from api.worker_schemas import (
     WorkerStatusResponse,
 )
 from config import (
-    CLEANUP_SOURCE_ON_PERMANENT_FAILURE,
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
@@ -1133,17 +1132,10 @@ async def fail_job(
         ) from e
 
     # Clean up source file after permanent failure (outside transaction)
-    if not will_retry and CLEANUP_SOURCE_ON_PERMANENT_FAILURE:
-        video_id = job["video_id"]
-        for ext in SUPPORTED_VIDEO_EXTENSIONS:
-            source_file = UPLOADS_DIR / f"{video_id}{ext}"
-            if source_file.exists():
-                try:
-                    source_file.unlink()
-                    logger.info(f"Cleaned up source file for permanently failed video {video_id}: {source_file}")
-                except OSError as e:
-                    logger.error(f"Failed to clean up source file {source_file}: {e}")
-                break
+    if not will_retry:
+        from worker.transcoder import cleanup_source_file
+
+        cleanup_source_file(job["video_id"])
 
     return FailJobResponse(
         status="ok",
