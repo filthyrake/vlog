@@ -48,22 +48,39 @@ ERROR_MESSAGES = {
 }
 
 
-def truncate_error(msg: str, max_length: int = ERROR_DETAIL_MAX_LENGTH) -> str:
+def truncate_string(text: Optional[str], max_length: int) -> Optional[str]:
+    """
+    Truncate a string to a maximum length.
+
+    Generic string truncation utility that can be used for any text,
+    not just error messages.
+
+    Args:
+        text: The text to truncate (can be None)
+        max_length: Maximum length
+
+    Returns:
+        The truncated text with "..." appended if it was truncated, or None if input was None
+    """
+    if text is None:
+        return None
+    if not text or len(text) <= max_length:
+        return text
+    return text[:max_length - 3] + "..."
+
+
+def truncate_error(msg: Optional[str], max_length: int = ERROR_DETAIL_MAX_LENGTH) -> Optional[str]:
     """
     Truncate an error message to a maximum length.
 
     Args:
-        msg: The error message to truncate
+        msg: The error message to truncate (can be None)
         max_length: Maximum length (default: ERROR_DETAIL_MAX_LENGTH)
 
     Returns:
-        The truncated message with "..." appended if it was truncated
+        The truncated message with "..." appended if it was truncated, or None if input was None
     """
-    if not msg:
-        return msg
-    if len(msg) <= max_length:
-        return msg
-    return msg[:max_length - 3] + "..."
+    return truncate_string(msg, max_length)
 
 
 
