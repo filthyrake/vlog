@@ -23,7 +23,6 @@ from api.database import (
     transcoding_jobs,
     video_qualities,
     videos,
-    workers,
 )
 from api.enums import VideoStatus
 
