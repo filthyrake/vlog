@@ -761,26 +761,40 @@ async def update_progress(
     )
 
     # Update quality progress if provided
+    # Use upsert (INSERT ... ON CONFLICT) for PostgreSQL compatibility
+    # The databases library returns None for UPDATE regardless of rows affected,
+    # so UPDATE-then-INSERT doesn't work reliably.
     if data.quality_progress:
+        db_url = str(database.url)
+        is_postgresql = db_url.startswith("postgresql")
+
         for qp in data.quality_progress:
-            # Try to update existing record
-            result = await database.execute(
-                quality_progress.update()
-                .where(quality_progress.c.job_id == job_id)
-                .where(quality_progress.c.quality == qp.name)
-                .values(status=qp.status, progress_percent=qp.progress)
-            )
-            # If no record exists, create one
-            # PostgreSQL with databases library returns None for UPDATE when no rows affected
-            # SQLite returns 0
-            if result is None or result == 0 or (isinstance(result, str) and result.startswith("UPDATE 0")):
-                logger.info(f"Job {job_id}: Inserting new record for {qp.name}")
+            if is_postgresql:
+                # PostgreSQL upsert using ON CONFLICT
                 await database.execute(
-                    quality_progress.insert().values(
+                    sa.text("""
+                        INSERT INTO quality_progress (job_id, quality, status, progress_percent)
+                        VALUES (:job_id, :quality, :status, :progress)
+                        ON CONFLICT (job_id, quality) DO UPDATE
+                        SET status = :status, progress_percent = :progress
+                    """).bindparams(
                         job_id=job_id,
                         quality=qp.name,
                         status=qp.status,
-                        progress_percent=qp.progress,
+                        progress=qp.progress,
+                    )
+                )
+            else:
+                # SQLite upsert using INSERT OR REPLACE
+                await database.execute(
+                    sa.text("""
+                        INSERT OR REPLACE INTO quality_progress (job_id, quality, status, progress_percent)
+                        VALUES (:job_id, :quality, :status, :progress)
+                    """).bindparams(
+                        job_id=job_id,
+                        quality=qp.name,
+                        status=qp.status,
+                        progress=qp.progress,
                     )
                 )
 
