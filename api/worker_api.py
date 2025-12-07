@@ -41,7 +41,7 @@ from api.database import (
     worker_api_keys,
     workers,
 )
-from api.db_retry import DatabaseLockedError, execute_with_retry
+from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
     ClaimJobResponse,
@@ -168,7 +168,7 @@ async def _detect_and_release_stale_jobs():
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
 
     # Find workers that are not already offline but haven't sent heartbeat
-    stale_workers = await database.fetch_all(
+    stale_workers = await fetch_all_with_retry(
         workers.select().where(workers.c.status != "offline").where(workers.c.last_heartbeat < offline_threshold)
     )
 
@@ -199,7 +199,7 @@ async def _detect_and_release_stale_jobs():
 
         # Find jobs claimed by this worker that have EXPIRED claims
         # Don't release jobs where the claim hasn't expired yet - the worker might still complete them
-        stale_jobs = await database.fetch_all(
+        stale_jobs = await fetch_all_with_retry(
             transcoding_jobs.select()
             .where(transcoding_jobs.c.worker_id == worker["worker_id"])
             .where(transcoding_jobs.c.completed_at.is_(None))
@@ -231,7 +231,7 @@ async def _detect_and_release_stale_jobs():
             )
 
             # Reset video status back to pending so it can be reclaimed
-            video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+            video = await fetch_one_with_retry(videos.select().where(videos.c.id == job["video_id"]))
             if video and video["status"] == "processing":
                 await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
                 logger.info(f"Reset video {job['video_id']} status to pending")
@@ -306,7 +306,7 @@ async def lifespan(app: FastAPI):
     logger.info("Worker API shutting down - releasing claimed jobs...")
     try:
         # Find all jobs that are still claimed but not completed
-        claimed_jobs = await database.fetch_all(
+        claimed_jobs = await fetch_all_with_retry(
             transcoding_jobs.select()
             .where(transcoding_jobs.c.claimed_at.isnot(None))
             .where(transcoding_jobs.c.completed_at.is_(None))
@@ -329,7 +329,7 @@ async def lifespan(app: FastAPI):
                 )
 
                 # Reset video status back to pending if it was processing
-                video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+                video = await fetch_one_with_retry(videos.select().where(videos.c.id == job["video_id"]))
                 if video and video["status"] == "processing":
                     await database.execute(
                         videos.update().where(videos.c.id == job["video_id"]).values(status="pending")
@@ -566,7 +566,7 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
 
     if not requesting_worker_has_gpu:
         # This is a CPU worker - check if any GPU workers are idle
-        idle_gpu_workers = await database.fetch_all(
+        idle_gpu_workers = await fetch_all_with_retry(
             workers.select().where(workers.c.status == "idle").where(workers.c.id != worker["id"])  # Exclude self
         )
 
@@ -607,7 +607,7 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
             )
 
             # Find oldest unclaimed pending job
-            job = await database.fetch_one(
+            job = await fetch_one_with_retry(
                 sa.text("""
                     SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
                     FROM transcoding_jobs tj
@@ -696,7 +696,7 @@ async def update_progress(
 ):
     """Update job progress and extend claim."""
     # Verify worker owns this job
-    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+    job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
@@ -779,7 +779,7 @@ async def complete_job(
     worker: dict = Depends(verify_worker_key),
 ):
     """Mark job as complete after HLS files uploaded."""
-    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+    job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
@@ -792,7 +792,7 @@ async def complete_job(
         async with database.transaction():
             # Save quality info
             for q in data.qualities:
-                existing = await database.fetch_one(
+                existing = await fetch_one_with_retry(
                     video_qualities.select()
                     .where(video_qualities.c.video_id == job["video_id"])
                     .where(video_qualities.c.quality == q.name)
@@ -861,7 +861,7 @@ async def fail_job(
     worker: dict = Depends(verify_worker_key),
 ):
     """Report job failure."""
-    job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+    job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
@@ -938,7 +938,7 @@ async def download_source(
 ):
     """Stream source file to worker."""
     # Verify worker has claimed this video's job
-    job = await database.fetch_one(
+    job = await fetch_one_with_retry(
         transcoding_jobs.select()
         .where(transcoding_jobs.c.video_id == video_id)
         .where(transcoding_jobs.c.worker_id == worker["worker_id"])
@@ -986,7 +986,7 @@ async def upload_quality(
     - {quality_name}.m3u8 (quality playlist)
     - {quality_name}_XXXX.ts (segments)
     """
-    job = await database.fetch_one(
+    job = await fetch_one_with_retry(
         transcoding_jobs.select()
         .where(transcoding_jobs.c.video_id == video_id)
         .where(transcoding_jobs.c.worker_id == worker["worker_id"])
@@ -994,7 +994,7 @@ async def upload_quality(
     if not job:
         raise HTTPException(status_code=403, detail="Not your job or job not found")
 
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1123,7 +1123,7 @@ async def upload_finalize(
 
     Called after all quality uploads complete.
     """
-    job = await database.fetch_one(
+    job = await fetch_one_with_retry(
         transcoding_jobs.select()
         .where(transcoding_jobs.c.video_id == video_id)
         .where(transcoding_jobs.c.worker_id == worker["worker_id"])
@@ -1131,7 +1131,7 @@ async def upload_finalize(
     if not job:
         raise HTTPException(status_code=403, detail="Not your job or job not found")
 
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1216,7 +1216,7 @@ async def upload_hls(
     DEPRECATED: Use /upload/{video_id}/quality/{name} for incremental uploads.
     This endpoint remains for backwards compatibility.
     """
-    job = await database.fetch_one(
+    job = await fetch_one_with_retry(
         transcoding_jobs.select()
         .where(transcoding_jobs.c.video_id == video_id)
         .where(transcoding_jobs.c.worker_id == worker["worker_id"])
@@ -1224,7 +1224,7 @@ async def upload_hls(
     if not job:
         raise HTTPException(status_code=403, detail="Not your job or job not found")
 
-    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -1374,7 +1374,7 @@ async def list_workers(
     offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
 
     # Get all workers
-    rows = await database.fetch_all(workers.select().order_by(workers.c.last_heartbeat.desc()))
+    rows = await fetch_all_with_retry(workers.select().order_by(workers.c.last_heartbeat.desc()))
 
     worker_list = []
     active_count = 0
@@ -1399,7 +1399,7 @@ async def list_workers(
         # Get current video slug if working
         current_video_slug = None
         if row["current_job_id"]:
-            job = await database.fetch_one(
+            job = await fetch_one_with_retry(
                 sa.select(videos.c.slug)
                 .select_from(transcoding_jobs.join(videos))
                 .where(transcoding_jobs.c.id == row["current_job_id"])
@@ -1444,7 +1444,7 @@ async def revoke_worker(
     Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
     """
     # Find worker by UUID
-    worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
 

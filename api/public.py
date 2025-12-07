@@ -43,6 +43,7 @@ from api.db_retry import (
     db_execute_with_retry,
     fetch_all_with_retry,
     fetch_one_with_retry,
+    fetch_val_with_retry,
 )
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
@@ -483,7 +484,7 @@ async def get_category(request: Request, slug: str) -> CategoryResponse:
             )
         )
     )
-    count = await database.fetch_val(count_query)
+    count = await fetch_val_with_retry(count_query)
 
     return CategoryResponse(
         id=row["id"],

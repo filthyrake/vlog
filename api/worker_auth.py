@@ -12,6 +12,7 @@ from fastapi.security import APIKeyHeader
 
 from api.common import ensure_utc
 from api.database import database, worker_api_keys, workers
+from api.db_retry import fetch_one_with_retry
 from config import TRUSTED_PROXIES
 
 # Security event logger - separate from regular application logging
@@ -109,7 +110,7 @@ async def verify_worker_key(
     key_hash = hash_api_key(api_key)
 
     # Query database for matching key by prefix (non-revoked keys only)
-    key_record = await database.fetch_one(
+    key_record = await fetch_one_with_retry(
         worker_api_keys.select()
         .where(worker_api_keys.c.key_prefix == prefix)
         .where(worker_api_keys.c.revoked_at.is_(None))
@@ -171,7 +172,7 @@ async def verify_worker_key(
     asyncio.create_task(update_last_used())
 
     # Get worker info
-    worker = await database.fetch_one(workers.select().where(workers.c.id == key_record["worker_id"]))
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.id == key_record["worker_id"]))
 
     if not worker:
         security_logger.warning(
@@ -215,5 +216,5 @@ async def verify_worker_key(
 
 async def get_worker_by_id(worker_id: str) -> Optional[dict]:
     """Get a worker by its UUID."""
-    worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
     return dict(worker) if worker else None
