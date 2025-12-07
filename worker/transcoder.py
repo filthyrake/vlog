@@ -18,7 +18,6 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from sqlite3 import IntegrityError  # databases library passes through sqlite3 exceptions
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -47,7 +46,6 @@ from config import (
     HLS_SEGMENT_DURATION,
     JOB_STALE_TIMEOUT,
     KEEP_COMPLETED_QUALITIES,
-    MAX_RETRY_ATTEMPTS,
     PROGRESS_UPDATE_INTERVAL,
     QUALITY_PRESETS,
     SUPPORTED_VIDEO_EXTENSIONS,
@@ -987,48 +985,26 @@ async def cleanup_partial_output(
 # ============================================================================
 
 
-async def get_or_create_job(video_id: int, state: Optional[WorkerState] = None) -> dict:
-    """Get existing job or create a new one for the video.
+async def get_existing_job(video_id: int) -> Optional[dict]:
+    """Get existing transcoding job for a video.
+
+    Returns None if no job exists - this indicates the upload is still in progress
+    and the admin API hasn't created the job yet. The local worker should skip
+    processing in this case to avoid race conditions.
 
     Args:
         video_id: Database ID of the video
-        state: Optional WorkerState instance. If not provided, uses/creates the
-               default global state.
-    """
-    if state is None:
-        state = get_worker_state()
 
-    # Check for existing job
+    Returns:
+        Job dict if exists, None otherwise
+    """
     query = transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
     job = await database.fetch_one(query)
 
     if job:
         return dict(job)
 
-    # Create new job - handle race condition where another worker created it first
-    try:
-        result = await database.execute(
-            transcoding_jobs.insert().values(
-                video_id=video_id,
-                worker_id=state.worker_id,
-                current_step=None,
-                progress_percent=0,
-                started_at=datetime.now(timezone.utc),
-                last_checkpoint=datetime.now(timezone.utc),
-                attempt_number=1,
-                max_attempts=MAX_RETRY_ATTEMPTS,
-            )
-        )
-
-        job_query = transcoding_jobs.select().where(transcoding_jobs.c.id == result)
-        return dict(await database.fetch_one(job_query))
-    except IntegrityError:
-        # Another worker created it first, fetch the existing job by video_id
-        job = await database.fetch_one(query)
-        if job:
-            return dict(job)
-        # Re-raise if still not found (shouldn't happen but handle defensively)
-        raise
+    return None
 
 
 async def update_job_step(job_id: int, step: str):
@@ -1328,8 +1304,12 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         )
         return False
 
-    # Get or create job record
-    job = await get_or_create_job(video_id, state)
+    # Get existing job record (created by admin API during upload)
+    # If no job exists, the upload is still in progress - skip and retry later
+    job = await get_existing_job(video_id)
+    if job is None:
+        print(f"  No transcoding job found - upload still in progress, will retry later")
+        return False
     job_id = job["id"]
 
     # Always mark video as processing when we start/resume
