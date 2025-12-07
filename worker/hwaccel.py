@@ -481,10 +481,13 @@ def _select_hardware_encoder(
 def _build_nvenc_selection(encoder: EncoderInfo, target_height: int) -> EncoderSelection:
     """Build FFmpeg arguments for NVENC encoding."""
     # Input arguments for CUDA hardware decoding
+    # Note: We don't use -hwaccel_output_format cuda because scale_npp/scale_cuda
+    # require FFmpeg compiled with --enable-libnpp or --enable-cuda-llvm respectively,
+    # which most distro FFmpeg builds (including RPM Fusion) don't have.
+    # Frames are decoded with CUDA, copied to CPU for scaling, then the NVENC encoder
+    # uploads them back to GPU for encoding. This is still much faster than CPU encoding.
     input_args = [
         "-hwaccel",
-        "cuda",
-        "-hwaccel_output_format",
         "cuda",
     ]
 
@@ -508,10 +511,9 @@ def _build_nvenc_selection(encoder: EncoderInfo, target_height: int) -> EncoderS
     if encoder.codec == VideoCodec.HEVC:
         output_args.extend(["-tag:v", "hvc1"])  # Apple compatibility
 
-    # Scale filter uses NPP (NVIDIA Performance Primitives)
-    # Note: scale_cuda requires ffmpeg compiled with --enable-cuda-llvm
-    # scale_npp is more commonly available in NVIDIA-enabled ffmpeg builds
-    scale_filter = f"scale_npp=-2:{target_height}"
+    # Use standard CPU scale filter since scale_npp/scale_cuda aren't available
+    # in most distro FFmpeg builds. The NVENC encoder handles GPU upload.
+    scale_filter = f"scale=-2:{target_height}"
 
     return EncoderSelection(
         encoder=encoder,

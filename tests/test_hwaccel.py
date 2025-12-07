@@ -67,7 +67,8 @@ class TestEncoderSelection:
         assert selection.encoder.is_hardware is True
         assert "-hwaccel" in selection.input_args
         assert "cuda" in selection.input_args
-        assert "scale_npp" in selection.scale_filter
+        # Uses CPU scale filter since scale_npp/scale_cuda aren't available in most FFmpeg builds
+        assert selection.scale_filter == "scale=-2:1080"
 
     def test_select_nvenc_hevc(self):
         """Test NVENC HEVC encoder selection."""
