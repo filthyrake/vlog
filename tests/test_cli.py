@@ -501,6 +501,7 @@ class TestCmdList:
 
         args = mock.Mock()
         args.status = None
+        args.archived = False
 
         with mock.patch("httpx.get", return_value=mock_response):
             cmd_list(args)
@@ -521,6 +522,7 @@ class TestCmdList:
 
         args = mock.Mock()
         args.status = None
+        args.archived = False
 
         with mock.patch("httpx.get", return_value=mock_response):
             cmd_list(args)
@@ -538,6 +540,7 @@ class TestCmdList:
 
         args = mock.Mock()
         args.status = "pending"
+        args.archived = False
 
         with mock.patch("httpx.get", return_value=mock_response) as mock_get:
             cmd_list(args)
@@ -554,6 +557,7 @@ class TestCmdList:
 
         args = mock.Mock()
         args.status = None
+        args.archived = False
 
         with mock.patch("httpx.get", side_effect=httpx.ConnectError("Connection refused")):
             with pytest.raises(SystemExit) as exc_info:
@@ -571,6 +575,7 @@ class TestCmdList:
 
         args = mock.Mock()
         args.status = None
+        args.archived = False
 
         with mock.patch("httpx.get", side_effect=httpx.TimeoutException("Timeout")):
             with pytest.raises(SystemExit) as exc_info:
@@ -592,6 +597,7 @@ class TestCmdList:
 
         args = mock.Mock()
         args.status = None
+        args.archived = False
 
         with mock.patch("httpx.get", return_value=mock_response):
             with pytest.raises(SystemExit) as exc_info:
@@ -600,6 +606,85 @@ class TestCmdList:
 
         captured = capsys.readouterr()
         assert "Internal server error" in captured.out
+
+    def test_list_archived_videos_success(self, capsys):
+        """Test listing archived videos successfully."""
+        from cli.main import cmd_list
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "videos": [
+                {
+                    "id": 1,
+                    "title": "Deleted Video",
+                    "slug": "deleted-video",
+                    "deleted_at": "2024-01-15T10:30:00",
+                    "created_at": "2024-01-01T00:00:00",
+                },
+                {
+                    "id": 2,
+                    "title": "Another Deleted Video with a Very Long Title That Will Be Truncated",
+                    "slug": "another-deleted-video-with-long-slug",
+                    "deleted_at": "2024-01-16T12:00:00",
+                    "created_at": "2024-01-02T00:00:00",
+                },
+            ],
+            "total": 2,
+        }
+
+        args = mock.Mock()
+        args.status = None
+        args.archived = True
+
+        with mock.patch("httpx.get", return_value=mock_response) as mock_get:
+            cmd_list(args)
+            # Verify the archived endpoint is called
+            call_args = mock_get.call_args
+            assert "/videos/archived" in call_args[0][0]
+
+        captured = capsys.readouterr()
+        assert "Archived videos (2 total)" in captured.out
+        assert "Deleted Video" in captured.out
+        assert "deleted-video" in captured.out
+        assert "2024-01-15T10:30:00" in captured.out
+
+    def test_list_archived_videos_empty(self, capsys):
+        """Test listing archived videos when none exist."""
+        from cli.main import cmd_list
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {"videos": [], "total": 0}
+
+        args = mock.Mock()
+        args.status = None
+        args.archived = True
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            cmd_list(args)
+
+        captured = capsys.readouterr()
+        assert "No archived videos found" in captured.out
+
+    def test_list_archived_ignores_status_filter(self, capsys):
+        """Test that --status is ignored when --archived is used."""
+        from cli.main import cmd_list
+
+        mock_response = mock.Mock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {"videos": [], "total": 0}
+
+        args = mock.Mock()
+        args.status = "pending"  # This should be ignored
+        args.archived = True
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            cmd_list(args)
+
+        captured = capsys.readouterr()
+        assert "Warning: --status is ignored" in captured.out
+        assert "No archived videos found" in captured.out
 
 
 class TestCmdCategories:
