@@ -9,6 +9,7 @@ This test suite validates that:
 """
 
 import pytest
+
 from api.common import validate_slug
 
 
@@ -82,19 +83,19 @@ class TestSlugValidation:
         """Test edge cases."""
         # Empty string
         assert not validate_slug("")
-        
+
         # Leading hyphen
         assert not validate_slug("-test")
-        
+
         # Trailing hyphen
         assert not validate_slug("test-")
-        
+
         # Double hyphen
         assert not validate_slug("test--video")
-        
+
         # Only hyphens
         assert not validate_slug("---")
-        
+
         # Very long valid slug (should pass)
         long_slug = "a" * 100 + "-" + "b" * 100
         assert validate_slug(long_slug)
@@ -114,7 +115,7 @@ class TestPublicAPISlugValidation:
             "test.video",  # Dot
             "test video",  # Space (URL encoded as test%20video)
         ]
-        
+
         for slug in invalid_slugs:
             response = public_client.get(f"/api/videos/{slug}")
             # Uppercase slugs might be accepted by routing but fail validation
@@ -129,11 +130,11 @@ class TestPublicAPISlugValidation:
         # These slugs contain '..' which should fail validation
         # Note: FastAPI routing might reject some of these before they reach validation
         path_traversal_slugs = [
-            "test..video",  # Contains .. 
+            "test..video",  # Contains ..
             "..video",  # Starts with ..
             "video..",  # Ends with ..
         ]
-        
+
         for slug in path_traversal_slugs:
             response = public_client.get(f"/api/videos/{slug}")
             # Should be rejected either at routing (404) or validation (400)
@@ -163,7 +164,7 @@ class TestPublicAPISlugValidation:
         # Should return 200 (video exists) or 404 (not found), but not 400 (invalid)
         response = public_client.get("/api/videos/test-video")
         assert response.status_code in [200, 404]
-        
+
         if response.status_code != 400:
             # Should not be a validation error
             if response.status_code != 200:

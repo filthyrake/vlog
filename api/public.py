@@ -279,7 +279,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
     # Validate slug to prevent path traversal attacks
     if not validate_slug(slug):
         raise HTTPException(status_code=400, detail="Invalid video slug")
-    
+
     query = (
         sa.select(
             videos,
@@ -351,7 +351,7 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
     # Validate slug to prevent path traversal attacks
     if not validate_slug(slug):
         raise HTTPException(status_code=400, detail="Invalid video slug")
-    
+
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
     video = await fetch_one_with_retry(video_query)
@@ -418,7 +418,7 @@ async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     # Validate slug to prevent path traversal attacks
     if not validate_slug(slug):
         raise HTTPException(status_code=400, detail="Invalid video slug")
-    
+
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
     video = await fetch_one_with_retry(video_query)
@@ -484,7 +484,7 @@ async def get_category(request: Request, slug: str) -> CategoryResponse:
     # Validate slug to prevent path traversal attacks
     if not validate_slug(slug):
         raise HTTPException(status_code=400, detail="Invalid category slug")
-    
+
     query = categories.select().where(categories.c.slug == slug)
     row = await fetch_one_with_retry(query)
     if not row:
