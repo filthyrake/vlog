@@ -106,12 +106,14 @@ class TestSafeJsonResponse:
         mock_response.is_success = False
         mock_response.status_code = 500
         mock_response.json.side_effect = ValueError("Invalid JSON")
-        mock_response.text = "x" * 300  # 300 characters
+        mock_response.text = "x" * 600  # 600 characters
 
         with pytest.raises(CLIError) as exc_info:
             safe_json_response(mock_response)
-        # Should be truncated to exactly 200 chars
-        assert len(str(exc_info.value).split(": ", 1)[1]) == 200
+        # Should be truncated to ERROR_DETAIL_MAX_LENGTH (500) with ellipsis
+        error_detail = str(exc_info.value).split(": ", 1)[1]
+        assert len(error_detail) == 500
+        assert error_detail.endswith("...")
 
 
 class TestValidateFile:
