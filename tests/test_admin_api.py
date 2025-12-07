@@ -1170,7 +1170,6 @@ class TestWorkerDashboardEndpoints:
     @pytest.mark.asyncio
     async def test_list_workers_with_data(self, admin_client, test_database):
         """Test listing workers with sample data."""
-        from datetime import timedelta
 
         now = datetime.now(timezone.utc)
 
@@ -1214,8 +1213,6 @@ class TestWorkerDashboardEndpoints:
     @pytest.mark.asyncio
     async def test_list_active_jobs_with_data(self, admin_client, test_database, sample_pending_video):
         """Test listing active jobs with pending video."""
-        now = datetime.now(timezone.utc)
-
         # Create transcoding job for the pending video
         await test_database.execute(
             transcoding_jobs.insert().values(

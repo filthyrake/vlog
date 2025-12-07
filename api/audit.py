@@ -36,6 +36,13 @@ class AuditAction(str, Enum):
     VIDEO_REUPLOAD = "video_reupload"
     VIDEO_RETRANSCODE = "video_retranscode"
 
+    # Bulk video actions
+    VIDEO_BULK_DELETE = "video_bulk_delete"
+    VIDEO_BULK_UPDATE = "video_bulk_update"
+    VIDEO_BULK_RETRANSCODE = "video_bulk_retranscode"
+    VIDEO_BULK_RESTORE = "video_bulk_restore"
+    VIDEO_EXPORT = "video_export"
+
     # Category actions
     CATEGORY_CREATE = "category_create"
     CATEGORY_DELETE = "category_delete"

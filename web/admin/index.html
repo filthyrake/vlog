@@ -132,13 +132,54 @@
         <div x-show="tab === 'videos'" x-cloak>
             <div class="flex justify-between items-center mb-6">
                 <h2 class="text-xl font-semibold">All Videos</h2>
-                <button @click="loadVideos" class="text-blue-400 hover:text-blue-300">Refresh</button>
+                <div class="flex gap-4 items-center">
+                    <button @click="exportVideos" class="text-green-400 hover:text-green-300">Export</button>
+                    <button @click="loadVideos" class="text-blue-400 hover:text-blue-300">Refresh</button>
+                </div>
+            </div>
+
+            <!-- Bulk Action Toolbar -->
+            <div x-show="selectedVideos.length > 0" class="bg-dark-800 rounded-lg p-3 mb-4 flex items-center gap-4">
+                <span class="text-dark-300">
+                    <span class="font-semibold text-white" x-text="selectedVideos.length"></span> video(s) selected
+                </span>
+                <div class="flex gap-2 ml-auto">
+                    <button
+                        @click="openBulkUpdateModal"
+                        class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition"
+                    >Update</button>
+                    <button
+                        @click="openBulkRetranscodeModal"
+                        class="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 rounded text-sm font-medium transition"
+                    >Re-transcode</button>
+                    <button
+                        @click="bulkRestoreVideos"
+                        x-show="selectedVideos.some(id => videos.find(v => v.id === id)?.deleted_at)"
+                        class="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition"
+                    >Restore</button>
+                    <button
+                        @click="openBulkDeleteModal"
+                        class="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-sm font-medium transition"
+                    >Delete</button>
+                    <button
+                        @click="clearSelection"
+                        class="px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded text-sm font-medium transition"
+                    >Clear</button>
+                </div>
             </div>
 
             <div class="bg-dark-900 rounded-xl overflow-hidden">
                 <table class="w-full">
                     <thead class="bg-dark-800">
                         <tr>
+                            <th class="px-4 py-3 text-left text-sm font-medium w-10">
+                                <input
+                                    type="checkbox"
+                                    :checked="selectedVideos.length === videos.length && videos.length > 0"
+                                    @change="toggleSelectAll"
+                                    class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                >
+                            </th>
                             <th class="px-4 py-3 text-left text-sm font-medium">Thumbnail</th>
                             <th class="px-4 py-3 text-left text-sm font-medium">Title</th>
                             <th class="px-4 py-3 text-left text-sm font-medium">Category</th>
@@ -149,7 +190,15 @@
                     </thead>
                     <tbody class="divide-y divide-dark-800">
                         <template x-for="video in videos" :key="video.id">
-                            <tr class="hover:bg-dark-800/50">
+                            <tr class="hover:bg-dark-800/50" :class="{'bg-blue-900/20': selectedVideos.includes(video.id)}">
+                                <td class="px-4 py-3">
+                                    <input
+                                        type="checkbox"
+                                        :checked="selectedVideos.includes(video.id)"
+                                        @change="toggleVideoSelection(video.id)"
+                                        class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                    >
+                                </td>
                                 <td class="px-4 py-3">
                                     <div class="w-24 aspect-video bg-dark-800 rounded overflow-hidden">
                                         <img
@@ -822,6 +871,163 @@
         </div>
     </div>
 
+    <!-- Bulk Delete Modal -->
+    <div x-show="bulkDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="bulkDeleteModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
+            <h3 class="text-xl font-semibold mb-4">Delete Videos</h3>
+            <p class="text-dark-300 mb-4">
+                You are about to delete <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
+            </p>
+            <div class="mb-4">
+                <label class="flex items-center gap-3 cursor-pointer">
+                    <input
+                        type="checkbox"
+                        x-model="bulkDeletePermanent"
+                        class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-red-500 focus:ring-red-500 focus:ring-offset-0"
+                    >
+                    <span class="text-dark-300">Permanently delete (cannot be undone)</span>
+                </label>
+            </div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div class="flex gap-3">
+                <button
+                    @click="bulkDeleteModal = false"
+                    :disabled="bulkOpLoading"
+                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
+                >Cancel</button>
+                <button
+                    @click="executeBulkDelete"
+                    :disabled="bulkOpLoading"
+                    class="flex-1 py-2 bg-red-600 hover:bg-red-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                >
+                    <span x-show="!bulkOpLoading">Delete</span>
+                    <span x-show="bulkOpLoading">Deleting...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk Update Modal -->
+    <div x-show="bulkUpdateModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="bulkUpdateModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
+            <h3 class="text-xl font-semibold mb-4">Update Videos</h3>
+            <p class="text-dark-300 mb-4">
+                Update <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) with the following settings:
+            </p>
+            <div class="space-y-4 mb-4">
+                <div>
+                    <label class="block text-sm font-medium mb-2">Category</label>
+                    <select
+                        x-model="bulkUpdateCategory"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                    >
+                        <option value="">-- Don't change --</option>
+                        <option value="0">Remove category</option>
+                        <template x-for="cat in categories" :key="cat.id">
+                            <option :value="cat.id" x-text="cat.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Published Date</label>
+                    <input
+                        type="datetime-local"
+                        x-model="bulkUpdatePublishedAt"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                    >
+                    <div class="mt-2">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                x-model="bulkUpdateUnpublish"
+                                class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            >
+                            <span class="text-dark-400 text-sm">Unpublish (remove published date)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div class="flex gap-3">
+                <button
+                    @click="bulkUpdateModal = false"
+                    :disabled="bulkOpLoading"
+                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
+                >Cancel</button>
+                <button
+                    @click="executeBulkUpdate"
+                    :disabled="bulkOpLoading"
+                    class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                >
+                    <span x-show="!bulkOpLoading">Update</span>
+                    <span x-show="bulkOpLoading">Updating...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk Retranscode Modal -->
+    <div x-show="bulkRetranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="bulkRetranscodeModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
+            <h3 class="text-xl font-semibold mb-4">Re-transcode Videos</h3>
+            <p class="text-dark-300 mb-4">
+                Queue <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) for re-transcoding.
+            </p>
+            <div class="space-y-2 mb-4">
+                <label class="block text-sm font-medium mb-2">Qualities to re-transcode</label>
+                <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
+                    <input
+                        type="radio"
+                        name="bulkRetranscodeQuality"
+                        value="all"
+                        x-model="bulkRetranscodeQuality"
+                        class="w-4 h-4 border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                    >
+                    <span>All qualities (full re-encode)</span>
+                </label>
+                <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
+                    <input
+                        type="radio"
+                        name="bulkRetranscodeQuality"
+                        value="1080p"
+                        x-model="bulkRetranscodeQuality"
+                        class="w-4 h-4 border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                    >
+                    <span>1080p only</span>
+                </label>
+                <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
+                    <input
+                        type="radio"
+                        name="bulkRetranscodeQuality"
+                        value="720p"
+                        x-model="bulkRetranscodeQuality"
+                        class="w-4 h-4 border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                    >
+                    <span>720p only</span>
+                </label>
+            </div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div class="flex gap-3">
+                <button
+                    @click="bulkRetranscodeModal = false"
+                    :disabled="bulkOpLoading"
+                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
+                >Cancel</button>
+                <button
+                    @click="executeBulkRetranscode"
+                    :disabled="bulkOpLoading"
+                    class="flex-1 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                >
+                    <span x-show="!bulkOpLoading">Re-transcode</span>
+                    <span x-show="bulkOpLoading">Queueing...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         function admin() {
             return {
@@ -885,6 +1091,20 @@
 
                 // Transcode progress
                 progressData: {},
+
+                // Bulk operations
+                selectedVideos: [],
+                bulkDeleteModal: false,
+                bulkDeletePermanent: false,
+                bulkUpdateModal: false,
+                bulkUpdateCategory: '',
+                bulkUpdatePublishedAt: '',
+                bulkUpdateUnpublish: false,
+                bulkRetranscodeModal: false,
+                bulkRetranscodeQuality: 'all',
+                bulkOpLoading: false,
+                bulkOpMessage: '',
+                bulkOpError: false,
 
                 async init() {
                     await Promise.all([
@@ -1294,7 +1514,14 @@
                 },
 
                 formatDuration(seconds) {
-                    return VLogUtils.formatDuration(seconds, '-');
+                    if (!seconds) return '-';
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    if (h > 0) {
+                        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    }
+                    return `${m}:${s.toString().padStart(2, '0')}`;
                 },
 
                 // Analytics methods
@@ -1442,6 +1669,215 @@
                     if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
                     if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
                     return Math.floor(seconds / 86400) + 'd ago';
+                },
+
+                // Bulk operation methods
+                toggleSelectAll() {
+                    if (this.selectedVideos.length === this.videos.length) {
+                        this.selectedVideos = [];
+                    } else {
+                        this.selectedVideos = this.videos.map(v => v.id);
+                    }
+                },
+
+                toggleVideoSelection(videoId) {
+                    const idx = this.selectedVideos.indexOf(videoId);
+                    if (idx === -1) {
+                        this.selectedVideos.push(videoId);
+                    } else {
+                        this.selectedVideos.splice(idx, 1);
+                    }
+                },
+
+                clearSelection() {
+                    this.selectedVideos = [];
+                },
+
+                openBulkDeleteModal() {
+                    this.bulkDeletePermanent = false;
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+                    this.bulkDeleteModal = true;
+                },
+
+                openBulkUpdateModal() {
+                    this.bulkUpdateCategory = '';
+                    this.bulkUpdatePublishedAt = '';
+                    this.bulkUpdateUnpublish = false;
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+                    this.bulkUpdateModal = true;
+                },
+
+                openBulkRetranscodeModal() {
+                    this.bulkRetranscodeQuality = 'all';
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+                    this.bulkRetranscodeModal = true;
+                },
+
+                async executeBulkDelete() {
+                    this.bulkOpLoading = true;
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+
+                    try {
+                        const res = await fetch('/api/videos/bulk/delete', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                video_ids: this.selectedVideos,
+                                permanent: this.bulkDeletePermanent
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.bulkOpMessage = `Deleted ${data.deleted} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : '');
+                            this.bulkOpError = data.failed > 0;
+                            await this.loadVideos();
+                            this.selectedVideos = [];
+                            setTimeout(() => { this.bulkDeleteModal = false; }, 1500);
+                        } else {
+                            this.bulkOpMessage = data.detail || 'Delete failed';
+                            this.bulkOpError = true;
+                        }
+                    } catch (e) {
+                        this.bulkOpMessage = 'Delete failed: ' + e.message;
+                        this.bulkOpError = true;
+                    }
+
+                    this.bulkOpLoading = false;
+                },
+
+                async executeBulkUpdate() {
+                    // Build update payload
+                    const payload = { video_ids: this.selectedVideos };
+
+                    if (this.bulkUpdateCategory !== '') {
+                        payload.category_id = parseInt(this.bulkUpdateCategory);
+                    }
+                    if (this.bulkUpdateUnpublish) {
+                        payload.unpublish = true;
+                    } else if (this.bulkUpdatePublishedAt) {
+                        payload.published_at = this.bulkUpdatePublishedAt;
+                    }
+
+                    const hasUpdates = (payload.category_id !== undefined) || payload.unpublish || payload.published_at;
+                    if (!hasUpdates) {
+                        this.bulkOpMessage = 'Please select at least one field to update';
+                        this.bulkOpError = true;
+                        return;
+                    }
+
+                    this.bulkOpLoading = true;
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+
+                    try {
+                        const res = await fetch('/api/videos/bulk/update', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.bulkOpMessage = `Updated ${data.updated} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : '');
+                            this.bulkOpError = data.failed > 0;
+                            await this.loadVideos();
+                            this.selectedVideos = [];
+                            setTimeout(() => { this.bulkUpdateModal = false; }, 1500);
+                        } else {
+                            this.bulkOpMessage = data.detail || 'Update failed';
+                            this.bulkOpError = true;
+                        }
+                    } catch (e) {
+                        this.bulkOpMessage = 'Update failed: ' + e.message;
+                        this.bulkOpError = true;
+                    }
+
+                    this.bulkOpLoading = false;
+                },
+
+                async executeBulkRetranscode() {
+                    this.bulkOpLoading = true;
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+
+                    try {
+                        const res = await fetch('/api/videos/bulk/retranscode', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                video_ids: this.selectedVideos,
+                                qualities: [this.bulkRetranscodeQuality]
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.bulkOpMessage = `Queued ${data.queued} video(s) for re-transcoding` + (data.failed > 0 ? `, ${data.failed} failed` : '');
+                            this.bulkOpError = data.failed > 0;
+                            await this.loadVideos();
+                            this.selectedVideos = [];
+                            setTimeout(() => { this.bulkRetranscodeModal = false; }, 1500);
+                        } else {
+                            this.bulkOpMessage = data.detail || 'Re-transcode failed';
+                            this.bulkOpError = true;
+                        }
+                    } catch (e) {
+                        this.bulkOpMessage = 'Re-transcode failed: ' + e.message;
+                        this.bulkOpError = true;
+                    }
+
+                    this.bulkOpLoading = false;
+                },
+
+                async bulkRestoreVideos() {
+                    if (!confirm(`Restore ${this.selectedVideos.length} video(s) from archive?`)) return;
+
+                    try {
+                        const res = await fetch('/api/videos/bulk/restore', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ video_ids: this.selectedVideos })
+                        });
+
+                        const data = await res.json();
+                        if (res.ok) {
+                            alert(`Restored ${data.restored} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : ''));
+                            await this.loadVideos();
+                            this.selectedVideos = [];
+                        } else {
+                            alert(data.detail || 'Restore failed');
+                        }
+                    } catch (e) {
+                        alert('Restore failed: ' + e.message);
+                    }
+                },
+
+                async exportVideos() {
+                    try {
+                        const res = await fetch('/api/videos/export');
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
+                        const data = await res.json();
+
+                        // Create downloadable JSON file
+                        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `vlog-export-${new Date().toISOString().slice(0, 10)}.json`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    } catch (e) {
+                        alert('Export failed: ' + e.message);
+                    }
                 }
             };
         }

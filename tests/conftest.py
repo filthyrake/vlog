@@ -23,7 +23,6 @@ from api.database import (  # noqa: E402
     categories,
     metadata,
     playback_sessions,
-    transcriptions,
     video_qualities,
     videos,
 )
