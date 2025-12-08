@@ -21,6 +21,9 @@ metadata:
     app.kubernetes.io/gpu-type: intel
 spec:
   replicas: 1
+  # Use Recreate strategy since GPU resources can't be shared between old/new pods
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: vlog

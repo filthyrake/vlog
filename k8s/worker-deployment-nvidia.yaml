@@ -22,6 +22,9 @@ metadata:
 spec:
   # Single GPU worker per GPU (adjust based on available GPUs)
   replicas: 1
+  # Use Recreate strategy since GPU resources can't be shared between old/new pods
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: vlog

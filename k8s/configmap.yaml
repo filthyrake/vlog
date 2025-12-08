@@ -23,3 +23,10 @@ data:
 
   # Work directory for temporary files
   VLOG_WORKER_WORK_DIR: "/tmp/vlog-worker"
+
+  # Redis URL for job queue (optional - enables instant job dispatch)
+  # If empty, workers will poll the database for jobs
+  # VLOG_REDIS_URL: "redis://vlog-server.example.com:6379"
+
+  # Job queue mode: database (polling only), redis (Redis only), hybrid (Redis with DB fallback)
+  # VLOG_JOB_QUEUE_MODE: "hybrid"
