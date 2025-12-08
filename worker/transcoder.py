@@ -508,6 +508,7 @@ def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> T
 
         # Validate all referenced segment files exist and are non-empty
         segment_count = 0
+        first_segment_path = None
         for line in content.splitlines():
             line = line.strip()
             # Skip empty lines and comments/tags
@@ -521,11 +522,34 @@ def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> T
                     return False, f"Missing segment file: {line}"
                 if segment_path.stat().st_size == 0:
                     return False, f"Empty segment file: {line}"
+                if first_segment_path is None:
+                    first_segment_path = segment_path
                 segment_count += 1
 
         # Sanity check - playlist should have at least one segment
         if segment_count == 0:
             return False, "Playlist contains no segment references"
+
+        # Validate first segment actually contains a video stream
+        # This catches cases where encoding failed but audio-only output was produced
+        if first_segment_path:
+            import subprocess
+            try:
+                result = subprocess.run(
+                    [
+                        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
+                        "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+                        str(first_segment_path)
+                    ],
+                    capture_output=True,
+                    timeout=10,
+                )
+                if result.returncode != 0 or b"video" not in result.stdout:
+                    return False, f"Segment {first_segment_path.name} has no video stream (encoding may have failed)"
+            except subprocess.TimeoutExpired:
+                return False, f"Timeout probing segment {first_segment_path.name}"
+            except Exception as e:
+                return False, f"Error probing segment: {e}"
 
         return True, None
 
