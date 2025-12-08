@@ -337,6 +337,7 @@ class TranscriptionUpdate(BaseModel):
 
 class RetranscodeRequest(BaseModel):
     qualities: List[str] = Field(..., min_length=1)
+    priority: str = Field(default="normal", pattern="^(high|normal|low)$")
 
     @field_validator("qualities")
     @classmethod
@@ -425,6 +426,7 @@ class BulkRetranscodeRequest(BaseModel):
 
     video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
     qualities: List[str] = Field(default=["all"], min_length=1)
+    priority: str = Field(default="normal", pattern="^(high|normal|low)$")
 
     @field_validator("qualities")
     @classmethod

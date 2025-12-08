@@ -3,6 +3,7 @@ Admin API - handles uploads and video management.
 Runs on port 9001 (not exposed externally).
 """
 
+import asyncio
 import json
 import logging
 import shutil
@@ -23,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slugify import slugify
+from sse_starlette.sse import EventSourceResponse
 
 from api.analytics_cache import AnalyticsCache
 from api.audit import AuditAction, log_audit
@@ -58,6 +60,9 @@ from api.db_retry import (
 )
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
+from api.job_queue import JobDispatch, get_job_queue
+from api.pubsub import subscribe_to_progress, subscribe_to_workers
+from api.redis_client import is_redis_available
 from api.schemas import (
     ActiveJobsResponse,
     ActiveJobWithWorker,
@@ -106,12 +111,15 @@ from config import (
     ANALYTICS_CACHE_TTL,
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
     ARCHIVE_DIR,
+    JOB_QUEUE_MODE,
     MAX_UPLOAD_SIZE,
     QUALITY_PRESETS,
     RATE_LIMIT_ADMIN_DEFAULT,
     RATE_LIMIT_ADMIN_UPLOAD,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
+    SSE_HEARTBEAT_INTERVAL,
+    SSE_RECONNECT_TIMEOUT_MS,
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
@@ -261,7 +269,7 @@ async def cleanup_orphaned_jobs() -> int:
     return len(orphaned)
 
 
-async def create_or_reset_transcoding_job(video_id: int) -> None:
+async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal") -> None:
     """
     Create a new transcoding job or reset an existing one for a video.
 
@@ -272,9 +280,17 @@ async def create_or_reset_transcoding_job(video_id: int) -> None:
 
     This prevents HTTP 500 errors from unique constraint violations (issue #270).
 
+    If Redis is configured, also publishes the job to the Redis Streams queue
+    for instant dispatch to workers.
+
     Args:
         video_id: The video ID to create/reset a job for
+        priority: Job priority ("high", "normal", "low")
     """
+    # Validate priority (defense-in-depth beyond Pydantic validation)
+    if priority not in ("high", "normal", "low"):
+        priority = "normal"
+
     db_url = str(database.url)
     is_postgresql = db_url.startswith("postgresql")
 
@@ -332,6 +348,32 @@ async def create_or_reset_transcoding_job(video_id: int) -> None:
             else:
                 # Re-raise other errors (retryable errors are handled by db_execute_with_retry)
                 raise
+
+    # Publish job to Redis Streams for instant dispatch (if configured)
+    if JOB_QUEUE_MODE in ("redis", "hybrid"):
+        try:
+            # Get video and job info for the dispatch message
+            video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
+
+            if video and job:
+                job_dispatch = JobDispatch(
+                    job_id=job["id"],
+                    video_id=video_id,
+                    video_slug=video["slug"],
+                    source_width=video["source_width"],
+                    source_height=video["source_height"],
+                    duration=video["duration"],
+                    priority=priority,
+                )
+
+                job_queue = await get_job_queue()
+                published = await job_queue.publish_job(job_dispatch)
+                if published:
+                    logger.debug(f"Published job {job['id']} to Redis queue (priority: {priority})")
+        except Exception as e:
+            # Redis publish failure is not critical - workers will poll database
+            logger.warning(f"Failed to publish job to Redis: {e}")
 
 
 @asynccontextmanager
@@ -1324,7 +1366,7 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
 
                 # Create new transcoding job
                 # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
-                await create_or_reset_transcoding_job(video_id)
+                await create_or_reset_transcoding_job(video_id, priority=data.priority)
 
                 # If retranscoding all, delete transcription record (inside transaction)
                 if retranscode_all:
@@ -1965,7 +2007,7 @@ async def retranscode_video(
 
         # Create new transcoding job for remote workers to claim
         # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
-        await create_or_reset_transcoding_job(video_id)
+        await create_or_reset_transcoding_job(video_id, priority=data.priority)
 
     # Audit log
     log_audit(
@@ -1975,7 +2017,7 @@ async def retranscode_video(
         resource_type="video",
         resource_id=video_id,
         resource_name=slug,
-        details={"qualities": qualities_to_delete, "retranscode_all": retranscode_all},
+        details={"qualities": qualities_to_delete, "retranscode_all": retranscode_all, "priority": data.priority},
     )
 
     return RetranscodeResponse(
@@ -3231,6 +3273,369 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
     )
 
     return {"status": "ok", "message": "Worker deleted"}
+
+
+# ============ Server-Sent Events (SSE) Endpoints ============
+
+
+@app.get("/api/events/progress")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def sse_progress(
+    request: Request,
+    video_ids: Optional[str] = Query(None, description="Comma-separated video IDs to monitor"),
+):
+    """
+    Server-Sent Events endpoint for real-time transcoding progress.
+
+    Subscribes to progress updates for specified videos (or all if none specified).
+    Falls back to database polling if Redis is unavailable.
+
+    SSE Message Format:
+        event: progress
+        data: {"video_id": 123, "progress_percent": 45, ...}
+
+        event: heartbeat
+        data: {"timestamp": "..."}
+    """
+
+    async def event_generator():
+        # Send retry interval for client reconnection
+        yield {"event": "retry", "data": str(SSE_RECONNECT_TIMEOUT_MS)}
+
+        # Parse and validate video IDs
+        vid_list = []
+        if video_ids:
+            try:
+                vid_list = [int(v.strip()) for v in video_ids.split(",") if v.strip()]
+            except ValueError:
+                logger.warning(f"Invalid video IDs in SSE request: {video_ids}")
+                vid_list = []
+
+        # Send initial progress state
+        try:
+            initial_progress = await _get_progress_from_database(video_ids)
+            if initial_progress:
+                yield {"event": "initial", "data": json.dumps({"progress": initial_progress})}
+        except Exception as e:
+            logger.warning(f"Failed to get initial progress state: {e}")
+
+        # Check if Redis is available for pub/sub
+        redis_available = await is_redis_available()
+
+        if redis_available:
+            # Redis-based real-time updates
+            subscriber = None
+            try:
+                if vid_list:
+                    subscriber = await subscribe_to_progress(vid_list)
+                else:
+                    subscriber = await subscribe_to_progress()
+
+                if subscriber and subscriber.is_active:
+                    last_heartbeat = asyncio.get_running_loop().time()
+
+                    async for message in subscriber.listen():
+                        if await request.is_disconnected():
+                            break
+
+                        event_type = message.get("type", "progress")
+                        yield {"event": event_type, "data": json.dumps(message)}
+
+                        # Send periodic heartbeats
+                        now = asyncio.get_running_loop().time()
+                        if now - last_heartbeat > SSE_HEARTBEAT_INTERVAL:
+                            yield {
+                                "event": "heartbeat",
+                                "data": json.dumps({"timestamp": datetime.now(timezone.utc).isoformat()}),
+                            }
+                            last_heartbeat = now
+                else:
+                    # Subscription failed, fall through to polling
+                    redis_available = False
+            except Exception as e:
+                logger.warning(f"SSE Redis subscription error: {e}")
+                redis_available = False
+            finally:
+                if subscriber:
+                    await subscriber.close()
+
+        if not redis_available:
+            # Fallback: Database polling every 3 seconds
+            last_data = {}
+            while not await request.is_disconnected():
+                try:
+                    # Query database for progress
+                    progress_data = await _get_progress_from_database(video_ids)
+
+                    # Only send if changed
+                    for vid, data in progress_data.items():
+                        if data != last_data.get(vid):
+                            yield {"event": "progress", "data": json.dumps(data)}
+                    last_data = progress_data
+
+                    # Send heartbeat
+                    yield {
+                        "event": "heartbeat",
+                        "data": json.dumps({"timestamp": datetime.now(timezone.utc).isoformat()}),
+                    }
+                except Exception as e:
+                    logger.debug(f"SSE polling error: {e}")
+
+                await asyncio.sleep(3)
+
+    return EventSourceResponse(event_generator())
+
+
+@app.get("/api/events/workers")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def sse_workers(request: Request):
+    """
+    Server-Sent Events endpoint for real-time worker status updates.
+
+    Provides:
+    - Worker status changes (active/idle/offline)
+    - Current job assignments
+    - Job completion/failure notifications
+    """
+
+    async def event_generator():
+        # Send retry interval for client reconnection
+        yield {"event": "retry", "data": str(SSE_RECONNECT_TIMEOUT_MS)}
+
+        # Send initial state
+        try:
+            initial_state = await _get_workers_state()
+            yield {"event": "initial", "data": json.dumps(initial_state)}
+        except Exception as e:
+            logger.warning(f"Failed to get initial workers state: {e}")
+
+        # Check if Redis is available for pub/sub
+        redis_available = await is_redis_available()
+
+        if redis_available:
+            # Redis-based real-time updates
+            subscriber = None
+            try:
+                subscriber = await subscribe_to_workers()
+
+                if subscriber and subscriber.is_active:
+                    last_heartbeat = asyncio.get_running_loop().time()
+
+                    async for message in subscriber.listen():
+                        if await request.is_disconnected():
+                            break
+
+                        event_type = message.get("type", "update")
+                        yield {"event": event_type, "data": json.dumps(message)}
+
+                        # Send periodic heartbeats
+                        now = asyncio.get_running_loop().time()
+                        if now - last_heartbeat > SSE_HEARTBEAT_INTERVAL:
+                            yield {
+                                "event": "heartbeat",
+                                "data": json.dumps({"timestamp": datetime.now(timezone.utc).isoformat()}),
+                            }
+                            last_heartbeat = now
+                else:
+                    redis_available = False
+            except Exception as e:
+                logger.warning(f"SSE Redis subscription error: {e}")
+                redis_available = False
+            finally:
+                if subscriber:
+                    await subscriber.close()
+
+        if not redis_available:
+            # Fallback: Database polling every 5 seconds
+            last_data = {}
+            while not await request.is_disconnected():
+                try:
+                    current_data = await _get_workers_state()
+
+                    # Only send if changed
+                    if current_data != last_data:
+                        yield {"event": "update", "data": json.dumps(current_data)}
+                        last_data = current_data
+
+                    # Send heartbeat
+                    yield {
+                        "event": "heartbeat",
+                        "data": json.dumps({"timestamp": datetime.now(timezone.utc).isoformat()}),
+                    }
+                except Exception as e:
+                    logger.debug(f"SSE polling error: {e}")
+
+                await asyncio.sleep(5)
+
+    return EventSourceResponse(event_generator())
+
+
+async def _get_progress_from_database(video_ids: Optional[str]) -> dict:
+    """Get progress data from database for SSE fallback polling."""
+    # Build query for active videos
+    query = (
+        sa.select(
+            videos.c.id,
+            videos.c.slug,
+            videos.c.status,
+            transcoding_jobs.c.id.label("job_id"),
+            transcoding_jobs.c.current_step,
+            transcoding_jobs.c.progress_percent,
+            transcoding_jobs.c.last_error,
+        )
+        .select_from(videos.outerjoin(transcoding_jobs, videos.c.id == transcoding_jobs.c.video_id))
+        .where(videos.c.status.in_(["pending", "processing"]))
+        .where(videos.c.deleted_at.is_(None))
+    )
+
+    if video_ids:
+        try:
+            ids = [int(v.strip()) for v in video_ids.split(",") if v.strip()]
+            query = query.where(videos.c.id.in_(ids))
+        except ValueError:
+            # If video_ids contains invalid values, ignore the filter and return all active videos
+            pass
+
+    rows = await database.fetch_all(query)
+    result = {}
+
+    for row in rows:
+        video_id = row["id"]
+
+        # Get quality progress for this job
+        qualities = []
+        if row["job_id"]:
+            qp_rows = await database.fetch_all(
+                quality_progress.select().where(quality_progress.c.job_id == row["job_id"])
+            )
+            qualities = [
+                {
+                    "name": qp["quality"],
+                    "status": qp["status"],
+                    "progress": qp["progress_percent"] or 0,
+                }
+                for qp in qp_rows
+            ]
+
+        result[video_id] = {
+            "type": "progress",
+            "video_id": video_id,
+            "video_slug": row["slug"],
+            "job_id": row["job_id"],
+            "status": row["status"],
+            "current_step": row["current_step"],
+            "progress_percent": row["progress_percent"] or 0,
+            "qualities": qualities,
+            "last_error": row["last_error"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    return result
+
+
+async def _get_workers_state() -> dict:
+    """Get current workers state from database for SSE."""
+    now = datetime.now(timezone.utc)
+    offline_threshold = now - timedelta(minutes=WORKER_OFFLINE_THRESHOLD_MINUTES)
+
+    # Get all workers
+    rows = await database.fetch_all(workers.select().order_by(workers.c.registered_at.desc()))
+
+    workers_list = []
+    stats = {"total": 0, "active": 0, "idle": 0, "offline": 0, "disabled": 0}
+
+    for row in rows:
+        stats["total"] += 1
+
+        # Determine effective status
+        status = row["status"]
+        if status == "disabled":
+            stats["disabled"] += 1
+        elif status in ("active", "idle", "busy"):
+            last_hb = row["last_heartbeat"]
+            if last_hb and last_hb.replace(tzinfo=timezone.utc) < offline_threshold:
+                status = "offline"
+                stats["offline"] += 1
+            elif status == "idle":
+                stats["idle"] += 1
+            else:
+                stats["active"] += 1
+        else:
+            stats["offline"] += 1
+
+        # Get current job info if any
+        current_job = None
+        if row["current_job_id"]:
+            job = await database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.id == row["current_job_id"])
+            )
+            if job:
+                video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+                current_job = {
+                    "job_id": job["id"],
+                    "video_id": job["video_id"],
+                    "video_slug": video["slug"] if video else None,
+                    "current_step": job["current_step"],
+                    "progress_percent": job["progress_percent"] or 0,
+                }
+
+        # Parse capabilities
+        hwaccel_type = None
+        if row["metadata"]:
+            try:
+                metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"]
+                caps = metadata.get("capabilities", {})
+                if caps.get("hwaccel_available"):
+                    hwaccel_type = caps.get("hwaccel_type")
+            except (json.JSONDecodeError, TypeError):
+                # Ignore malformed or missing metadata; capabilities will be left unset
+                pass
+
+        workers_list.append(
+            {
+                "worker_id": row["worker_id"],
+                "worker_name": row["worker_name"],
+                "status": status,
+                "last_heartbeat": row["last_heartbeat"].isoformat() if row["last_heartbeat"] else None,
+                "hwaccel_type": hwaccel_type,
+                "current_job": current_job,
+            }
+        )
+
+    # Get active jobs
+    active_jobs = []
+    job_rows = await database.fetch_all(
+        sa.select(
+            transcoding_jobs,
+            videos.c.slug.label("video_slug"),
+            videos.c.title.label("video_title"),
+        )
+        .select_from(transcoding_jobs.join(videos, transcoding_jobs.c.video_id == videos.c.id))
+        .where(transcoding_jobs.c.completed_at.is_(None))
+        .order_by(transcoding_jobs.c.id.desc())
+        .limit(50)
+    )
+
+    for job in job_rows:
+        active_jobs.append(
+            {
+                "job_id": job["id"],
+                "video_id": job["video_id"],
+                "video_slug": job["video_slug"],
+                "video_title": job["video_title"],
+                "worker_id": job["worker_id"],
+                "current_step": job["current_step"],
+                "progress_percent": job["progress_percent"] or 0,
+                "status": "processing" if job["worker_id"] else "pending",
+            }
+        )
+
+    return {
+        "workers": workers_list,
+        "stats": stats,
+        "active_jobs": active_jobs,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 if __name__ == "__main__":
