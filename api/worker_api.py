@@ -32,7 +32,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
-from api.common import check_health, ensure_utc, get_real_ip, get_storage_status, rate_limit_exceeded_handler
+from api.common import (
+    RequestIDMiddleware,
+    check_health,
+    ensure_utc,
+    get_real_ip,
+    get_storage_status,
+    rate_limit_exceeded_handler,
+)
 from api.database import (
     configure_database,
     database,
@@ -495,6 +502,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Request ID middleware for tracing
+app.add_middleware(RequestIDMiddleware)
+
 # CORS - allow all origins since workers use API key auth (not cookies)
 # Note: allow_credentials must be False with wildcard origins per CORS spec
 app.add_middleware(
@@ -503,6 +513,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 # Rate limiting setup
