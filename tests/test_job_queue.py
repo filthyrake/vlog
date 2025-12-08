@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import api.job_queue
 from api.job_queue import (
     DEAD_LETTER_STREAM,
     PRIORITY_STREAMS,
@@ -640,8 +641,6 @@ class TestGlobalJobQueue:
     async def test_get_job_queue_returns_singleton(self):
         """get_job_queue should return the same instance."""
         # Reset global state
-        import api.job_queue
-
         api.job_queue._job_queue = None
         api.job_queue._job_queue_initialized = False
 
