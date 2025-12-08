@@ -1144,6 +1144,16 @@
                             this.connectWorkersSSE();
                         }
                     });
+
+                    // Cleanup SSE connections on page unload
+                    window.addEventListener('beforeunload', () => {
+                        if (this.progressSSE) {
+                            this.progressSSE.close();
+                        }
+                        if (this.workersSSE) {
+                            this.workersSSE.close();
+                        }
+                    });
                 },
 
                 async loadVideos() {

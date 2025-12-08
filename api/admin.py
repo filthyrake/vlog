@@ -287,6 +287,10 @@ async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal
         video_id: The video ID to create/reset a job for
         priority: Job priority ("high", "normal", "low")
     """
+    # Validate priority (defense-in-depth beyond Pydantic validation)
+    if priority not in ("high", "normal", "low"):
+        priority = "normal"
+
     db_url = str(database.url)
     is_postgresql = db_url.startswith("postgresql")
 
@@ -3275,6 +3279,7 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
 
 
 @app.get("/api/events/progress")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def sse_progress(
     request: Request,
     video_ids: Optional[str] = Query(None, description="Comma-separated video IDs to monitor"),
@@ -3297,6 +3302,23 @@ async def sse_progress(
         # Send retry interval for client reconnection
         yield {"event": "retry", "data": str(SSE_RECONNECT_TIMEOUT_MS)}
 
+        # Parse and validate video IDs
+        vid_list = []
+        if video_ids:
+            try:
+                vid_list = [int(v.strip()) for v in video_ids.split(",") if v.strip()]
+            except ValueError:
+                logger.warning(f"Invalid video IDs in SSE request: {video_ids}")
+                vid_list = []
+
+        # Send initial progress state
+        try:
+            initial_progress = await _get_progress_from_database(video_ids)
+            if initial_progress:
+                yield {"event": "initial", "data": json.dumps({"progress": initial_progress})}
+        except Exception as e:
+            logger.warning(f"Failed to get initial progress state: {e}")
+
         # Check if Redis is available for pub/sub
         redis_available = await is_redis_available()
 
@@ -3304,14 +3326,13 @@ async def sse_progress(
             # Redis-based real-time updates
             subscriber = None
             try:
-                if video_ids:
-                    vid_list = [int(v.strip()) for v in video_ids.split(",") if v.strip()]
+                if vid_list:
                     subscriber = await subscribe_to_progress(vid_list)
                 else:
                     subscriber = await subscribe_to_progress()
 
                 if subscriber and subscriber.is_active:
-                    last_heartbeat = asyncio.get_event_loop().time()
+                    last_heartbeat = asyncio.get_running_loop().time()
 
                     async for message in subscriber.listen():
                         if await request.is_disconnected():
@@ -3321,7 +3342,7 @@ async def sse_progress(
                         yield {"event": event_type, "data": json.dumps(message)}
 
                         # Send periodic heartbeats
-                        now = asyncio.get_event_loop().time()
+                        now = asyncio.get_running_loop().time()
                         if now - last_heartbeat > SSE_HEARTBEAT_INTERVAL:
                             yield {
                                 "event": "heartbeat",
@@ -3366,6 +3387,7 @@ async def sse_progress(
 
 
 @app.get("/api/events/workers")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def sse_workers(request: Request):
     """
     Server-Sent Events endpoint for real-time worker status updates.
@@ -3397,7 +3419,7 @@ async def sse_workers(request: Request):
                 subscriber = await subscribe_to_workers()
 
                 if subscriber and subscriber.is_active:
-                    last_heartbeat = asyncio.get_event_loop().time()
+                    last_heartbeat = asyncio.get_running_loop().time()
 
                     async for message in subscriber.listen():
                         if await request.is_disconnected():
@@ -3407,7 +3429,7 @@ async def sse_workers(request: Request):
                         yield {"event": event_type, "data": json.dumps(message)}
 
                         # Send periodic heartbeats
-                        now = asyncio.get_event_loop().time()
+                        now = asyncio.get_running_loop().time()
                         if now - last_heartbeat > SSE_HEARTBEAT_INTERVAL:
                             yield {
                                 "event": "heartbeat",
@@ -3471,6 +3493,7 @@ async def _get_progress_from_database(video_ids: Optional[str]) -> dict:
             ids = [int(v.strip()) for v in video_ids.split(",") if v.strip()]
             query = query.where(videos.c.id.in_(ids))
         except ValueError:
+            # If video_ids contains invalid values, ignore the filter and return all active videos
             pass
 
     rows = await database.fetch_all(query)
@@ -3565,6 +3588,7 @@ async def _get_workers_state() -> dict:
                 if caps.get("hwaccel_available"):
                     hwaccel_type = caps.get("hwaccel_type")
             except (json.JSONDecodeError, TypeError):
+                # Ignore malformed or missing metadata; capabilities will be left unset
                 pass
 
         workers_list.append(
