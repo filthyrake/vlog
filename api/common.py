@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 # - No consecutive hyphens, no leading/trailing hyphens
 SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 
+# Request ID validation pattern: alphanumeric with common separator characters
+# Allows UUIDs, trace IDs from various systems, and custom IDs
+# Max 128 chars to prevent log injection/memory abuse
+REQUEST_ID_PATTERN = re.compile(r'^[\w\-.]+$')
+REQUEST_ID_MAX_LENGTH = 128
+
 
 def validate_slug(slug: str) -> bool:
     r"""
@@ -169,6 +175,12 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Use existing request ID from header, or generate a new one
         request_id = request.headers.get("X-Request-ID")
+        if request_id:
+            # Sanitize: limit length and allow only safe characters
+            # This prevents log injection attacks and excessive memory usage
+            request_id = request_id[:REQUEST_ID_MAX_LENGTH].strip()
+            if not REQUEST_ID_PATTERN.match(request_id):
+                request_id = None
         if not request_id:
             request_id = str(uuid.uuid4())
 

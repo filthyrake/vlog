@@ -384,6 +384,7 @@ app.add_middleware(
     allow_credentials=True if ADMIN_CORS_ALLOWED_ORIGINS != ["*"] else False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 # Serve video files for preview
