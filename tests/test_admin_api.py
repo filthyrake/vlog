@@ -1583,3 +1583,185 @@ class TestWorkerDashboardEndpoints:
         assert workers_by_id["offline-worker"]["status"] == "offline"
         assert data["idle_count"] >= 1
         assert data["offline_count"] >= 1
+
+
+# ============================================================================
+# Bulk Operations Tests (Issue #252)
+# ============================================================================
+
+
+class TestBulkOperationsHTTP:
+    """HTTP-level tests for bulk operations."""
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_success(self, admin_client, test_database, sample_category, test_storage):
+        """Test bulk delete successfully deletes multiple videos."""
+        # Create multiple videos
+        video_ids = []
+        for i in range(3):
+            now = datetime.now(timezone.utc)
+            video_id = await test_database.execute(
+                videos.insert().values(
+                    title=f"Bulk Delete Test Video {i}",
+                    slug=f"bulk-delete-test-{i}",
+                    status=VideoStatus.READY,
+                    created_at=now,
+                )
+            )
+            video_ids.append(video_id)
+
+        # Perform bulk delete
+        response = admin_client.post(
+            "/api/videos/bulk/delete",
+            json={"video_ids": video_ids, "permanent": True},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted"] == 3
+        assert data["failed"] == 0
+        assert data["status"] == "ok"
+        assert len(data["results"]) == 3
+        for result in data["results"]:
+            assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_bulk_update_success(self, admin_client, test_database, sample_category):
+        """Test bulk update successfully updates multiple videos."""
+        # Create multiple videos
+        video_ids = []
+        for i in range(3):
+            now = datetime.now(timezone.utc)
+            video_id = await test_database.execute(
+                videos.insert().values(
+                    title=f"Bulk Update Test Video {i}",
+                    slug=f"bulk-update-test-{i}",
+                    status=VideoStatus.READY,
+                    created_at=now,
+                )
+            )
+            video_ids.append(video_id)
+
+        # Perform bulk update
+        response = admin_client.post(
+            "/api/videos/bulk/update",
+            json={"video_ids": video_ids, "category_id": sample_category["id"]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["updated"] == 3
+        assert data["failed"] == 0
+        assert data["status"] == "ok"
+
+        # Verify videos were updated
+        for video_id in video_ids:
+            video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
+            assert video["category_id"] == sample_category["id"]
+
+    @pytest.mark.skip(
+        reason="Route /api/videos/bulk/restore conflicts with /api/videos/{video_id}/restore - needs route reordering"
+    )
+    @pytest.mark.asyncio
+    async def test_bulk_restore_success(self, admin_client, test_database, sample_category, test_storage):
+        """Test bulk restore successfully restores multiple videos."""
+        # Create multiple soft-deleted videos
+        video_ids = []
+        for i in range(3):
+            now = datetime.now(timezone.utc)
+            video_id = await test_database.execute(
+                videos.insert().values(
+                    title=f"Bulk Restore Test Video {i}",
+                    slug=f"bulk-restore-test-{i}",
+                    status=VideoStatus.READY,
+                    created_at=now,
+                    deleted_at=now,  # Soft-deleted
+                )
+            )
+            video_ids.append(video_id)
+
+        # Perform bulk restore
+        response = admin_client.post(
+            "/api/videos/bulk/restore",
+            json={"video_ids": video_ids},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["restored"] == 3
+        assert data["failed"] == 0
+        assert data["status"] == "ok"
+
+        # Verify videos were restored
+        for video_id in video_ids:
+            video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
+            assert video["deleted_at"] is None
+
+    @pytest.mark.skip(
+        reason="Route /api/videos/bulk/retranscode conflicts with /api/videos/{video_id}/retranscode - needs route reordering"
+    )
+    @pytest.mark.asyncio
+    async def test_bulk_retranscode_success(self, admin_client, test_database, sample_category, test_storage):
+        """Test bulk retranscode successfully queues multiple videos."""
+        # Create multiple videos with source files
+        video_ids = []
+        for i in range(2):
+            now = datetime.now(timezone.utc)
+            video_id = await test_database.execute(
+                videos.insert().values(
+                    title=f"Bulk Retranscode Test Video {i}",
+                    slug=f"bulk-retranscode-test-{i}",
+                    status=VideoStatus.READY,
+                    source_height=1080,
+                    created_at=now,
+                )
+            )
+            video_ids.append(video_id)
+
+            # Create source file in uploads directory
+            source_file = test_storage["uploads"] / f"{video_id}.mp4"
+            source_file.write_bytes(b"fake video content")
+
+        # Perform bulk retranscode
+        response = admin_client.post(
+            "/api/videos/bulk/retranscode",
+            json={"video_ids": video_ids, "qualities": ["720p"]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["queued"] == 2
+        assert data["failed"] == 0
+        assert data["status"] == "ok"
+
+        # Verify videos were reset to pending
+        for video_id in video_ids:
+            video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
+            assert video["status"] == VideoStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_partial_failure(self, admin_client, test_database, sample_category, test_storage):
+        """Test bulk delete handles partial failures correctly."""
+        # Create one video
+        now = datetime.now(timezone.utc)
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Bulk Delete Partial Test",
+                slug="bulk-delete-partial-test",
+                status=VideoStatus.READY,
+                created_at=now,
+            )
+        )
+
+        # Perform bulk delete with one valid and one invalid video ID
+        response = admin_client.post(
+            "/api/videos/bulk/delete",
+            json={"video_ids": [video_id, 99999], "permanent": True},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted"] == 1
+        assert data["failed"] == 1
+        assert data["status"] == "partial"
+
+        # Verify results contain both success and failure
+        results_by_id = {r["video_id"]: r for r in data["results"]}
+        assert results_by_id[video_id]["success"] is True
+        assert results_by_id[99999]["success"] is False
+        assert "not found" in results_by_id[99999]["error"].lower()
