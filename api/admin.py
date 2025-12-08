@@ -1017,6 +1017,480 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
         return {"status": "ok", "message": "Video moved to archive"}
 
 
+# ============ Bulk Operations ============
+
+
+@app.post("/api/videos/bulk/delete")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkDeleteResponse:
+    """
+    Delete multiple videos at once.
+
+    Supports both soft-delete (moves to archive) and permanent delete.
+    Operations are performed individually to track per-video success/failure.
+    """
+    bulk_operation_id = str(uuid.uuid4())
+    results = []
+    deleted_count = 0
+    failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
+
+    for video_id in data.video_ids:
+        try:
+            # Get video info
+            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            if not row:
+                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
+                failed_count += 1
+                continue
+
+            if data.permanent:
+                # PERMANENT DELETE
+                async with database.transaction():
+                    job = await database.fetch_one(
+                        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+                    )
+                    if job:
+                        await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
+                    await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
+                    await database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
+                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+                    await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
+                    await database.execute(videos.delete().where(videos.c.id == video_id))
+
+                # Delete files AFTER successful transaction
+                video_dir = VIDEOS_DIR / row["slug"]
+                if video_dir.exists():
+                    shutil.rmtree(video_dir)
+                archive_dir = ARCHIVE_DIR / row["slug"]
+                if archive_dir.exists():
+                    shutil.rmtree(archive_dir)
+                for ext in SUPPORTED_VIDEO_EXTENSIONS:
+                    upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+                    if upload_file.exists():
+                        upload_file.unlink()
+            else:
+                # SOFT DELETE
+                await database.execute(
+                    videos.update().where(videos.c.id == video_id).values(deleted_at=datetime.now(timezone.utc))
+                )
+
+                video_dir = VIDEOS_DIR / row["slug"]
+                archive_video_dir = ARCHIVE_DIR / row["slug"]
+                moved_files = []
+
+                try:
+                    if video_dir.exists():
+                        archive_video_dir.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(video_dir), str(archive_video_dir))
+                        moved_files.append(("dir", archive_video_dir, video_dir))
+
+                    for ext in SUPPORTED_VIDEO_EXTENSIONS:
+                        upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+                        if upload_file.exists():
+                            archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
+                            archive_upload.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(upload_file), str(archive_upload))
+                            moved_files.append(("file", archive_upload, upload_file))
+                except Exception as e:
+                    # Rollback file moves
+                    for item_type, src, dst in reversed(moved_files):
+                        try:
+                            shutil.move(str(src), str(dst))
+                        except Exception:
+                            # Ignore errors during rollback to avoid masking the original error
+                            pass
+                    # Rollback database change
+                    await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
+                    results.append(
+                        BulkOperationResult(video_id=video_id, success=False, error=f"Failed to archive: {e}")
+                    )
+                    failed_count += 1
+                    continue
+
+            # Emit individual audit event for successful delete
+            log_audit(
+                AuditAction.VIDEO_DELETE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=row["slug"],
+                details={
+                    "permanent": data.permanent,
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
+            results.append(BulkOperationResult(video_id=video_id, success=True))
+            deleted_count += 1
+
+        except Exception as e:
+            logger.exception(f"Failed to delete video {video_id}: {e}")
+            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
+            failed_count += 1
+
+    # Summary audit log for bulk operation
+    log_audit(
+        AuditAction.VIDEO_BULK_DELETE,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        resource_type="video",
+        details={
+            "bulk_operation_id": bulk_operation_id,
+            "video_ids": data.video_ids,
+            "permanent": data.permanent,
+            "deleted": deleted_count,
+            "failed": failed_count,
+        },
+    )
+
+    return BulkDeleteResponse(
+        status="ok" if failed_count == 0 else "partial",
+        deleted=deleted_count,
+        failed=failed_count,
+        results=results,
+    )
+
+
+@app.post("/api/videos/bulk/update")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkUpdateResponse:
+    """
+    Update multiple videos with the same values.
+
+    Supports updating category, published_at, and unpublishing.
+    """
+    bulk_operation_id = str(uuid.uuid4())
+    results = []
+    updated_count = 0
+    failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
+
+    # Validate category exists if provided
+    if data.category_id is not None and data.category_id > 0:
+        existing_category = await database.fetch_one(categories.select().where(categories.c.id == data.category_id))
+        if not existing_category:
+            raise HTTPException(status_code=400, detail=f"Category with ID {data.category_id} does not exist")
+
+    # Build update values
+    update_values = {}
+    if data.category_id is not None:
+        update_values["category_id"] = data.category_id if data.category_id > 0 else None
+    if data.unpublish:
+        update_values["published_at"] = None
+    elif data.published_at is not None:
+        update_values["published_at"] = data.published_at
+
+    if not update_values:
+        raise HTTPException(status_code=400, detail="No update values provided")
+
+    for video_id in data.video_ids:
+        try:
+            # Verify video exists
+            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            if not row:
+                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
+                failed_count += 1
+                continue
+
+            await database.execute(videos.update().where(videos.c.id == video_id).values(**update_values))
+
+            # Emit individual audit event for successful update
+            log_audit(
+                AuditAction.VIDEO_UPDATE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=row["slug"],
+                details={
+                    "updates": update_values,
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
+            results.append(BulkOperationResult(video_id=video_id, success=True))
+            updated_count += 1
+
+        except Exception as e:
+            logger.exception(f"Failed to update video {video_id}: {e}")
+            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
+            failed_count += 1
+
+    # Summary audit log for bulk operation
+    log_audit(
+        AuditAction.VIDEO_BULK_UPDATE,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        resource_type="video",
+        details={
+            "bulk_operation_id": bulk_operation_id,
+            "video_ids": data.video_ids,
+            "updates": update_values,
+            "updated": updated_count,
+            "failed": failed_count,
+        },
+    )
+
+    return BulkUpdateResponse(
+        status="ok" if failed_count == 0 else "partial",
+        updated=updated_count,
+        failed=failed_count,
+        results=results,
+    )
+
+
+@app.post("/api/videos/bulk/retranscode")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest) -> BulkRetranscodeResponse:
+    """
+    Queue multiple videos for re-transcoding.
+
+    Each video will be reset to pending status and queued for transcoding.
+    """
+    bulk_operation_id = str(uuid.uuid4())
+    results = []
+    queued_count = 0
+    failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
+
+    for video_id in data.video_ids:
+        try:
+            # Get video info
+            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            if not row:
+                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
+                failed_count += 1
+                continue
+
+            slug = row["slug"]
+            source_height = row["source_height"]
+
+            # Check source file exists
+            source_file = None
+            for ext in SUPPORTED_VIDEO_EXTENSIONS:
+                potential_source = UPLOADS_DIR / f"{video_id}{ext}"
+                if potential_source.exists():
+                    source_file = potential_source
+                    break
+
+            if not source_file:
+                results.append(
+                    BulkOperationResult(video_id=video_id, success=False, error="Source file not found in uploads")
+                )
+                failed_count += 1
+                continue
+
+            # Determine qualities to retranscode
+            retranscode_all = "all" in data.qualities
+            if retranscode_all:
+                qualities_to_delete = [q["name"] for q in QUALITY_PRESETS if q["height"] <= source_height]
+                qualities_to_delete.append("original")
+            else:
+                qualities_to_delete = [q for q in data.qualities if q != "all"]
+
+            async with database.transaction():
+                # Cancel existing transcoding job
+                existing_job = await database.fetch_one(
+                    transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+                )
+                if existing_job:
+                    await database.execute(
+                        quality_progress.delete().where(quality_progress.c.job_id == existing_job["id"])
+                    )
+                    await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
+
+                # Delete specified quality records
+                for quality in qualities_to_delete:
+                    await database.execute(
+                        video_qualities.delete().where(
+                            (video_qualities.c.video_id == video_id) & (video_qualities.c.quality == quality)
+                        )
+                    )
+
+                # Reset video status
+                await database.execute(
+                    videos.update()
+                    .where(videos.c.id == video_id)
+                    .values(status=VideoStatus.PENDING, error_message=None)
+                )
+
+                # Create new transcoding job
+                # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
+                await create_or_reset_transcoding_job(video_id)
+
+                # If retranscoding all, delete transcription record (inside transaction)
+                if retranscode_all:
+                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+
+            # Delete quality files from disk (after transaction succeeds)
+            video_dir = VIDEOS_DIR / slug
+            if video_dir.exists():
+                for quality in qualities_to_delete:
+                    for pattern in [f"{quality}.m3u8", f"{quality}_*.ts"]:
+                        for f in video_dir.glob(pattern):
+                            f.unlink()
+
+                # Delete VTT file if retranscoding all
+                if retranscode_all:
+                    vtt_path = video_dir / "captions.vtt"
+                    if vtt_path.exists():
+                        vtt_path.unlink()
+
+            # Emit individual audit event for successful retranscode
+            log_audit(
+                AuditAction.VIDEO_RETRANSCODE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=slug,
+                details={
+                    "qualities": data.qualities,
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
+            results.append(BulkOperationResult(video_id=video_id, success=True))
+            queued_count += 1
+
+        except Exception as e:
+            logger.exception(f"Failed to queue retranscode for video {video_id}: {e}")
+            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
+            failed_count += 1
+
+    # Summary audit log for bulk operation
+    log_audit(
+        AuditAction.VIDEO_BULK_RETRANSCODE,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        resource_type="video",
+        details={
+            "bulk_operation_id": bulk_operation_id,
+            "video_ids": data.video_ids,
+            "qualities": data.qualities,
+            "queued": queued_count,
+            "failed": failed_count,
+        },
+    )
+
+    return BulkRetranscodeResponse(
+        status="ok" if failed_count == 0 else "partial",
+        queued=queued_count,
+        failed=failed_count,
+        results=results,
+    )
+
+
+@app.post("/api/videos/bulk/restore")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> BulkRestoreResponse:
+    """
+    Restore multiple soft-deleted videos from archive.
+    """
+    bulk_operation_id = str(uuid.uuid4())
+    results = []
+    restored_count = 0
+    failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
+
+    for video_id in data.video_ids:
+        try:
+            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+            if not row:
+                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
+                failed_count += 1
+                continue
+
+            if not row["deleted_at"]:
+                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video is not deleted"))
+                failed_count += 1
+                continue
+
+            original_deleted_at = row["deleted_at"]
+
+            # Update database first
+            await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
+
+            archive_video_dir = ARCHIVE_DIR / row["slug"]
+            video_dir = VIDEOS_DIR / row["slug"]
+            moved_files = []
+
+            try:
+                if archive_video_dir.exists():
+                    shutil.move(str(archive_video_dir), str(video_dir))
+                    moved_files.append(("dir", video_dir, archive_video_dir))
+
+                for ext in SUPPORTED_VIDEO_EXTENSIONS:
+                    archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
+                    if archive_upload.exists():
+                        upload_file = UPLOADS_DIR / f"{video_id}{ext}"
+                        shutil.move(str(archive_upload), str(upload_file))
+                        moved_files.append(("file", upload_file, archive_upload))
+            except Exception as e:
+                # Rollback file moves
+                for item_type, src, dst in reversed(moved_files):
+                    try:
+                        shutil.move(str(src), str(dst))
+                    except Exception:
+                        # Ignore errors during rollback to avoid masking the original error
+                        pass
+                # Rollback database change
+                await database.execute(
+                    videos.update().where(videos.c.id == video_id).values(deleted_at=original_deleted_at)
+                )
+                results.append(BulkOperationResult(video_id=video_id, success=False, error=f"Failed to restore: {e}"))
+                failed_count += 1
+                continue
+
+            # Emit individual audit event for successful restore
+            log_audit(
+                AuditAction.VIDEO_RESTORE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=row["slug"],
+                details={
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
+            results.append(BulkOperationResult(video_id=video_id, success=True))
+            restored_count += 1
+
+        except Exception as e:
+            logger.exception(f"Failed to restore video {video_id}: {e}")
+            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
+            failed_count += 1
+
+    # Summary audit log for bulk operation
+    log_audit(
+        AuditAction.VIDEO_BULK_RESTORE,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        resource_type="video",
+        details={
+            "bulk_operation_id": bulk_operation_id,
+            "video_ids": data.video_ids,
+            "restored": restored_count,
+            "failed": failed_count,
+        },
+    )
+
+    return BulkRestoreResponse(
+        status="ok" if failed_count == 0 else "partial",
+        restored=restored_count,
+        failed=failed_count,
+        results=results,
+    )
+
+
 @app.post("/api/videos/{video_id}/restore")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def restore_video(request: Request, video_id: int):
@@ -2084,480 +2558,6 @@ async def analytics_trends(
     response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
 
     return TrendsResponse(**result_data)
-
-
-# ============ Bulk Operations ============
-
-
-@app.post("/api/videos/bulk/delete")
-@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkDeleteResponse:
-    """
-    Delete multiple videos at once.
-
-    Supports both soft-delete (moves to archive) and permanent delete.
-    Operations are performed individually to track per-video success/failure.
-    """
-    bulk_operation_id = str(uuid.uuid4())
-    results = []
-    deleted_count = 0
-    failed_count = 0
-    client_ip = get_real_ip(request)
-    user_agent = request.headers.get("user-agent")
-
-    for video_id in data.video_ids:
-        try:
-            # Get video info
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
-            if not row:
-                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
-                failed_count += 1
-                continue
-
-            if data.permanent:
-                # PERMANENT DELETE
-                async with database.transaction():
-                    job = await database.fetch_one(
-                        transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-                    )
-                    if job:
-                        await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
-                    await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
-                    await database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
-                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
-                    await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
-                    await database.execute(videos.delete().where(videos.c.id == video_id))
-
-                # Delete files AFTER successful transaction
-                video_dir = VIDEOS_DIR / row["slug"]
-                if video_dir.exists():
-                    shutil.rmtree(video_dir)
-                archive_dir = ARCHIVE_DIR / row["slug"]
-                if archive_dir.exists():
-                    shutil.rmtree(archive_dir)
-                for ext in SUPPORTED_VIDEO_EXTENSIONS:
-                    upload_file = UPLOADS_DIR / f"{video_id}{ext}"
-                    if upload_file.exists():
-                        upload_file.unlink()
-            else:
-                # SOFT DELETE
-                await database.execute(
-                    videos.update().where(videos.c.id == video_id).values(deleted_at=datetime.now(timezone.utc))
-                )
-
-                video_dir = VIDEOS_DIR / row["slug"]
-                archive_video_dir = ARCHIVE_DIR / row["slug"]
-                moved_files = []
-
-                try:
-                    if video_dir.exists():
-                        archive_video_dir.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(video_dir), str(archive_video_dir))
-                        moved_files.append(("dir", archive_video_dir, video_dir))
-
-                    for ext in SUPPORTED_VIDEO_EXTENSIONS:
-                        upload_file = UPLOADS_DIR / f"{video_id}{ext}"
-                        if upload_file.exists():
-                            archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
-                            archive_upload.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.move(str(upload_file), str(archive_upload))
-                            moved_files.append(("file", archive_upload, upload_file))
-                except Exception as e:
-                    # Rollback file moves
-                    for item_type, src, dst in reversed(moved_files):
-                        try:
-                            shutil.move(str(src), str(dst))
-                        except Exception:
-                            # Ignore errors during rollback to avoid masking the original error
-                            pass
-                    # Rollback database change
-                    await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
-                    results.append(
-                        BulkOperationResult(video_id=video_id, success=False, error=f"Failed to archive: {e}")
-                    )
-                    failed_count += 1
-                    continue
-
-            # Emit individual audit event for successful delete
-            log_audit(
-                AuditAction.VIDEO_DELETE,
-                client_ip=client_ip,
-                user_agent=user_agent,
-                resource_type="video",
-                resource_id=video_id,
-                resource_name=row["slug"],
-                details={
-                    "permanent": data.permanent,
-                    "bulk_operation_id": bulk_operation_id,
-                },
-            )
-
-            results.append(BulkOperationResult(video_id=video_id, success=True))
-            deleted_count += 1
-
-        except Exception as e:
-            logger.exception(f"Failed to delete video {video_id}: {e}")
-            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
-            failed_count += 1
-
-    # Summary audit log for bulk operation
-    log_audit(
-        AuditAction.VIDEO_BULK_DELETE,
-        client_ip=client_ip,
-        user_agent=user_agent,
-        resource_type="video",
-        details={
-            "bulk_operation_id": bulk_operation_id,
-            "video_ids": data.video_ids,
-            "permanent": data.permanent,
-            "deleted": deleted_count,
-            "failed": failed_count,
-        },
-    )
-
-    return BulkDeleteResponse(
-        status="ok" if failed_count == 0 else "partial",
-        deleted=deleted_count,
-        failed=failed_count,
-        results=results,
-    )
-
-
-@app.post("/api/videos/bulk/update")
-@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkUpdateResponse:
-    """
-    Update multiple videos with the same values.
-
-    Supports updating category, published_at, and unpublishing.
-    """
-    bulk_operation_id = str(uuid.uuid4())
-    results = []
-    updated_count = 0
-    failed_count = 0
-    client_ip = get_real_ip(request)
-    user_agent = request.headers.get("user-agent")
-
-    # Validate category exists if provided
-    if data.category_id is not None and data.category_id > 0:
-        existing_category = await database.fetch_one(categories.select().where(categories.c.id == data.category_id))
-        if not existing_category:
-            raise HTTPException(status_code=400, detail=f"Category with ID {data.category_id} does not exist")
-
-    # Build update values
-    update_values = {}
-    if data.category_id is not None:
-        update_values["category_id"] = data.category_id if data.category_id > 0 else None
-    if data.unpublish:
-        update_values["published_at"] = None
-    elif data.published_at is not None:
-        update_values["published_at"] = data.published_at
-
-    if not update_values:
-        raise HTTPException(status_code=400, detail="No update values provided")
-
-    for video_id in data.video_ids:
-        try:
-            # Verify video exists
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
-            if not row:
-                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
-                failed_count += 1
-                continue
-
-            await database.execute(videos.update().where(videos.c.id == video_id).values(**update_values))
-
-            # Emit individual audit event for successful update
-            log_audit(
-                AuditAction.VIDEO_UPDATE,
-                client_ip=client_ip,
-                user_agent=user_agent,
-                resource_type="video",
-                resource_id=video_id,
-                resource_name=row["slug"],
-                details={
-                    "updates": update_values,
-                    "bulk_operation_id": bulk_operation_id,
-                },
-            )
-
-            results.append(BulkOperationResult(video_id=video_id, success=True))
-            updated_count += 1
-
-        except Exception as e:
-            logger.exception(f"Failed to update video {video_id}: {e}")
-            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
-            failed_count += 1
-
-    # Summary audit log for bulk operation
-    log_audit(
-        AuditAction.VIDEO_BULK_UPDATE,
-        client_ip=client_ip,
-        user_agent=user_agent,
-        resource_type="video",
-        details={
-            "bulk_operation_id": bulk_operation_id,
-            "video_ids": data.video_ids,
-            "updates": update_values,
-            "updated": updated_count,
-            "failed": failed_count,
-        },
-    )
-
-    return BulkUpdateResponse(
-        status="ok" if failed_count == 0 else "partial",
-        updated=updated_count,
-        failed=failed_count,
-        results=results,
-    )
-
-
-@app.post("/api/videos/bulk/retranscode")
-@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest) -> BulkRetranscodeResponse:
-    """
-    Queue multiple videos for re-transcoding.
-
-    Each video will be reset to pending status and queued for transcoding.
-    """
-    bulk_operation_id = str(uuid.uuid4())
-    results = []
-    queued_count = 0
-    failed_count = 0
-    client_ip = get_real_ip(request)
-    user_agent = request.headers.get("user-agent")
-
-    for video_id in data.video_ids:
-        try:
-            # Get video info
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
-            if not row:
-                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
-                failed_count += 1
-                continue
-
-            slug = row["slug"]
-            source_height = row["source_height"]
-
-            # Check source file exists
-            source_file = None
-            for ext in SUPPORTED_VIDEO_EXTENSIONS:
-                potential_source = UPLOADS_DIR / f"{video_id}{ext}"
-                if potential_source.exists():
-                    source_file = potential_source
-                    break
-
-            if not source_file:
-                results.append(
-                    BulkOperationResult(video_id=video_id, success=False, error="Source file not found in uploads")
-                )
-                failed_count += 1
-                continue
-
-            # Determine qualities to retranscode
-            retranscode_all = "all" in data.qualities
-            if retranscode_all:
-                qualities_to_delete = [q["name"] for q in QUALITY_PRESETS if q["height"] <= source_height]
-                qualities_to_delete.append("original")
-            else:
-                qualities_to_delete = [q for q in data.qualities if q != "all"]
-
-            async with database.transaction():
-                # Cancel existing transcoding job
-                existing_job = await database.fetch_one(
-                    transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
-                )
-                if existing_job:
-                    await database.execute(
-                        quality_progress.delete().where(quality_progress.c.job_id == existing_job["id"])
-                    )
-                    await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
-
-                # Delete specified quality records
-                for quality in qualities_to_delete:
-                    await database.execute(
-                        video_qualities.delete().where(
-                            (video_qualities.c.video_id == video_id) & (video_qualities.c.quality == quality)
-                        )
-                    )
-
-                # Reset video status
-                await database.execute(
-                    videos.update()
-                    .where(videos.c.id == video_id)
-                    .values(status=VideoStatus.PENDING, error_message=None)
-                )
-
-                # Create new transcoding job
-                # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
-                await create_or_reset_transcoding_job(video_id)
-
-                # If retranscoding all, delete transcription record (inside transaction)
-                if retranscode_all:
-                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
-
-            # Delete quality files from disk (after transaction succeeds)
-            video_dir = VIDEOS_DIR / slug
-            if video_dir.exists():
-                for quality in qualities_to_delete:
-                    for pattern in [f"{quality}.m3u8", f"{quality}_*.ts"]:
-                        for f in video_dir.glob(pattern):
-                            f.unlink()
-
-                # Delete VTT file if retranscoding all
-                if retranscode_all:
-                    vtt_path = video_dir / "captions.vtt"
-                    if vtt_path.exists():
-                        vtt_path.unlink()
-
-            # Emit individual audit event for successful retranscode
-            log_audit(
-                AuditAction.VIDEO_RETRANSCODE,
-                client_ip=client_ip,
-                user_agent=user_agent,
-                resource_type="video",
-                resource_id=video_id,
-                resource_name=slug,
-                details={
-                    "qualities": data.qualities,
-                    "bulk_operation_id": bulk_operation_id,
-                },
-            )
-
-            results.append(BulkOperationResult(video_id=video_id, success=True))
-            queued_count += 1
-
-        except Exception as e:
-            logger.exception(f"Failed to queue retranscode for video {video_id}: {e}")
-            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
-            failed_count += 1
-
-    # Summary audit log for bulk operation
-    log_audit(
-        AuditAction.VIDEO_BULK_RETRANSCODE,
-        client_ip=client_ip,
-        user_agent=user_agent,
-        resource_type="video",
-        details={
-            "bulk_operation_id": bulk_operation_id,
-            "video_ids": data.video_ids,
-            "qualities": data.qualities,
-            "queued": queued_count,
-            "failed": failed_count,
-        },
-    )
-
-    return BulkRetranscodeResponse(
-        status="ok" if failed_count == 0 else "partial",
-        queued=queued_count,
-        failed=failed_count,
-        results=results,
-    )
-
-
-@app.post("/api/videos/bulk/restore")
-@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> BulkRestoreResponse:
-    """
-    Restore multiple soft-deleted videos from archive.
-    """
-    bulk_operation_id = str(uuid.uuid4())
-    results = []
-    restored_count = 0
-    failed_count = 0
-    client_ip = get_real_ip(request)
-    user_agent = request.headers.get("user-agent")
-
-    for video_id in data.video_ids:
-        try:
-            row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
-            if not row:
-                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
-                failed_count += 1
-                continue
-
-            if not row["deleted_at"]:
-                results.append(BulkOperationResult(video_id=video_id, success=False, error="Video is not deleted"))
-                failed_count += 1
-                continue
-
-            original_deleted_at = row["deleted_at"]
-
-            # Update database first
-            await database.execute(videos.update().where(videos.c.id == video_id).values(deleted_at=None))
-
-            archive_video_dir = ARCHIVE_DIR / row["slug"]
-            video_dir = VIDEOS_DIR / row["slug"]
-            moved_files = []
-
-            try:
-                if archive_video_dir.exists():
-                    shutil.move(str(archive_video_dir), str(video_dir))
-                    moved_files.append(("dir", video_dir, archive_video_dir))
-
-                for ext in SUPPORTED_VIDEO_EXTENSIONS:
-                    archive_upload = ARCHIVE_DIR / f"uploads/{video_id}{ext}"
-                    if archive_upload.exists():
-                        upload_file = UPLOADS_DIR / f"{video_id}{ext}"
-                        shutil.move(str(archive_upload), str(upload_file))
-                        moved_files.append(("file", upload_file, archive_upload))
-            except Exception as e:
-                # Rollback file moves
-                for item_type, src, dst in reversed(moved_files):
-                    try:
-                        shutil.move(str(src), str(dst))
-                    except Exception:
-                        # Ignore errors during rollback to avoid masking the original error
-                        pass
-                # Rollback database change
-                await database.execute(
-                    videos.update().where(videos.c.id == video_id).values(deleted_at=original_deleted_at)
-                )
-                results.append(BulkOperationResult(video_id=video_id, success=False, error=f"Failed to restore: {e}"))
-                failed_count += 1
-                continue
-
-            # Emit individual audit event for successful restore
-            log_audit(
-                AuditAction.VIDEO_RESTORE,
-                client_ip=client_ip,
-                user_agent=user_agent,
-                resource_type="video",
-                resource_id=video_id,
-                resource_name=row["slug"],
-                details={
-                    "bulk_operation_id": bulk_operation_id,
-                },
-            )
-
-            results.append(BulkOperationResult(video_id=video_id, success=True))
-            restored_count += 1
-
-        except Exception as e:
-            logger.exception(f"Failed to restore video {video_id}: {e}")
-            results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
-            failed_count += 1
-
-    # Summary audit log for bulk operation
-    log_audit(
-        AuditAction.VIDEO_BULK_RESTORE,
-        client_ip=client_ip,
-        user_agent=user_agent,
-        resource_type="video",
-        details={
-            "bulk_operation_id": bulk_operation_id,
-            "video_ids": data.video_ids,
-            "restored": restored_count,
-            "failed": failed_count,
-        },
-    )
-
-    return BulkRestoreResponse(
-        status="ok" if failed_count == 0 else "partial",
-        restored=restored_count,
-        failed=failed_count,
-        results=results,
-    )
 
 
 @app.get("/api/videos/export")

@@ -1657,9 +1657,6 @@ class TestBulkOperationsHTTP:
             video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
             assert video["category_id"] == sample_category["id"]
 
-    @pytest.mark.skip(
-        reason="Route /api/videos/bulk/restore conflicts with /api/videos/{video_id}/restore - needs route reordering"
-    )
     @pytest.mark.asyncio
     async def test_bulk_restore_success(self, admin_client, test_database, sample_category, test_storage):
         """Test bulk restore successfully restores multiple videos."""
@@ -1694,9 +1691,6 @@ class TestBulkOperationsHTTP:
             video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
             assert video["deleted_at"] is None
 
-    @pytest.mark.skip(
-        reason="Route /api/videos/bulk/retranscode conflicts with /api/videos/{video_id}/retranscode - needs route reordering"
-    )
     @pytest.mark.asyncio
     async def test_bulk_retranscode_success(self, admin_client, test_database, sample_category, test_storage):
         """Test bulk retranscode successfully queues multiple videos."""
