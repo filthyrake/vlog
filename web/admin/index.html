@@ -1092,6 +1092,12 @@
                 // Transcode progress
                 progressData: {},
 
+                // SSE connections for real-time updates
+                progressSSE: null,
+                workersSSE: null,
+                sseReconnectAttempts: 0,
+                maxSseReconnectDelay: 30000,
+
                 // Bulk operations
                 selectedVideos: [],
                 bulkDeleteModal: false,
@@ -1112,16 +1118,32 @@
                         this.loadCategories()
                     ]);
 
-                    // Auto-refresh videos every 10 seconds, progress every 3 seconds
-                    setInterval(() => this.loadVideos(), 10000);
-                    setInterval(() => this.loadProgressForActiveVideos(), 3000);
+                    // Try to connect to SSE for real-time updates (falls back to polling)
+                    this.connectProgressSSE();
 
-                    // Auto-refresh workers every 5 seconds when workers tab is active
+                    // Auto-refresh videos every 30 seconds (longer interval since SSE handles progress)
+                    setInterval(() => this.loadVideos(), 30000);
+
+                    // Fallback polling for progress if SSE not connected
                     setInterval(() => {
-                        if (this.tab === 'workers') {
-                            this.loadWorkers();
+                        if (!this.progressSSE || this.progressSSE.readyState !== EventSource.OPEN) {
+                            this.loadProgressForActiveVideos();
                         }
                     }, 5000);
+
+                    // Auto-refresh workers every 10 seconds when workers tab is active (SSE handles real-time)
+                    setInterval(() => {
+                        if (this.tab === 'workers' && (!this.workersSSE || this.workersSSE.readyState !== EventSource.OPEN)) {
+                            this.loadWorkers();
+                        }
+                    }, 10000);
+
+                    // Connect workers SSE when switching to workers tab
+                    this.$watch('tab', (newTab) => {
+                        if (newTab === 'workers') {
+                            this.connectWorkersSSE();
+                        }
+                    });
                 },
 
                 async loadVideos() {
@@ -1157,6 +1179,181 @@
                             console.error(`Failed to load progress for video ${video.id}:`, e);
                         }
                     }));
+                },
+
+                connectProgressSSE() {
+                    // Close existing connection if any
+                    if (this.progressSSE) {
+                        this.progressSSE.close();
+                    }
+
+                    // Get video IDs that need progress tracking
+                    const activeIds = this.videos
+                        .filter(v => v.status === 'processing' || v.status === 'pending')
+                        .map(v => v.id)
+                        .join(',');
+
+                    const url = activeIds
+                        ? `/api/events/progress?video_ids=${activeIds}`
+                        : '/api/events/progress';
+
+                    try {
+                        this.progressSSE = new EventSource(url);
+
+                        this.progressSSE.addEventListener('progress', (e) => {
+                            const data = JSON.parse(e.data);
+                            this.progressData[data.video_id] = {
+                                progress_percent: data.progress_percent,
+                                current_step: data.current_step,
+                                qualities: data.qualities,
+                                last_error: data.last_error,
+                                status: data.status
+                            };
+                        });
+
+                        this.progressSSE.addEventListener('job_completed', (e) => {
+                            const data = JSON.parse(e.data);
+                            const video = this.videos.find(v => v.id === data.video_id);
+                            if (video) {
+                                video.status = 'ready';
+                            }
+                            delete this.progressData[data.video_id];
+                            // Refresh video list to get updated qualities
+                            this.loadVideos();
+                        });
+
+                        this.progressSSE.addEventListener('job_failed', (e) => {
+                            const data = JSON.parse(e.data);
+                            const video = this.videos.find(v => v.id === data.video_id);
+                            if (video && !data.will_retry) {
+                                video.status = 'failed';
+                            }
+                            if (this.progressData[data.video_id]) {
+                                this.progressData[data.video_id].last_error = data.error;
+                            }
+                        });
+
+                        this.progressSSE.addEventListener('initial', (e) => {
+                            // Initial state from SSE connection
+                            const data = JSON.parse(e.data);
+                            if (data.progress) {
+                                for (const [videoId, progress] of Object.entries(data.progress)) {
+                                    this.progressData[parseInt(videoId)] = progress;
+                                }
+                            }
+                        });
+
+                        this.progressSSE.onopen = () => {
+                            console.log('Progress SSE connected');
+                            this.sseReconnectAttempts = 0;
+                        };
+
+                        this.progressSSE.onerror = (e) => {
+                            console.warn('Progress SSE error, will reconnect:', e);
+                            this.scheduleSSEReconnect('progress');
+                        };
+                    } catch (e) {
+                        console.warn('Failed to create progress SSE:', e);
+                    }
+                },
+
+                connectWorkersSSE() {
+                    // Close existing connection if any
+                    if (this.workersSSE) {
+                        this.workersSSE.close();
+                    }
+
+                    try {
+                        this.workersSSE = new EventSource('/api/events/workers');
+
+                        this.workersSSE.addEventListener('initial', (e) => {
+                            const data = JSON.parse(e.data);
+                            if (data.workers) {
+                                this.workersList = data.workers;
+                                this.workerStats = {
+                                    total_count: data.total_count,
+                                    active_count: data.active_count,
+                                    idle_count: data.idle_count,
+                                    offline_count: data.offline_count,
+                                    disabled_count: data.disabled_count
+                                };
+                            }
+                            if (data.active_jobs) {
+                                this.activeJobs = data.active_jobs;
+                            }
+                        });
+
+                        this.workersSSE.addEventListener('worker_status', (e) => {
+                            const data = JSON.parse(e.data);
+                            // Update worker in list
+                            const worker = this.workersList.find(w => w.worker_id === data.worker_id);
+                            if (worker) {
+                                worker.status = data.status;
+                                worker.current_video_title = data.current_video_slug;
+                                worker.current_step = data.current_step;
+                                worker.current_progress = data.progress_percent;
+                            }
+                        });
+
+                        this.workersSSE.addEventListener('job_completed', (e) => {
+                            // Refresh active jobs on completion
+                            this.loadActiveJobs();
+                        });
+
+                        this.workersSSE.addEventListener('job_failed', (e) => {
+                            // Refresh active jobs on failure
+                            this.loadActiveJobs();
+                        });
+
+                        this.workersSSE.addEventListener('progress', (e) => {
+                            const data = JSON.parse(e.data);
+                            // Update active job progress
+                            if (this.activeJobs && this.activeJobs.jobs) {
+                                const job = this.activeJobs.jobs.find(j => j.job_id === data.job_id);
+                                if (job) {
+                                    job.progress_percent = data.progress_percent;
+                                    job.current_step = data.current_step;
+                                    job.qualities = data.qualities;
+                                }
+                            }
+                        });
+
+                        this.workersSSE.onopen = () => {
+                            console.log('Workers SSE connected');
+                        };
+
+                        this.workersSSE.onerror = (e) => {
+                            console.warn('Workers SSE error, will reconnect:', e);
+                            this.scheduleSSEReconnect('workers');
+                        };
+                    } catch (e) {
+                        console.warn('Failed to create workers SSE:', e);
+                    }
+                },
+
+                async loadActiveJobs() {
+                    try {
+                        const res = await fetch('/api/workers/active-jobs');
+                        if (res.ok) {
+                            this.activeJobs = await res.json();
+                        }
+                    } catch (e) {
+                        console.error('Failed to load active jobs:', e);
+                    }
+                },
+
+                scheduleSSEReconnect(type) {
+                    this.sseReconnectAttempts++;
+                    // Exponential backoff: 1s, 2s, 4s, 8s, ... up to max
+                    const delay = Math.min(1000 * Math.pow(2, this.sseReconnectAttempts - 1), this.maxSseReconnectDelay);
+
+                    setTimeout(() => {
+                        if (type === 'progress') {
+                            this.connectProgressSSE();
+                        } else if (type === 'workers' && this.tab === 'workers') {
+                            this.connectWorkersSSE();
+                        }
+                    }, delay);
                 },
 
                 async loadCategories() {

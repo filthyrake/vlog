@@ -179,17 +179,27 @@ class WorkerAPIClient:
             timeout=TIMEOUT_HEARTBEAT,
         )
 
-    async def claim_job(self) -> dict:
+    async def claim_job(self, job_id: Optional[int] = None) -> dict:
         """
         Attempt to claim a transcoding job.
+
+        Args:
+            job_id: Optional specific job ID to claim (for Redis-dispatched jobs).
+                    If provided, will only claim this specific job.
+                    If not provided, claims any available job from the database.
 
         Returns:
             Job info if claimed, or message indicating no jobs available
         """
+        params = {}
+        if job_id is not None:
+            params["job_id"] = job_id
+
         return await self._request(
             "POST",
             "/api/worker/claim",
             timeout=TIMEOUT_CLAIM,
+            params=params if params else None,
         )
 
     async def update_progress(
