@@ -18,12 +18,15 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 
 if TYPE_CHECKING:
     from worker.hwaccel import GPUCapabilities
+
+# Import at runtime for parallel session calculation
+from worker.hwaccel import get_recommended_parallel_sessions
 
 from api.common import ensure_utc, validate_slug
 from api.database import (
@@ -83,6 +86,43 @@ logger = logging.getLogger(__name__)
 
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
+
+
+def group_qualities_by_resolution(
+    qualities: List[dict], parallel_count: int
+) -> List[List[dict]]:
+    """
+    Group qualities into batches for parallel encoding.
+
+    Groups high-res qualities (>= 1080p) together and low-res (< 1080p) together,
+    then chunks each group by the parallel count. This keeps similar workloads
+    together for better memory usage.
+
+    Args:
+        qualities: List of quality preset dicts with 'name' and 'height' keys
+        parallel_count: Maximum number of qualities per batch
+
+    Returns:
+        List of quality batches, each containing up to parallel_count qualities
+    """
+    if parallel_count <= 1:
+        # Sequential mode: each quality in its own batch
+        return [[q] for q in qualities]
+
+    # Split into high-res (1080p+) and low-res groups
+    high_res = [q for q in qualities if q["height"] >= 1080]
+    low_res = [q for q in qualities if q["height"] < 1080]
+
+    batches = []
+
+    # Create batches from high-res first, then low-res
+    for group in [high_res, low_res]:
+        for i in range(0, len(group), parallel_count):
+            batch = group[i : i + parallel_count]
+            if batch:
+                batches.append(batch)
+
+    return batches
 
 
 class WorkerState:
@@ -1705,19 +1745,28 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             await checkpoint(job_id)
 
         # ----------------------------------------------------------------
-        # Step 3b: Transcode to lower qualities
+        # Step 3b: Transcode to lower qualities (with parallel batching)
         # ----------------------------------------------------------------
 
-        for idx, quality in enumerate(qualities):
-            quality_name = quality["name"]
-            # idx+1 because original is index 0
-            quality_idx = idx + 1
+        # Get parallel encoding count based on GPU capabilities
+        parallel_count = get_recommended_parallel_sessions(state.gpu_caps)
+        if parallel_count > 1:
+            print(f"  Using parallel encoding: {parallel_count} qualities at a time")
 
-            # Check for shutdown before processing each quality
-            if state.shutdown_requested:
-                print("  Shutdown requested, resetting video to pending...")
-                await reset_video_to_pending(video_id)
-                return False
+        # Group qualities into batches for parallel processing
+        quality_batches = group_qualities_by_resolution(qualities, parallel_count)
+
+        # Shared progress tracking for parallel qualities
+        quality_progresses: Dict[str, int] = {}
+
+        async def transcode_single_quality(
+            quality: dict,
+        ) -> Optional[dict]:
+            """
+            Transcode a single quality. Returns quality info dict on success, None on failure.
+            Designed to be run in parallel with other qualities.
+            """
+            quality_name = quality["name"]
 
             # Check if already completed
             status = await get_quality_status(job_id, quality_name)
@@ -1732,15 +1781,12 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     if actual_width % 2 != 0:
                         actual_width += 1
                     actual_height = quality["height"]
-                successful_qualities.append(
-                    {
-                        "name": quality_name,
-                        "width": actual_width,
-                        "height": actual_height,
-                        "bitrate": quality["bitrate"],
-                    }
-                )
-                continue
+                return {
+                    "name": quality_name,
+                    "width": actual_width,
+                    "height": actual_height,
+                    "bitrate": quality["bitrate"],
+                }
 
             # Check if playlist file is complete (from previous attempt)
             playlist_path = output_dir / f"{quality_name}.m3u8"
@@ -1756,27 +1802,29 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     if actual_width % 2 != 0:
                         actual_width += 1
                     actual_height = quality["height"]
-                successful_qualities.append(
-                    {
-                        "name": quality_name,
-                        "width": actual_width,
-                        "height": actual_height,
-                        "bitrate": quality["bitrate"],
-                    }
-                )
-                continue
+                return {
+                    "name": quality_name,
+                    "width": actual_width,
+                    "height": actual_height,
+                    "bitrate": quality["bitrate"],
+                }
 
             # Transcode this quality
             print(f"    {quality_name}: Transcoding...")
             await update_quality_status(job_id, quality_name, QualityStatus.IN_PROGRESS)
 
-            async def progress_cb(progress: int, q_idx=quality_idx, q_name=quality_name):
+            async def progress_cb(progress: int, q_name=quality_name):
+                # Update per-quality progress
                 await progress_tracker.update_quality(job_id, q_name, progress)
-                # Update overall progress (original is done, so start from quality_idx)
-                base_progress = int((q_idx / total_qualities) * 100)
-                quality_contribution = int((progress / 100) * (100 / total_qualities))
-                overall = base_progress + quality_contribution
-                await progress_tracker.update_job(job_id, overall)
+                # Track in shared dict for overall progress calculation
+                quality_progresses[q_name] = progress
+                # Calculate overall progress: original is done (100%), plus average of all qualities
+                # Original contributes 1/total_qualities, remaining qualities share the rest
+                original_contribution = 100 / total_qualities
+                quality_avg = sum(quality_progresses.values()) / len(qualities) if qualities else 0
+                quality_contribution = quality_avg * (1 - 1 / total_qualities)
+                overall = int(original_contribution + quality_contribution)
+                await progress_tracker.update_job(job_id, min(overall, 99))  # Cap at 99 until finalized
 
             try:
                 success, error_detail = await transcode_quality_with_progress(
@@ -1799,26 +1847,54 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         if actual_width % 2 != 0:
                             actual_width += 1
                         actual_height = quality["height"]
-                    successful_qualities.append(
-                        {
-                            "name": quality_name,
-                            "width": actual_width,
-                            "height": actual_height,
-                            "bitrate": quality["bitrate"],
-                        }
-                    )
                     print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
+                    return {
+                        "name": quality_name,
+                        "width": actual_width,
+                        "height": actual_height,
+                        "bitrate": quality["bitrate"],
+                    }
                 else:
                     error_msg = error_detail or "Transcoding process returned non-zero exit code"
                     await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
                     failed_qualities.append({"name": quality_name, "error": error_msg})
                     print(f"    {quality_name}: Failed")
+                    return None
             except Exception as e:
                 error_msg = str(e)
                 await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
                 failed_qualities.append({"name": quality_name, "error": error_msg})
                 print(f"    {quality_name}: Error - {e}")
+                return None
 
+        # Process each batch of qualities
+        for batch_idx, batch in enumerate(quality_batches):
+            # Check for shutdown before processing each batch
+            if state.shutdown_requested:
+                print("  Shutdown requested, resetting video to pending...")
+                await reset_video_to_pending(video_id)
+                return False
+
+            if len(batch) > 1:
+                print(f"  Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
+
+            # Run batch in parallel
+            tasks = [transcode_single_quality(q) for q in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results
+            for quality, result in zip(batch, results):
+                if isinstance(result, Exception):
+                    # Unexpected exception during task execution
+                    error_msg = str(result)
+                    await update_quality_status(job_id, quality["name"], QualityStatus.FAILED, error_msg)
+                    failed_qualities.append({"name": quality["name"], "error": error_msg})
+                    print(f"    {quality['name']}: Unexpected error - {result}")
+                elif result is not None:
+                    # Success - result is the quality info dict
+                    successful_qualities.append(result)
+
+            # Checkpoint after each batch
             await checkpoint(job_id)
 
         # ----------------------------------------------------------------
