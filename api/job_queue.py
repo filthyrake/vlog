@@ -78,6 +78,7 @@ class JobDispatch:
             try:
                 created_at = datetime.fromisoformat(data["created_at"])
             except (ValueError, TypeError):
+                # If parsing fails, leave created_at as None (invalid/missing date is acceptable)
                 pass
 
         job = cls(
@@ -376,11 +377,16 @@ class JobQueue:
 
 # Global job queue instance for API use
 _job_queue: Optional[JobQueue] = None
+_job_queue_initialized: bool = False
 
 
 async def get_job_queue() -> JobQueue:
-    """Get or create the global job queue instance."""
-    global _job_queue
+    """Get or create the global job queue instance, initialized for API publishing."""
+    global _job_queue, _job_queue_initialized
     if _job_queue is None:
         _job_queue = JobQueue()
+    if not _job_queue_initialized:
+        # Initialize for API publishing (no consumer operations needed)
+        await _job_queue.initialize(consumer_name="api-publisher")
+        _job_queue_initialized = True
     return _job_queue

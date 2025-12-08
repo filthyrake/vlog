@@ -34,7 +34,7 @@ class RedisClient:
     """Singleton Redis client with connection pooling and health monitoring."""
 
     _instance: Optional["RedisClient"] = None
-    _lock: asyncio.Lock = asyncio.Lock()
+    _lock: Optional[asyncio.Lock] = None
     _initialized: bool = False
 
     def __init__(self) -> None:
@@ -47,9 +47,28 @@ class RedisClient:
         self._circuit_open_until: Optional[datetime] = None
 
     @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        """Get or create the asyncio lock, ensuring it's bound to the current event loop."""
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+            return cls._lock
+
+        try:
+            current_loop = asyncio.get_running_loop()
+            # Check if lock is bound to a different loop (Python 3.9 compatibility)
+            lock_loop = getattr(cls._lock, "_loop", None)
+            if lock_loop is not None and lock_loop is not current_loop:
+                cls._lock = asyncio.Lock()
+        except RuntimeError:
+            # No running loop, create new lock
+            cls._lock = asyncio.Lock()
+
+        return cls._lock
+
+    @classmethod
     async def get_instance(cls) -> "RedisClient":
         """Get or create the singleton instance."""
-        async with cls._lock:
+        async with cls._get_lock():
             if cls._instance is None:
                 cls._instance = cls()
             if not cls._initialized:
@@ -60,7 +79,7 @@ class RedisClient:
     @classmethod
     async def reset_instance(cls) -> None:
         """Reset the singleton instance (for testing)."""
-        async with cls._lock:
+        async with cls._get_lock():
             if cls._instance is not None:
                 await cls._instance.close()
                 cls._instance = None
@@ -204,13 +223,15 @@ class RedisClient:
         if self._client:
             try:
                 await self._client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                # Ignore close errors during shutdown
+                logger.debug(f"Exception while closing Redis client: {e}")
         if self._pool:
             try:
                 await self._pool.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                # Ignore disconnect errors during shutdown
+                logger.debug(f"Exception while disconnecting Redis pool: {e}")
         self._client = None
         self._pool = None
         self._healthy = False

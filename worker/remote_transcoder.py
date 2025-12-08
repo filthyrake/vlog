@@ -667,9 +667,10 @@ async def worker_loop():
                         jobs_processed += 1
                     else:
                         jobs_failed += 1
-                        # On failure, reject Redis job to move to dead letter queue
+                        # On failure, acknowledge Redis job so database retry logic can handle retries
+                        # The job will be re-queued to Redis when the database retry triggers
                         if redis_job:
-                            await JOB_QUEUE.reject_job(redis_job, "Job processing failed")
+                            await JOB_QUEUE.acknowledge_job(redis_job)
                 else:
                     # No jobs available
                     # If Redis is enabled, claim_job already blocks for a short time
