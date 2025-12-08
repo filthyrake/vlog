@@ -20,6 +20,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
 from api.common import (
+    RequestIDMiddleware,
     SecurityHeadersMiddleware,
     check_health,
     get_real_ip,
@@ -119,6 +120,7 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIDMiddleware)
 
 # CORS middleware for HLS playback and analytics
 # If CORS_ALLOWED_ORIGINS is empty, allow same-origin only (no CORS headers)
@@ -129,7 +131,7 @@ app.add_middleware(
     allow_credentials=bool(CORS_ALLOWED_ORIGINS),  # Only enable with explicit origins
     allow_methods=["GET", "HEAD", "OPTIONS", "POST"],
     allow_headers=["Authorization", "Content-Type"],
-    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
+    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges", "X-Request-ID"],
 )
 
 
