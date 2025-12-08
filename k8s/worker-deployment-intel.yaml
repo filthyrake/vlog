@@ -41,23 +41,28 @@ spec:
 
       containers:
       - name: worker
-        # GPU-enabled worker image
-        image: vlog-worker-gpu:latest
-        imagePullPolicy: Always
+        # GPU-enabled worker image from local registry
+        image: 10.0.1.152:9003/vlog-worker-gpu:rocky10
+        imagePullPolicy: IfNotPresent
 
-        # Load environment from ConfigMap and Secret
+        # Load environment from ConfigMap
         envFrom:
         - configMapRef:
             name: vlog-worker-config
-        - secretRef:
-            name: vlog-worker-credentials
 
-        # GPU-specific environment variables
+        # Environment variables
         env:
+        # API key from secret
+        - name: VLOG_WORKER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vlog-worker-secret
+              key: intel-api-key
+        # GPU-specific settings
         - name: VLOG_HWACCEL_TYPE
           value: "intel"
         - name: VLOG_HWACCEL_PREFERRED_CODEC
-          value: "av1"  # Intel Arc has excellent AV1 encode!
+          value: "h264"  # AV1 not supported in HLS/MPEG-TS containers yet
         # Intel Media Driver (iHD) for Arc GPUs
         - name: LIBVA_DRIVER_NAME
           value: "iHD"
@@ -67,11 +72,11 @@ spec:
           requests:
             memory: "4Gi"
             cpu: "1000m"
-            gpu.intel.com/i915: 1
+            gpu.intel.com/xe: 1  # Arc B580 uses xe driver
           limits:
             memory: "8Gi"
             cpu: "2000m"
-            gpu.intel.com/i915: 1
+            gpu.intel.com/xe: 1
 
         # Mount volumes
         volumeMounts:
