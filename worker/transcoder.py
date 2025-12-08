@@ -477,7 +477,7 @@ async def get_output_dimensions(segment_path: Path, timeout: float = 10.0) -> Tu
         return (0, 0)
 
 
-def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> Tuple[bool, Optional[str]]:
+async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> Tuple[bool, Optional[str]]:
     """
     Validate an HLS playlist is complete and well-formed.
 
@@ -533,22 +533,23 @@ def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> T
         # Validate first segment actually contains a video stream
         # This catches cases where encoding failed but audio-only output was produced
         if first_segment_path:
-            import subprocess
             try:
-                result = subprocess.run(
-                    [
+                proc = await asyncio.wait_for(
+                    asyncio.create_subprocess_exec(
                         "ffprobe", "-v", "quiet", "-select_streams", "v:0",
                         "-show_entries", "stream=codec_type", "-of", "csv=p=0",
-                        str(first_segment_path)
-                    ],
-                    capture_output=True,
+                        str(first_segment_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    ),
                     timeout=10,
                 )
-                if result.returncode != 0 or b"video" not in result.stdout:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                if proc.returncode != 0 or b"video" not in stdout:
                     return False, f"Segment {first_segment_path.name} has no video stream (encoding may have failed)"
-            except subprocess.TimeoutExpired:
+            except asyncio.TimeoutError:
                 return False, f"Timeout probing segment {first_segment_path.name}"
-            except Exception as e:
+            except OSError as e:
                 return False, f"Error probing segment: {e}"
 
         return True, None
@@ -557,14 +558,14 @@ def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> T
         return False, f"Error reading playlist: {e}"
 
 
-def is_hls_playlist_complete(playlist_path: Path) -> bool:
+async def is_hls_playlist_complete(playlist_path: Path) -> bool:
     """
     Check if an HLS playlist is complete and valid.
     Validates the playlist structure and ensures all segment files exist.
 
     This is a convenience wrapper around validate_hls_playlist().
     """
-    is_valid, error = validate_hls_playlist(playlist_path, check_segments=True)
+    is_valid, error = await validate_hls_playlist(playlist_path, check_segments=True)
     if not is_valid and error:
         # Log validation failures for debugging
         print(f"      Playlist validation failed: {error}")
@@ -1650,7 +1651,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     "is_original": True,
                 }
             )
-        elif is_hls_playlist_complete(output_dir / "original.m3u8"):
+        elif await is_hls_playlist_complete(output_dir / "original.m3u8"):
             print("    original: Found complete playlist, marking complete...")
             await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
             successful_qualities.append(
@@ -1743,7 +1744,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
             # Check if playlist file is complete (from previous attempt)
             playlist_path = output_dir / f"{quality_name}.m3u8"
-            if is_hls_playlist_complete(playlist_path):
+            if await is_hls_playlist_complete(playlist_path):
                 print(f"    {quality_name}: Found complete playlist, marking complete...")
                 await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                 # Get actual dimensions from existing segment
@@ -1860,7 +1861,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
                 # Check if playlist file is actually complete on disk
                 playlist_path = output_dir / f"{quality_name}.m3u8"
-                if is_hls_playlist_complete(playlist_path):
+                if await is_hls_playlist_complete(playlist_path):
                     print(f"    {quality_name}: Found complete playlist on disk, marking complete...")
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                     # Add to successful qualities
