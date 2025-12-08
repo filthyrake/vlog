@@ -6,6 +6,7 @@ Runs on port 9001 (not exposed externally).
 import json
 import logging
 import shutil
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2097,9 +2098,12 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
     Supports both soft-delete (moves to archive) and permanent delete.
     Operations are performed individually to track per-video success/failure.
     """
+    bulk_operation_id = str(uuid.uuid4())
     results = []
     deleted_count = 0
     failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
 
     for video_id in data.video_ids:
         try:
@@ -2174,6 +2178,20 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
                     failed_count += 1
                     continue
 
+            # Emit individual audit event for successful delete
+            log_audit(
+                AuditAction.VIDEO_DELETE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=row["slug"],
+                details={
+                    "permanent": data.permanent,
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
             results.append(BulkOperationResult(video_id=video_id, success=True))
             deleted_count += 1
 
@@ -2182,13 +2200,14 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
             results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
             failed_count += 1
 
-    # Single audit log for bulk operation
+    # Summary audit log for bulk operation
     log_audit(
         AuditAction.VIDEO_BULK_DELETE,
-        client_ip=get_real_ip(request),
-        user_agent=request.headers.get("user-agent"),
+        client_ip=client_ip,
+        user_agent=user_agent,
         resource_type="video",
         details={
+            "bulk_operation_id": bulk_operation_id,
             "video_ids": data.video_ids,
             "permanent": data.permanent,
             "deleted": deleted_count,
@@ -2212,9 +2231,12 @@ async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkU
 
     Supports updating category, published_at, and unpublishing.
     """
+    bulk_operation_id = str(uuid.uuid4())
     results = []
     updated_count = 0
     failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
 
     # Validate category exists if provided
     if data.category_id is not None and data.category_id > 0:
@@ -2244,6 +2266,21 @@ async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkU
                 continue
 
             await database.execute(videos.update().where(videos.c.id == video_id).values(**update_values))
+
+            # Emit individual audit event for successful update
+            log_audit(
+                AuditAction.VIDEO_UPDATE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=row["slug"],
+                details={
+                    "updates": update_values,
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
             results.append(BulkOperationResult(video_id=video_id, success=True))
             updated_count += 1
 
@@ -2252,13 +2289,14 @@ async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkU
             results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
             failed_count += 1
 
-    # Audit log
+    # Summary audit log for bulk operation
     log_audit(
         AuditAction.VIDEO_BULK_UPDATE,
-        client_ip=get_real_ip(request),
-        user_agent=request.headers.get("user-agent"),
+        client_ip=client_ip,
+        user_agent=user_agent,
         resource_type="video",
         details={
+            "bulk_operation_id": bulk_operation_id,
             "video_ids": data.video_ids,
             "updates": update_values,
             "updated": updated_count,
@@ -2282,9 +2320,12 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
 
     Each video will be reset to pending status and queued for transcoding.
     """
+    bulk_operation_id = str(uuid.uuid4())
     results = []
     queued_count = 0
     failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
 
     for video_id in data.video_ids:
         try:
@@ -2369,6 +2410,20 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
                     if vtt_path.exists():
                         vtt_path.unlink()
 
+            # Emit individual audit event for successful retranscode
+            log_audit(
+                AuditAction.VIDEO_RETRANSCODE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=slug,
+                details={
+                    "qualities": data.qualities,
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
             results.append(BulkOperationResult(video_id=video_id, success=True))
             queued_count += 1
 
@@ -2377,13 +2432,14 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
             results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
             failed_count += 1
 
-    # Audit log
+    # Summary audit log for bulk operation
     log_audit(
         AuditAction.VIDEO_BULK_RETRANSCODE,
-        client_ip=get_real_ip(request),
-        user_agent=request.headers.get("user-agent"),
+        client_ip=client_ip,
+        user_agent=user_agent,
         resource_type="video",
         details={
+            "bulk_operation_id": bulk_operation_id,
             "video_ids": data.video_ids,
             "qualities": data.qualities,
             "queued": queued_count,
@@ -2405,9 +2461,12 @@ async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> Bul
     """
     Restore multiple soft-deleted videos from archive.
     """
+    bulk_operation_id = str(uuid.uuid4())
     results = []
     restored_count = 0
     failed_count = 0
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent")
 
     for video_id in data.video_ids:
         try:
@@ -2458,6 +2517,19 @@ async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> Bul
                 failed_count += 1
                 continue
 
+            # Emit individual audit event for successful restore
+            log_audit(
+                AuditAction.VIDEO_RESTORE,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                resource_type="video",
+                resource_id=video_id,
+                resource_name=row["slug"],
+                details={
+                    "bulk_operation_id": bulk_operation_id,
+                },
+            )
+
             results.append(BulkOperationResult(video_id=video_id, success=True))
             restored_count += 1
 
@@ -2466,13 +2538,14 @@ async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> Bul
             results.append(BulkOperationResult(video_id=video_id, success=False, error=str(e)))
             failed_count += 1
 
-    # Audit log
+    # Summary audit log for bulk operation
     log_audit(
         AuditAction.VIDEO_BULK_RESTORE,
-        client_ip=get_real_ip(request),
-        user_agent=request.headers.get("user-agent"),
+        client_ip=client_ip,
+        user_agent=user_agent,
         resource_type="video",
         details={
+            "bulk_operation_id": bulk_operation_id,
             "video_ids": data.video_ids,
             "restored": restored_count,
             "failed": failed_count,
