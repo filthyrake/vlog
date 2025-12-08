@@ -112,6 +112,7 @@ class AuditLogger:
         details: Optional[dict] = None,
         success: bool = True,
         error: Optional[str] = None,
+        request_id: Optional[str] = None,
     ):
         """
         Log an audit event.
@@ -126,6 +127,7 @@ class AuditLogger:
             details: Additional action-specific details
             success: Whether the action succeeded
             error: Error message if action failed
+            request_id: Unique request ID for tracing across services
         """
         if not AUDIT_LOG_ENABLED:
             return
@@ -136,6 +138,8 @@ class AuditLogger:
             "success": success,
         }
 
+        if request_id:
+            entry["request_id"] = request_id
         if client_ip:
             entry["client_ip"] = client_ip
         if user_agent:
@@ -172,6 +176,7 @@ def log_audit(
     details: Optional[dict] = None,
     success: bool = True,
     error: Optional[str] = None,
+    request_id: Optional[str] = None,
 ):
     """
     Convenience function for logging audit events.
@@ -183,7 +188,8 @@ def log_audit(
             resource_type="video",
             resource_id=video_id,
             resource_name=slug,
-            details={"title": title, "category_id": category_id}
+            details={"title": title, "category_id": category_id},
+            request_id=get_request_id(request)
         )
     """
     audit_logger.log(
@@ -196,4 +202,5 @@ def log_audit(
         details=details,
         success=success,
         error=error,
+        request_id=request_id,
     )

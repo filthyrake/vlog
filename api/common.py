@@ -152,6 +152,46 @@ def get_real_ip(request: Request) -> str:
     return client_ip
 
 
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """
+    Add request ID tracking for request tracing across services.
+
+    Generates a unique request ID for each incoming request, or uses an existing
+    X-Request-ID header if provided. The request ID is stored in request.state
+    and returned in the response headers.
+
+    This enables:
+    - Correlating logs across multiple services
+    - Tracing requests through the entire request lifecycle
+    - Debugging production issues by filtering logs by request ID
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        # Use existing request ID from header, or generate a new one
+        request_id = request.headers.get("X-Request-ID")
+        if not request_id:
+            request_id = str(uuid.uuid4())
+
+        # Store in request state for access by handlers
+        request.state.request_id = request_id
+
+        response = await call_next(request)
+
+        # Include request ID in response for client correlation
+        response.headers["X-Request-ID"] = request_id
+
+        return response
+
+
+def get_request_id(request: Request) -> Optional[str]:
+    """
+    Get the request ID from the request state.
+
+    Returns None if RequestIDMiddleware hasn't processed the request yet.
+    """
+    return getattr(request.state, "request_id", None)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all responses."""
 

@@ -27,6 +27,7 @@ from slugify import slugify
 from api.analytics_cache import AnalyticsCache
 from api.audit import AuditAction, log_audit
 from api.common import (
+    RequestIDMiddleware,
     SecurityHeadersMiddleware,
     check_health,
     check_storage_available,
@@ -373,6 +374,7 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIDMiddleware)
 
 
 # Allow CORS for admin UI (internal-only, not exposed externally)
