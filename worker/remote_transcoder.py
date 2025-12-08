@@ -6,6 +6,8 @@ Designed for containerized deployment (Docker/Kubernetes).
 Downloads source files from the Worker API, transcodes locally,
 and uploads HLS output back to the server.
 
+Supports Redis Streams for instant job dispatch (when configured).
+
 Run with: python -m worker.remote_transcoder
 Requires: VLOG_WORKER_API_KEY environment variable
 
@@ -17,15 +19,20 @@ Environment variables:
     VLOG_WORKER_WORK_DIR: Working directory for downloads (default: /tmp/vlog-worker)
     VLOG_HWACCEL_TYPE: Hardware acceleration type (auto, nvidia, intel, none)
     VLOG_HWACCEL_PREFERRED_CODEC: Preferred codec (h264, hevc, av1)
+    VLOG_JOB_QUEUE_MODE: Job queue mode (database, redis, hybrid)
+    VLOG_REDIS_URL: Redis URL for job queue (empty = disabled)
 """
 
 import asyncio
 import shutil
 import signal
 import sys
+import uuid
 from typing import List, Optional
 
+from api.job_queue import JobDispatch, JobQueue
 from config import (
+    JOB_QUEUE_MODE,
     QUALITY_PRESETS,
     WORKER_API_KEY,
     WORKER_API_URL,
@@ -51,6 +58,12 @@ shutdown_requested = False
 
 # Global GPU capabilities (detected at startup)
 GPU_CAPS: Optional[GPUCapabilities] = None
+
+# Global job queue (initialized at startup if Redis enabled)
+JOB_QUEUE: Optional[JobQueue] = None
+
+# Worker ID for Redis consumer name (generated at startup)
+WORKER_UUID: str = ""
 
 # Error messages
 CLAIM_EXPIRED_ERROR = "Claim expired - job may have been reassigned to another worker"
@@ -539,7 +552,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
 async def worker_loop():
     """Main worker loop."""
-    global shutdown_requested, GPU_CAPS
+    global shutdown_requested, GPU_CAPS, JOB_QUEUE, WORKER_UUID
 
     # Set up signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
@@ -551,6 +564,9 @@ async def worker_loop():
         print("Register a worker first: curl -X POST http://server:9002/api/worker/register")
         sys.exit(1)
 
+    # Generate unique worker ID for Redis consumer
+    WORKER_UUID = str(uuid.uuid4())[:8]
+
     # Create work directory
     WORKER_WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -561,6 +577,19 @@ async def worker_loop():
     print(f"  Work dir: {WORKER_WORK_DIR}")
     print(f"  Heartbeat interval: {WORKER_HEARTBEAT_INTERVAL}s")
     print(f"  Poll interval: {WORKER_POLL_INTERVAL}s")
+    print(f"  Job queue mode: {JOB_QUEUE_MODE}")
+
+    # Initialize Redis job queue if enabled
+    if JOB_QUEUE_MODE in ("redis", "hybrid"):
+        print("  Initializing Redis job queue...")
+        JOB_QUEUE = JobQueue()
+        await JOB_QUEUE.initialize(consumer_name=f"worker-{WORKER_UUID}")
+        if JOB_QUEUE.is_redis_enabled:
+            print("  Redis Streams enabled for instant job dispatch")
+        else:
+            print("  Redis unavailable, using database polling")
+    else:
+        print("  Job queue mode: database (polling)")
 
     # Detect GPU capabilities
     print("  Detecting GPU capabilities...")
@@ -597,8 +626,29 @@ async def worker_loop():
     try:
         while not shutdown_requested:
             try:
-                # Try to claim a job
-                result = await client.claim_job()
+                result = None
+                redis_job: Optional[JobDispatch] = None
+
+                # Try Redis Streams first for instant dispatch
+                if JOB_QUEUE and JOB_QUEUE.is_redis_enabled:
+                    redis_job = await JOB_QUEUE.claim_job()
+
+                    if redis_job:
+                        # Got job from Redis, do targeted HTTP claim to verify and lock in DB
+                        print(f"Redis dispatched job {redis_job.job_id}, confirming with API...")
+                        result = await client.claim_job(job_id=redis_job.job_id)
+
+                        if not result.get("job_id"):
+                            # Job already claimed by another worker or no longer available
+                            # Acknowledge the Redis message to remove it from the stream
+                            print(f"  Job {redis_job.job_id} no longer available, acknowledging Redis message")
+                            await JOB_QUEUE.acknowledge_job(redis_job)
+                            redis_job = None
+                            result = None
+
+                # Fallback to HTTP polling if no Redis job
+                if not result:
+                    result = await client.claim_job()
 
                 if result.get("job_id"):
                     # Mark that we're processing a job
@@ -609,13 +659,24 @@ async def worker_loop():
                     # Clear the processing state
                     worker_state["processing_job"] = None
 
+                    # Acknowledge Redis job on success
+                    if redis_job and success:
+                        await JOB_QUEUE.acknowledge_job(redis_job)
+
                     if success:
                         jobs_processed += 1
                     else:
                         jobs_failed += 1
+                        # On failure, acknowledge Redis job so database retry logic can handle retries
+                        # The job will be re-queued to Redis when the database retry triggers
+                        if redis_job:
+                            await JOB_QUEUE.acknowledge_job(redis_job)
                 else:
-                    # No jobs available, wait before polling again
-                    await asyncio.sleep(WORKER_POLL_INTERVAL)
+                    # No jobs available
+                    # If Redis is enabled, claim_job already blocks for a short time
+                    # Only poll interval sleep if database-only mode
+                    if JOB_QUEUE_MODE == "database" or not (JOB_QUEUE and JOB_QUEUE.is_redis_enabled):
+                        await asyncio.sleep(WORKER_POLL_INTERVAL)
 
             except WorkerAPIError as e:
                 print(f"API error in worker loop: {e.message}")

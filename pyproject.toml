@@ -24,6 +24,8 @@ dependencies = [
     "watchdog>=3.0.0",
     "slowapi>=0.1.9",
     "rich>=13.0.0",
+    "redis>=4.0.0",  # Required for job queue and pub/sub
+    "sse-starlette>=1.6.0",  # Server-Sent Events support
 ]
 
 [project.optional-dependencies]
@@ -32,9 +34,6 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.1.0",
-]
-production = [
-    "redis>=4.0.0",  # Required for rate limiting across multiple instances
 ]
 
 [project.scripts]

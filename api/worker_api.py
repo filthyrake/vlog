@@ -51,6 +51,7 @@ from api.database import (
     workers,
 )
 from api.db_retry import DatabaseLockedError, execute_with_retry
+from api.pubsub import Publisher
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
     ClaimJobResponse,
@@ -658,6 +659,33 @@ async def worker_heartbeat(
             f"(was offline since last_heartbeat={worker['last_heartbeat']})"
         )
 
+    # Publish worker status to Redis pub/sub for real-time UI updates
+    # Get current job info for the status update
+    current_video_slug = None
+    hwaccel_type = None
+    if worker.get("current_job_id"):
+        job = await database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == worker["current_job_id"])
+        )
+        if job:
+            video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+            current_video_slug = video["slug"] if video else None
+
+    # Extract hwaccel type from metadata
+    if data.metadata and data.metadata.get("capabilities"):
+        caps = data.metadata["capabilities"]
+        if caps.get("hwaccel_available"):
+            hwaccel_type = caps.get("hwaccel_type")
+
+    await Publisher.publish_worker_status(
+        worker_id=worker["worker_id"],
+        worker_name=worker_name,
+        status=data.status,
+        current_job_id=worker.get("current_job_id"),
+        current_video_slug=current_video_slug,
+        hwaccel_type=hwaccel_type,
+    )
+
     return HeartbeatResponse(status="ok", server_time=now)
 
 
@@ -696,12 +724,21 @@ def worker_has_gpu(worker: dict) -> bool:
 
 @app.post("/api/worker/claim", response_model=ClaimJobResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
-async def claim_job(request: Request, worker: dict = Depends(verify_worker_key)):
+async def claim_job(
+    request: Request,
+    job_id: Optional[int] = None,
+    worker: dict = Depends(verify_worker_key),
+):
     """
-    Atomically claim the next available transcoding job.
+    Atomically claim a transcoding job.
 
     Uses database transaction for distributed safety.
     Claims expire after WORKER_CLAIM_DURATION_MINUTES (extended on progress updates).
+
+    Args:
+        job_id: Optional specific job ID to claim (for Redis-dispatched jobs).
+                If provided, will only claim this specific job.
+                If not provided, claims any available job from the database.
 
     GPU workers have priority over CPU workers. If a CPU worker requests a job
     but idle GPU workers are available, the CPU worker will be told to wait.
@@ -763,7 +800,7 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
                 """).bindparams(now=now)
             )
 
-            # Find oldest unclaimed pending job with row locking
+            # Find job to claim with row locking
             # FOR UPDATE SKIP LOCKED is critical for distributed workers:
             # - FOR UPDATE: locks the selected row for the transaction duration
             # - SKIP LOCKED: if another worker already locked a row, skip it
@@ -777,7 +814,37 @@ async def claim_job(request: Request, worker: dict = Depends(verify_worker_key))
             db_url = str(database.url)
             is_postgresql = db_url.startswith("postgresql")
 
-            if is_postgresql:
+            if job_id is not None:
+                # Targeted claim for a specific job (Redis-dispatched)
+                if is_postgresql:
+                    job = await database.fetch_one(
+                        sa.text("""
+                            SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                            FROM transcoding_jobs tj
+                            JOIN videos v ON tj.video_id = v.id
+                            WHERE tj.id = :job_id
+                              AND v.status = 'pending'
+                              AND v.deleted_at IS NULL
+                              AND tj.claimed_at IS NULL
+                              AND tj.completed_at IS NULL
+                            FOR UPDATE OF tj SKIP LOCKED
+                        """).bindparams(job_id=job_id)
+                    )
+                else:
+                    job = await database.fetch_one(
+                        sa.text("""
+                            SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                            FROM transcoding_jobs tj
+                            JOIN videos v ON tj.video_id = v.id
+                            WHERE tj.id = :job_id
+                              AND v.status = 'pending'
+                              AND v.deleted_at IS NULL
+                              AND tj.claimed_at IS NULL
+                              AND tj.completed_at IS NULL
+                        """).bindparams(job_id=job_id)
+                    )
+            elif is_postgresql:
+                # Find oldest unclaimed pending job
                 job = await database.fetch_one(
                     sa.text("""
                         SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
@@ -980,6 +1047,22 @@ async def update_progress(
 
         await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(**video_updates))
 
+    # Publish progress to Redis pub/sub for real-time UI updates
+    qualities_data = None
+    if data.quality_progress:
+        qualities_data = [
+            {"name": qp.name, "status": qp.status, "progress": qp.progress} for qp in data.quality_progress
+        ]
+
+    await Publisher.publish_progress(
+        video_id=job["video_id"],
+        job_id=job_id,
+        current_step=data.current_step,
+        progress_percent=data.progress_percent,
+        qualities=qualities_data,
+        status="processing",
+    )
+
     return ProgressUpdateResponse(status="ok", claim_expires_at=new_expiry)
 
 
@@ -1066,6 +1149,21 @@ async def complete_job(
             detail="Database temporarily unavailable, please retry",
         ) from e
 
+    # Publish job completion to Redis pub/sub for real-time UI updates
+    video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+    worker_name = worker["worker_name"] or worker["worker_id"][:8]
+
+    await Publisher.publish_job_completed(
+        job_id=job_id,
+        video_id=job["video_id"],
+        video_slug=video["slug"] if video else "unknown",
+        worker_id=worker["worker_id"],
+        worker_name=worker_name,
+        qualities=[
+            {"name": q.name, "width": q.width, "height": q.height, "bitrate": q.bitrate} for q in data.qualities
+        ],
+    )
+
     return CompleteJobResponse(status="ok", message="Job completed successfully")
 
 
@@ -1147,6 +1245,22 @@ async def fail_job(
         from worker.transcoder import cleanup_source_file
 
         cleanup_source_file(job["video_id"])
+
+    # Publish job failure to Redis pub/sub for real-time UI updates
+    video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+    worker_name = worker["worker_name"] or worker["worker_id"][:8]
+
+    await Publisher.publish_job_failed(
+        job_id=job_id,
+        video_id=job["video_id"],
+        video_slug=video["slug"] if video else "unknown",
+        worker_id=worker["worker_id"],
+        worker_name=worker_name,
+        error=data.error_message[:200] if data.error_message else "Unknown error",
+        will_retry=will_retry,
+        attempt=job["attempt_number"] + (1 if will_retry else 0),
+        max_attempts=job["max_attempts"],
+    )
 
     return FailJobResponse(
         status="ok",

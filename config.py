@@ -13,10 +13,7 @@ UPLOADS_DIR = NAS_STORAGE / os.getenv("VLOG_UPLOADS_SUBDIR", "uploads")
 ARCHIVE_DIR = NAS_STORAGE / os.getenv("VLOG_ARCHIVE_SUBDIR", "archive")
 # Database configuration - PostgreSQL is the default
 # Set VLOG_DATABASE_URL to override (e.g., for SQLite: sqlite:///./vlog.db)
-DATABASE_URL = os.getenv(
-    "VLOG_DATABASE_URL",
-    "postgresql://vlog:vlog_password@localhost/vlog"
-)
+DATABASE_URL = os.getenv("VLOG_DATABASE_URL", "postgresql://vlog:vlog_password@localhost/vlog")
 
 # Legacy SQLite path (kept for migration scripts)
 DATABASE_PATH = Path(os.getenv("VLOG_DATABASE_PATH", str(BASE_DIR / "vlog.db")))
@@ -60,9 +57,7 @@ MAX_RETRY_ATTEMPTS = int(os.getenv("VLOG_MAX_RETRY_ATTEMPTS", "3"))
 RETRY_BACKOFF_BASE = int(os.getenv("VLOG_RETRY_BACKOFF_BASE", "60"))
 CLEANUP_PARTIAL_ON_FAILURE = os.getenv("VLOG_CLEANUP_PARTIAL_ON_FAILURE", "true").lower() == "true"
 KEEP_COMPLETED_QUALITIES = os.getenv("VLOG_KEEP_COMPLETED_QUALITIES", "true").lower() == "true"
-CLEANUP_SOURCE_ON_PERMANENT_FAILURE = (
-    os.getenv("VLOG_CLEANUP_SOURCE_ON_PERMANENT_FAILURE", "true").lower() == "true"
-)
+CLEANUP_SOURCE_ON_PERMANENT_FAILURE = os.getenv("VLOG_CLEANUP_SOURCE_ON_PERMANENT_FAILURE", "true").lower() == "true"
 
 # FFmpeg timeout settings (prevents stuck transcoding jobs)
 # Base multiplier applied to video duration (scaled by resolution)
@@ -181,6 +176,34 @@ RATE_LIMIT_WORKER_PROGRESS = os.getenv("VLOG_RATE_LIMIT_WORKER_PROGRESS", "600/m
 # Storage backend for rate limiting
 # Options: "memory" (default, per-process), or a Redis URL like "redis://localhost:6379"
 RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
+
+# Redis Configuration (for job queue and pub/sub)
+# Set VLOG_REDIS_URL to enable Redis features (e.g., "redis://localhost:6379")
+# Empty string disables Redis features (database polling used instead)
+REDIS_URL = os.getenv("VLOG_REDIS_URL", "")
+REDIS_POOL_SIZE = int(os.getenv("VLOG_REDIS_POOL_SIZE", "10"))
+REDIS_SOCKET_TIMEOUT = float(os.getenv("VLOG_REDIS_SOCKET_TIMEOUT", "5.0"))
+REDIS_SOCKET_CONNECT_TIMEOUT = float(os.getenv("VLOG_REDIS_SOCKET_CONNECT_TIMEOUT", "5.0"))
+REDIS_HEALTH_CHECK_INTERVAL = int(os.getenv("VLOG_REDIS_HEALTH_CHECK_INTERVAL", "30"))
+
+# Job Queue Mode
+# "database" (default) - Poll database for jobs (current behavior, always works)
+# "redis" - Use Redis Streams for job dispatch (requires REDIS_URL)
+# "hybrid" - Use Redis when available, fall back to database polling
+JOB_QUEUE_MODE = os.getenv("VLOG_JOB_QUEUE_MODE", "database")
+
+# Redis Streams Settings
+REDIS_STREAM_MAX_LEN = int(os.getenv("VLOG_REDIS_STREAM_MAX_LEN", "10000"))
+REDIS_CONSUMER_GROUP = os.getenv("VLOG_REDIS_CONSUMER_GROUP", "vlog-workers")
+REDIS_CONSUMER_BLOCK_MS = int(os.getenv("VLOG_REDIS_CONSUMER_BLOCK_MS", "5000"))
+REDIS_PENDING_TIMEOUT_MS = int(os.getenv("VLOG_REDIS_PENDING_TIMEOUT_MS", "300000"))  # 5 min
+
+# Pub/Sub Channel Settings
+REDIS_PUBSUB_PREFIX = os.getenv("VLOG_REDIS_PUBSUB_PREFIX", "vlog")
+
+# SSE (Server-Sent Events) Settings
+SSE_HEARTBEAT_INTERVAL = int(os.getenv("VLOG_SSE_HEARTBEAT_INTERVAL", "30"))
+SSE_RECONNECT_TIMEOUT_MS = int(os.getenv("VLOG_SSE_RECONNECT_TIMEOUT_MS", "3000"))
 
 # Trusted proxy configuration for X-Forwarded-For header
 # Only trust X-Forwarded-For when request comes from these IPs
