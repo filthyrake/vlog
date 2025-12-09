@@ -783,13 +783,9 @@ def get_recommended_parallel_sessions(gpu_caps: Optional[GPUCapabilities] = None
 
     # Auto-detect: reserve 1 session for headroom, cap at 3 for safety
     # This ensures we don't hit GPU session limits or memory issues
+    # When auto is enabled, PARALLEL_QUALITIES is ignored - GPU capabilities determine parallelism
     max_sessions = gpu_caps.max_concurrent_sessions
     recommended = min(3, max(1, max_sessions - 1))
-
-    # But don't exceed the configured value if it's explicitly set lower
-    if PARALLEL_QUALITIES > 1:
-        # User has explicitly set a value, respect it as maximum
-        recommended = min(recommended, PARALLEL_QUALITIES)
 
     return recommended
 
