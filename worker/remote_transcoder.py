@@ -227,7 +227,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
                 # Validate HLS playlist before upload (issue #166)
                 playlist_path = output_dir / "original.m3u8"
-                is_valid, validation_error = validate_hls_playlist(playlist_path)
+                is_valid, validation_error = await validate_hls_playlist(playlist_path)
                 if not is_valid:
                     print(f"    original: HLS validation failed - {validation_error}")
                     quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
@@ -412,7 +412,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
             # Validate HLS playlist before upload (issue #166)
             quality_playlist_path = output_dir / f"{quality_name}.m3u8"
-            is_valid, validation_error = validate_hls_playlist(quality_playlist_path)
+            is_valid, validation_error = await validate_hls_playlist(quality_playlist_path)
             if not is_valid:
                 print(f"    {quality_name}: HLS validation failed - {validation_error}")
                 async with progress_list_lock:
