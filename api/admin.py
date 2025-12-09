@@ -181,9 +181,15 @@ class AdminAuthMiddleware:
             return
 
         path = scope.get("path", "")
+        method = scope.get("method", "")
 
         # Skip auth for non-API paths
         if not path.startswith("/api"):
+            await self.app(scope, receive, send)
+            return
+
+        # Skip auth for OPTIONS (CORS preflight) requests
+        if method == "OPTIONS":
             await self.app(scope, receive, send)
             return
 
@@ -192,6 +198,10 @@ class AdminAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Extract client IP for logging
+        client = scope.get("client")
+        client_ip = client[0] if client else "unknown"
+
         # Extract X-Admin-Secret header
         headers = dict(scope.get("headers", []))
         admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
@@ -199,7 +209,7 @@ class AdminAuthMiddleware:
         if not admin_secret:
             security_logger.warning(
                 "Admin API auth failed: missing X-Admin-Secret header",
-                extra={"event": "auth_failure", "reason": "missing_header", "path": path},
+                extra={"event": "auth_failure", "reason": "missing_header", "path": path, "client_ip": client_ip},
             )
             response = JSONResponse(
                 status_code=401,
@@ -212,7 +222,7 @@ class AdminAuthMiddleware:
         if not hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
             security_logger.warning(
                 "Admin API auth failed: invalid secret",
-                extra={"event": "auth_failure", "reason": "invalid_secret", "path": path},
+                extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
             )
             response = JSONResponse(
                 status_code=403,
@@ -222,6 +232,10 @@ class AdminAuthMiddleware:
             return
 
         # Auth successful
+        security_logger.info(
+            "Admin API auth successful",
+            extra={"event": "auth_success", "path": path, "client_ip": client_ip},
+        )
         await self.app(scope, receive, send)
 
 

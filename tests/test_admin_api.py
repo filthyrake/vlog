@@ -1917,3 +1917,70 @@ class TestAdminAPIAuth:
             response = client.get("/")
             assert response.status_code == 200
             assert "text/html" in response.headers.get("content-type", "")
+
+    def test_options_preflight_no_auth_required(self, test_storage, test_db_url, monkeypatch):
+        """OPTIONS (CORS preflight) requests should work without auth."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # OPTIONS preflight should work without auth header
+            response = client.options("/api/categories")
+            # Should return 200 (CORS middleware handles it) not 401
+            assert response.status_code != 401
+            assert response.status_code != 403
+
+    def test_post_endpoint_requires_auth(self, test_storage, test_db_url, monkeypatch):
+        """POST endpoints should also require auth when enabled."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # POST without auth should return 401
+            response = client.post(
+                "/api/categories",
+                json={"name": "Test", "description": "Test"},
+            )
+            assert response.status_code == 401
+
+            # POST with correct auth should succeed
+            response = client.post(
+                "/api/categories",
+                json={"name": "Test", "description": "Test"},
+                headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
+            )
+            assert response.status_code == 200

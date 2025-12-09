@@ -1043,7 +1043,7 @@
                         class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
                         placeholder="Enter VLOG_ADMIN_API_SECRET"
                         required
-                        autocomplete="off"
+                        autocomplete="new-password"
                     >
                 </div>
                 <div x-show="authError" class="text-red-400 text-sm mb-4" x-text="authError"></div>
@@ -1058,7 +1058,7 @@
                     </button>
                 </div>
             </form>
-            <p class="text-dark-500 text-xs mt-4 text-center">Secret is stored in browser session only</p>
+            <p class="text-dark-500 text-xs mt-4 text-center">Secret is stored for this browser session (cleared when you close this tab)</p>
         </div>
     </div>
 
@@ -1156,7 +1156,8 @@
 
                 // Helper function to make authenticated API requests
                 async apiFetch(url, options = {}) {
-                    const headers = options.headers || {};
+                    // Create a new headers object to avoid mutating the caller's object
+                    const headers = { ...(options.headers || {}) };
                     if (this.adminSecret) {
                         headers['X-Admin-Secret'] = this.adminSecret;
                     }
@@ -1187,6 +1188,11 @@
 
                         if (response.status === 401 || response.status === 403) {
                             this.authError = 'Invalid admin secret';
+                            return;
+                        }
+
+                        if (!response.ok) {
+                            this.authError = `Server error: ${response.status}`;
                             return;
                         }
 
@@ -1222,6 +1228,12 @@
                             sessionStorage.removeItem('adminSecret');
                             return false;
                         }
+
+                        if (!response.ok) {
+                            console.error('Auth check failed with status:', response.status);
+                            return false;
+                        }
+
                         return true;
                     } catch (e) {
                         console.error('Auth check failed:', e);
