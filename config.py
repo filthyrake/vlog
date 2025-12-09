@@ -97,6 +97,15 @@ HWACCEL_MAX_CONCURRENT_SESSIONS = int(os.getenv("VLOG_HWACCEL_MAX_SESSIONS", "3"
 # Intel VAAPI device path (auto-detected if empty)
 HWACCEL_VAAPI_DEVICE = os.getenv("VLOG_HWACCEL_VAAPI_DEVICE", "")
 
+# Parallel Quality Encoding Settings
+# Number of qualities to encode simultaneously (1 = sequential, 3 = recommended for GPUs)
+# Used when PARALLEL_QUALITIES_AUTO is false, or when no GPU is detected
+PARALLEL_QUALITIES = int(os.getenv("VLOG_PARALLEL_QUALITIES", "1"))
+# Auto-detect optimal parallelism based on GPU capabilities
+# When true AND a GPU is detected, overrides PARALLEL_QUALITIES with min(3, gpu.max_sessions - 1)
+# When true but no GPU is detected, falls back to PARALLEL_QUALITIES value
+PARALLEL_QUALITIES_AUTO = os.getenv("VLOG_PARALLEL_QUALITIES_AUTO", "true").lower() == "true"
+
 # Worker settings (event-driven processing for local worker)
 WORKER_USE_FILESYSTEM_WATCHER = os.getenv("VLOG_WORKER_USE_FILESYSTEM_WATCHER", "true").lower() == "true"
 WORKER_FALLBACK_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_FALLBACK_POLL_INTERVAL", "60"))

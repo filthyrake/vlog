@@ -27,8 +27,9 @@ import asyncio
 import shutil
 import signal
 import sys
+import time
 import uuid
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from api.job_queue import JobDispatch, JobQueue
 from config import (
@@ -41,7 +42,12 @@ from config import (
     WORKER_WORK_DIR,
 )
 from worker.http_client import WorkerAPIClient, WorkerAPIError
-from worker.hwaccel import GPUCapabilities, detect_gpu_capabilities, get_worker_capabilities
+from worker.hwaccel import (
+    GPUCapabilities,
+    detect_gpu_capabilities,
+    get_recommended_parallel_sessions,
+    get_worker_capabilities,
+)
 from worker.transcoder import (
     create_original_quality,
     generate_master_playlist,
@@ -49,6 +55,7 @@ from worker.transcoder import (
     get_applicable_qualities,
     get_output_dimensions,
     get_video_info,
+    group_qualities_by_resolution,
     transcode_quality_with_progress,
     validate_hls_playlist,
 )
@@ -265,54 +272,106 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 failed_qualities.append("original")
                 print(f"    original: Failed - {error}")
 
-        # Transcode other qualities
+        # Transcode other qualities (with parallel batching)
+        # Get parallel encoding count based on GPU capabilities
+        parallel_count = get_recommended_parallel_sessions(GPU_CAPS)
+        if parallel_count > 1:
+            print(f"  Using parallel encoding: {parallel_count} qualities at a time")
+
+        # Filter out existing qualities and group for parallel processing
+        qualities_to_transcode = [q for q in qualities if q["name"] not in existing_qualities]
+
+        # Mark existing qualities as skipped
         for idx, quality in enumerate(qualities):
+            if quality["name"] in existing_qualities:
+                print(f"    {quality['name']}: Skipping (already exists)")
+                quality_progress_list[idx + 1] = {
+                    "name": quality["name"],
+                    "status": "skipped",
+                    "progress": 100,
+                }
+
+        # Group qualities for parallel processing
+        quality_batches = group_qualities_by_resolution(qualities_to_transcode, parallel_count)
+
+        # Build quality name to index mapping for progress list
+        quality_to_idx: Dict[str, int] = {}
+        for idx, quality in enumerate(qualities):
+            quality_to_idx[quality["name"]] = idx + 1  # +1 for original
+
+        # Shared progress tracking for parallel qualities (with lock for coroutine safety)
+        # Initialize skipped qualities with 100% progress for accurate overall calculation
+        quality_progresses: Dict[str, int] = {
+            q["name"]: 100 for q in qualities if q["name"] in existing_qualities
+        }
+        last_update_times: Dict[str, float] = {}
+        progress_lock = asyncio.Lock()
+        progress_list_lock = asyncio.Lock()
+
+        async def transcode_and_upload_quality(
+            quality: dict,
+        ) -> Tuple[Optional[dict], Optional[str]]:
+            """
+            Transcode a single quality and upload it.
+
+            Returns:
+                Tuple of (success_info, failed_quality_name):
+                - On success: (quality_info_dict, None)
+                - On failure: (None, quality_name)
+            """
+            # Check for shutdown at the start to avoid starting new work
             if shutdown_requested:
-                raise Exception("Shutdown requested")
+                return (None, quality["name"])
 
             quality_name = quality["name"]
-            quality_idx = idx + 1  # +1 because original is at index 0
-
-            # Skip if this quality already exists (selective re-transcode)
-            if quality_name in existing_qualities:
-                print(f"    {quality_name}: Skipping (already exists)")
-                quality_progress_list[quality_idx] = {"name": quality_name, "status": "skipped", "progress": 100}
-                continue
-
-            # Calculate progress for this quality step
-            progress_base = 15 + int((idx + 1) / total_qualities * 75)
+            quality_idx = quality_to_idx[quality_name]
 
             print(f"    {quality_name}: Transcoding...")
-            quality_progress_list[quality_idx] = {"name": quality_name, "status": "in_progress", "progress": 0}
-            await client.update_progress(job_id, "transcode", progress_base, quality_progress_list)
+            async with progress_list_lock:
+                quality_progress_list[quality_idx] = {
+                    "name": quality_name,
+                    "status": "in_progress",
+                    "progress": 0,
+                }
 
-            # Define progress callback that updates the API
-            last_update_time = [0.0]  # Use list to allow mutation in closure
-
-            # Use default arguments to capture loop variables by value, not reference
-            # (classic Python late binding closure fix)
+            # Per-quality progress callback
             async def update_quality_progress(pct: int, qidx: int = quality_idx, qname: str = quality_name):
-                import time
-
                 now = time.time()
-                # Only update every 5 seconds to avoid flooding the API
-                if now - last_update_time[0] >= 5.0:
+                # Check timing under progress_lock (for last_update_times and quality_progresses)
+                async with progress_lock:
+                    last_update = last_update_times.get(qname, 0)
+                    # Only update every 5 seconds to avoid flooding the API
+                    if now - last_update < 5.0:
+                        return  # Rate limited, skip update
+                    # Update progress tracking under this lock
+                    quality_progresses[qname] = pct
+                    last_update_times[qname] = now
+
+                # Update quality_progress_list under its dedicated lock
+                async with progress_list_lock:
                     quality_progress_list[qidx] = {
                         "name": qname,
                         "status": "in_progress",
                         "progress": pct,
                     }
                     try:
-                        await client.update_progress(job_id, "transcode", progress_base, quality_progress_list)
-                        last_update_time[0] = now
+                        # Calculate overall progress based on all quality progresses
+                        # Uses len(qualities) to include skipped qualities (already at 100%)
+                        async with progress_lock:
+                            avg_progress = (
+                                sum(quality_progresses.values()) / len(qualities)
+                                if qualities
+                                else 0
+                            )
+                        overall = 15 + int(avg_progress * 0.75)
+                        await client.update_progress(job_id, "transcode", overall, quality_progress_list)
                     except WorkerAPIError as e:
                         if e.status_code == 409:
-                            # Claim expired - job may have been reassigned
-                            print("      Claim expired - aborting job")
+                            print(f"      {qname}: Claim expired - aborting job")
                             raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                        print(f"      Progress update failed: {e.message}")
+                        print(f"      {qname}: Progress update failed: {e.message}")
                     except Exception as e:
-                        print(f"      Progress update failed: {e}")
+                        print(f"      {qname}: Progress update failed: {e}")
 
             success, error = await transcode_quality_with_progress(
                 source_path,
@@ -323,92 +382,133 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 gpu_caps=GPU_CAPS,
             )
 
-            if success:
-                # Get actual dimensions from transcoded segment
-                first_segment = output_dir / f"{quality_name}_0000.ts"
-                if first_segment.exists():
-                    actual_width, actual_height = await get_output_dimensions(first_segment)
-                else:
-                    # Estimate based on aspect ratio
-                    actual_height = quality["height"]
-                    actual_width = int(actual_height * source_width / source_height)
-                    # Round to nearest even number (required for h264)
-                    actual_width = actual_width + (actual_width % 2)
-
-                successful_qualities.append(
-                    {
+            if not success:
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
                         "name": quality_name,
-                        "width": actual_width,
-                        "height": actual_height,
-                        "bitrate": int(quality["bitrate"].replace("k", "")),
+                        "status": "failed",
+                        "progress": 0,
                     }
-                )
-                print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
-
-                # Validate HLS playlist before upload (issue #166)
-                quality_playlist_path = output_dir / f"{quality_name}.m3u8"
-                is_valid, validation_error = validate_hls_playlist(quality_playlist_path)
-                if not is_valid:
-                    print(f"    {quality_name}: HLS validation failed - {validation_error}")
-                    quality_progress_list[quality_idx] = {"name": quality_name, "status": "failed", "progress": 0}
-                    failed_qualities.append(quality_name)
-                    # Remove the quality we just added since validation failed
-                    if successful_qualities and successful_qualities[-1]["name"] == quality_name:
-                        successful_qualities.pop()
-                else:
-                    # Upload this quality immediately to free disk space
-                    print(f"    {quality_name}: Uploading...")
-                    try:
-                        # Define progress callback to extend claim during upload (issue #266)
-                        # Use default arguments to capture loop variables by value
-                        async def upload_progress_callback(
-                            bytes_sent: int,
-                            total_bytes: int,
-                            qidx: int = quality_idx,
-                            qname: str = quality_name,
-                        ):
-                            try:
-                                quality_progress_list[qidx] = {
-                                    "name": qname,
-                                    "status": "uploading",
-                                    "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
-                                }
-                                await client.update_progress(job_id, "upload", 90, quality_progress_list)
-                            except WorkerAPIError as e:
-                                if e.status_code == 409:
-                                    # Claim expired - stop upload
-                                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                                print(f"      Upload progress update failed: {e.message}")
-
-                        await client.upload_quality(
-                            video_id, quality_name, output_dir, progress_callback=upload_progress_callback
-                        )
-                        quality_progress_list[quality_idx] = {
-                            "name": quality_name,
-                            "status": "uploaded",
-                            "progress": 100,
-                        }
-                        print(f"    {quality_name}: Uploaded")
-
-                        # Delete local files to free disk space
-                        playlist_file = output_dir / f"{quality_name}.m3u8"
-                        if playlist_file.exists():
-                            playlist_file.unlink()
-                        for segment in output_dir.glob(f"{quality_name}_*.ts"):
-                            segment.unlink()
-                        print(f"    {quality_name}: Local files cleaned up")
-                    except WorkerAPIError as e:
-                        # Upload failed - keep files, mark as completed (not uploaded)
-                        quality_progress_list[quality_idx] = {
-                            "name": quality_name,
-                            "status": "completed",
-                            "progress": 100,
-                        }
-                        print(f"    {quality_name}: Upload failed - {e.message}")
-            else:
-                quality_progress_list[quality_idx] = {"name": quality_name, "status": "failed", "progress": 0}
-                failed_qualities.append(quality_name)
                 print(f"    {quality_name}: Failed - {error}")
+                return (None, quality_name)
+
+            # Get actual dimensions from transcoded segment
+            first_segment = output_dir / f"{quality_name}_0000.ts"
+            if first_segment.exists():
+                actual_width, actual_height = await get_output_dimensions(first_segment)
+            else:
+                # Estimate based on aspect ratio
+                actual_height = quality["height"]
+                actual_width = int(actual_height * source_width / source_height)
+                actual_width = actual_width + (actual_width % 2)
+
+            quality_info = {
+                "name": quality_name,
+                "width": actual_width,
+                "height": actual_height,
+                "bitrate": int(quality["bitrate"].replace("k", "")),
+            }
+            print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
+
+            # Validate HLS playlist before upload (issue #166)
+            quality_playlist_path = output_dir / f"{quality_name}.m3u8"
+            is_valid, validation_error = validate_hls_playlist(quality_playlist_path)
+            if not is_valid:
+                print(f"    {quality_name}: HLS validation failed - {validation_error}")
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "failed",
+                        "progress": 0,
+                    }
+                return (None, quality_name)
+
+            # Upload this quality immediately to free disk space
+            print(f"    {quality_name}: Uploading...")
+            try:
+                # Upload progress callback
+                async def upload_progress_callback(
+                    bytes_sent: int,
+                    total_bytes: int,
+                    qidx: int = quality_idx,
+                    qname: str = quality_name,
+                ):
+                    try:
+                        async with progress_list_lock:
+                            quality_progress_list[qidx] = {
+                                "name": qname,
+                                "status": "uploading",
+                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                            }
+                        await client.update_progress(job_id, "upload", 90, quality_progress_list)
+                    except WorkerAPIError as e:
+                        if e.status_code == 409:
+                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                        print(f"      {qname}: Upload progress failed: {e.message}")
+
+                await client.upload_quality(video_id, quality_name, output_dir, progress_callback=upload_progress_callback)
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "uploaded",
+                        "progress": 100,
+                    }
+                print(f"    {quality_name}: Uploaded")
+
+                # Delete local files to free disk space
+                playlist_file = output_dir / f"{quality_name}.m3u8"
+                if playlist_file.exists():
+                    playlist_file.unlink()
+                for segment in output_dir.glob(f"{quality_name}_*.ts"):
+                    segment.unlink()
+                print(f"    {quality_name}: Local files cleaned up")
+
+            except WorkerAPIError as e:
+                # Upload failed - keep files, mark as completed (not uploaded)
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "completed",
+                        "progress": 100,
+                    }
+                print(f"    {quality_name}: Upload failed - {e.message}")
+
+            return (quality_info, None)
+
+        # Process each batch of qualities
+        for batch_idx, batch in enumerate(quality_batches):
+            if shutdown_requested:
+                raise Exception("Shutdown requested")
+
+            if len(batch) > 1:
+                print(f"  Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
+
+            # Run batch in parallel
+            tasks = [transcode_and_upload_quality(q) for q in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results - collect successes and failures from returned tuples
+            for quality, result in zip(batch, results):
+                if isinstance(result, ClaimExpiredError):
+                    # Re-raise claim expiry to abort the job
+                    raise result
+                elif isinstance(result, Exception):
+                    # Unexpected exception
+                    quality_idx = quality_to_idx[quality["name"]]
+                    async with progress_list_lock:
+                        quality_progress_list[quality_idx] = {
+                            "name": quality["name"],
+                            "status": "failed",
+                            "progress": 0,
+                        }
+                    failed_qualities.append(quality["name"])
+                    print(f"    {quality['name']}: Unexpected error - {result}")
+                elif isinstance(result, tuple):
+                    success_info, failed_name = result
+                    if success_info is not None:
+                        successful_qualities.append(success_info)
+                    if failed_name is not None:
+                        failed_qualities.append(failed_name)
 
         # Check if we have any successful qualities (or all were skipped)
         # If all qualities were skipped, we still need to complete the job
