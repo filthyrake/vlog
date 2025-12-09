@@ -71,6 +71,7 @@ from worker.alerts import (
     alert_stale_job_recovered,
     alert_worker_shutdown,
     alert_worker_startup,
+    send_alert_fire_and_forget,
 )
 from worker.alerts import (
     get_metrics as get_alert_metrics,
@@ -1496,13 +1497,13 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             # Clean up source file after permanent failure
             if cleanup_source_file(job["video_id"]):
                 print(f"    Cleaned up source file for video {job['video_id']}")
-            # Send alert for max retries exceeded
-            await alert_max_retries_exceeded(
+            # Send alert for max retries exceeded (fire-and-forget)
+            send_alert_fire_and_forget(alert_max_retries_exceeded(
                 video_id=job["video_id"],
                 video_slug=video["slug"],
                 max_attempts=job["max_attempts"],
                 last_error=job.get("last_error"),
-            )
+            ))
         else:
             # Reset for retry - use transaction to ensure consistency
             print(f"    Resetting for retry (attempt {job['attempt_number'] + 1})")
@@ -1520,13 +1521,13 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
                     video["slug"], keep_completed_qualities=KEEP_COMPLETED_QUALITIES, completed_quality_names=completed
                 )
 
-            # Send alert for stale job recovered
-            await alert_stale_job_recovered(
+            # Send alert for stale job recovered (fire-and-forget)
+            send_alert_fire_and_forget(alert_stale_job_recovered(
                 video_id=job["video_id"],
                 video_slug=video["slug"],
                 attempt_number=job["attempt_number"],
                 worker_id=job.get("worker_id"),
-            )
+            ))
 
     if stale_jobs:
         print(f"  Recovered {len(stale_jobs)} interrupted job(s)")
@@ -2174,14 +2175,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     error_message=f"Attempt {job['attempt_number']} failed: {str(e)[:400]}",
                 )
             )
-            # Send alert for job failure (will retry)
-            await alert_job_failed(
+            # Send alert for job failure (fire-and-forget, will retry)
+            send_alert_fire_and_forget(alert_job_failed(
                 video_id=video_id,
                 video_slug=video_slug,
                 attempt_number=job["attempt_number"],
                 error=str(e),
                 will_retry=True,
-            )
+            ))
         else:
             # Final failure - mark job as completed (finished, even though failed)
             await mark_job_failed(job_id, str(e), final=True)
@@ -2193,14 +2194,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     error_message=str(e)[:500],
                 )
             )
-            # Send alert for max retries exceeded
+            # Send alert for max retries exceeded (fire-and-forget)
             if job:
-                await alert_max_retries_exceeded(
+                send_alert_fire_and_forget(alert_max_retries_exceeded(
                     video_id=video_id,
                     video_slug=video_slug,
                     max_attempts=job["max_attempts"],
                     last_error=str(e),
-                )
+                ))
 
         return False
 
@@ -2254,13 +2255,13 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
             # Clean up source file after permanent failure
             if cleanup_source_file(job["video_id"]):
                 print(f"  Cleaned up source file for video {job['video_id']}")
-            # Send alert for max retries exceeded
-            await alert_max_retries_exceeded(
+            # Send alert for max retries exceeded (fire-and-forget)
+            send_alert_fire_and_forget(alert_max_retries_exceeded(
                 video_id=job["video_id"],
                 video_slug=video["slug"],
                 max_attempts=job["max_attempts"],
                 last_error=job.get("last_error"),
-            )
+            ))
         else:
             print(f"Found stale job for '{video['slug']}', resetting for retry")
             async with database.transaction():
@@ -2268,13 +2269,13 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
                 await database.execute(
                     videos.update().where(videos.c.id == job["video_id"]).values(status=VideoStatus.PENDING)
                 )
-            # Send alert for stale job recovered
-            await alert_stale_job_recovered(
+            # Send alert for stale job recovered (fire-and-forget)
+            send_alert_fire_and_forget(alert_stale_job_recovered(
                 video_id=job["video_id"],
                 video_slug=video["slug"],
                 attempt_number=job["attempt_number"],
                 worker_id=job.get("worker_id"),
-            )
+            ))
 
 
 async def cleanup_expired_archives():
@@ -2401,13 +2402,13 @@ async def worker_loop(state: Optional[WorkerState] = None):
     # Get count of recovered jobs from alert metrics for startup notification
     recovered_count = get_alert_metrics().stale_jobs_recovered
 
-    # Send worker startup alert
+    # Send worker startup alert (fire-and-forget)
     gpu_info = state.gpu_caps.device_name if state.gpu_caps else None
-    await alert_worker_startup(
+    send_alert_fire_and_forget(alert_worker_startup(
         worker_id=state.worker_id,
         gpu_info=gpu_info,
         recovered_jobs=recovered_count,
-    )
+    ))
 
     last_stale_check = datetime.now(timezone.utc)
     stale_check_interval = 300  # Check every 5 minutes
@@ -2518,11 +2519,11 @@ async def worker_loop(state: Optional[WorkerState] = None):
             else:
                 print("No jobs to reset.")
 
-            # Send worker shutdown alert
-            await alert_worker_shutdown(
+            # Send worker shutdown alert (fire-and-forget)
+            send_alert_fire_and_forget(alert_worker_shutdown(
                 worker_id=state.worker_id,
                 jobs_reset=reset_count,
-            )
+            ))
         except Exception as e:
             print(f"Error during cleanup: {e}")
 

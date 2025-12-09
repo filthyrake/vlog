@@ -15,6 +15,7 @@ from worker.alerts import (
     alert_worker_startup,
     get_metrics,
     reset_metrics,
+    send_alert_fire_and_forget,
     send_webhook_alert,
 )
 
@@ -383,3 +384,62 @@ class TestGlobalMetrics:
         reset_metrics()
         new_metrics = get_metrics()
         assert new_metrics.stale_jobs_recovered == 0
+
+
+class TestFireAndForget:
+    """Tests for fire-and-forget alert functionality."""
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_schedules_task(self):
+        """Test that send_alert_fire_and_forget schedules a background task."""
+        import asyncio
+
+        called = False
+
+        async def mock_alert():
+            nonlocal called
+            called = True
+
+        send_alert_fire_and_forget(mock_alert())
+
+        # Give the event loop a chance to execute the task
+        await asyncio.sleep(0.1)
+
+        assert called is True
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_catches_exceptions(self):
+        """Test that fire-and-forget catches and logs exceptions."""
+        import asyncio
+
+        async def failing_alert():
+            raise ValueError("Test error")
+
+        # Should not raise - exceptions are caught
+        send_alert_fire_and_forget(failing_alert())
+
+        # Give the event loop a chance to process
+        await asyncio.sleep(0.1)
+
+        # Test passes if we get here without exception
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_with_real_alert(self):
+        """Test fire-and-forget with an actual alert function."""
+        import asyncio
+
+        with patch("worker.alerts.send_webhook_alert", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = True
+
+            send_alert_fire_and_forget(alert_stale_job_recovered(
+                video_id=123,
+                video_slug="test-video",
+                attempt_number=1,
+                worker_id="worker-1",
+            ))
+
+            # Give the event loop a chance to process
+            await asyncio.sleep(0.1)
+
+            # The alert should have been called
+            mock_send.assert_called_once()

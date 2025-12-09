@@ -9,12 +9,13 @@ Provides webhook notifications for:
 Includes rate limiting to prevent alert flooding.
 """
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Dict, Optional
 
 import httpx
 
@@ -123,6 +124,30 @@ def reset_metrics():
     """Reset metrics (for testing)."""
     global _metrics
     _metrics = AlertMetrics()
+
+
+def send_alert_fire_and_forget(coro: Awaitable[Any]) -> None:
+    """
+    Schedule an alert coroutine as a fire-and-forget background task.
+
+    This ensures alert failures don't crash the worker. Any exceptions
+    are logged at debug level and silently ignored.
+
+    Args:
+        coro: The alert coroutine to execute (e.g., alert_stale_job_recovered(...))
+    """
+
+    async def _safe_send():
+        try:
+            await coro
+        except Exception as e:
+            logger.debug(f"Failed to send alert (fire-and-forget): {e}")
+
+    try:
+        asyncio.create_task(_safe_send())
+    except RuntimeError:
+        # No running event loop (shouldn't happen in normal operation)
+        logger.debug("Cannot send alert: no running event loop")
 
 
 async def send_webhook_alert(
