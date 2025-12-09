@@ -26,8 +26,6 @@ if TYPE_CHECKING:
     from worker.hwaccel import GPUCapabilities
 
 # Import at runtime for parallel session calculation
-from worker.hwaccel import get_recommended_parallel_sessions
-
 from api.common import ensure_utc, validate_slug
 from api.database import (
     configure_database,
@@ -67,6 +65,18 @@ from config import (
     WORKER_FALLBACK_POLL_INTERVAL,
     WORKER_USE_FILESYSTEM_WATCHER,
 )
+from worker.alerts import (
+    alert_job_failed,
+    alert_max_retries_exceeded,
+    alert_stale_job_recovered,
+    alert_worker_shutdown,
+    alert_worker_startup,
+    send_alert_fire_and_forget,
+)
+from worker.alerts import (
+    get_metrics as get_alert_metrics,
+)
+from worker.hwaccel import get_recommended_parallel_sessions
 
 # Conditional import for filesystem watching
 if WORKER_USE_FILESYSTEM_WATCHER:
@@ -88,9 +98,7 @@ logger = logging.getLogger(__name__)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 
 
-def group_qualities_by_resolution(
-    qualities: List[dict], parallel_count: int
-) -> List[List[dict]]:
+def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) -> List[List[dict]]:
     """
     Group qualities into batches for parallel encoding.
 
@@ -576,8 +584,15 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
             try:
                 proc = await asyncio.wait_for(
                     asyncio.create_subprocess_exec(
-                        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
-                        "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+                        "ffprobe",
+                        "-v",
+                        "quiet",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "stream=codec_type",
+                        "-of",
+                        "csv=p=0",
                         str(first_segment_path),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
@@ -1482,6 +1497,13 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             # Clean up source file after permanent failure
             if cleanup_source_file(job["video_id"]):
                 print(f"    Cleaned up source file for video {job['video_id']}")
+            # Send alert for max retries exceeded (fire-and-forget)
+            send_alert_fire_and_forget(alert_max_retries_exceeded(
+                video_id=job["video_id"],
+                video_slug=video["slug"],
+                max_attempts=job["max_attempts"],
+                last_error=job.get("last_error"),
+            ))
         else:
             # Reset for retry - use transaction to ensure consistency
             print(f"    Resetting for retry (attempt {job['attempt_number'] + 1})")
@@ -1498,6 +1520,14 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
                 await cleanup_partial_output(
                     video["slug"], keep_completed_qualities=KEEP_COMPLETED_QUALITIES, completed_quality_names=completed
                 )
+
+            # Send alert for stale job recovered (fire-and-forget)
+            send_alert_fire_and_forget(alert_stale_job_recovered(
+                video_id=job["video_id"],
+                video_slug=video["slug"],
+                attempt_number=job["attempt_number"],
+                worker_id=job.get("worker_id"),
+            ))
 
     if stale_jobs:
         print(f"  Recovered {len(stale_jobs)} interrupted job(s)")
@@ -2118,11 +2148,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         if video_row and video_row["published_at"] is None:
             video_updates["published_at"] = datetime.now(timezone.utc)
 
-        await database.execute(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(**video_updates)
-        )
+        await database.execute(videos.update().where(videos.c.id == video_id).values(**video_updates))
 
         # Mark job completed
         await mark_job_completed(job_id)
@@ -2149,6 +2175,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     error_message=f"Attempt {job['attempt_number']} failed: {str(e)[:400]}",
                 )
             )
+            # Send alert for job failure (fire-and-forget, will retry)
+            send_alert_fire_and_forget(alert_job_failed(
+                video_id=video_id,
+                video_slug=video_slug,
+                attempt_number=job["attempt_number"],
+                error=str(e),
+                will_retry=True,
+            ))
         else:
             # Final failure - mark job as completed (finished, even though failed)
             await mark_job_failed(job_id, str(e), final=True)
@@ -2160,6 +2194,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     error_message=str(e)[:500],
                 )
             )
+            # Send alert for max retries exceeded (fire-and-forget)
+            if job:
+                send_alert_fire_and_forget(alert_max_retries_exceeded(
+                    video_id=video_id,
+                    video_slug=video_slug,
+                    max_attempts=job["max_attempts"],
+                    last_error=str(e),
+                ))
 
         return False
 
@@ -2213,6 +2255,13 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
             # Clean up source file after permanent failure
             if cleanup_source_file(job["video_id"]):
                 print(f"  Cleaned up source file for video {job['video_id']}")
+            # Send alert for max retries exceeded (fire-and-forget)
+            send_alert_fire_and_forget(alert_max_retries_exceeded(
+                video_id=job["video_id"],
+                video_slug=video["slug"],
+                max_attempts=job["max_attempts"],
+                last_error=job.get("last_error"),
+            ))
         else:
             print(f"Found stale job for '{video['slug']}', resetting for retry")
             async with database.transaction():
@@ -2220,6 +2269,13 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
                 await database.execute(
                     videos.update().where(videos.c.id == job["video_id"]).values(status=VideoStatus.PENDING)
                 )
+            # Send alert for stale job recovered (fire-and-forget)
+            send_alert_fire_and_forget(alert_stale_job_recovered(
+                video_id=job["video_id"],
+                video_slug=video["slug"],
+                attempt_number=job["attempt_number"],
+                worker_id=job.get("worker_id"),
+            ))
 
 
 async def cleanup_expired_archives():
@@ -2343,6 +2399,17 @@ async def worker_loop(state: Optional[WorkerState] = None):
     # Recover any interrupted jobs from previous crashes
     await recover_interrupted_jobs(state)
 
+    # Get count of recovered jobs from alert metrics for startup notification
+    recovered_count = get_alert_metrics().stale_jobs_recovered
+
+    # Send worker startup alert (fire-and-forget)
+    gpu_info = state.gpu_caps.device_name if state.gpu_caps else None
+    send_alert_fire_and_forget(alert_worker_startup(
+        worker_id=state.worker_id,
+        gpu_info=gpu_info,
+        recovered_jobs=recovered_count,
+    ))
+
     last_stale_check = datetime.now(timezone.utc)
     stale_check_interval = 300  # Check every 5 minutes
 
@@ -2451,6 +2518,12 @@ async def worker_loop(state: Optional[WorkerState] = None):
                 print(f"Reset {reset_count} job(s) to pending state.")
             else:
                 print("No jobs to reset.")
+
+            # Send worker shutdown alert (fire-and-forget)
+            send_alert_fire_and_forget(alert_worker_shutdown(
+                worker_id=state.worker_id,
+                jobs_reset=reset_count,
+            ))
         except Exception as e:
             print(f"Error during cleanup: {e}")
 

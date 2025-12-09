@@ -252,3 +252,13 @@ AUDIT_LOG_LEVEL = os.getenv("VLOG_AUDIT_LOG_LEVEL", "INFO").upper()
 ERROR_SUMMARY_MAX_LENGTH = int(os.getenv("VLOG_ERROR_SUMMARY_MAX_LENGTH", "100"))  # Brief error summaries
 ERROR_DETAIL_MAX_LENGTH = int(os.getenv("VLOG_ERROR_DETAIL_MAX_LENGTH", "500"))  # Detailed error messages
 ERROR_LOG_MAX_LENGTH = int(os.getenv("VLOG_ERROR_LOG_MAX_LENGTH", "2000"))  # Full error logs
+
+# Alerting Configuration
+# Webhook URL for sending alerts (stale jobs, max retries exceeded, etc.)
+# Leave empty to disable webhook alerts
+ALERT_WEBHOOK_URL = os.getenv("VLOG_ALERT_WEBHOOK_URL", "")
+# Timeout for webhook requests in seconds
+ALERT_WEBHOOK_TIMEOUT = int(os.getenv("VLOG_ALERT_WEBHOOK_TIMEOUT", "10"))
+# Minimum interval between alerts for the same event type (seconds)
+# Prevents alert flooding when multiple jobs fail in quick succession
+ALERT_RATE_LIMIT_SECONDS = int(os.getenv("VLOG_ALERT_RATE_LIMIT_SECONDS", "300"))
