@@ -27,6 +27,7 @@ import asyncio
 import shutil
 import signal
 import sys
+import time
 import uuid
 from typing import Dict, List, Optional, Tuple
 
@@ -298,10 +299,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         for idx, quality in enumerate(qualities):
             quality_to_idx[quality["name"]] = idx + 1  # +1 for original
 
-        # Shared progress tracking for parallel qualities (with lock for thread safety)
-        import time
-
-        quality_progresses: Dict[str, int] = {}
+        # Shared progress tracking for parallel qualities (with lock for coroutine safety)
+        # Initialize skipped qualities with 100% progress for accurate overall calculation
+        quality_progresses: Dict[str, int] = {
+            q["name"]: 100 for q in qualities if q["name"] in existing_qualities
+        }
         last_update_times: Dict[str, float] = {}
         progress_lock = asyncio.Lock()
         progress_list_lock = asyncio.Lock()
@@ -317,6 +319,10 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 - On success: (quality_info_dict, None)
                 - On failure: (None, quality_name)
             """
+            # Check for shutdown at the start to avoid starting new work
+            if shutdown_requested:
+                return (None, quality["name"])
+
             quality_name = quality["name"]
             quality_idx = quality_to_idx[quality_name]
 
@@ -331,33 +337,41 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             # Per-quality progress callback
             async def update_quality_progress(pct: int, qidx: int = quality_idx, qname: str = quality_name):
                 now = time.time()
+                # Check timing under progress_lock (for last_update_times and quality_progresses)
                 async with progress_lock:
                     last_update = last_update_times.get(qname, 0)
                     # Only update every 5 seconds to avoid flooding the API
-                    if now - last_update >= 5.0:
-                        quality_progress_list[qidx] = {
-                            "name": qname,
-                            "status": "in_progress",
-                            "progress": pct,
-                        }
-                        quality_progresses[qname] = pct
-                        last_update_times[qname] = now
-                        try:
-                            # Calculate overall progress based on all quality progresses
+                    if now - last_update < 5.0:
+                        return  # Rate limited, skip update
+                    # Update progress tracking under this lock
+                    quality_progresses[qname] = pct
+                    last_update_times[qname] = now
+
+                # Update quality_progress_list under its dedicated lock
+                async with progress_list_lock:
+                    quality_progress_list[qidx] = {
+                        "name": qname,
+                        "status": "in_progress",
+                        "progress": pct,
+                    }
+                    try:
+                        # Calculate overall progress based on all quality progresses
+                        # Uses len(qualities) to include skipped qualities (already at 100%)
+                        async with progress_lock:
                             avg_progress = (
-                                sum(quality_progresses.values()) / len(qualities_to_transcode)
-                                if qualities_to_transcode
+                                sum(quality_progresses.values()) / len(qualities)
+                                if qualities
                                 else 0
                             )
-                            overall = 15 + int(avg_progress * 0.75)
-                            await client.update_progress(job_id, "transcode", overall, quality_progress_list)
-                        except WorkerAPIError as e:
-                            if e.status_code == 409:
-                                print(f"      {qname}: Claim expired - aborting job")
-                                raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                            print(f"      {qname}: Progress update failed: {e.message}")
-                        except Exception as e:
-                            print(f"      {qname}: Progress update failed: {e}")
+                        overall = 15 + int(avg_progress * 0.75)
+                        await client.update_progress(job_id, "transcode", overall, quality_progress_list)
+                    except WorkerAPIError as e:
+                        if e.status_code == 409:
+                            print(f"      {qname}: Claim expired - aborting job")
+                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                        print(f"      {qname}: Progress update failed: {e.message}")
+                    except Exception as e:
+                        print(f"      {qname}: Progress update failed: {e}")
 
             success, error = await transcode_quality_with_progress(
                 source_path,

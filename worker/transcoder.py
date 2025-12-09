@@ -1756,7 +1756,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # Group qualities into batches for parallel processing
         quality_batches = group_qualities_by_resolution(qualities, parallel_count)
 
-        # Shared progress tracking for parallel qualities (with lock for thread safety)
+        # Shared progress tracking for parallel qualities (with lock for coroutine safety)
         quality_progresses: Dict[str, int] = {}
         progress_lock = asyncio.Lock()
 
@@ -1772,6 +1772,10 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 - On failure: (None, {"name": ..., "error": ...})
                 - On skip (already complete): (quality_info_dict, None)
             """
+            # Check for shutdown at the start to avoid starting new work
+            if state.shutdown_requested:
+                return (None, {"name": quality["name"], "error": "Shutdown requested"})
+
             quality_name = quality["name"]
 
             # Check if already completed
