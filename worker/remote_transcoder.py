@@ -298,58 +298,66 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         for idx, quality in enumerate(qualities):
             quality_to_idx[quality["name"]] = idx + 1  # +1 for original
 
-        # Shared progress tracking for parallel qualities
+        # Shared progress tracking for parallel qualities (with lock for thread safety)
         import time
 
         quality_progresses: Dict[str, int] = {}
         last_update_times: Dict[str, float] = {}
+        progress_lock = asyncio.Lock()
+        progress_list_lock = asyncio.Lock()
 
         async def transcode_and_upload_quality(
             quality: dict,
-        ) -> Optional[dict]:
+        ) -> Tuple[Optional[dict], Optional[str]]:
             """
-            Transcode a single quality and upload it. Returns quality info dict on success.
-            Designed to be run in parallel with other qualities.
+            Transcode a single quality and upload it.
+
+            Returns:
+                Tuple of (success_info, failed_quality_name):
+                - On success: (quality_info_dict, None)
+                - On failure: (None, quality_name)
             """
             quality_name = quality["name"]
             quality_idx = quality_to_idx[quality_name]
 
             print(f"    {quality_name}: Transcoding...")
-            quality_progress_list[quality_idx] = {
-                "name": quality_name,
-                "status": "in_progress",
-                "progress": 0,
-            }
+            async with progress_list_lock:
+                quality_progress_list[quality_idx] = {
+                    "name": quality_name,
+                    "status": "in_progress",
+                    "progress": 0,
+                }
 
             # Per-quality progress callback
             async def update_quality_progress(pct: int, qidx: int = quality_idx, qname: str = quality_name):
                 now = time.time()
-                last_update = last_update_times.get(qname, 0)
-                # Only update every 5 seconds to avoid flooding the API
-                if now - last_update >= 5.0:
-                    quality_progress_list[qidx] = {
-                        "name": qname,
-                        "status": "in_progress",
-                        "progress": pct,
-                    }
-                    quality_progresses[qname] = pct
-                    try:
-                        # Calculate overall progress based on all quality progresses
-                        avg_progress = (
-                            sum(quality_progresses.values()) / len(qualities_to_transcode)
-                            if qualities_to_transcode
-                            else 0
-                        )
-                        overall = 15 + int(avg_progress * 0.75)
-                        await client.update_progress(job_id, "transcode", overall, quality_progress_list)
+                async with progress_lock:
+                    last_update = last_update_times.get(qname, 0)
+                    # Only update every 5 seconds to avoid flooding the API
+                    if now - last_update >= 5.0:
+                        quality_progress_list[qidx] = {
+                            "name": qname,
+                            "status": "in_progress",
+                            "progress": pct,
+                        }
+                        quality_progresses[qname] = pct
                         last_update_times[qname] = now
-                    except WorkerAPIError as e:
-                        if e.status_code == 409:
-                            print(f"      {qname}: Claim expired - aborting job")
-                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                        print(f"      {qname}: Progress update failed: {e.message}")
-                    except Exception as e:
-                        print(f"      {qname}: Progress update failed: {e}")
+                        try:
+                            # Calculate overall progress based on all quality progresses
+                            avg_progress = (
+                                sum(quality_progresses.values()) / len(qualities_to_transcode)
+                                if qualities_to_transcode
+                                else 0
+                            )
+                            overall = 15 + int(avg_progress * 0.75)
+                            await client.update_progress(job_id, "transcode", overall, quality_progress_list)
+                        except WorkerAPIError as e:
+                            if e.status_code == 409:
+                                print(f"      {qname}: Claim expired - aborting job")
+                                raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+                            print(f"      {qname}: Progress update failed: {e.message}")
+                        except Exception as e:
+                            print(f"      {qname}: Progress update failed: {e}")
 
             success, error = await transcode_quality_with_progress(
                 source_path,
@@ -361,14 +369,14 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             )
 
             if not success:
-                quality_progress_list[quality_idx] = {
-                    "name": quality_name,
-                    "status": "failed",
-                    "progress": 0,
-                }
-                failed_qualities.append(quality_name)
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "failed",
+                        "progress": 0,
+                    }
                 print(f"    {quality_name}: Failed - {error}")
-                return None
+                return (None, quality_name)
 
             # Get actual dimensions from transcoded segment
             first_segment = output_dir / f"{quality_name}_0000.ts"
@@ -393,13 +401,13 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             is_valid, validation_error = validate_hls_playlist(quality_playlist_path)
             if not is_valid:
                 print(f"    {quality_name}: HLS validation failed - {validation_error}")
-                quality_progress_list[quality_idx] = {
-                    "name": quality_name,
-                    "status": "failed",
-                    "progress": 0,
-                }
-                failed_qualities.append(quality_name)
-                return None
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "failed",
+                        "progress": 0,
+                    }
+                return (None, quality_name)
 
             # Upload this quality immediately to free disk space
             print(f"    {quality_name}: Uploading...")
@@ -412,11 +420,12 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     qname: str = quality_name,
                 ):
                     try:
-                        quality_progress_list[qidx] = {
-                            "name": qname,
-                            "status": "uploading",
-                            "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
-                        }
+                        async with progress_list_lock:
+                            quality_progress_list[qidx] = {
+                                "name": qname,
+                                "status": "uploading",
+                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                            }
                         await client.update_progress(job_id, "upload", 90, quality_progress_list)
                     except WorkerAPIError as e:
                         if e.status_code == 409:
@@ -424,11 +433,12 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         print(f"      {qname}: Upload progress failed: {e.message}")
 
                 await client.upload_quality(video_id, quality_name, output_dir, progress_callback=upload_progress_callback)
-                quality_progress_list[quality_idx] = {
-                    "name": quality_name,
-                    "status": "uploaded",
-                    "progress": 100,
-                }
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "uploaded",
+                        "progress": 100,
+                    }
                 print(f"    {quality_name}: Uploaded")
 
                 # Delete local files to free disk space
@@ -441,14 +451,15 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
             except WorkerAPIError as e:
                 # Upload failed - keep files, mark as completed (not uploaded)
-                quality_progress_list[quality_idx] = {
-                    "name": quality_name,
-                    "status": "completed",
-                    "progress": 100,
-                }
+                async with progress_list_lock:
+                    quality_progress_list[quality_idx] = {
+                        "name": quality_name,
+                        "status": "completed",
+                        "progress": 100,
+                    }
                 print(f"    {quality_name}: Upload failed - {e.message}")
 
-            return quality_info
+            return (quality_info, None)
 
         # Process each batch of qualities
         for batch_idx, batch in enumerate(quality_batches):
@@ -462,25 +473,28 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             tasks = [transcode_and_upload_quality(q) for q in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Process results
+            # Process results - collect successes and failures from returned tuples
             for quality, result in zip(batch, results):
                 if isinstance(result, ClaimExpiredError):
                     # Re-raise claim expiry to abort the job
                     raise result
                 elif isinstance(result, Exception):
                     # Unexpected exception
-                    error_msg = str(result)
                     quality_idx = quality_to_idx[quality["name"]]
-                    quality_progress_list[quality_idx] = {
-                        "name": quality["name"],
-                        "status": "failed",
-                        "progress": 0,
-                    }
+                    async with progress_list_lock:
+                        quality_progress_list[quality_idx] = {
+                            "name": quality["name"],
+                            "status": "failed",
+                            "progress": 0,
+                        }
                     failed_qualities.append(quality["name"])
                     print(f"    {quality['name']}: Unexpected error - {result}")
-                elif result is not None:
-                    # Success - result is the quality info dict
-                    successful_qualities.append(result)
+                elif isinstance(result, tuple):
+                    success_info, failed_name = result
+                    if success_info is not None:
+                        successful_qualities.append(success_info)
+                    if failed_name is not None:
+                        failed_qualities.append(failed_name)
 
         # Check if we have any successful qualities (or all were skipped)
         # If all qualities were skipped, we still need to complete the job
