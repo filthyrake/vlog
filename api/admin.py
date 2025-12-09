@@ -4,6 +4,7 @@ Runs on port 9001 (not exposed externally).
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import shutil
@@ -105,6 +106,7 @@ from api.schemas import (
     WorkerJobHistory,
 )
 from config import (
+    ADMIN_API_SECRET,
     ADMIN_CORS_ALLOWED_ORIGINS,
     ADMIN_PORT,
     ANALYTICS_CACHE_ENABLED,
@@ -146,6 +148,95 @@ ALLOWED_VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
 # Input length limits
 MAX_TITLE_LENGTH = 255
 MAX_DESCRIPTION_LENGTH = 5000
+
+# Security event logger for authentication events
+security_logger = logging.getLogger("security.admin_auth")
+
+
+class AdminAuthMiddleware:
+    """
+    Middleware to protect Admin API endpoints with API key authentication.
+
+    When ADMIN_API_SECRET is configured:
+    - All /api/* paths require X-Admin-Secret header
+    - Returns 401 if header is missing
+    - Returns 403 if header value is incorrect
+
+    When ADMIN_API_SECRET is not configured (empty):
+    - All requests are allowed (backwards compatible)
+
+    Paths that are always allowed (no auth required):
+    - / (admin HTML page)
+    - /health (monitoring)
+    - /static/* (static files)
+    - /videos/* (video file serving for preview)
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        method = scope.get("method", "")
+
+        # Skip auth for non-API paths
+        if not path.startswith("/api"):
+            await self.app(scope, receive, send)
+            return
+
+        # Skip auth for OPTIONS (CORS preflight) requests
+        if method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
+        # If ADMIN_API_SECRET is not configured, allow all requests (backwards compatible)
+        if not ADMIN_API_SECRET:
+            await self.app(scope, receive, send)
+            return
+
+        # Extract client IP for logging
+        client = scope.get("client")
+        client_ip = client[0] if client else "unknown"
+
+        # Extract X-Admin-Secret header
+        headers = dict(scope.get("headers", []))
+        admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
+
+        if not admin_secret:
+            security_logger.warning(
+                "Admin API auth failed: missing X-Admin-Secret header",
+                extra={"event": "auth_failure", "reason": "missing_header", "path": path, "client_ip": client_ip},
+            )
+            response = JSONResponse(
+                status_code=401,
+                content={"detail": "X-Admin-Secret header required"},
+            )
+            await response(scope, receive, send)
+            return
+
+        # Use constant-time comparison to prevent timing attacks
+        if not hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+            security_logger.warning(
+                "Admin API auth failed: invalid secret",
+                extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "Invalid admin secret"},
+            )
+            await response(scope, receive, send)
+            return
+
+        # Auth successful
+        security_logger.info(
+            "Admin API auth successful",
+            extra={"event": "auth_success", "path": path, "client_ip": client_ip},
+        )
+        await self.app(scope, receive, send)
 
 
 async def delete_video_and_job(video_id: int) -> None:
@@ -418,6 +509,9 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIDMiddleware)
 
+# Admin API authentication middleware (see AdminAuthMiddleware class)
+# Only active when VLOG_ADMIN_API_SECRET is configured
+app.add_middleware(AdminAuthMiddleware)
 
 # Allow CORS for admin UI (internal-only, not exposed externally)
 app.add_middleware(
