@@ -3,8 +3,13 @@ Tests for analytics caching functionality.
 """
 
 import time
+from unittest.mock import MagicMock, patch
 
-from api.analytics_cache import AnalyticsCache
+from api.analytics_cache import (
+    AnalyticsCache,
+    RedisAnalyticsCache,
+    create_analytics_cache,
+)
 
 
 class TestAnalyticsCache:
@@ -365,3 +370,340 @@ class TestAnalyticsCache:
         # Verify all original keys are still present
         for i in range(10):
             assert cache.get(f"key_{i}") is not None
+
+    def test_get_stats_includes_backend(self):
+        """Test that get_stats includes backend type."""
+        cache = AnalyticsCache()
+        stats = cache.get_stats()
+        assert stats["backend"] == "memory"
+
+
+class TestRedisAnalyticsCache:
+    """Test suite for RedisAnalyticsCache with mocked Redis."""
+
+    def test_initialization_with_mock_redis(self):
+        """Test cache initializes with mocked Redis."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=120,
+                enabled=True,
+            )
+
+            assert cache._enabled is True
+            assert cache._ttl == 120
+            mock_client.ping.assert_called_once()
+
+    def test_initialization_disabled(self):
+        """Test cache doesn't connect when disabled."""
+        cache = RedisAnalyticsCache(
+            redis_url="redis://localhost:6379",
+            ttl_seconds=60,
+            enabled=False,
+        )
+
+        assert cache._enabled is False
+        assert cache._client is None
+
+    def test_get_returns_none_when_disabled(self):
+        """Test get returns None when cache is disabled."""
+        cache = RedisAnalyticsCache(
+            redis_url="redis://localhost:6379",
+            ttl_seconds=60,
+            enabled=False,
+        )
+
+        result = cache.get("test_key")
+        assert result is None
+
+    def test_set_does_nothing_when_disabled(self):
+        """Test set does nothing when cache is disabled."""
+        cache = RedisAnalyticsCache(
+            redis_url="redis://localhost:6379",
+            ttl_seconds=60,
+            enabled=False,
+        )
+
+        # Should not raise any errors
+        cache.set("test_key", {"data": 1})
+        assert cache.get("test_key") is None
+
+    def test_get_and_set_with_mock_redis(self):
+        """Test get and set operations with mocked Redis."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            # Test set
+            test_data = {"total_views": 100, "unique_viewers": 50}
+            cache.set("test_key", test_data)
+            mock_client.setex.assert_called_once()
+
+            # Verify the call arguments
+            call_args = mock_client.setex.call_args
+            assert call_args[0][0] == "vlog:analytics:test_key"
+            assert call_args[0][1] == 60
+
+    def test_get_with_mock_redis(self):
+        """Test get operation with mocked Redis."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            # Configure mock to return JSON data
+            mock_client.get.return_value = '{"total_views": 100}'
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            result = cache.get("test_key")
+            assert result == {"total_views": 100}
+            mock_client.get.assert_called_with("vlog:analytics:test_key")
+
+    def test_get_returns_none_for_missing_key(self):
+        """Test get returns None for missing key."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+            mock_client.get.return_value = None
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            result = cache.get("nonexistent_key")
+            assert result is None
+
+    def test_invalidate_with_mock_redis(self):
+        """Test invalidate operation with mocked Redis."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            cache.invalidate("test_key")
+            mock_client.delete.assert_called_with("vlog:analytics:test_key")
+
+    def test_clear_with_mock_redis(self):
+        """Test clear operation with mocked Redis."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+            # Simulate SCAN returning keys then finishing
+            mock_client.scan.side_effect = [
+                (1, ["vlog:analytics:key1", "vlog:analytics:key2"]),
+                (0, []),  # End of scan
+            ]
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            cache.clear()
+            mock_client.delete.assert_called_once_with(
+                "vlog:analytics:key1", "vlog:analytics:key2"
+            )
+
+    def test_cleanup_expired_returns_zero(self):
+        """Test cleanup_expired returns 0 (Redis handles TTL)."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            result = cache.cleanup_expired()
+            assert result == 0
+
+    def test_get_stats_with_mock_redis(self):
+        """Test get_stats with mocked Redis."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+            mock_client.scan.side_effect = [
+                (1, ["vlog:analytics:key1", "vlog:analytics:key2"]),
+                (0, ["vlog:analytics:key3"]),
+            ]
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=120,
+                enabled=True,
+            )
+
+            stats = cache.get_stats()
+            assert stats["enabled"] is True
+            assert stats["ttl_seconds"] == 120
+            assert stats["entry_count"] == 3
+            assert stats["max_size"] == -1
+            assert stats["backend"] == "redis"
+            assert stats["connected"] is True
+
+    def test_connection_failure_graceful_degradation(self):
+        """Test cache gracefully handles connection failures."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+            mock_client.ping.side_effect = Exception("Connection refused")
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            # Should not raise, just log warning and set client to None
+            assert cache._client is None
+            assert cache._connection_failed is True
+
+            # Operations should gracefully return None/do nothing
+            assert cache.get("test_key") is None
+            cache.set("test_key", {"data": 1})  # Should not raise
+
+    def test_operation_failure_graceful_degradation(self):
+        """Test cache gracefully handles operation failures."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+            mock_client.get.side_effect = Exception("Network error")
+
+            cache = RedisAnalyticsCache(
+                redis_url="redis://localhost:6379",
+                ttl_seconds=60,
+                enabled=True,
+            )
+
+            # Should return None instead of raising
+            result = cache.get("test_key")
+            assert result is None
+
+
+class TestCreateAnalyticsCache:
+    """Test suite for create_analytics_cache factory function."""
+
+    def test_creates_memory_cache_by_default(self):
+        """Test factory creates memory cache by default."""
+        cache = create_analytics_cache()
+        assert isinstance(cache, AnalyticsCache)
+        assert cache.get_stats()["backend"] == "memory"
+
+    def test_creates_memory_cache_for_memory_url(self):
+        """Test factory creates memory cache for memory:// URL."""
+        cache = create_analytics_cache(storage_url="memory://")
+        assert isinstance(cache, AnalyticsCache)
+
+    def test_creates_memory_cache_when_disabled(self):
+        """Test factory creates disabled memory cache when disabled."""
+        cache = create_analytics_cache(
+            storage_url="redis://localhost:6379",
+            enabled=False,
+        )
+        assert isinstance(cache, AnalyticsCache)
+        assert cache.get_stats()["enabled"] is False
+
+    def test_creates_redis_cache_for_redis_url(self):
+        """Test factory creates Redis cache for redis:// URL."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = create_analytics_cache(storage_url="redis://localhost:6379")
+            assert isinstance(cache, RedisAnalyticsCache)
+            assert cache.get_stats()["backend"] == "redis"
+
+    def test_creates_redis_cache_for_rediss_url(self):
+        """Test factory creates Redis cache for rediss:// (TLS) URL."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = create_analytics_cache(storage_url="rediss://localhost:6379")
+            assert isinstance(cache, RedisAnalyticsCache)
+
+    def test_passes_ttl_to_memory_cache(self):
+        """Test factory passes TTL to memory cache."""
+        cache = create_analytics_cache(storage_url="memory://", ttl_seconds=120)
+        assert cache.get_stats()["ttl_seconds"] == 120
+
+    def test_passes_ttl_to_redis_cache(self):
+        """Test factory passes TTL to Redis cache."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = create_analytics_cache(
+                storage_url="redis://localhost:6379",
+                ttl_seconds=120,
+            )
+            assert cache.get_stats()["ttl_seconds"] == 120
+
+    def test_passes_max_size_to_memory_cache(self):
+        """Test factory passes max_size to memory cache."""
+        cache = create_analytics_cache(storage_url="memory://", max_size=500)
+        assert cache.get_stats()["max_size"] == 500
+
+    def test_ignores_max_size_for_redis_cache(self):
+        """Test factory ignores max_size for Redis cache."""
+        with patch.dict("sys.modules", {"redis": MagicMock()}):
+            import sys
+            mock_redis_module = sys.modules["redis"]
+            mock_client = MagicMock()
+            mock_redis_module.Redis.from_url.return_value = mock_client
+
+            cache = create_analytics_cache(
+                storage_url="redis://localhost:6379",
+                max_size=500,
+            )
+            # Redis cache should have -1 for max_size (unlimited)
+            assert cache.get_stats()["max_size"] == -1

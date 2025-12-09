@@ -27,7 +27,7 @@ from slowapi.errors import RateLimitExceeded
 from slugify import slugify
 from sse_starlette.sse import EventSourceResponse
 
-from api.analytics_cache import AnalyticsCache
+from api.analytics_cache import create_analytics_cache
 from api.audit import AuditAction, log_audit
 from api.common import (
     RequestIDMiddleware,
@@ -110,6 +110,7 @@ from config import (
     ADMIN_CORS_ALLOWED_ORIGINS,
     ADMIN_PORT,
     ANALYTICS_CACHE_ENABLED,
+    ANALYTICS_CACHE_STORAGE_URL,
     ANALYTICS_CACHE_TTL,
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
     ARCHIVE_DIR,
@@ -139,8 +140,12 @@ limiter = Limiter(
     enabled=RATE_LIMIT_ENABLED,
 )
 
-# Initialize analytics cache
-analytics_cache = AnalyticsCache(ttl_seconds=ANALYTICS_CACHE_TTL, enabled=ANALYTICS_CACHE_ENABLED)
+# Initialize analytics cache (uses Redis if ANALYTICS_CACHE_STORAGE_URL is set to redis://)
+analytics_cache = create_analytics_cache(
+    storage_url=ANALYTICS_CACHE_STORAGE_URL,
+    ttl_seconds=ANALYTICS_CACHE_TTL,
+    enabled=ANALYTICS_CACHE_ENABLED,
+)
 
 # Use centralized video extensions from config
 ALLOWED_VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
