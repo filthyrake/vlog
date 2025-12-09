@@ -1028,9 +1028,51 @@
         </div>
     </div>
 
+    <!-- Auth Modal -->
+    <div x-show="showAuthModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+        <div class="bg-dark-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+            <h3 class="text-xl font-semibold mb-4">Authentication Required</h3>
+            <p class="text-dark-400 mb-4">This Admin API requires authentication. Enter your admin secret to continue.</p>
+            <form @submit.prevent="submitAuth">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-2">Admin Secret</label>
+                    <input
+                        type="password"
+                        x-model="authSecretInput"
+                        x-ref="authInput"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        placeholder="Enter VLOG_ADMIN_API_SECRET"
+                        required
+                        autocomplete="new-password"
+                    >
+                </div>
+                <div x-show="authError" class="text-red-400 text-sm mb-4" x-text="authError"></div>
+                <div class="flex gap-3">
+                    <button
+                        type="submit"
+                        :disabled="authLoading"
+                        class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                    >
+                        <span x-show="!authLoading">Authenticate</span>
+                        <span x-show="authLoading">Checking...</span>
+                    </button>
+                </div>
+            </form>
+            <p class="text-dark-500 text-xs mt-4 text-center">Secret is stored for this browser session (cleared when you close this tab)</p>
+        </div>
+    </div>
+
     <script>
         function admin() {
             return {
+                // Authentication state
+                adminSecret: sessionStorage.getItem('adminSecret') || '',
+                showAuthModal: false,
+                authSecretInput: '',
+                authError: '',
+                authLoading: false,
+                authRequired: false,
+
                 tab: 'videos',
                 videos: [],
                 categories: [],
@@ -1112,7 +1154,106 @@
                 bulkOpMessage: '',
                 bulkOpError: false,
 
+                // Helper function to make authenticated API requests
+                async apiFetch(url, options = {}) {
+                    // Create a new headers object to avoid mutating the caller's object
+                    const headers = { ...(options.headers || {}) };
+                    if (this.adminSecret) {
+                        headers['X-Admin-Secret'] = this.adminSecret;
+                    }
+                    const response = await fetch(url, { ...options, headers });
+
+                    // Handle auth errors
+                    if (response.status === 401 || response.status === 403) {
+                        this.authRequired = true;
+                        this.showAuthModal = true;
+                        this.adminSecret = '';
+                        sessionStorage.removeItem('adminSecret');
+                        throw new Error('Authentication required');
+                    }
+
+                    return response;
+                },
+
+                // Submit authentication
+                async submitAuth() {
+                    this.authError = '';
+                    this.authLoading = true;
+
+                    try {
+                        // Test the secret by making a request
+                        const response = await fetch('/api/categories', {
+                            headers: { 'X-Admin-Secret': this.authSecretInput }
+                        });
+
+                        if (response.status === 401 || response.status === 403) {
+                            this.authError = 'Invalid admin secret';
+                            return;
+                        }
+
+                        if (!response.ok) {
+                            this.authError = `Server error: ${response.status}`;
+                            return;
+                        }
+
+                        // Success - save the secret
+                        this.adminSecret = this.authSecretInput;
+                        sessionStorage.setItem('adminSecret', this.adminSecret);
+                        this.showAuthModal = false;
+                        this.authSecretInput = '';
+
+                        // Reload data now that we're authenticated
+                        await Promise.all([
+                            this.loadVideos(),
+                            this.loadCategories()
+                        ]);
+                    } catch (e) {
+                        this.authError = 'Failed to authenticate: ' + e.message;
+                    } finally {
+                        this.authLoading = false;
+                    }
+                },
+
+                // Check if authentication is required
+                async checkAuth() {
+                    try {
+                        const response = await fetch('/api/categories', {
+                            headers: this.adminSecret ? { 'X-Admin-Secret': this.adminSecret } : {}
+                        });
+
+                        if (response.status === 401 || response.status === 403) {
+                            this.authRequired = true;
+                            this.showAuthModal = true;
+                            this.adminSecret = '';
+                            sessionStorage.removeItem('adminSecret');
+                            return false;
+                        }
+
+                        if (!response.ok) {
+                            console.error('Auth check failed with status:', response.status);
+                            return false;
+                        }
+
+                        return true;
+                    } catch (e) {
+                        console.error('Auth check failed:', e);
+                        return true; // Allow to continue on network errors
+                    }
+                },
+
                 async init() {
+                    // Check authentication first
+                    const authOk = await this.checkAuth();
+                    if (!authOk) {
+                        // Focus the auth input after modal is shown
+                        this.$nextTick(() => {
+                            if (this.$refs.authInput) {
+                                this.$refs.authInput.focus();
+                            }
+                        });
+                        return;
+                    }
+
                     await Promise.all([
                         this.loadVideos(),
                         this.loadCategories()
@@ -1158,7 +1299,7 @@
 
                 async loadVideos() {
                     try {
-                        const res = await fetch('/api/videos');
+                        const res = await this.apiFetch('/api/videos');
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
@@ -1180,7 +1321,7 @@
                     // Fetch progress for each
                     await Promise.all(activeVideos.map(async (video) => {
                         try {
-                            const res = await fetch(`/api/videos/${video.id}/progress`);
+                            const res = await this.apiFetch(`/api/videos/${video.id}/progress`);
                             if (res.ok) {
                                 const data = await res.json();
                                 this.progressData[video.id] = data;
@@ -1343,7 +1484,7 @@
 
                 async loadActiveJobs() {
                     try {
-                        const res = await fetch('/api/workers/active-jobs');
+                        const res = await this.apiFetch('/api/workers/active-jobs');
                         if (res.ok) {
                             this.activeJobs = await res.json();
                         }
@@ -1368,7 +1509,7 @@
 
                 async loadCategories() {
                     try {
-                        const res = await fetch('/api/categories');
+                        const res = await this.apiFetch('/api/categories');
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
@@ -1398,6 +1539,9 @@
                     try {
                         const xhr = new XMLHttpRequest();
                         xhr.open('POST', '/api/videos', true);
+                        if (this.adminSecret) {
+                            xhr.setRequestHeader('X-Admin-Secret', this.adminSecret);
+                        }
 
                         xhr.upload.onprogress = (e) => {
                             if (e.lengthComputable) {
@@ -1414,6 +1558,13 @@
                                 this.uploadDescription = '';
                                 this.uploadCategory = '';
                                 this.loadVideos();
+                            } else if (xhr.status === 401 || xhr.status === 403) {
+                                this.authRequired = true;
+                                this.showAuthModal = true;
+                                this.adminSecret = '';
+                                sessionStorage.removeItem('adminSecret');
+                                this.uploadMessage = 'Authentication required';
+                                this.uploadError = true;
                             } else {
                                 this.uploadMessage = 'Upload failed: ' + xhr.responseText;
                                 this.uploadError = true;
@@ -1442,7 +1593,7 @@
                     if (!this.newCategoryName) return;
 
                     try {
-                        const res = await fetch('/api/categories', {
+                        const res = await this.apiFetch('/api/categories', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -1468,7 +1619,7 @@
                     if (!confirm('Delete this category? Videos in it will become uncategorized.')) return;
 
                     try {
-                        await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+                        await this.apiFetch(`/api/categories/${id}`, { method: 'DELETE' });
                         await this.loadCategories();
                         await this.loadVideos();
                     } catch (e) {
@@ -1480,7 +1631,7 @@
                     if (!confirm('Delete this video? This cannot be undone.')) return;
 
                     try {
-                        await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+                        await this.apiFetch(`/api/videos/${id}`, { method: 'DELETE' });
                         await this.loadVideos();
                     } catch (e) {
                         alert('Failed to delete video: ' + e.message);
@@ -1489,7 +1640,7 @@
 
                 async retryVideo(id) {
                     try {
-                        await fetch(`/api/videos/${id}/retry`, { method: 'POST' });
+                        await this.apiFetch(`/api/videos/${id}/retry`, { method: 'POST' });
                         await this.loadVideos();
                     } catch (e) {
                         alert('Failed to retry: ' + e.message);
@@ -1521,6 +1672,9 @@
                     try {
                         const xhr = new XMLHttpRequest();
                         xhr.open('POST', `/api/videos/${this.reuploadVideoId}/re-upload`, true);
+                        if (this.adminSecret) {
+                            xhr.setRequestHeader('X-Admin-Secret', this.adminSecret);
+                        }
 
                         xhr.upload.onprogress = (e) => {
                             if (e.lengthComputable) {
@@ -1538,6 +1692,13 @@
                                 setTimeout(() => {
                                     this.reuploadModal = false;
                                 }, 1500);
+                            } else if (xhr.status === 401 || xhr.status === 403) {
+                                this.authRequired = true;
+                                this.showAuthModal = true;
+                                this.adminSecret = '';
+                                sessionStorage.removeItem('adminSecret');
+                                this.reuploadMessage = 'Authentication required';
+                                this.reuploadError = true;
                             } else {
                                 let errorMsg = 'Re-upload failed';
                                 try {
@@ -1579,7 +1740,7 @@
 
                     // Fetch available qualities
                     try {
-                        const res = await fetch(`/api/videos/${video.id}/qualities`);
+                        const res = await this.apiFetch(`/api/videos/${video.id}/qualities`);
                         if (res.ok) {
                             const data = await res.json();
                             this.retranscodeAvailable = data.available_qualities || [];
@@ -1601,7 +1762,7 @@
                     if (!confirm(`Re-transcode all qualities for "${video.title}"? This will delete all existing transcoded files and re-process the video.`)) return;
 
                     try {
-                        const res = await fetch(`/api/videos/${video.id}/retranscode`, {
+                        const res = await this.apiFetch(`/api/videos/${video.id}/retranscode`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ qualities: ['all'] })
@@ -1630,7 +1791,7 @@
                     this.retranscodeError = false;
 
                     try {
-                        const res = await fetch(`/api/videos/${this.retranscodeVideoId}/retranscode`, {
+                        const res = await this.apiFetch(`/api/videos/${this.retranscodeVideoId}/retranscode`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ qualities: this.retranscodeSelected })
@@ -1703,7 +1864,7 @@
                         formData.append('category_id', this.editCategory);
                         formData.append('published_at', this.editPublishedAt);
 
-                        const res = await fetch(`/api/videos/${this.editVideoId}`, {
+                        const res = await this.apiFetch(`/api/videos/${this.editVideoId}`, {
                             method: 'PUT',
                             body: formData
                         });
@@ -1741,7 +1902,7 @@
 
                 async loadAnalyticsOverview() {
                     try {
-                        const res = await fetch('/api/analytics/overview');
+                        const res = await this.apiFetch('/api/analytics/overview');
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
@@ -1754,7 +1915,7 @@
 
                 async loadVideoAnalytics() {
                     try {
-                        const res = await fetch(`/api/analytics/videos?period=${this.analyticsPeriod}&limit=20&sort_by=views`);
+                        const res = await this.apiFetch(`/api/analytics/videos?period=${this.analyticsPeriod}&limit=20&sort_by=views`);
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
@@ -1789,8 +1950,8 @@
                 async loadWorkers() {
                     try {
                         const [workersRes, jobsRes] = await Promise.all([
-                            fetch('/api/workers'),
-                            fetch('/api/workers/active-jobs')
+                            this.apiFetch('/api/workers'),
+                            this.apiFetch('/api/workers/active-jobs')
                         ]);
 
                         if (workersRes.ok) {
@@ -1827,7 +1988,7 @@
                     if (!confirm('Disable this worker? It will not be able to claim new jobs.')) return;
 
                     try {
-                        const res = await fetch(`/api/workers/${workerId}/disable`, { method: 'PUT' });
+                        const res = await this.apiFetch(`/api/workers/${workerId}/disable`, { method: 'PUT' });
                         if (res.ok) {
                             await this.loadWorkers();
                         } else {
@@ -1841,7 +2002,7 @@
 
                 async enableWorker(workerId) {
                     try {
-                        const res = await fetch(`/api/workers/${workerId}/enable`, { method: 'PUT' });
+                        const res = await this.apiFetch(`/api/workers/${workerId}/enable`, { method: 'PUT' });
                         if (res.ok) {
                             await this.loadWorkers();
                         } else {
@@ -1858,7 +2019,7 @@
                     if (!confirm(`Delete worker "${name}"? This will revoke its API key and remove it from the system.`)) return;
 
                     try {
-                        const res = await fetch(`/api/workers/${workerId}`, { method: 'DELETE' });
+                        const res = await this.apiFetch(`/api/workers/${workerId}`, { method: 'DELETE' });
                         if (res.ok) {
                             await this.loadWorkers();
                         } else {
@@ -1929,7 +2090,7 @@
                     this.bulkOpError = false;
 
                     try {
-                        const res = await fetch('/api/videos/bulk/delete', {
+                        const res = await this.apiFetch('/api/videos/bulk/delete', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -1982,7 +2143,7 @@
                     this.bulkOpError = false;
 
                     try {
-                        const res = await fetch('/api/videos/bulk/update', {
+                        const res = await this.apiFetch('/api/videos/bulk/update', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(payload)
@@ -2013,7 +2174,7 @@
                     this.bulkOpError = false;
 
                     try {
-                        const res = await fetch('/api/videos/bulk/retranscode', {
+                        const res = await this.apiFetch('/api/videos/bulk/retranscode', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -2045,7 +2206,7 @@
                     if (!confirm(`Restore ${this.selectedVideos.length} video(s) from archive?`)) return;
 
                     try {
-                        const res = await fetch('/api/videos/bulk/restore', {
+                        const res = await this.apiFetch('/api/videos/bulk/restore', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ video_ids: this.selectedVideos })
@@ -2066,7 +2227,7 @@
 
                 async exportVideos() {
                     try {
-                        const res = await fetch('/api/videos/export');
+                        const res = await this.apiFetch('/api/videos/export');
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
