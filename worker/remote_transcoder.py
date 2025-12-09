@@ -121,7 +121,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     job_id = job["job_id"]
     video_id = job["video_id"]
     video_slug = job["video_slug"]
-    source_filename = job.get("source_filename", f"{video_id}.mp4")
+    # source_filename may be None if file not found; default to video_id.mp4
+    source_filename = job.get("source_filename") or f"{video_id}.mp4"
 
     print(f"Processing video: {video_slug} (job={job_id})")
 
