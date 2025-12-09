@@ -2,11 +2,12 @@
 
 ## Overview
 
-VLog uses SQLite for data storage. The database file (`vlog.db`) is kept local for performance, while video files are stored on NAS.
+VLog uses PostgreSQL as its database backend. PostgreSQL provides concurrent read/write support, making it suitable for multi-instance deployments.
 
-**Location:** `./vlog.db` (configurable via `VLOG_DATABASE_PATH`)
+**Connection URL:** Configurable via `VLOG_DATABASE_URL`
+**Default:** `postgresql://vlog:vlog_password@localhost/vlog`
 
-**ORM:** SQLAlchemy with async support via `databases` and `aiosqlite`
+**ORM:** SQLAlchemy with async support via `databases` and `asyncpg`
 
 ---
 
@@ -22,7 +23,7 @@ Organizes videos into categories.
 | name | VARCHAR(100) | NOT NULL | Display name |
 | slug | VARCHAR(100) | UNIQUE, NOT NULL | URL-safe identifier |
 | description | TEXT | DEFAULT '' | Category description |
-| created_at | DATETIME | DEFAULT now | Creation timestamp |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Creation timestamp |
 
 ### videos
 
@@ -40,9 +41,9 @@ Core video metadata and processing status.
 | source_height | INTEGER | DEFAULT 0 | Original height |
 | status | VARCHAR(20) | DEFAULT 'pending' | Processing status |
 | error_message | TEXT | NULLABLE | Error details if failed |
-| created_at | DATETIME | DEFAULT now | Upload timestamp |
-| published_at | DATETIME | NULLABLE | Publication timestamp |
-| deleted_at | DATETIME | NULLABLE | Soft-delete timestamp (NULL = not deleted) |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Upload timestamp |
+| published_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Publication timestamp |
+| deleted_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Soft-delete timestamp (NULL = not deleted) |
 
 **Status Values:**
 - `pending` - Uploaded, waiting for processing
@@ -85,8 +86,8 @@ Cookie-based unique viewer tracking (privacy-friendly).
 |--------|------|-------------|-------------|
 | id | INTEGER | PRIMARY KEY | Auto-increment ID |
 | session_id | VARCHAR(64) | UNIQUE, NOT NULL | Browser session ID |
-| first_seen | DATETIME | DEFAULT now | First visit |
-| last_seen | DATETIME | DEFAULT now | Last visit |
+| first_seen | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | First visit |
+| last_seen | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Last visit |
 
 ### playback_sessions
 
@@ -97,9 +98,9 @@ Individual video playback tracking for analytics.
 | id | INTEGER | PRIMARY KEY | Auto-increment ID |
 | video_id | INTEGER | FK(videos.id) CASCADE | Video watched |
 | viewer_id | INTEGER | FK(viewers.id) SET NULL | Optional viewer link |
-| session_token | VARCHAR(64) | NOT NULL | Unique session token |
-| started_at | DATETIME | DEFAULT now | Playback start |
-| ended_at | DATETIME | NULLABLE | Playback end |
+| session_token | VARCHAR(64) | UNIQUE, NOT NULL | Unique session token |
+| started_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Playback start |
+| ended_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Playback end |
 | duration_watched | FLOAT | DEFAULT 0 | Seconds watched |
 | max_position | FLOAT | DEFAULT 0 | Furthest position |
 | quality_used | VARCHAR(10) | NULLABLE | Primary quality used |
@@ -107,26 +108,34 @@ Individual video playback tracking for analytics.
 
 **Indexes:**
 - `ix_playback_sessions_video_id` - Per-video analytics
+- `ix_playback_sessions_viewer_id` - Viewer session history
 - `ix_playback_sessions_started_at` - Time-based queries
-- `ix_playback_sessions_session_token` - Session lookups
 
 ### transcoding_jobs
 
-Tracks transcoding jobs with checkpoint-based recovery.
+Tracks transcoding jobs with checkpoint-based recovery and distributed claiming.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | INTEGER | PRIMARY KEY | Auto-increment ID |
 | video_id | INTEGER | FK(videos.id) CASCADE, UNIQUE | One job per video |
-| worker_id | VARCHAR(36) | NULLABLE | Processing worker UUID |
+| worker_id | VARCHAR(36) | NULLABLE | Currently assigned worker UUID |
 | current_step | VARCHAR(50) | NULLABLE | Current processing step |
 | progress_percent | INTEGER | DEFAULT 0 | Overall progress (0-100) |
-| started_at | DATETIME | NULLABLE | Job start time |
-| last_checkpoint | DATETIME | NULLABLE | Last checkpoint update |
-| completed_at | DATETIME | NULLABLE | Job completion time |
+| started_at | TIMESTAMP | NULLABLE | Job start time |
+| last_checkpoint | TIMESTAMP | NULLABLE | Last checkpoint update |
+| completed_at | TIMESTAMP | NULLABLE | Job completion time |
+| claimed_at | TIMESTAMP | NULLABLE | When job was claimed |
+| claim_expires_at | TIMESTAMP | NULLABLE | Job claim expiration |
 | attempt_number | INTEGER | DEFAULT 1 | Current attempt (1-N) |
 | max_attempts | INTEGER | DEFAULT 3 | Maximum retries |
 | last_error | TEXT | NULLABLE | Last error message |
+| processed_by_worker_id | VARCHAR(36) | NULLABLE | Worker that completed job (audit) |
+| processed_by_worker_name | VARCHAR(100) | NULLABLE | Worker name (audit) |
+
+**Indexes:**
+- `ix_transcoding_jobs_video_id` - Video lookups
+- `ix_transcoding_jobs_claim_expires` - Stale job detection
 
 **Processing Steps:**
 - `probe` - Extracting video metadata
@@ -148,9 +157,12 @@ Per-quality transcoding progress for detailed tracking.
 | segments_total | INTEGER | NULLABLE | Total segment count |
 | segments_completed | INTEGER | DEFAULT 0 | Completed segments |
 | progress_percent | INTEGER | DEFAULT 0 | Progress (0-100) |
-| started_at | DATETIME | NULLABLE | Quality start time |
-| completed_at | DATETIME | NULLABLE | Quality completion time |
+| started_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Quality start time |
+| completed_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Quality completion time |
 | error_message | TEXT | NULLABLE | Error if failed |
+
+**Indexes:**
+- `ix_quality_progress_job_id` - Job progress lookup
 
 **Unique Constraint:** `uq_job_quality` (job_id, quality)
 
@@ -171,8 +183,8 @@ Whisper transcription tracking and output.
 | video_id | INTEGER | FK(videos.id) CASCADE, UNIQUE | One per video |
 | status | VARCHAR(20) | NOT NULL, DEFAULT 'pending' | Status |
 | language | VARCHAR(10) | DEFAULT 'en' | Detected/specified language |
-| started_at | DATETIME | NULLABLE | Transcription start |
-| completed_at | DATETIME | NULLABLE | Transcription end |
+| started_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Transcription start |
+| completed_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Transcription end |
 | duration_seconds | FLOAT | NULLABLE | Processing time |
 | transcript_text | TEXT | NULLABLE | Full transcript |
 | vtt_path | VARCHAR(255) | NULLABLE | Path to WebVTT file |
@@ -193,23 +205,24 @@ Registered remote transcoding workers.
 |--------|------|-------------|-------------|
 | id | INTEGER | PRIMARY KEY | Auto-increment ID |
 | worker_id | VARCHAR(36) | UNIQUE, NOT NULL | UUID identifier |
-| worker_name | VARCHAR(100) | NOT NULL | Display name |
+| worker_name | VARCHAR(100) | NULLABLE | Display name |
 | worker_type | VARCHAR(20) | DEFAULT 'remote' | Worker type (local/remote) |
-| status | VARCHAR(20) | DEFAULT 'idle' | Current status |
-| registered_at | DATETIME | DEFAULT now | Registration time |
-| last_heartbeat | DATETIME | NULLABLE | Last heartbeat received |
-| current_job_id | INTEGER | FK(transcoding_jobs.id) | Currently assigned job |
+| status | VARCHAR(20) | DEFAULT 'active' | Current status |
+| registered_at | TIMESTAMP | NOT NULL | Registration time |
+| last_heartbeat | TIMESTAMP | NULLABLE | Last heartbeat received |
+| current_job_id | INTEGER | FK(transcoding_jobs.id) SET NULL | Currently assigned job |
 | capabilities | TEXT | NULLABLE | JSON capabilities metadata |
+| metadata | TEXT | NULLABLE | JSON metadata (K8s pod info, etc.) |
 
 **Status Values:**
-- `idle` - Ready for work
-- `active` - Currently processing
+- `active` - Worker is online and available
 - `offline` - No recent heartbeat
-- `revoked` - API key revoked
+- `disabled` - Worker disabled by admin
 
 **Indexes:**
 - `ix_workers_worker_id` - Worker UUID lookup
 - `ix_workers_status` - Status filtering
+- `ix_workers_last_heartbeat` - Heartbeat monitoring
 
 ### worker_api_keys
 
@@ -219,16 +232,23 @@ API keys for worker authentication (SHA-256 hashed).
 |--------|------|-------------|-------------|
 | id | INTEGER | PRIMARY KEY | Auto-increment ID |
 | worker_id | INTEGER | FK(workers.id) CASCADE | Parent worker |
-| key_prefix | VARCHAR(8) | NOT NULL, INDEX | First 8 chars for lookup |
 | key_hash | VARCHAR(64) | NOT NULL | SHA-256 hash of full key |
-| created_at | DATETIME | DEFAULT now | Key creation time |
-| revoked_at | DATETIME | NULLABLE | Revocation time (NULL = active) |
+| key_prefix | VARCHAR(8) | NOT NULL, INDEX | First 8 chars for lookup |
+| created_at | TIMESTAMP | NOT NULL | Key creation time |
+| expires_at | TIMESTAMP | NULLABLE | Optional expiration time |
+| revoked_at | TIMESTAMP | NULLABLE | Revocation time (NULL = active) |
+| last_used_at | TIMESTAMP | NULLABLE | Last successful authentication |
+
+**Indexes:**
+- `ix_worker_api_keys_key_prefix` - Efficient key lookup
+- `ix_worker_api_keys_worker_id` - Worker key retrieval
 
 **Security Design:**
 - Full API key is only shown once at registration
 - Key is stored as SHA-256 hash
 - Prefix enables efficient lookup without full scan
 - Revoked keys remain in table for audit trail
+- `last_used_at` tracks recent activity
 
 ---
 
@@ -315,37 +335,81 @@ FROM playback_sessions;
 ```sql
 SELECT * FROM transcoding_jobs
 WHERE completed_at IS NULL
-  AND last_checkpoint < datetime('now', '-30 minutes');
+  AND last_checkpoint < NOW() - INTERVAL '30 minutes';
 ```
 
 ---
 
 ## Database Management
 
-### Initialize Tables
+### Initialize Database
 
 ```bash
+# Create PostgreSQL database and user (first time only)
+sudo -u postgres psql << EOF
+CREATE USER vlog WITH PASSWORD 'vlog_password';
+CREATE DATABASE vlog OWNER vlog;
+GRANT ALL PRIVILEGES ON DATABASE vlog TO vlog;
+EOF
+
+# Create tables
 python api/database.py
+```
+
+### Migrations
+
+VLog uses Alembic for schema migrations:
+
+```bash
+# Check current migration version
+alembic current
+
+# Apply all pending migrations
+alembic upgrade head
+
+# Rollback one migration
+alembic downgrade -1
+
+# Create a new migration (after modifying models)
+alembic revision --autogenerate -m "description"
 ```
 
 ### Backup
 
 ```bash
-sqlite3 vlog.db ".backup 'backup.db'"
+# Backup entire database
+pg_dump -U vlog vlog > backup_$(date +%Y%m%d).sql
+
+# Backup with compression
+pg_dump -U vlog -Fc vlog > backup_$(date +%Y%m%d).dump
+
+# Restore from backup
+pg_restore -U vlog -d vlog backup.dump
 ```
 
 ### Query Interactively
 
 ```bash
-sqlite3 vlog.db
-sqlite> .tables
-sqlite> .schema videos
-sqlite> SELECT * FROM videos LIMIT 5;
+# Connect to database
+psql -U vlog -d vlog
+
+# Common commands
+\dt          -- List tables
+\d videos    -- Describe table schema
+\di          -- List indexes
+
+# Example queries
+SELECT * FROM videos LIMIT 5;
+SELECT COUNT(*) FROM playback_sessions;
 ```
 
 ### Reset Database
 
 ```bash
-rm vlog.db
+# Drop and recreate database
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS vlog;"
+sudo -u postgres psql -c "CREATE DATABASE vlog OWNER vlog;"
+
+# Recreate tables
 python api/database.py
 ```
