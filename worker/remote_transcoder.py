@@ -188,12 +188,6 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
         successful_qualities: List[dict] = []
         failed_qualities: List[str] = []
-        # Count only qualities that need processing (for progress calculation)
-        qualities_to_process = len([q for q in qualities if q["name"] not in existing_qualities])
-        if "original" not in existing_qualities:
-            qualities_to_process += 1
-        total_qualities = max(qualities_to_process, 1)  # At least 1 to avoid division by zero
-
         # Initialize quality progress tracking
         # Mark existing qualities as "skipped"
         original_status = "skipped" if "original" in existing_qualities else "pending"
