@@ -99,10 +99,11 @@ HWACCEL_VAAPI_DEVICE = os.getenv("VLOG_HWACCEL_VAAPI_DEVICE", "")
 
 # Parallel Quality Encoding Settings
 # Number of qualities to encode simultaneously (1 = sequential, 3 = recommended for GPUs)
-# When PARALLEL_QUALITIES_AUTO is true, this is overridden by GPU detection
+# Used when PARALLEL_QUALITIES_AUTO is false, or when no GPU is detected
 PARALLEL_QUALITIES = int(os.getenv("VLOG_PARALLEL_QUALITIES", "1"))
 # Auto-detect optimal parallelism based on GPU capabilities
-# When true and a GPU is detected, sets parallelism to min(3, gpu.max_sessions - 1)
+# When true AND a GPU is detected, overrides PARALLEL_QUALITIES with min(3, gpu.max_sessions - 1)
+# When true but no GPU is detected, falls back to PARALLEL_QUALITIES value
 PARALLEL_QUALITIES_AUTO = os.getenv("VLOG_PARALLEL_QUALITIES_AUTO", "true").lower() == "true"
 
 # Worker settings (event-driven processing for local worker)
