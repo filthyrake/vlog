@@ -670,6 +670,71 @@ DELETE /api/workers/{worker_id}
 
 Removes worker registration (does not revoke API key).
 
+### Server-Sent Events (SSE)
+
+Real-time updates for transcoding progress and worker status.
+
+#### Progress Updates
+```
+GET /api/events/progress?video_ids=1,2,3
+```
+
+Streams real-time transcoding progress updates.
+
+Query parameters:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| video_ids | string | Comma-separated video IDs to monitor |
+
+SSE Event Types:
+- `progress` - Transcoding progress update
+- `heartbeat` - Keep-alive (every 30s)
+
+Event data format:
+```json
+{
+  "type": "progress",
+  "video_id": 1,
+  "job_id": 16,
+  "current_step": "transcode",
+  "progress_percent": 45,
+  "qualities": [
+    {"name": "1080p", "status": "completed", "progress": 100},
+    {"name": "720p", "status": "in_progress", "progress": 60}
+  ],
+  "status": "processing",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+#### Worker Status Updates
+```
+GET /api/events/workers
+```
+
+Streams real-time worker status changes.
+
+SSE Event Types:
+- `worker_status` - Worker status change
+- `heartbeat` - Keep-alive (every 30s)
+
+Event data format:
+```json
+{
+  "type": "worker_status",
+  "worker_id": "uuid-string",
+  "worker_name": "k8s-worker-1",
+  "status": "active",
+  "current_job_id": 16,
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Notes:**
+- SSE uses Redis Pub/Sub when available for instant updates
+- Falls back to database polling if Redis is unavailable
+- Client should handle reconnection via `EventSource` API
+
 ---
 
 ## Rate Limiting
