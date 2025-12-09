@@ -48,13 +48,40 @@ sudo chown $USER:$USER /mnt/nas/vlog-storage
 export VLOG_STORAGE_PATH=$HOME/vlog-storage
 ```
 
-### 3. Initialize Database
+### 3. Install and Configure PostgreSQL
+
+```bash
+# Install PostgreSQL
+sudo dnf install postgresql-server postgresql  # RHEL/Rocky
+# OR
+sudo apt install postgresql postgresql-contrib  # Debian/Ubuntu
+
+# Initialize and start PostgreSQL
+sudo postgresql-setup --initdb
+sudo systemctl enable --now postgresql
+
+# Create database and user
+sudo -u postgres psql << EOF
+CREATE USER vlog WITH PASSWORD 'vlog_password';
+CREATE DATABASE vlog OWNER vlog;
+GRANT ALL PRIVILEGES ON DATABASE vlog TO vlog;
+EOF
+
+# Enable local password authentication (edit pg_hba.conf)
+# Change 'ident' to 'md5' for local connections:
+# local   all   all   md5
+# host    all   all   127.0.0.1/32   md5
+sudo vim /var/lib/pgsql/data/pg_hba.conf
+sudo systemctl restart postgresql
+```
+
+### 4. Initialize Database Tables
 
 ```bash
 python api/database.py
 ```
 
-### 4. Start Development Servers
+### 5. Start Development Servers
 
 ```bash
 # Start all services
@@ -88,6 +115,40 @@ username=your_nas_user
 password=your_nas_password
 EOF
 sudo chmod 600 /etc/samba/credentials
+```
+
+#### PostgreSQL Setup
+
+```bash
+# Install and configure PostgreSQL (see Development Setup for details)
+sudo dnf install postgresql-server postgresql
+sudo postgresql-setup --initdb
+sudo systemctl enable --now postgresql
+
+# Create database
+sudo -u postgres createuser vlog -P  # Enter password when prompted
+sudo -u postgres createdb -O vlog vlog
+```
+
+#### Redis Setup (Optional)
+
+Enable Redis for instant job dispatch and real-time progress updates:
+
+```bash
+# Install Redis
+sudo dnf install redis  # RHEL/Rocky
+# OR
+sudo apt install redis-server  # Debian/Ubuntu
+
+# Enable and start
+sudo systemctl enable --now redis
+
+# Verify
+redis-cli ping  # Should return PONG
+
+# Configure VLog to use Redis (add to environment or systemd service files)
+# VLOG_REDIS_URL=redis://localhost:6379
+# VLOG_JOB_QUEUE_MODE=hybrid
 ```
 
 ### 2. Systemd Service Files
@@ -648,11 +709,11 @@ vlog worker status
 kubectl logs -n vlog -l app=vlog-worker --tail=100
 
 # Check for pending jobs
-sqlite3 ./vlog.db "SELECT id, video_id, current_step, worker_id FROM transcoding_jobs WHERE completed_at IS NULL"
+psql -U vlog -d vlog -c "SELECT id, video_id, current_step, worker_id FROM transcoding_jobs WHERE completed_at IS NULL"
 
 # Reset stuck jobs
-sqlite3 ./vlog.db "UPDATE transcoding_jobs SET worker_id = NULL WHERE completed_at IS NULL"
-sqlite3 ./vlog.db "UPDATE videos SET status = 'pending' WHERE status = 'processing'"
+psql -U vlog -d vlog -c "UPDATE transcoding_jobs SET worker_id = NULL WHERE completed_at IS NULL"
+psql -U vlog -d vlog -c "UPDATE videos SET status = 'pending' WHERE status = 'processing'"
 ```
 
 ---
@@ -705,11 +766,14 @@ MaxRetentionSec=30days
 ### Database
 
 ```bash
-# Backup (adjust paths as needed)
-cp ./vlog.db /backup/vlog-$(date +%Y%m%d).db
+# Backup database
+pg_dump -U vlog vlog > /backup/vlog-$(date +%Y%m%d).sql
 
-# Or with sqlite3
-sqlite3 ./vlog.db ".backup '/backup/vlog.db'"
+# Backup with compression
+pg_dump -U vlog -Fc vlog > /backup/vlog-$(date +%Y%m%d).dump
+
+# Restore from backup
+pg_restore -U vlog -d vlog /backup/vlog.dump
 ```
 
 ### Video Files
@@ -745,13 +809,19 @@ sudo journalctl -u vlog-worker -f
 # - NAS connection issues
 ```
 
-### Database Locked
+### Database Connection Issues
 
-SQLite can lock with concurrent access:
+PostgreSQL connection problems:
 
 ```bash
-# Check for processes using the database
-lsof ./vlog.db
+# Check PostgreSQL is running
+sudo systemctl status postgresql
+
+# Check connections
+psql -U vlog -d vlog -c "SELECT * FROM pg_stat_activity WHERE datname = 'vlog';"
+
+# Restart PostgreSQL if needed
+sudo systemctl restart postgresql
 
 # Restart services
 sudo systemctl restart vlog.target

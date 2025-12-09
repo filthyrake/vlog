@@ -25,21 +25,21 @@ VLog is a self-hosted video platform built with Python/FastAPI for the backend a
                               |                             |
                               +-------------+---------------+
                                             |
-                              +-------------v--------------+
-                              |      SQLite Database       |
-                              |      (vlog.db - local)     |
-                              +-------------+--------------+
-                                            |
-     +----------------+---------------------+--------------------+----------------+
-     |                |                     |                    |                |
-+----v----+    +------v------+    +--------v--------+    +------v------+  +------v------+
-| Worker  |    | Local       |    | Transcription   |    | NAS Storage |  | Kubernetes  |
-| API     |    | Transcoder  |    | Worker          |    | /mnt/nas/   |  | Workers     |
-| :9002   |    | (inotify)   |    | (whisper)       |    | vlog-storage|  | (remote)    |
-+---------+    +-------------+    +-----------------+    +-------------+  +-------------+
-     ^                                                                          |
-     |                          HTTP: claim jobs, download/upload               |
-     +--------------------------------------------------------------------------+
+                    +-----------------------+-----------------------+
+                    |                       |                       |
+        +-----------v-----------+   +-------v-------+   +-----------v-----------+
+        |  PostgreSQL Database  |   | Redis (opt.)  |   |     Worker API        |
+        |   (vlog database)     |   | Job Queue &   |   |     FastAPI :9002     |
+        +-----------+-----------+   |  Pub/Sub      |   +-----------+-----------+
+                    |               +-------+-------+               |
+                    |                       |                       |
+     +--------------+--+--------------------+-------+---------------+
+     |                 |                    |       |               |
++----v----+    +-------v-----+    +--------v--+  +--v----------+  +-v------------+
+| Local   |    | Transcription|   | NAS Storage|  | Kubernetes |  | Real-time    |
+|Transcoder|   | Worker       |   | /mnt/nas/  |  | Workers    |  | SSE Updates  |
+|(inotify) |   | (whisper)    |   | vlog-storage| | (remote)   |  | (Admin UI)   |
++----------+   +--------------+   +------------+  +------------+  +--------------+
 ```
 
 ## Components
@@ -74,6 +74,11 @@ Internal-only API for video management:
 - Failed transcoding retry
 - Manual transcription triggers
 - Analytics dashboard data
+- **Real-time SSE endpoints** for progress and worker status updates
+
+**SSE Endpoints:**
+- `GET /api/events/progress?video_ids=1,2,3` - Real-time transcoding progress
+- `GET /api/events/workers` - Real-time worker status changes
 
 **Security Note:** This API should NOT be exposed publicly.
 
@@ -106,10 +111,13 @@ Central coordinator for distributed transcoding:
 | `common.py` | Security middleware, health checks, rate limiting helpers |
 | `analytics_cache.py` | In-memory caching for analytics queries |
 | `audit.py` | Audit logging for security-relevant operations |
-| `db_retry.py` | Database retry logic for SQLite locking |
+| `db_retry.py` | Database retry logic for transient errors (deadlocks, connection issues) |
 | `enums.py` | Enum definitions (VideoStatus, TranscriptionStatus) |
 | `errors.py` | Error message sanitization utilities |
 | `exception_utils.py` | Exception handling decorators |
+| `redis_client.py` | Redis connection pool with circuit breaker pattern |
+| `job_queue.py` | Redis Streams job queue abstraction with priority levels |
+| `pubsub.py` | Redis Pub/Sub for real-time progress updates |
 
 ### 4. Local Transcoding Worker
 
@@ -212,23 +220,34 @@ Background process for automatic captioning:
 
 ### 7. Database
 
-**Location:** `vlog.db` (local SQLite)
+**Database:** PostgreSQL (default)
 
-**Why Local?** SQLite performance degrades significantly over network filesystems. The database is kept local while video files are stored on NAS.
+PostgreSQL provides concurrent read/write support, making it suitable for multi-instance deployments. The database URL is configurable via `VLOG_DATABASE_URL`.
 
 **Tables:**
 - `categories` - Video organization
-- `videos` - Video metadata and status
+- `videos` - Video metadata and status (with soft-delete via `deleted_at`)
 - `video_qualities` - Available HLS variants per video
 - `viewers` - Cookie-based viewer tracking
 - `playback_sessions` - Watch analytics
-- `transcoding_jobs` - Job tracking with checkpoints
+- `transcoding_jobs` - Job tracking with checkpoints and job claiming
 - `quality_progress` - Per-quality transcoding progress
 - `transcriptions` - Whisper transcription records
 - `workers` - Registered remote workers with status tracking
 - `worker_api_keys` - API key authentication (SHA-256 hashed)
 
-### 8. Storage (NAS)
+### 8. Redis (Optional)
+
+**Purpose:** Real-time job dispatch and progress updates
+
+**Features:**
+- **Redis Streams:** Instant job dispatch with priority queues (high/normal/low)
+- **Pub/Sub:** Real-time transcoding progress and worker status for SSE
+- **Circuit Breaker:** Automatic fallback to database polling if Redis unavailable
+
+**Configuration:** Set `VLOG_REDIS_URL` to enable Redis features. See `CONFIGURATION.md` for all Redis settings.
+
+### 9. Storage (NAS)
 
 **Mount Point:** `/mnt/nas/vlog-storage`
 
@@ -301,8 +320,10 @@ Video ready → Transcription worker polls
 |-------|------------|
 | Backend Framework | FastAPI |
 | ASGI Server | Uvicorn |
-| Database | SQLite + SQLAlchemy |
-| Async DB Access | aiosqlite, databases |
+| Database | PostgreSQL + SQLAlchemy |
+| Async DB Access | asyncpg, databases |
+| Job Queue (optional) | Redis Streams |
+| Real-time Updates | Redis Pub/Sub + SSE |
 | Rate Limiting | slowapi (memory or Redis) |
 | Video Processing | FFmpeg 7.1.2 (NVENC, VAAPI, QSV) |
 | Transcription | faster-whisper |
@@ -335,16 +356,16 @@ All configuration is centralized in `config.py`. Every setting supports environm
 
 ## Scalability Considerations
 
-### Current Design (Single Server)
+### Current Design
 
-- SQLite database (single-writer limitation)
-- Single transcoding worker
-- Single transcription worker
-- NAS for video storage (horizontal storage scaling)
+- **PostgreSQL database** - Full concurrent read/write support
+- **Optional Redis** - Job queue with priority and real-time SSE updates
+- **Distributed transcoding** - Multiple GPU workers via Kubernetes
+- **NAS for video storage** - Horizontal storage scaling
 
-### Future Scaling Options
+### Scaling Options
 
-1. **Database** - Migrate to PostgreSQL for concurrent writes
-2. **Workers** - Add message queue (Redis/RabbitMQ) for distributed processing
+1. **API Instances** - Multiple API instances behind load balancer (requires Redis for shared rate limiting)
+2. **Transcoding Workers** - Add more GPU workers in Kubernetes (auto-scaling with HPA)
 3. **Storage** - Object storage (S3-compatible) with CDN
-4. **API** - Horizontal scaling behind load balancer
+4. **Redis** - Enable Redis for instant job dispatch and real-time progress updates

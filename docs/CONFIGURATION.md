@@ -14,12 +14,22 @@ All settings support environment variable configuration. Set these in your shell
 | `VLOG_VIDEOS_SUBDIR` | `videos` | Subdirectory for transcoded HLS output |
 | `VLOG_UPLOADS_SUBDIR` | `uploads` | Subdirectory for temporary uploads |
 | `VLOG_ARCHIVE_SUBDIR` | `archive` | Subdirectory for soft-deleted videos |
-| `VLOG_DATABASE_PATH` | `./vlog.db` | SQLite database file path |
 
 **Notes:**
 - Video files are stored on NAS for capacity
-- Database is kept local because SQLite performs poorly over network filesystems
 - Directories are created automatically on startup (except in test mode)
+
+### Database Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_DATABASE_URL` | `postgresql://vlog:vlog_password@localhost/vlog` | PostgreSQL connection URL |
+| `VLOG_DATABASE_PATH` | `./vlog.db` | Legacy SQLite path (for migration scripts only) |
+
+**Notes:**
+- PostgreSQL is the default and recommended database
+- For SQLite (not recommended for production): `VLOG_DATABASE_URL=sqlite:///./vlog.db`
+- Connection URL format: `postgresql://user:password@host:port/database`
 
 ### Server Ports
 
@@ -241,6 +251,88 @@ export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
 
 The API will log a warning at startup if rate limiting is enabled with in-memory storage.
 
+### Redis Configuration
+
+Optional Redis integration for job queue and real-time updates.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_REDIS_URL` | (empty) | Redis connection URL (empty = disabled) |
+| `VLOG_REDIS_POOL_SIZE` | `10` | Connection pool size |
+| `VLOG_REDIS_SOCKET_TIMEOUT` | `5.0` | Socket timeout in seconds |
+| `VLOG_REDIS_SOCKET_CONNECT_TIMEOUT` | `5.0` | Connection timeout in seconds |
+| `VLOG_REDIS_HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
+
+**Job Queue Mode:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_JOB_QUEUE_MODE` | `database` | Queue mode: database, redis, or hybrid |
+
+- `database` - Poll database for jobs (always works)
+- `redis` - Use Redis Streams for instant dispatch (requires `REDIS_URL`)
+- `hybrid` - Use Redis when available, fall back to database
+
+**Redis Streams Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_REDIS_STREAM_MAX_LEN` | `10000` | Maximum stream length |
+| `VLOG_REDIS_CONSUMER_GROUP` | `vlog-workers` | Consumer group name |
+| `VLOG_REDIS_CONSUMER_BLOCK_MS` | `5000` | Block timeout for XREADGROUP |
+| `VLOG_REDIS_PENDING_TIMEOUT_MS` | `300000` | Pending message timeout (5 min) |
+
+**Pub/Sub Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_REDIS_PUBSUB_PREFIX` | `vlog` | Channel name prefix |
+
+**Enable Redis:**
+
+```bash
+# Start Redis
+sudo systemctl enable --now redis
+
+# Configure VLog
+export VLOG_REDIS_URL="redis://localhost:6379"
+export VLOG_JOB_QUEUE_MODE="hybrid"  # or "redis" for Redis-only
+```
+
+### SSE (Server-Sent Events) Settings
+
+Real-time progress updates in the admin UI.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_SSE_HEARTBEAT_INTERVAL` | `30` | Heartbeat interval in seconds |
+| `VLOG_SSE_RECONNECT_TIMEOUT_MS` | `3000` | Client reconnect timeout |
+
+**Note:** SSE uses Redis Pub/Sub when available, otherwise falls back to database polling.
+
+### Parallel Quality Encoding
+
+Encode multiple quality variants simultaneously to reduce transcoding time.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_PARALLEL_QUALITIES` | `1` | Number of qualities to encode in parallel |
+| `VLOG_PARALLEL_QUALITIES_AUTO` | `true` | Auto-detect based on GPU capabilities |
+
+**Behavior:**
+- When `AUTO=true` and GPU is detected: uses `min(3, gpu.max_sessions - 1)`
+- When `AUTO=true` but no GPU: uses `PARALLEL_QUALITIES` value
+- Recommended: `PARALLEL_QUALITIES=3` for GPUs
+- ~2x speedup on GPUs with concurrent encoding support
+
+### Error Message Truncation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_ERROR_SUMMARY_MAX_LENGTH` | `100` | Brief error summaries |
+| `VLOG_ERROR_DETAIL_MAX_LENGTH` | `500` | Detailed error messages |
+| `VLOG_ERROR_LOG_MAX_LENGTH` | `2000` | Full error logs |
+
 ---
 
 ## Multi-Instance Deployment Notes
@@ -263,9 +355,17 @@ By default, rate limiting uses in-memory storage (per-process). For consistent r
 VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379
 ```
 
-### SQLite Limitations
+### Database
 
-SQLite WAL mode supports concurrent readers but only one writer. For true multi-instance write scaling, consider migrating to PostgreSQL.
+PostgreSQL fully supports concurrent reads and writes. No special configuration needed for multi-instance deployments.
+
+### Redis for Real-Time Features
+
+For SSE endpoints to work consistently across instances, Redis is required:
+```bash
+VLOG_REDIS_URL=redis://localhost:6379
+VLOG_JOB_QUEUE_MODE=hybrid
+```
 
 ### Worker Admin Endpoints
 
