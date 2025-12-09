@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VLog is a self-hosted video platform with 4K support and HLS streaming. It consists of these services:
 - **Public API** (port 9000): FastAPI server for video browsing, playback, and analytics
-- **Admin API** (port 9001): FastAPI server for uploads and management (internal only)
+- **Admin API** (port 9001): FastAPI server for uploads and management (optional API key auth via `VLOG_ADMIN_API_SECRET`)
 - **Worker API** (port 9002): FastAPI server for remote worker registration, job claiming, and file transfer
 - **Transcoding Worker**: Background process that converts uploads to HLS with multiple quality variants
   - **Local mode**: Event-driven with inotify, runs as systemd service
@@ -241,6 +241,14 @@ When running multiple API instances (e.g., behind a load balancer):
   python -c "import secrets; print(secrets.token_urlsafe(32))"
   ```
 
+- **Admin API authentication**: Optional API key authentication for the Admin API (port 9001). When `VLOG_ADMIN_API_SECRET` is set, all `/api/*` endpoints require the `X-Admin-Secret` header. The admin web UI will prompt for the secret on first access. If not set, the Admin API is unauthenticated (backwards compatible).
+  ```bash
+  # Generate a secret
+  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  # Enable authentication
+  export VLOG_ADMIN_API_SECRET="your-generated-secret"
+  ```
+
 ## Important Configuration
 
 - `pyproject.toml`: Package configuration with dependencies and CLI entry point
@@ -251,6 +259,7 @@ When running multiple API instances (e.g., behind a load balancer):
   - Rate limiting: `VLOG_RATE_LIMIT_ENABLED`, `VLOG_RATE_LIMIT_PUBLIC_DEFAULT`, etc.
   - CORS: `VLOG_CORS_ORIGINS`, `VLOG_ADMIN_CORS_ORIGINS`
   - Archive: `VLOG_ARCHIVE_RETENTION_DAYS` (default: 30)
+  - Admin API: `VLOG_ADMIN_API_SECRET` (empty = no auth, set to enable API key authentication)
   - Worker API: `VLOG_WORKER_API_PORT`, `VLOG_WORKER_API_URL`, `VLOG_WORKER_API_KEY`, `VLOG_WORKER_ADMIN_SECRET`
   - Remote workers: `VLOG_WORKER_HEARTBEAT_INTERVAL`, `VLOG_WORKER_CLAIM_DURATION`, `VLOG_WORKER_POLL_INTERVAL`
   - Hardware acceleration: `VLOG_HWACCEL_TYPE` (auto, nvidia, intel, none), `VLOG_HWACCEL_PREFERRED_CODEC` (h264, hevc, av1)

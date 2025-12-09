@@ -1759,3 +1759,161 @@ class TestBulkOperationsHTTP:
         assert results_by_id[video_id]["success"] is True
         assert results_by_id[99999]["success"] is False
         assert "not found" in results_by_id[99999]["error"].lower()
+
+
+# ============================================================================
+# Admin API Authentication Tests
+# ============================================================================
+
+TEST_ADMIN_API_SECRET = "test-admin-api-secret-12345"
+
+
+class TestAdminAPIAuth:
+    """Tests for Admin API authentication middleware."""
+
+    def test_auth_disabled_allows_requests(self, admin_client):
+        """When ADMIN_API_SECRET is not set, requests should be allowed without auth."""
+        # admin_client fixture doesn't set ADMIN_API_SECRET, so auth is disabled
+        response = admin_client.get("/api/categories")
+        assert response.status_code == 200
+
+    def test_auth_enabled_returns_401_without_header(self, test_storage, test_db_url, monkeypatch):
+        """When ADMIN_API_SECRET is set, requests without header should return 401."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/api/categories")
+            assert response.status_code == 401
+            assert "X-Admin-Secret header required" in response.json()["detail"]
+
+    def test_auth_enabled_returns_403_with_wrong_secret(self, test_storage, test_db_url, monkeypatch):
+        """When ADMIN_API_SECRET is set, requests with wrong secret should return 403."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get(
+                "/api/categories",
+                headers={"X-Admin-Secret": "wrong-secret"},
+            )
+            assert response.status_code == 403
+            assert "Invalid admin secret" in response.json()["detail"]
+
+    def test_auth_enabled_allows_correct_secret(self, test_storage, test_db_url, monkeypatch):
+        """When ADMIN_API_SECRET is set, requests with correct secret should succeed."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            response = client.get(
+                "/api/categories",
+                headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
+            )
+            assert response.status_code == 200
+
+    def test_health_endpoint_no_auth_required(self, test_storage, test_db_url, monkeypatch):
+        """Health endpoint should work without auth even when ADMIN_API_SECRET is set."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Health endpoint should work without auth
+            response = client.get("/health")
+            assert response.status_code in [200, 503]  # May be 503 if db unavailable
+
+    def test_root_endpoint_no_auth_required(self, test_storage, test_db_url, monkeypatch):
+        """Root HTML endpoint should work without auth even when ADMIN_API_SECRET is set."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Root endpoint should work without auth
+            response = client.get("/")
+            assert response.status_code == 200
+            assert "text/html" in response.headers.get("content-type", "")
