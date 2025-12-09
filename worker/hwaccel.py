@@ -756,6 +756,40 @@ async def get_worker_capabilities(gpu_caps: Optional[GPUCapabilities] = None) ->
     return caps
 
 
+def get_recommended_parallel_sessions(gpu_caps: Optional[GPUCapabilities] = None) -> int:
+    """
+    Get recommended number of parallel quality encode sessions.
+
+    Uses config settings:
+    - PARALLEL_QUALITIES_AUTO: If true, auto-detect based on GPU
+    - PARALLEL_QUALITIES: Manual override value
+
+    Args:
+        gpu_caps: Detected GPU capabilities (None for CPU-only)
+
+    Returns:
+        Number of qualities to encode in parallel (minimum 1)
+    """
+    # Import here to avoid circular imports
+    from config import PARALLEL_QUALITIES, PARALLEL_QUALITIES_AUTO
+
+    # If auto-detection is disabled, use the configured value
+    if not PARALLEL_QUALITIES_AUTO:
+        return max(1, PARALLEL_QUALITIES)
+
+    # If no GPU, default to configured value (likely 1)
+    if gpu_caps is None:
+        return max(1, PARALLEL_QUALITIES)
+
+    # Auto-detect: reserve 1 session for headroom, cap at 3 for safety
+    # This ensures we don't hit GPU session limits or memory issues
+    # When auto is enabled, PARALLEL_QUALITIES is ignored - GPU capabilities determine parallelism
+    max_sessions = gpu_caps.max_concurrent_sessions
+    recommended = min(3, max(1, max_sessions - 1))
+
+    return recommended
+
+
 # For testing: print capabilities when run directly
 if __name__ == "__main__":
     import json

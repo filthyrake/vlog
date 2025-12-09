@@ -455,3 +455,172 @@ class TestConfigConstants:
         assert MAX_DURATION_SECONDS >= 3600
         # Should be less than a month
         assert MAX_DURATION_SECONDS <= 30 * 24 * 3600
+
+
+class TestGroupQualitiesByResolution:
+    """Tests for parallel quality batching."""
+
+    def test_sequential_mode(self):
+        """Test parallel_count=1 produces one quality per batch."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        qualities = [
+            {"name": "1080p", "height": 1080},
+            {"name": "720p", "height": 720},
+            {"name": "480p", "height": 480},
+        ]
+
+        batches = group_qualities_by_resolution(qualities, parallel_count=1)
+
+        # Each quality should be in its own batch
+        assert len(batches) == 3
+        assert batches[0] == [{"name": "1080p", "height": 1080}]
+        assert batches[1] == [{"name": "720p", "height": 720}]
+        assert batches[2] == [{"name": "480p", "height": 480}]
+
+    def test_parallel_mode_groups_by_resolution(self):
+        """Test qualities are grouped by high-res vs low-res."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        # Mix of high-res and low-res
+        qualities = [
+            {"name": "2160p", "height": 2160},
+            {"name": "1440p", "height": 1440},
+            {"name": "1080p", "height": 1080},
+            {"name": "720p", "height": 720},
+            {"name": "480p", "height": 480},
+            {"name": "360p", "height": 360},
+        ]
+
+        batches = group_qualities_by_resolution(qualities, parallel_count=3)
+
+        # High-res (2160, 1440, 1080) should be in one batch
+        # Low-res (720, 480, 360) should be in another batch
+        assert len(batches) == 2
+        # First batch: high-res
+        assert all(q["height"] >= 1080 for q in batches[0])
+        assert len(batches[0]) == 3
+        # Second batch: low-res
+        assert all(q["height"] < 1080 for q in batches[1])
+        assert len(batches[1]) == 3
+
+    def test_parallel_mode_chunks_large_groups(self):
+        """Test large groups are chunked by parallel_count."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        # 4 high-res qualities with parallel_count=2
+        qualities = [
+            {"name": "2160p", "height": 2160},
+            {"name": "1440p", "height": 1440},
+            {"name": "1080p", "height": 1080},
+            {"name": "720p", "height": 720},
+        ]
+
+        batches = group_qualities_by_resolution(qualities, parallel_count=2)
+
+        # Should produce:
+        # Batch 1: [2160p, 1440p] (high-res, first 2)
+        # Batch 2: [1080p] (high-res, remaining 1)
+        # Batch 3: [720p] (low-res, 1)
+        assert len(batches) == 3
+        assert batches[0] == [{"name": "2160p", "height": 2160}, {"name": "1440p", "height": 1440}]
+        assert batches[1] == [{"name": "1080p", "height": 1080}]
+        assert batches[2] == [{"name": "720p", "height": 720}]
+
+    def test_empty_qualities(self):
+        """Test empty input produces empty output."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        batches = group_qualities_by_resolution([], parallel_count=3)
+        assert batches == []
+
+    def test_single_quality(self):
+        """Test single quality produces single batch."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        qualities = [{"name": "720p", "height": 720}]
+        batches = group_qualities_by_resolution(qualities, parallel_count=3)
+
+        assert len(batches) == 1
+        assert batches[0] == [{"name": "720p", "height": 720}]
+
+
+class TestGetRecommendedParallelSessions:
+    """Tests for parallel session recommendation."""
+
+    def test_no_gpu_uses_config_default(self):
+        """Test that no GPU uses the config default."""
+        from worker.hwaccel import get_recommended_parallel_sessions
+
+        # With no GPU, should return config default (1)
+        with patch("config.PARALLEL_QUALITIES", 1):
+            with patch("config.PARALLEL_QUALITIES_AUTO", True):
+                result = get_recommended_parallel_sessions(None)
+                assert result == 1
+
+    def test_auto_disabled_uses_config_value(self):
+        """Test that disabling auto uses the explicit config value."""
+        from worker.hwaccel import GPUCapabilities, HWAccelType, get_recommended_parallel_sessions
+
+        gpu_caps = GPUCapabilities(
+            hwaccel_type=HWAccelType.NVIDIA,
+            device_name="Test GPU",
+            max_concurrent_sessions=5,
+        )
+
+        # With auto disabled, should use explicit config value
+        with patch("config.PARALLEL_QUALITIES", 2):
+            with patch("config.PARALLEL_QUALITIES_AUTO", False):
+                result = get_recommended_parallel_sessions(gpu_caps)
+                assert result == 2
+
+    def test_auto_enabled_respects_gpu_limit(self):
+        """Test auto mode respects GPU session limits."""
+        from worker.hwaccel import GPUCapabilities, HWAccelType, get_recommended_parallel_sessions
+
+        # RTX 3090-like GPU with 3 sessions
+        gpu_caps = GPUCapabilities(
+            hwaccel_type=HWAccelType.NVIDIA,
+            device_name="RTX 3090",
+            max_concurrent_sessions=3,
+        )
+
+        with patch("config.PARALLEL_QUALITIES", 1):
+            with patch("config.PARALLEL_QUALITIES_AUTO", True):
+                result = get_recommended_parallel_sessions(gpu_caps)
+                # Should be min(3, max_sessions - 1) = min(3, 2) = 2
+                assert result == 2
+
+    def test_auto_caps_at_three(self):
+        """Test auto mode caps at 3 even with more GPU sessions."""
+        from worker.hwaccel import GPUCapabilities, HWAccelType, get_recommended_parallel_sessions
+
+        # Intel Arc-like GPU with 10 sessions
+        gpu_caps = GPUCapabilities(
+            hwaccel_type=HWAccelType.INTEL,
+            device_name="Intel Arc",
+            max_concurrent_sessions=10,
+        )
+
+        with patch("config.PARALLEL_QUALITIES", 1):
+            with patch("config.PARALLEL_QUALITIES_AUTO", True):
+                result = get_recommended_parallel_sessions(gpu_caps)
+                # Should be min(3, 10 - 1) = 3
+                assert result == 3
+
+    def test_minimum_is_one(self):
+        """Test result is at least 1."""
+        from worker.hwaccel import GPUCapabilities, HWAccelType, get_recommended_parallel_sessions
+
+        # GPU with only 1 session
+        gpu_caps = GPUCapabilities(
+            hwaccel_type=HWAccelType.NVIDIA,
+            device_name="Weak GPU",
+            max_concurrent_sessions=1,
+        )
+
+        with patch("config.PARALLEL_QUALITIES", 0):
+            with patch("config.PARALLEL_QUALITIES_AUTO", True):
+                result = get_recommended_parallel_sessions(gpu_caps)
+                # Should be max(1, ...) = 1
+                assert result >= 1
