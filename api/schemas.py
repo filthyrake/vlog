@@ -140,6 +140,14 @@ class VideoQualityResponse(BaseModel):
     bitrate: int
 
 
+class VideoTagInfo(BaseModel):
+    """Tag info included in video responses."""
+
+    id: int
+    name: str
+    slug: str
+
+
 class VideoResponse(BaseModel):
     id: int
     title: str
@@ -160,6 +168,7 @@ class VideoResponse(BaseModel):
     captions_url: Optional[str] = None  # WebVTT captions URL
     transcription_status: Optional[str] = None  # pending, processing, completed, failed
     qualities: List[VideoQualityResponse] = []
+    tags: List[VideoTagInfo] = []
 
 
 class VideoListResponse(BaseModel):
@@ -174,6 +183,7 @@ class VideoListResponse(BaseModel):
     created_at: datetime
     published_at: Optional[datetime]
     thumbnail_url: Optional[str] = None
+    tags: List[VideoTagInfo] = []
 
 
 # Analytics request models
@@ -593,3 +603,41 @@ class WorkerDetailResponse(BaseModel):
     avg_job_duration_seconds: Optional[float] = None
     # Recent jobs
     recent_jobs: List[WorkerJobHistory] = []
+
+
+# ============ Tag Models ============
+
+
+class TagCreate(BaseModel):
+    """Request to create a new tag."""
+
+    name: str = Field(..., min_length=1, max_length=50)
+
+
+class TagUpdate(BaseModel):
+    """Request to update a tag."""
+
+    name: str = Field(..., min_length=1, max_length=50)
+
+
+class TagResponse(BaseModel):
+    """Response for a single tag."""
+
+    id: int
+    name: str
+    slug: str
+    created_at: datetime
+    video_count: int = 0
+
+
+class TagListResponse(BaseModel):
+    """Response for tag listing."""
+
+    tags: List[TagResponse]
+    total_count: int
+
+
+class VideoTagsUpdate(BaseModel):
+    """Request to set tags on a video."""
+
+    tag_ids: List[int] = Field(..., max_length=20, description="List of tag IDs (max 20 tags per video)")

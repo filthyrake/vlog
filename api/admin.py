@@ -45,9 +45,11 @@ from api.database import (
     database,
     playback_sessions,
     quality_progress,
+    tags,
     transcoding_jobs,
     transcriptions,
     video_qualities,
+    video_tags,
     videos,
     worker_api_keys,
     workers,
@@ -84,6 +86,9 @@ from api.schemas import (
     QualityProgressResponse,
     RetranscodeRequest,
     RetranscodeResponse,
+    TagCreate,
+    TagResponse,
+    TagUpdate,
     TranscodingProgressResponse,
     TranscriptionResponse,
     TranscriptionTrigger,
@@ -100,6 +105,8 @@ from api.schemas import (
     VideoQualityInfo,
     VideoQualityResponse,
     VideoResponse,
+    VideoTagInfo,
+    VideoTagsUpdate,
     WorkerDashboardResponse,
     WorkerDashboardStatus,
     WorkerDetailResponse,
@@ -665,6 +672,154 @@ async def delete_category(request: Request, category_id: int):
     return {"status": "ok"}
 
 
+# ============ Tags ============
+
+
+@app.get("/api/tags")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_tags(request: Request) -> List[TagResponse]:
+    """List all tags with video counts (including non-ready videos for admin)."""
+    query = sa.text("""
+        SELECT t.*, COUNT(vt.video_id) as video_count
+        FROM tags t
+        LEFT JOIN video_tags vt ON vt.tag_id = t.id
+        LEFT JOIN videos v ON v.id = vt.video_id AND v.deleted_at IS NULL
+        GROUP BY t.id
+        ORDER BY t.name
+    """)
+    rows = await fetch_all_with_retry(query)
+
+    return [
+        TagResponse(
+            id=row["id"],
+            name=row["name"],
+            slug=row["slug"],
+            created_at=row["created_at"],
+            video_count=row["video_count"],
+        )
+        for row in rows
+    ]
+
+
+@app.post("/api/tags")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_tag(request: Request, data: TagCreate) -> TagResponse:
+    """Create a new tag."""
+    slug = slugify(data.name)
+
+    # Check for duplicate slug
+    existing = await fetch_one_with_retry(tags.select().where(tags.c.slug == slug))
+    if existing:
+        raise HTTPException(status_code=400, detail="Tag with this name already exists")
+
+    query = tags.insert().values(
+        name=data.name,
+        slug=slug,
+        created_at=datetime.now(timezone.utc),
+    )
+    tag_id = await db_execute_with_retry(query)
+
+    # Audit log
+    log_audit(
+        AuditAction.TAG_CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="tag",
+        resource_id=tag_id,
+        resource_name=slug,
+        details={"name": data.name},
+    )
+
+    return TagResponse(
+        id=tag_id,
+        name=data.name,
+        slug=slug,
+        created_at=datetime.now(timezone.utc),
+        video_count=0,
+    )
+
+
+@app.put("/api/tags/{tag_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_tag(request: Request, tag_id: int, data: TagUpdate) -> TagResponse:
+    """Update a tag name."""
+    # Verify tag exists
+    existing = await fetch_one_with_retry(tags.select().where(tags.c.id == tag_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    new_slug = slugify(data.name)
+
+    # Check for duplicate slug (exclude current tag)
+    duplicate = await fetch_one_with_retry(
+        tags.select().where(tags.c.slug == new_slug).where(tags.c.id != tag_id)
+    )
+    if duplicate:
+        raise HTTPException(status_code=400, detail="Tag with this name already exists")
+
+    await db_execute_with_retry(
+        tags.update().where(tags.c.id == tag_id).values(name=data.name, slug=new_slug)
+    )
+
+    # Get video count
+    count_query = (
+        sa.select(sa.func.count(sa.distinct(videos.c.id)))
+        .select_from(video_tags.join(videos, videos.c.id == video_tags.c.video_id))
+        .where(video_tags.c.tag_id == tag_id)
+        .where(videos.c.deleted_at.is_(None))
+    )
+    video_count = await fetch_val_with_retry(count_query)
+
+    # Audit log
+    log_audit(
+        AuditAction.TAG_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="tag",
+        resource_id=tag_id,
+        resource_name=new_slug,
+        details={"old_name": existing["name"], "new_name": data.name},
+    )
+
+    return TagResponse(
+        id=tag_id,
+        name=data.name,
+        slug=new_slug,
+        created_at=existing["created_at"],
+        video_count=video_count or 0,
+    )
+
+
+@app.delete("/api/tags/{tag_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_tag(request: Request, tag_id: int):
+    """Delete a tag. Videos with this tag will have it removed."""
+    # Verify tag exists
+    existing = await fetch_one_with_retry(tags.select().where(tags.c.id == tag_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Use transaction to ensure atomicity
+    async with database.transaction():
+        # Delete video_tags entries first (FK constraint)
+        await database.execute(video_tags.delete().where(video_tags.c.tag_id == tag_id))
+        # Delete the tag
+        await database.execute(tags.delete().where(tags.c.id == tag_id))
+
+    # Audit log
+    log_audit(
+        AuditAction.TAG_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="tag",
+        resource_id=tag_id,
+        resource_name=existing["slug"],
+        details={"name": existing["name"]},
+    )
+
+    return {"status": "ok"}
+
+
 # ============ Videos ============
 
 
@@ -1030,6 +1185,112 @@ async def update_video(
             resource_id=video_id,
             details={"updated_fields": list(update_data.keys())},
         )
+
+    return {"status": "ok"}
+
+
+@app.get("/api/videos/{video_id}/tags")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_video_tags(request: Request, video_id: int) -> List[VideoTagInfo]:
+    """Get all tags for a video."""
+    # Verify video exists
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    query = (
+        sa.select(tags.c.id, tags.c.name, tags.c.slug)
+        .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
+        .where(video_tags.c.video_id == video_id)
+        .order_by(tags.c.name)
+    )
+    rows = await fetch_all_with_retry(query)
+
+    return [VideoTagInfo(id=row["id"], name=row["name"], slug=row["slug"]) for row in rows]
+
+
+@app.put("/api/videos/{video_id}/tags")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def set_video_tags(request: Request, video_id: int, data: VideoTagsUpdate) -> List[VideoTagInfo]:
+    """Set tags for a video (replaces all existing tags)."""
+    # Verify video exists
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Verify all tag_ids exist
+    if data.tag_ids:
+        existing_tags = await fetch_all_with_retry(tags.select().where(tags.c.id.in_(data.tag_ids)))
+        existing_ids = {t["id"] for t in existing_tags}
+        missing_ids = set(data.tag_ids) - existing_ids
+        if missing_ids:
+            raise HTTPException(status_code=400, detail=f"Tag IDs not found: {sorted(missing_ids)}")
+
+    # Replace all tags in a transaction
+    async with database.transaction():
+        # Remove existing tags
+        await database.execute(video_tags.delete().where(video_tags.c.video_id == video_id))
+        # Add new tags
+        if data.tag_ids:
+            # Deduplicate tag_ids
+            unique_tag_ids = list(dict.fromkeys(data.tag_ids))
+            for tag_id in unique_tag_ids:
+                await database.execute(video_tags.insert().values(video_id=video_id, tag_id=tag_id))
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_TAGS_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"tag_ids": data.tag_ids},
+    )
+
+    # Return updated tags
+    query = (
+        sa.select(tags.c.id, tags.c.name, tags.c.slug)
+        .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
+        .where(video_tags.c.video_id == video_id)
+        .order_by(tags.c.name)
+    )
+    rows = await fetch_all_with_retry(query)
+
+    return [VideoTagInfo(id=row["id"], name=row["name"], slug=row["slug"]) for row in rows]
+
+
+@app.delete("/api/videos/{video_id}/tags/{tag_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def remove_video_tag(request: Request, video_id: int, tag_id: int):
+    """Remove a single tag from a video."""
+    # Verify video exists
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Verify tag exists
+    tag = await fetch_one_with_retry(tags.select().where(tags.c.id == tag_id))
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Remove the tag association
+    await db_execute_with_retry(
+        video_tags.delete().where(
+            sa.and_(video_tags.c.video_id == video_id, video_tags.c.tag_id == tag_id)
+        )
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_TAGS_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"removed_tag_id": tag_id, "removed_tag_name": tag["name"]},
+    )
 
     return {"status": "ok"}
 

@@ -206,6 +206,28 @@ worker_api_keys = sa.Table(
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
 )
 
+# Tags for granular content organization
+tags = sa.Table(
+    "tags",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String(50), unique=True, nullable=False),
+    sa.Column("slug", sa.String(50), unique=True, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Index("ix_tags_slug", "slug"),
+)
+
+# Many-to-many relationship between videos and tags
+video_tags = sa.Table(
+    "video_tags",
+    metadata,
+    sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("tag_id", sa.Integer, sa.ForeignKey("tags.id", ondelete="CASCADE"), nullable=False),
+    sa.PrimaryKeyConstraint("video_id", "tag_id"),
+    sa.Index("ix_video_tags_video_id", "video_id"),
+    sa.Index("ix_video_tags_tag_id", "tag_id"),
+)
+
 
 def create_tables():
     """
