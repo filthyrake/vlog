@@ -95,7 +95,8 @@ worker/
 ├── remote_transcoder.py # Containerized worker for distributed transcoding via Worker API
 ├── hwaccel.py          # GPU detection and hardware encoder selection (NVENC, VAAPI)
 ├── http_client.py      # HTTP client for worker-to-API communication
-└── transcription.py    # Whisper transcription worker
+├── transcription.py    # Whisper transcription worker
+└── alerts.py           # Webhook alerting for transcoding events (stale jobs, failures, etc.)
 
 web/
 ├── public/       # Tailwind + Alpine.js frontend for browsing
@@ -114,7 +115,14 @@ k8s/              # Kubernetes manifests for containerized workers
 
 migrations/
 ├── env.py        # Alembic environment config (loads from config.py)
-└── versions/     # Migration scripts (001_initial_schema.py, 002_add_session_token_unique_constraint.py, 003_add_workers_table.py, 004_add_missing_indexes.py)
+└── versions/     # Migration scripts:
+    ├── 001_initial_schema.py
+    ├── 002_add_session_token_unique_constraint.py
+    ├── 003_add_workers_table.py
+    ├── 004_add_missing_indexes.py
+    ├── 005_add_workers_current_job_fk.py
+    ├── 006_add_processed_by_worker.py
+    └── 007_add_tags_tables.py
 ```
 
 ### Key Flows
@@ -218,6 +226,7 @@ Alert payload format (JSON):
 ### Database Schema
 
 Core tables: `categories`, `videos` (with `deleted_at` for soft-delete), `video_qualities`
+Tags: `tags`, `video_tags` (many-to-many relationship for granular content organization)
 Analytics: `viewers`, `playback_sessions` (cookie-based viewer tracking, watch progress)
 Transcoding: `transcoding_jobs`, `quality_progress` (checkpoint-based resumable transcoding)
 Workers: `workers`, `worker_api_keys` (remote worker registration with API key auth)

@@ -250,6 +250,35 @@ API keys for worker authentication (SHA-256 hashed).
 - Revoked keys remain in table for audit trail
 - `last_used_at` tracks recent activity
 
+### tags
+
+Tag definitions for granular content organization.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| name | VARCHAR(50) | UNIQUE, NOT NULL | Display name |
+| slug | VARCHAR(50) | UNIQUE, NOT NULL | URL-safe identifier |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Creation timestamp |
+
+**Indexes:**
+- `ix_tags_slug` - Fast tag lookup by slug
+
+### video_tags
+
+Many-to-many relationship between videos and tags.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| video_id | INTEGER | FK(videos.id) CASCADE, PK | Video reference |
+| tag_id | INTEGER | FK(tags.id) CASCADE, PK | Tag reference |
+
+**Indexes:**
+- `ix_video_tags_video_id` - Find tags for a video
+- `ix_video_tags_tag_id` - Find videos with a tag
+
+**Cascade Behavior:** Deleting a video or tag removes the association.
+
 ---
 
 ## Entity Relationships
@@ -261,6 +290,7 @@ videos (1) ───────────────────────
 videos (1) ─────────────────────────────── (N) playback_sessions
 videos (1) ─────────────────────────────── (1) transcoding_jobs
 videos (1) ─────────────────────────────── (1) transcriptions
+videos (N) ─────────────────────────────── (N) tags (via video_tags)
                                                 │
 transcoding_jobs (1) ──────────────────── (N) quality_progress
 transcoding_jobs (N) ──────────────────── (1) workers
@@ -280,6 +310,8 @@ viewers (1) ──────────────────────�
 | videos | playback_sessions | CASCADE |
 | videos | transcoding_jobs | CASCADE |
 | videos | transcriptions | CASCADE |
+| videos | video_tags | CASCADE |
+| tags | video_tags | CASCADE |
 | transcoding_jobs | quality_progress | CASCADE |
 | workers | worker_api_keys | CASCADE |
 | workers | transcoding_jobs.worker_id | SET NULL |
