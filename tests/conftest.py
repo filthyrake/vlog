@@ -27,7 +27,9 @@ from api.database import (  # noqa: E402
     categories,
     metadata,
     playback_sessions,
+    tags,
     video_qualities,
+    video_tags,
     videos,
 )
 from api.enums import VideoStatus  # noqa: E402
@@ -316,6 +318,38 @@ async def sample_playback_session(test_database: Database, sample_video: dict) -
         "duration_watched": 60.0,
         "max_position": 90.0,
     }
+
+
+@pytest.fixture(scope="function")
+async def sample_tag(test_database: Database) -> dict:
+    """Create a sample tag for testing."""
+    now = datetime.now(timezone.utc)
+    result = await test_database.execute(
+        tags.insert().values(
+            name="Test Tag",
+            slug="test-tag",
+            created_at=now,
+        )
+    )
+    return {
+        "id": result,
+        "name": "Test Tag",
+        "slug": "test-tag",
+        "created_at": now,
+    }
+
+
+@pytest.fixture(scope="function")
+async def sample_video_with_tag(test_database: Database, sample_video: dict, sample_tag: dict) -> dict:
+    """Create a sample video with a tag attached."""
+    await test_database.execute(
+        video_tags.insert().values(
+            video_id=sample_video["id"],
+            tag_id=sample_tag["id"],
+        )
+    )
+    sample_video["tags"] = [sample_tag]
+    return sample_video
 
 
 # ============================================================================
