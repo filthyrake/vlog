@@ -140,6 +140,16 @@ Event-driven background process for local video transcoding:
 - Configurable retry attempts with exponential backoff
 - Graceful shutdown handling
 
+### Shared Worker Utilities
+
+**Location:** `worker/` directory
+
+| Module | Purpose |
+|--------|---------|
+| `hwaccel.py` | GPU detection and hardware encoder selection (NVENC, VAAPI) |
+| `http_client.py` | HTTP client for worker-to-API communication |
+| `alerts.py` | Webhook alerting for transcoding events (stale jobs, failures, retries) |
+
 ### 5. Remote Transcoding Workers (Kubernetes)
 
 **Location:** `worker/remote_transcoder.py`, `Dockerfile.worker.gpu`
@@ -228,6 +238,8 @@ PostgreSQL provides concurrent read/write support, making it suitable for multi-
 - `categories` - Video organization
 - `videos` - Video metadata and status (with soft-delete via `deleted_at`)
 - `video_qualities` - Available HLS variants per video
+- `tags` - Tag definitions for granular content organization
+- `video_tags` - Many-to-many relationship between videos and tags
 - `viewers` - Cookie-based viewer tracking
 - `playback_sessions` - Watch analytics
 - `transcoding_jobs` - Job tracking with checkpoints and job claiming
