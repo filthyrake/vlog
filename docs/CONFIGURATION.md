@@ -339,14 +339,20 @@ Encode multiple quality variants simultaneously to reduce transcoding time.
 
 When running multiple API instances (e.g., behind a load balancer):
 
-### Analytics Cache Limitations
+### Analytics Cache
 
-The in-memory analytics cache (`api/analytics_cache.py`) is local to each process. In multi-instance deployments, different instances may show slightly different analytics counts until caches expire (default: 60 seconds TTL).
+By default, the analytics cache uses in-memory storage (per-process). For consistent analytics across instances, use Redis:
+```bash
+VLOG_ANALYTICS_CACHE_STORAGE_URL=redis://localhost:6379
+```
 
-**Workarounds:**
+**Options:**
 - `VLOG_ANALYTICS_CACHE_ENABLED=false` - Disable caching entirely (higher database load)
-- Analytics are eventually consistent, which is typically acceptable for view counts
-- Note: The analytics cache does not yet support Redis for shared state
+- `VLOG_ANALYTICS_CACHE_TTL=60` - Cache TTL in seconds (default: 60)
+- `VLOG_ANALYTICS_CACHE_STORAGE_URL=memory://` - In-memory cache (default, per-process)
+- `VLOG_ANALYTICS_CACHE_STORAGE_URL=redis://localhost:6379` - Redis-backed shared cache
+
+With in-memory cache, different instances may show slightly different analytics counts until caches expire. With Redis, all instances share the same cache state.
 
 ### Rate Limiting
 

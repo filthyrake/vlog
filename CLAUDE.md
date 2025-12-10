@@ -227,10 +227,10 @@ Transcription: `transcriptions` (whisper-generated subtitles with VTT output)
 
 When running multiple API instances (e.g., behind a load balancer):
 
-- **Analytics cache is per-instance**: The in-memory analytics cache (`api/analytics_cache.py`) is local to each process. In multi-instance deployments, different instances may show slightly different analytics counts until caches expire (default: 60 seconds).
-  - To disable caching: `VLOG_ANALYTICS_CACHE_ENABLED=false`
-  - For shared cache state, configure Redis: `VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379` (rate limiting) - note that analytics cache does not yet support Redis
-  - Analytics are eventually consistent, which is typically acceptable for view counts
+- **Analytics cache**: By default uses in-memory storage (per-process). For consistent analytics across instances, use Redis: `VLOG_ANALYTICS_CACHE_STORAGE_URL=redis://localhost:6379`
+  - To disable caching entirely: `VLOG_ANALYTICS_CACHE_ENABLED=false`
+  - With in-memory cache, different instances may show slightly different analytics counts until caches expire (default: 60 seconds)
+  - With Redis cache, all instances share the same cache state for consistent results
 
 - **Rate limiting storage**: By default uses in-memory storage (per-process). For consistent rate limiting across instances, use Redis: `VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379`
 
@@ -265,6 +265,7 @@ When running multiple API instances (e.g., behind a load balancer):
   - Hardware acceleration: `VLOG_HWACCEL_TYPE` (auto, nvidia, intel, none), `VLOG_HWACCEL_PREFERRED_CODEC` (h264, hevc, av1)
   - Parallel encoding: `VLOG_PARALLEL_QUALITIES` (default: 1), `VLOG_PARALLEL_QUALITIES_AUTO` (default: true)
   - Audit logging: `VLOG_AUDIT_LOG_ENABLED` (default: true), `VLOG_AUDIT_LOG_PATH` (default: /var/log/vlog/audit.log)
+  - Analytics cache: `VLOG_ANALYTICS_CACHE_ENABLED`, `VLOG_ANALYTICS_CACHE_TTL`, `VLOG_ANALYTICS_CACHE_STORAGE_URL` (memory:// or redis://)
   - Redis: `VLOG_REDIS_URL` (empty = disabled), `VLOG_JOB_QUEUE_MODE` (database, redis, hybrid), `VLOG_REDIS_POOL_SIZE` (default: 10)
   - SSE: `VLOG_SSE_HEARTBEAT_INTERVAL` (default: 30s), `VLOG_SSE_RECONNECT_TIMEOUT_MS` (default: 3000)
   - Alerting: `VLOG_ALERT_WEBHOOK_URL` (empty = disabled), `VLOG_ALERT_WEBHOOK_TIMEOUT` (default: 10s), `VLOG_ALERT_RATE_LIMIT_SECONDS` (default: 300)
