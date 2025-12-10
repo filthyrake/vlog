@@ -1,10 +1,20 @@
 """
-Simple in-memory cache for analytics endpoints with TTL support.
+Analytics cache with TTL support.
+
+Provides two implementations:
+- AnalyticsCache: In-memory cache for single-process deployments
+- RedisAnalyticsCache: Redis-backed cache for multi-instance deployments
+
+Use create_analytics_cache() factory function to get the appropriate implementation.
 """
 
+import json
+import logging
 import random
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyticsCache:
@@ -135,4 +145,223 @@ class AnalyticsCache:
             "ttl_seconds": self._ttl,
             "entry_count": len(self._cache),
             "max_size": self._max_size,
+            "backend": "memory",
         }
+
+
+class RedisAnalyticsCache:
+    """
+    Redis-backed cache with TTL for analytics data.
+
+    Provides shared caching across multiple API instances for consistent
+    analytics in multi-process/multi-server deployments.
+
+    Falls back gracefully to returning None (cache miss) if Redis is unavailable.
+    """
+
+    CACHE_KEY_PREFIX = "vlog:analytics:"
+
+    def __init__(
+        self,
+        redis_url: str,
+        ttl_seconds: int = 60,
+        enabled: bool = True,
+    ):
+        """
+        Initialize the Redis cache.
+
+        Args:
+            redis_url: Redis connection URL (e.g., "redis://localhost:6379")
+            ttl_seconds: Time to live in seconds for cache entries
+            enabled: Whether caching is enabled
+        """
+        self._redis_url = redis_url
+        self._ttl = ttl_seconds
+        self._enabled = enabled
+        self._client: Optional[Any] = None
+        self._connection_failed = False
+
+        if enabled:
+            self._initialize_client()
+
+    def _initialize_client(self) -> None:
+        """Initialize the Redis client."""
+        try:
+            import redis
+
+            self._client = redis.Redis.from_url(
+                self._redis_url,
+                socket_timeout=5.0,
+                socket_connect_timeout=5.0,
+                decode_responses=True,
+            )
+            # Test connection
+            self._client.ping()
+            logger.info(f"Redis analytics cache connected: {self._redis_url.split('@')[-1]}")
+        except Exception as e:
+            logger.warning(f"Redis analytics cache connection failed: {e}")
+            self._client = None
+            self._connection_failed = True
+
+    def _get_full_key(self, key: str) -> str:
+        """Get the full Redis key with prefix."""
+        return f"{self.CACHE_KEY_PREFIX}{key}"
+
+    def get(self, key: str) -> Optional[Any]:
+        """
+        Get a value from the cache.
+
+        Args:
+            key: Cache key
+
+        Returns:
+            Cached value if exists and not expired, None otherwise
+        """
+        if not self._enabled or self._client is None:
+            return None
+
+        try:
+            full_key = self._get_full_key(key)
+            data = self._client.get(full_key)
+            if data is None:
+                return None
+            return json.loads(data)
+        except Exception as e:
+            logger.warning(f"Redis analytics cache get failed: {e}")
+            return None
+
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set a value in the cache.
+
+        Args:
+            key: Cache key
+            value: Value to cache
+        """
+        if not self._enabled or self._client is None:
+            return
+
+        try:
+            full_key = self._get_full_key(key)
+            data = json.dumps(value)
+            self._client.setex(full_key, self._ttl, data)
+        except Exception as e:
+            logger.warning(f"Redis analytics cache set failed: {e}")
+
+    def clear(self) -> None:
+        """Clear all analytics cache entries."""
+        if self._client is None:
+            return
+
+        try:
+            # Use SCAN to find all analytics cache keys (safe for production)
+            cursor = 0
+            pattern = f"{self.CACHE_KEY_PREFIX}*"
+            while True:
+                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                if keys:
+                    self._client.delete(*keys)
+                if cursor == 0:
+                    break
+        except Exception as e:
+            logger.warning(f"Redis analytics cache clear failed: {e}")
+
+    def invalidate(self, key: str) -> None:
+        """
+        Invalidate a specific cache entry.
+
+        Args:
+            key: Cache key to invalidate
+        """
+        if self._client is None:
+            return
+
+        try:
+            full_key = self._get_full_key(key)
+            self._client.delete(full_key)
+        except Exception as e:
+            logger.warning(f"Redis analytics cache invalidate failed: {e}")
+
+    def cleanup_expired(self) -> int:
+        """
+        Remove all expired entries from cache.
+
+        Redis handles TTL-based expiration automatically, so this is a no-op.
+
+        Returns:
+            Always returns 0 (Redis handles expiration)
+        """
+        # Redis handles TTL expiration automatically
+        return 0
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get cache statistics.
+
+        Returns:
+            Dict with cache stats (TTL, enabled status, backend type)
+        """
+        entry_count = 0
+        if self._client is not None:
+            try:
+                # Count keys matching our prefix
+                cursor = 0
+                pattern = f"{self.CACHE_KEY_PREFIX}*"
+                while True:
+                    cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                    entry_count += len(keys)
+                    if cursor == 0:
+                        break
+            except Exception:
+                pass  # Return 0 if we can't count
+
+        return {
+            "enabled": self._enabled,
+            "ttl_seconds": self._ttl,
+            "entry_count": entry_count,
+            "max_size": -1,  # Redis has no fixed max size
+            "backend": "redis",
+            "connected": self._client is not None and not self._connection_failed,
+        }
+
+
+# Type alias for either cache implementation
+AnalyticsCacheType = Union[AnalyticsCache, RedisAnalyticsCache]
+
+
+def create_analytics_cache(
+    storage_url: str = "memory://",
+    ttl_seconds: int = 60,
+    enabled: bool = True,
+    max_size: int = 1000,
+) -> AnalyticsCacheType:
+    """
+    Factory function to create the appropriate analytics cache implementation.
+
+    Args:
+        storage_url: Storage backend URL. Use "memory://" for in-memory cache,
+                    or a Redis URL like "redis://localhost:6379" for shared cache.
+        ttl_seconds: Time to live in seconds for cache entries
+        enabled: Whether caching is enabled
+        max_size: Maximum entries for in-memory cache (ignored for Redis)
+
+    Returns:
+        Either AnalyticsCache (memory) or RedisAnalyticsCache (Redis) instance
+    """
+    if not enabled:
+        # Return disabled memory cache - simplest option
+        return AnalyticsCache(ttl_seconds=ttl_seconds, enabled=False, max_size=max_size)
+
+    if storage_url.startswith("redis://") or storage_url.startswith("rediss://"):
+        return RedisAnalyticsCache(
+            redis_url=storage_url,
+            ttl_seconds=ttl_seconds,
+            enabled=enabled,
+        )
+
+    # Default to in-memory cache
+    return AnalyticsCache(
+        ttl_seconds=ttl_seconds,
+        enabled=enabled,
+        max_size=max_size,
+    )

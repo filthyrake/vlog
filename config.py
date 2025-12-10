@@ -239,6 +239,11 @@ ANALYTICS_CACHE_ENABLED = os.getenv("VLOG_ANALYTICS_CACHE_ENABLED", "true").lowe
 # Cache TTL in seconds (default: 60 seconds)
 ANALYTICS_CACHE_TTL = int(os.getenv("VLOG_ANALYTICS_CACHE_TTL", "60"))
 
+# Storage backend for analytics cache
+# Options: "memory" (default, per-process), or a Redis URL like "redis://localhost:6379"
+# When Redis is configured, analytics cache is shared across all API instances
+ANALYTICS_CACHE_STORAGE_URL = os.getenv("VLOG_ANALYTICS_CACHE_STORAGE_URL", "memory://")
+
 # Client-side cache max-age in seconds (default: 60 seconds)
 # This controls the Cache-Control header sent to clients
 ANALYTICS_CLIENT_CACHE_MAX_AGE = int(os.getenv("VLOG_ANALYTICS_CLIENT_CACHE_MAX_AGE", "60"))
