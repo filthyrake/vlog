@@ -191,6 +191,23 @@ class TestVideoTagManagementHTTP:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_set_video_tags_exceeds_limit(self, admin_client, sample_video):
+        """Test that setting more than 20 tags fails validation."""
+        # Create 21 tags
+        tag_ids = []
+        for i in range(21):
+            response = admin_client.post("/api/tags", json={"name": f"Limit Tag {i}"})
+            assert response.status_code == 200
+            tag_ids.append(response.json()["id"])
+
+        # Try to set all 21 tags on video - should fail validation
+        response = admin_client.put(
+            f"/api/videos/{sample_video['id']}/tags",
+            json={"tag_ids": tag_ids},
+        )
+        assert response.status_code == 422  # Pydantic validation error
+
+    @pytest.mark.asyncio
     async def test_remove_video_tag(self, admin_client, sample_video_with_tag, sample_tag):
         """Test removing a single tag from a video."""
         response = admin_client.delete(f"/api/videos/{sample_video_with_tag['id']}/tags/{sample_tag['id']}")
