@@ -34,9 +34,11 @@ from api.database import (
     database,
     playback_sessions,
     quality_progress,
+    tags,
     transcoding_jobs,
     transcriptions,
     video_qualities,
+    video_tags,
     videos,
     viewers,
 )
@@ -56,11 +58,13 @@ from api.schemas import (
     PlaybackSessionCreate,
     PlaybackSessionResponse,
     QualityProgressResponse,
+    TagResponse,
     TranscodingProgressResponse,
     TranscriptionResponse,
     VideoListResponse,
     VideoQualityResponse,
     VideoResponse,
+    VideoTagInfo,
 )
 from config import (
     CORS_ALLOWED_ORIGINS,
@@ -212,16 +216,52 @@ async def category_page(slug: str):
     return FileResponse(WEB_DIR / "category.html")
 
 
+@app.get("/tag/{slug}", response_class=HTMLResponse)
+async def tag_page(slug: str):
+    """Serve the tag page."""
+    return FileResponse(WEB_DIR / "tag.html")
+
+
+async def get_video_tags(video_ids: List[int]) -> dict:
+    """Get tags for a list of video IDs. Returns a dict of video_id -> list of tags."""
+    if not video_ids:
+        return {}
+
+    query = (
+        sa.select(
+            video_tags.c.video_id,
+            tags.c.id,
+            tags.c.name,
+            tags.c.slug,
+        )
+        .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
+        .where(video_tags.c.video_id.in_(video_ids))
+        .order_by(tags.c.name)
+    )
+
+    rows = await fetch_all_with_retry(query)
+
+    result = {}
+    for row in rows:
+        video_id = row["video_id"]
+        if video_id not in result:
+            result[video_id] = []
+        result[video_id].append(VideoTagInfo(id=row["id"], name=row["name"], slug=row["slug"]))
+
+    return result
+
+
 @app.get("/api/videos")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_videos(
     request: Request,
     category: Optional[str] = None,
+    tag: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
 ) -> List[VideoListResponse]:
-    """List all published videos."""
+    """List all published videos. Filter by category, tag, or search term."""
     query = (
         sa.select(
             videos.c.id,
@@ -246,6 +286,15 @@ async def list_videos(
     if category:
         query = query.where(categories.c.slug == category)
 
+    if tag:
+        # Filter by tag slug - join with video_tags and tags tables
+        tag_subquery = (
+            sa.select(video_tags.c.video_id)
+            .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
+            .where(tags.c.slug == tag)
+        )
+        query = query.where(videos.c.id.in_(tag_subquery))
+
     if search:
         search_term = f"%{search}%"
         query = query.where(
@@ -256,6 +305,10 @@ async def list_videos(
         )
 
     rows = await fetch_all_with_retry(query)
+
+    # Get tags for all videos in one query
+    video_ids = [row["id"] for row in rows]
+    video_tags_map = await get_video_tags(video_ids)
 
     return [
         VideoListResponse(
@@ -270,6 +323,7 @@ async def list_videos(
             created_at=row["created_at"],
             published_at=row["published_at"],
             thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg",
+            tags=video_tags_map.get(row["id"], []),
         )
         for row in rows
     ]
@@ -324,6 +378,10 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         if transcription_row["status"] == TranscriptionStatus.COMPLETED and transcription_row["vtt_path"]:
             captions_url = f"/videos/{row['slug']}/captions.vtt"
 
+    # Get tags for this video
+    video_tags_map = await get_video_tags([row["id"]])
+    video_tag_list = video_tags_map.get(row["id"], [])
+
     return VideoResponse(
         id=row["id"],
         title=row["title"],
@@ -344,6 +402,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         captions_url=captions_url,
         transcription_status=transcription_status,
         qualities=qualities,
+        tags=video_tag_list,
     )
 
 
@@ -510,6 +569,65 @@ async def get_category(request: Request, slug: str) -> CategoryResponse:
         name=row["name"],
         slug=row["slug"],
         description=row["description"] or "",
+        created_at=row["created_at"],
+        video_count=count or 0,
+    )
+
+
+@app.get("/api/tags")
+@limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
+async def list_tags(request: Request) -> List[TagResponse]:
+    """List all tags with video counts."""
+    query = sa.text("""
+        SELECT t.*, COUNT(vt.video_id) as video_count
+        FROM tags t
+        LEFT JOIN video_tags vt ON vt.tag_id = t.id
+        LEFT JOIN videos v ON v.id = vt.video_id AND v.status = 'ready' AND v.deleted_at IS NULL
+        GROUP BY t.id
+        ORDER BY t.name
+    """)
+
+    rows = await fetch_all_with_retry(query)
+
+    return [
+        TagResponse(
+            id=row["id"],
+            name=row["name"],
+            slug=row["slug"],
+            created_at=row["created_at"],
+            video_count=row["video_count"],
+        )
+        for row in rows
+    ]
+
+
+@app.get("/api/tags/{slug}")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_tag(request: Request, slug: str) -> TagResponse:
+    """Get a single tag by slug."""
+    # Validate slug to prevent path traversal attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid tag slug")
+
+    query = tags.select().where(tags.c.slug == slug)
+    row = await fetch_one_with_retry(query)
+    if not row:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # Get video count (only count ready, non-deleted videos)
+    count_query = (
+        sa.select(sa.func.count(sa.distinct(videos.c.id)))
+        .select_from(video_tags.join(videos, videos.c.id == video_tags.c.video_id))
+        .where(video_tags.c.tag_id == row["id"])
+        .where(videos.c.status == VideoStatus.READY)
+        .where(videos.c.deleted_at.is_(None))
+    )
+    count = await fetch_val_with_retry(count_query)
+
+    return TagResponse(
+        id=row["id"],
+        name=row["name"],
+        slug=row["slug"],
         created_at=row["created_at"],
         video_count=count or 0,
     )

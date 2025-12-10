@@ -48,6 +48,12 @@ class AuditAction(str, Enum):
     CATEGORY_CREATE = "category_create"
     CATEGORY_DELETE = "category_delete"
 
+    # Tag actions
+    TAG_CREATE = "tag_create"
+    TAG_UPDATE = "tag_update"
+    TAG_DELETE = "tag_delete"
+    VIDEO_TAGS_UPDATE = "video_tags_update"
+
     # Transcription actions
     TRANSCRIPTION_TRIGGER = "transcription_trigger"
     TRANSCRIPTION_UPDATE = "transcription_update"
