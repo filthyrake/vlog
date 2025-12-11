@@ -10,6 +10,7 @@
     <script defer src="/static/vendor/alpine.min.js"></script>
     <!-- hls.js for HLS playback -->
     <script src="/static/vendor/hls.min.js"></script>
+    <script src="/static/js/player-controls.js"></script>
     <style>
         [x-cloak] { display: none !important; }
         #player {
@@ -25,6 +26,545 @@
             line-height: 1.4;
             padding: 0.2em 0.5em;
             border-radius: 4px;
+        }
+
+        /* Custom Player Controls Styles */
+        .player-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+        }
+
+        .player-container.is-fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 9999;
+        }
+
+        /* Gesture overlay */
+        .player-gesture-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 10;
+            touch-action: none;
+            cursor: pointer;
+        }
+
+        .player-gesture-overlay.controls-visible {
+            cursor: default;
+        }
+
+        /* Skip indicators */
+        .player-skip-indicator {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .player-skip-indicator.left {
+            left: 15%;
+        }
+
+        .player-skip-indicator.right {
+            right: 15%;
+        }
+
+        .player-skip-indicator.visible {
+            opacity: 1;
+            animation: skip-ripple 0.5s ease-out;
+        }
+
+        .player-skip-indicator svg {
+            width: 48px;
+            height: 48px;
+        }
+
+        .player-skip-indicator .skip-text {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 4px;
+        }
+
+        @keyframes skip-ripple {
+            0% { transform: translateY(-50%) scale(0.8); opacity: 0; }
+            50% { transform: translateY(-50%) scale(1.1); opacity: 1; }
+            100% { transform: translateY(-50%) scale(1); opacity: 0; }
+        }
+
+        /* Center play/pause indicator */
+        .player-center-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .player-center-indicator.visible {
+            animation: center-indicator 0.5s ease-out;
+        }
+
+        .player-center-indicator svg {
+            width: 48px;
+            height: 48px;
+            display: none;
+        }
+
+        .player-center-indicator.show-play .play-icon {
+            display: block;
+        }
+
+        .player-center-indicator.show-pause .pause-icon {
+            display: block;
+        }
+
+        @keyframes center-indicator {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+            30% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+        }
+
+        /* Adjustment indicator (volume/brightness) */
+        .player-adjustment-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .player-adjustment-indicator.visible {
+            opacity: 1;
+        }
+
+        .player-adjustment-indicator .adjustment-icon {
+            width: 32px;
+            height: 32px;
+            color: white;
+        }
+
+        .player-adjustment-indicator .adjustment-icon svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .player-adjustment-indicator .adjustment-bar {
+            width: 6px;
+            height: 100px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column-reverse;
+        }
+
+        .player-adjustment-indicator .adjustment-fill {
+            width: 100%;
+            background: white;
+            border-radius: 3px;
+            transition: height 0.1s ease;
+        }
+
+        /* Seek preview */
+        .player-seek-preview {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 24px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .player-seek-preview.visible {
+            opacity: 1;
+        }
+
+        /* Loading spinner */
+        .player-loading-spinner {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            z-index: 15;
+        }
+
+        .player-loading-spinner.visible {
+            opacity: 1;
+        }
+
+        .player-loading-spinner .spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Control bar */
+        .player-control-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+            z-index: 30;
+            opacity: 0;
+            transform: translateY(100%);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        .player-control-bar.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Control buttons */
+        .player-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 44px;
+            min-height: 44px;
+            padding: 8px;
+            background: transparent;
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.2s ease;
+        }
+
+        .player-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .player-btn:active {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .player-btn svg {
+            width: 24px;
+            height: 24px;
+        }
+
+        /* Play/pause button icons */
+        .play-pause-btn .pause-icon {
+            display: none;
+        }
+
+        .play-pause-btn.playing .play-icon {
+            display: none;
+        }
+
+        .play-pause-btn.playing .pause-icon {
+            display: block;
+        }
+
+        /* Volume button icons */
+        .volume-btn .volume-muted {
+            display: none;
+        }
+
+        .volume-btn.muted .volume-high {
+            display: none;
+        }
+
+        .volume-btn.muted .volume-muted {
+            display: block;
+        }
+
+        /* Fullscreen button icons */
+        .fullscreen-btn .fullscreen-exit {
+            display: none;
+        }
+
+        .fullscreen-btn.is-fullscreen .fullscreen-enter {
+            display: none;
+        }
+
+        .fullscreen-btn.is-fullscreen .fullscreen-exit {
+            display: block;
+        }
+
+        /* Quality button */
+        .quality-btn {
+            gap: 4px;
+            padding: 8px 12px;
+        }
+
+        .quality-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .quality-btn .quality-label {
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        /* Captions button */
+        .captions-btn.active {
+            background: rgba(59, 130, 246, 0.5);
+        }
+
+        /* Progress container */
+        .player-progress-container {
+            flex: 1;
+            position: relative;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .player-progress-bar {
+            position: relative;
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 2px;
+            overflow: visible;
+        }
+
+        .player-progress-container:hover .player-progress-bar {
+            height: 6px;
+        }
+
+        .player-progress-buffered {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 2px;
+            pointer-events: none;
+        }
+
+        .player-progress-played {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            background: #3b82f6;
+            border-radius: 2px;
+            pointer-events: none;
+        }
+
+        .player-progress-thumb {
+            position: absolute;
+            top: 50%;
+            width: 14px;
+            height: 14px;
+            background: #3b82f6;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+        }
+
+        .player-progress-container:hover .player-progress-thumb {
+            opacity: 1;
+        }
+
+        .player-progress-tooltip {
+            position: absolute;
+            bottom: 100%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+            margin-bottom: 8px;
+        }
+
+        .player-progress-tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Time display */
+        .player-time-display {
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            color: white;
+            min-width: 90px;
+            text-align: center;
+        }
+
+        /* Controls right section */
+        .player-controls-right {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* Quality modal */
+        .player-quality-modal {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 40;
+            display: none;
+        }
+
+        .player-quality-modal.visible {
+            display: block;
+        }
+
+        .quality-modal-backdrop {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+        }
+
+        .quality-modal-content {
+            position: absolute;
+            bottom: 70px;
+            right: 16px;
+            background: #1f2937;
+            border-radius: 8px;
+            overflow: hidden;
+            min-width: 150px;
+        }
+
+        .quality-modal-header {
+            padding: 12px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            color: white;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .quality-modal-options {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .quality-option {
+            padding: 12px 16px;
+            background: transparent;
+            border: none;
+            color: white;
+            text-align: left;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.2s ease;
+        }
+
+        .quality-option:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .quality-option.active {
+            background: rgba(59, 130, 246, 0.3);
+            color: #60a5fa;
+        }
+
+        /* Mobile responsive */
+        @media (max-width: 640px) {
+            .player-control-bar {
+                padding: 8px 12px;
+                gap: 4px;
+            }
+
+            .player-btn {
+                min-width: 40px;
+                min-height: 40px;
+                padding: 6px;
+            }
+
+            .player-btn svg {
+                width: 22px;
+                height: 22px;
+            }
+
+            .quality-btn {
+                padding: 6px 8px;
+            }
+
+            .quality-btn .quality-label {
+                font-size: 11px;
+            }
+
+            .player-time-display {
+                font-size: 11px;
+                min-width: 80px;
+            }
+
+            .quality-modal-content {
+                bottom: auto;
+                top: 50%;
+                left: 50%;
+                right: auto;
+                transform: translate(-50%, -50%);
+            }
         }
     </style>
 </head>
@@ -57,43 +597,15 @@
         <div x-show="!loading && !error && video" x-cloak>
             <!-- Video Player -->
             <div class="bg-black rounded-xl overflow-hidden mb-6">
-                <div class="aspect-video relative">
+                <div id="player-container" class="aspect-video relative player-container">
                     <video
                         id="player"
-                        controls
                         preload="auto"
                         playsinline
                         :poster="video?.thumbnail_url"
                     >
                     </video>
-                    <!-- Video Controls Overlay -->
-                    <div class="absolute bottom-16 right-4 z-10 flex gap-2">
-                        <!-- Captions Toggle -->
-                        <button
-                            x-show="video?.captions_url"
-                            @click="toggleCaptions()"
-                            :class="captionsEnabled ? 'bg-blue-600' : 'bg-dark-800/90'"
-                            class="text-white text-sm px-3 py-2 rounded border border-dark-600 cursor-pointer hover:bg-dark-700 flex items-center gap-1"
-                            title="Toggle captions"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                            </svg>
-                            <span>CC</span>
-                        </button>
-                        <!-- Quality Selector -->
-                        <select
-                            x-show="hlsLevels.length > 1"
-                            x-model="selectedQuality"
-                            @change="changeQuality($event.target.value)"
-                            class="bg-dark-800/90 text-white text-sm px-3 py-2 rounded border border-dark-600 cursor-pointer hover:bg-dark-700"
-                        >
-                            <option value="-1">Auto</option>
-                            <template x-for="(level, index) in hlsLevels" :key="index">
-                                <option :value="index" x-text="level.height + 'p'"></option>
-                            </template>
-                        </select>
-                    </div>
+                    <!-- Custom controls are injected by VLogPlayerControls -->
                 </div>
             </div>
 
@@ -242,6 +754,7 @@
                 loading: true,
                 error: null,
                 player: null,
+                playerControls: null,
                 analytics: null,
                 hls: null,
                 hlsLevels: [],
@@ -286,6 +799,7 @@
                 initPlayer() {
                     const self = this;
                     const video = document.getElementById('player');
+                    const container = document.getElementById('player-container');
                     const streamUrl = this.video.stream_url;
 
                     debugLog('Initializing hls.js with source:', streamUrl);
@@ -305,6 +819,10 @@
                             debugLog('HLS manifest parsed, levels:', data.levels);
                             // Populate quality levels for selector (sorted by height descending)
                             this.hlsLevels = data.levels.slice().sort((a, b) => b.height - a.height);
+                            // Update custom player controls with quality levels
+                            if (this.playerControls) {
+                                this.playerControls.setQualities(this.hlsLevels, -1);
+                            }
                         });
 
                         this.hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
@@ -347,6 +865,17 @@
                         return;
                     }
 
+                    // Initialize custom player controls
+                    this.playerControls = new VLogPlayerControls(container, video, {
+                        onQualityChange: (index) => this.changeQuality(index),
+                        onCaptionsToggle: () => this.toggleCaptions()
+                    });
+
+                    // Set captions availability
+                    if (this.video.captions_url) {
+                        this.playerControls.setCaptionsAvailable(true);
+                    }
+
                     // Initialize analytics
                     this.analytics = new PlaybackAnalytics(this.video.id, {
                         currentTime: () => video.currentTime,
@@ -368,6 +897,9 @@
                     // Handle page unload
                     window.addEventListener('beforeunload', () => {
                         this.analytics.endSession(false);
+                        if (this.playerControls) {
+                            this.playerControls.destroy();
+                        }
                     });
 
                     // Send heartbeat when tab becomes hidden
@@ -411,6 +943,10 @@
                         this.captionsTrack.track.mode = 'showing';
                         this.captionsEnabled = true;
                     }
+                    // Update player controls button state
+                    if (this.playerControls) {
+                        this.playerControls.setCaptionsEnabled(this.captionsEnabled);
+                    }
                     debugLog('Captions:', this.captionsEnabled ? 'on' : 'off');
                 },
 
@@ -439,6 +975,7 @@
                             debugLog('Quality set to', targetLevel.height + 'p');
                         }
                     }
+                    this.selectedQuality = String(idx);
                 }
             };
         }
