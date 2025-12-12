@@ -1189,6 +1189,66 @@ async def update_video(
     return {"status": "ok"}
 
 
+@app.post("/api/videos/{video_id}/publish")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def publish_video(request: Request, video_id: int):
+    """Publish a video (make it visible on the public site)."""
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if video["deleted_at"] is not None:
+        raise HTTPException(status_code=400, detail="Cannot publish a deleted video")
+
+    # Idempotent: skip if already published
+    if video["published_at"] is not None:
+        return {"status": "ok", "published": True}
+
+    await db_execute_with_retry(
+        videos.update().where(videos.c.id == video_id).values(published_at=datetime.now(timezone.utc))
+    )
+
+    log_audit(
+        AuditAction.VIDEO_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        details={"action": "publish"},
+    )
+
+    return {"status": "ok", "published": True}
+
+
+@app.post("/api/videos/{video_id}/unpublish")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def unpublish_video(request: Request, video_id: int):
+    """Unpublish a video (hide it from the public site)."""
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if video["deleted_at"] is not None:
+        raise HTTPException(status_code=400, detail="Cannot unpublish a deleted video")
+
+    # Idempotent: skip if already unpublished
+    if video["published_at"] is None:
+        return {"status": "ok", "published": False}
+
+    await db_execute_with_retry(videos.update().where(videos.c.id == video_id).values(published_at=None))
+
+    log_audit(
+        AuditAction.VIDEO_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        details={"action": "unpublish"},
+    )
+
+    return {"status": "ok", "published": False}
+
+
 @app.get("/api/videos/{video_id}/tags")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_tags(request: Request, video_id: int) -> List[VideoTagInfo]:
