@@ -225,6 +225,12 @@
                                             class="px-2 py-1 rounded text-sm"
                                             x-text="video.status"
                                         ></span>
+                                        <span
+                                            x-show="video.status === 'ready'"
+                                            :class="video.published_at ? 'bg-emerald-500/20 text-emerald-400' : 'bg-dark-600 text-dark-400'"
+                                            class="px-2 py-1 rounded text-sm"
+                                            x-text="video.published_at ? 'published' : 'draft'"
+                                        ></span>
                                         <!-- Progress details for processing videos -->
                                         <template x-if="video.status === 'processing' && progressData[video.id]">
                                             <div class="text-xs space-y-1 mt-2">
@@ -306,6 +312,13 @@
                                             @click="retryVideo(video.id)"
                                             class="text-yellow-400 hover:text-yellow-300 text-sm"
                                         >Retry</button>
+                                        <button
+                                            x-show="video.status === 'ready'"
+                                            @click="togglePublish(video)"
+                                            :class="video.published_at ? 'text-orange-400 hover:text-orange-300' : 'text-emerald-400 hover:text-emerald-300'"
+                                            class="text-sm"
+                                            x-text="video.published_at ? 'Unpublish' : 'Publish'"
+                                        ></button>
                                         <button
                                             @click="deleteVideo(video.id)"
                                             class="text-red-400 hover:text-red-300 text-sm"
@@ -1644,6 +1657,17 @@
                         await this.loadVideos();
                     } catch (e) {
                         alert('Failed to retry: ' + e.message);
+                    }
+                },
+
+                async togglePublish(video) {
+                    const action = video.published_at ? 'unpublish' : 'publish';
+                    try {
+                        await this.apiFetch(`/api/videos/${video.id}/${action}`, { method: 'POST' });
+                        // Update the video in-place for instant feedback
+                        video.published_at = action === 'publish' ? new Date().toISOString() : null;
+                    } catch (e) {
+                        alert(`Failed to ${action}: ` + e.message);
                     }
                 },
 

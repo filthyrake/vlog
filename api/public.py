@@ -278,6 +278,7 @@ async def list_videos(
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .where(videos.c.status == VideoStatus.READY)
         .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
+        .where(videos.c.published_at.is_not(None))  # Only show published videos
         .order_by(videos.c.published_at.desc())
         .limit(limit)
         .offset(offset)
@@ -346,6 +347,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .where(videos.c.slug == slug)
         .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
+        .where(videos.c.published_at.is_not(None))  # Only show published videos
     )
 
     row = await fetch_one_with_retry(query)
@@ -519,7 +521,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
     query = sa.text("""
         SELECT c.*, COUNT(v.id) as video_count
         FROM categories c
-        LEFT JOIN videos v ON v.category_id = c.id AND v.status = 'ready' AND v.deleted_at IS NULL
+        LEFT JOIN videos v ON v.category_id = c.id AND v.status = 'ready' AND v.deleted_at IS NULL AND v.published_at IS NOT NULL
         GROUP BY c.id
         ORDER BY c.name
     """)
@@ -552,13 +554,16 @@ async def get_category(request: Request, slug: str) -> CategoryResponse:
     if not row:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    # Get video count (exclude soft-deleted)
+    # Get video count (only published, non-deleted)
     count_query = (
         sa.select(sa.func.count())
         .select_from(videos)
         .where(
             sa.and_(
-                videos.c.category_id == row["id"], videos.c.status == VideoStatus.READY, videos.c.deleted_at.is_(None)
+                videos.c.category_id == row["id"],
+                videos.c.status == VideoStatus.READY,
+                videos.c.deleted_at.is_(None),
+                videos.c.published_at.is_not(None),
             )
         )
     )
@@ -582,7 +587,7 @@ async def list_tags(request: Request) -> List[TagResponse]:
         SELECT t.*, COUNT(vt.video_id) as video_count
         FROM tags t
         LEFT JOIN video_tags vt ON vt.tag_id = t.id
-        LEFT JOIN videos v ON v.id = vt.video_id AND v.status = 'ready' AND v.deleted_at IS NULL
+        LEFT JOIN videos v ON v.id = vt.video_id AND v.status = 'ready' AND v.deleted_at IS NULL AND v.published_at IS NOT NULL
         GROUP BY t.id
         ORDER BY t.name
     """)
@@ -614,13 +619,14 @@ async def get_tag(request: Request, slug: str) -> TagResponse:
     if not row:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # Get video count (only count ready, non-deleted videos)
+    # Get video count (only count published, non-deleted videos)
     count_query = (
         sa.select(sa.func.count(sa.distinct(videos.c.id)))
         .select_from(video_tags.join(videos, videos.c.id == video_tags.c.video_id))
         .where(video_tags.c.tag_id == row["id"])
         .where(videos.c.status == VideoStatus.READY)
         .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
     )
     count = await fetch_val_with_retry(count_query)
 
