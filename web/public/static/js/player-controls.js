@@ -14,8 +14,22 @@ class VLogPlayerControls {
             swipeThreshold: 30,
             brightnessMin: 0.5,
             brightnessMax: 1.5,
+            // Tap zone boundaries for skip/play-pause detection
+            leftZoneEnd: 0.33,
+            rightZoneStart: 0.67,
+            // Double-tap distance threshold in pixels
+            doubleTapDistanceThreshold: 50,
+            // Seek gesture sensitivity (pixels per second of seek)
+            seekPixelsPerSecond: 100 / 30,  // 100px = 30 seconds
+            // Vertical swipe sensitivity in pixels
+            verticalSwipeSensitivity: 150,
+            // Indicator display duration in ms
+            indicatorDisplayDuration: 500,
             ...options
         };
+
+        // Bound event handlers for proper cleanup
+        this._boundHandlers = {};
 
         // State
         this.controlsVisible = true;
@@ -56,6 +70,8 @@ class VLogPlayerControls {
         // Gesture overlay (captures touch events above video)
         this.gestureOverlay = document.createElement('div');
         this.gestureOverlay.className = 'player-gesture-overlay';
+        this.gestureOverlay.setAttribute('aria-label', 'Video gesture controls');
+        this.gestureOverlay.setAttribute('role', 'application');
         this.container.appendChild(this.gestureOverlay);
 
         // Skip indicators
@@ -152,12 +168,12 @@ class VLogPlayerControls {
                     </svg>
                     <span class="quality-label">Auto</span>
                 </button>
-                <button class="player-btn captions-btn" title="Captions" style="display: none;">
+                <button class="player-btn captions-btn hidden" title="Captions">
                     <svg viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z"/>
                     </svg>
                 </button>
-                <button class="player-btn pip-btn" title="Picture in Picture" style="display: none;">
+                <button class="player-btn pip-btn hidden" title="Picture in Picture">
                     <svg viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/>
                     </svg>
@@ -205,32 +221,49 @@ class VLogPlayerControls {
     }
 
     bindEvents() {
-        // Video events
-        this.video.addEventListener('play', () => this.updatePlayPauseButton());
-        this.video.addEventListener('pause', () => this.updatePlayPauseButton());
-        this.video.addEventListener('timeupdate', () => this.updateProgress());
-        this.video.addEventListener('progress', () => this.updateBuffered());
-        this.video.addEventListener('loadedmetadata', () => this.updateTimeDisplay());
-        this.video.addEventListener('durationchange', () => this.updateTimeDisplay());
-        this.video.addEventListener('waiting', () => this.showLoading());
-        this.video.addEventListener('canplay', () => this.hideLoading());
-        this.video.addEventListener('playing', () => this.hideLoading());
-        this.video.addEventListener('volumechange', () => this.updateVolumeButton());
-        this.video.addEventListener('ended', () => this.showControls());
-
-        // PiP events
-        this.video.addEventListener('enterpictureinpicture', () => {
+        // Create bound handlers for later removal
+        this._boundHandlers.onPlay = () => this.updatePlayPauseButton();
+        this._boundHandlers.onPause = () => this.updatePlayPauseButton();
+        this._boundHandlers.onTimeUpdate = this._throttle(() => this.updateProgress(), 250);
+        this._boundHandlers.onProgress = () => this.updateBuffered();
+        this._boundHandlers.onLoadedMetadata = () => this.updateTimeDisplay();
+        this._boundHandlers.onDurationChange = () => this.updateTimeDisplay();
+        this._boundHandlers.onWaiting = () => this.showLoading();
+        this._boundHandlers.onCanPlay = () => this.hideLoading();
+        this._boundHandlers.onPlaying = () => this.hideLoading();
+        this._boundHandlers.onVolumeChange = () => this.updateVolumeButton();
+        this._boundHandlers.onEnded = () => this.showControls();
+        this._boundHandlers.onEnterPiP = () => {
             this.isInPiP = true;
             this.hideControls();
-        });
-        this.video.addEventListener('leavepictureinpicture', () => {
+        };
+        this._boundHandlers.onLeavePiP = () => {
             this.isInPiP = false;
             this.showControls();
-        });
+        };
+        this._boundHandlers.onFullscreenChange = () => this.updateFullscreenButton();
+        this._boundHandlers.onKeyDown = (e) => this.handleKeyboard(e);
+
+        // Video events
+        this.video.addEventListener('play', this._boundHandlers.onPlay);
+        this.video.addEventListener('pause', this._boundHandlers.onPause);
+        this.video.addEventListener('timeupdate', this._boundHandlers.onTimeUpdate);
+        this.video.addEventListener('progress', this._boundHandlers.onProgress);
+        this.video.addEventListener('loadedmetadata', this._boundHandlers.onLoadedMetadata);
+        this.video.addEventListener('durationchange', this._boundHandlers.onDurationChange);
+        this.video.addEventListener('waiting', this._boundHandlers.onWaiting);
+        this.video.addEventListener('canplay', this._boundHandlers.onCanPlay);
+        this.video.addEventListener('playing', this._boundHandlers.onPlaying);
+        this.video.addEventListener('volumechange', this._boundHandlers.onVolumeChange);
+        this.video.addEventListener('ended', this._boundHandlers.onEnded);
+
+        // PiP events
+        this.video.addEventListener('enterpictureinpicture', this._boundHandlers.onEnterPiP);
+        this.video.addEventListener('leavepictureinpicture', this._boundHandlers.onLeavePiP);
 
         // Fullscreen events
-        document.addEventListener('fullscreenchange', () => this.updateFullscreenButton());
-        document.addEventListener('webkitfullscreenchange', () => this.updateFullscreenButton());
+        document.addEventListener('fullscreenchange', this._boundHandlers.onFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', this._boundHandlers.onFullscreenChange);
 
         // Control bar buttons
         this.playPauseBtn.addEventListener('click', (e) => {
@@ -287,13 +320,26 @@ class VLogPlayerControls {
         this.controlBar.addEventListener('mouseenter', () => this.showControls());
         this.controlBar.addEventListener('mousemove', () => this.showControls());
 
-        // Keyboard controls
-        document.addEventListener('keydown', (e) => this.handleKeyboard(e));
+        // Keyboard controls - scoped to container for focus-based handling
+        this.container.setAttribute('tabindex', '0');
+        this.container.addEventListener('keydown', this._boundHandlers.onKeyDown);
 
         // Check PiP support
         if (document.pictureInPictureEnabled && !this.video.disablePictureInPicture) {
-            this.pipBtn.style.display = '';
+            this.pipBtn.classList.remove('hidden');
         }
+    }
+
+    // Throttle utility to limit function call frequency
+    _throttle(func, limit) {
+        let inThrottle = false;
+        return function(...args) {
+            if (!inThrottle) {
+                func.apply(this, args);
+                inThrottle = true;
+                setTimeout(() => inThrottle = false, limit);
+            }
+        };
     }
 
     // Playback controls
@@ -375,16 +421,24 @@ class VLogPlayerControls {
         let percent = (clientX - rect.left) / rect.width;
         percent = Math.max(0, Math.min(1, percent));
 
-        const seekTime = percent * this.video.duration;
-        this.video.currentTime = seekTime;
+        // Only seek if video metadata is loaded and duration is valid
+        if (this.video.readyState >= 1 && Number.isFinite(this.video.duration)) {
+            const seekTime = percent * this.video.duration;
+            this.video.currentTime = seekTime;
 
-        this.progressPlayed.style.width = `${percent * 100}%`;
-        this.progressThumb.style.left = `${percent * 100}%`;
+            this.progressPlayed.style.width = `${percent * 100}%`;
+            this.progressThumb.style.left = `${percent * 100}%`;
 
-        // Show tooltip
-        this.progressTooltip.textContent = this.formatTime(seekTime);
-        this.progressTooltip.style.left = `${percent * 100}%`;
-        this.progressTooltip.classList.add('visible');
+            // Show tooltip
+            this.progressTooltip.textContent = this.formatTime(seekTime);
+            this.progressTooltip.style.left = `${percent * 100}%`;
+            this.progressTooltip.classList.add('visible');
+        } else {
+            // Show tooltip at current position even if seeking is not possible
+            this.progressTooltip.textContent = '0:00';
+            this.progressTooltip.style.left = `${percent * 100}%`;
+            this.progressTooltip.classList.add('visible');
+        }
     }
 
     showProgressTooltip(e) {
@@ -485,7 +539,7 @@ class VLogPlayerControls {
 
     // Captions
     setCaptionsAvailable(available) {
-        this.captionsBtn.style.display = available ? '' : 'none';
+        this.captionsBtn.classList.toggle('hidden', !available);
     }
 
     setCaptionsEnabled(enabled) {
@@ -507,7 +561,10 @@ class VLogPlayerControls {
                 await this.video.requestPictureInPicture();
             }
         } catch (err) {
-            console.error('PiP error:', err);
+            // Only log unexpected errors; NotAllowedError is expected if user cancels PiP
+            if (!(err && err.name === 'NotAllowedError')) {
+                console.error('PiP error:', err);
+            }
         }
     }
 
@@ -540,7 +597,11 @@ class VLogPlayerControls {
                 }
             }
         } catch (err) {
-            console.error('Fullscreen error:', err);
+            // Filter out expected errors (user cancellation, permission denied, etc.)
+            const expectedErrorNames = ['AbortError', 'NotAllowedError', 'SecurityError'];
+            if (!(err && expectedErrorNames.includes(err.name))) {
+                console.error('Fullscreen error:', err);
+            }
         }
     }
 
@@ -644,7 +705,7 @@ class VLogPlayerControls {
     handleTouchEnd(e) {
         const touchDuration = Date.now() - this.touchStartTime;
 
-        if (!this.isGesturing && touchDuration < 300) {
+        if (!this.isGesturing && touchDuration < this.options.doubleTapDelay) {
             // This was a tap, not a swipe
             this.handleTap(e);
         }
@@ -658,9 +719,15 @@ class VLogPlayerControls {
     }
 
     handleSeekGesture(deltaX) {
-        // Calculate seek amount (scale: 100px = 30 seconds)
-        const seekAmount = (deltaX / 100) * 30;
-        const newTime = Math.max(0, Math.min(this.video.duration, this.gestureStartValue + seekAmount));
+        // Calculate seek amount using configurable sensitivity
+        const seekAmount = deltaX / this.options.seekPixelsPerSecond;
+        let newTime;
+        if (Number.isFinite(this.video.duration)) {
+            newTime = Math.max(0, Math.min(this.video.duration, this.gestureStartValue + seekAmount));
+        } else {
+            // If duration is not available, do not seek
+            newTime = this.gestureStartValue;
+        }
 
         // Update seek preview
         this.seekPreview.textContent = this.formatTime(newTime);
@@ -672,7 +739,7 @@ class VLogPlayerControls {
 
     handleVolumeGesture(deltaY) {
         // Invert deltaY (swipe up = increase)
-        const volumeChange = -deltaY / 150;
+        const volumeChange = -deltaY / this.options.verticalSwipeSensitivity;
         const newVolume = Math.max(0, Math.min(1, this.gestureStartValue + volumeChange));
 
         this.setVolume(newVolume);
@@ -681,7 +748,7 @@ class VLogPlayerControls {
 
     handleBrightnessGesture(deltaY) {
         // Invert deltaY (swipe up = increase)
-        const brightnessChange = -deltaY / 150;
+        const brightnessChange = -deltaY / this.options.verticalSwipeSensitivity;
         const newBrightness = Math.max(this.options.brightnessMin,
             Math.min(this.options.brightnessMax, this.gestureStartValue + brightnessChange));
 
@@ -708,15 +775,17 @@ class VLogPlayerControls {
     }
 
     handleTap(e) {
+        // Clear any pending tap timeout to prevent race conditions
+        clearTimeout(this.tapTimeout);
+
         const now = Date.now();
         const touch = e.changedTouches ? e.changedTouches[0] : e;
         const tapX = touch.clientX;
 
         // Check for double tap
         if (now - this.lastTapTime < this.options.doubleTapDelay &&
-            Math.abs(tapX - this.lastTapX) < 50) {
+            Math.abs(tapX - this.lastTapX) < this.options.doubleTapDistanceThreshold) {
             // Double tap
-            clearTimeout(this.tapTimeout);
             this.handleDoubleTap(tapX);
             this.lastTapTime = 0;
         } else {
@@ -738,12 +807,12 @@ class VLogPlayerControls {
         const rect = this.gestureOverlay.getBoundingClientRect();
         const relativeX = (tapX - rect.left) / rect.width;
 
-        if (relativeX < 0.33) {
-            // Left third - skip back
+        if (relativeX < this.options.leftZoneEnd) {
+            // Left zone - skip back
             this.skip(-this.options.skipSeconds);
             this.showSkipIndicator('left');
-        } else if (relativeX > 0.67) {
-            // Right third - skip forward
+        } else if (relativeX > this.options.rightZoneStart) {
+            // Right zone - skip forward
             this.skip(this.options.skipSeconds);
             this.showSkipIndicator('right');
         } else {
@@ -754,7 +823,12 @@ class VLogPlayerControls {
     }
 
     skip(seconds) {
-        this.video.currentTime = Math.max(0, Math.min(this.video.duration, this.video.currentTime + seconds));
+        if (Number.isFinite(this.video.duration)) {
+            this.video.currentTime = Math.max(0, Math.min(this.video.duration, this.video.currentTime + seconds));
+        } else {
+            // If duration is not finite, just add seconds but clamp to zero
+            this.video.currentTime = Math.max(0, this.video.currentTime + seconds);
+        }
     }
 
     showSkipIndicator(side) {
@@ -762,7 +836,7 @@ class VLogPlayerControls {
         indicator.classList.add('visible');
         setTimeout(() => {
             indicator.classList.remove('visible');
-        }, 500);
+        }, this.options.indicatorDisplayDuration);
     }
 
     showCenterIndicator() {
@@ -771,7 +845,7 @@ class VLogPlayerControls {
         this.centerPlayIndicator.classList.add('visible');
         setTimeout(() => {
             this.centerPlayIndicator.classList.remove('visible');
-        }, 500);
+        }, this.options.indicatorDisplayDuration);
     }
 
     // Mouse click handling (desktop)
@@ -788,10 +862,10 @@ class VLogPlayerControls {
         const rect = this.gestureOverlay.getBoundingClientRect();
         const relativeX = (e.clientX - rect.left) / rect.width;
 
-        if (relativeX < 0.33) {
+        if (relativeX < this.options.leftZoneEnd) {
             this.skip(-this.options.skipSeconds);
             this.showSkipIndicator('left');
-        } else if (relativeX > 0.67) {
+        } else if (relativeX > this.options.rightZoneStart) {
             this.skip(this.options.skipSeconds);
             this.showSkipIndicator('right');
         } else {
@@ -848,7 +922,60 @@ class VLogPlayerControls {
     destroy() {
         clearTimeout(this.hideControlsTimeout);
         clearTimeout(this.tapTimeout);
-        // Remove event listeners would go here if needed
+
+        // Remove video event listeners
+        this.video.removeEventListener('play', this._boundHandlers.onPlay);
+        this.video.removeEventListener('pause', this._boundHandlers.onPause);
+        this.video.removeEventListener('timeupdate', this._boundHandlers.onTimeUpdate);
+        this.video.removeEventListener('progress', this._boundHandlers.onProgress);
+        this.video.removeEventListener('loadedmetadata', this._boundHandlers.onLoadedMetadata);
+        this.video.removeEventListener('durationchange', this._boundHandlers.onDurationChange);
+        this.video.removeEventListener('waiting', this._boundHandlers.onWaiting);
+        this.video.removeEventListener('canplay', this._boundHandlers.onCanPlay);
+        this.video.removeEventListener('playing', this._boundHandlers.onPlaying);
+        this.video.removeEventListener('volumechange', this._boundHandlers.onVolumeChange);
+        this.video.removeEventListener('ended', this._boundHandlers.onEnded);
+        this.video.removeEventListener('enterpictureinpicture', this._boundHandlers.onEnterPiP);
+        this.video.removeEventListener('leavepictureinpicture', this._boundHandlers.onLeavePiP);
+
+        // Remove document event listeners
+        document.removeEventListener('fullscreenchange', this._boundHandlers.onFullscreenChange);
+        document.removeEventListener('webkitfullscreenchange', this._boundHandlers.onFullscreenChange);
+
+        // Remove container event listener
+        this.container.removeEventListener('keydown', this._boundHandlers.onKeyDown);
+
+        // Remove created DOM elements
+        if (this.gestureOverlay && this.gestureOverlay.parentNode) {
+            this.gestureOverlay.parentNode.removeChild(this.gestureOverlay);
+        }
+        if (this.skipIndicatorLeft && this.skipIndicatorLeft.parentNode) {
+            this.skipIndicatorLeft.parentNode.removeChild(this.skipIndicatorLeft);
+        }
+        if (this.skipIndicatorRight && this.skipIndicatorRight.parentNode) {
+            this.skipIndicatorRight.parentNode.removeChild(this.skipIndicatorRight);
+        }
+        if (this.centerPlayIndicator && this.centerPlayIndicator.parentNode) {
+            this.centerPlayIndicator.parentNode.removeChild(this.centerPlayIndicator);
+        }
+        if (this.adjustmentIndicator && this.adjustmentIndicator.parentNode) {
+            this.adjustmentIndicator.parentNode.removeChild(this.adjustmentIndicator);
+        }
+        if (this.seekPreview && this.seekPreview.parentNode) {
+            this.seekPreview.parentNode.removeChild(this.seekPreview);
+        }
+        if (this.loadingSpinner && this.loadingSpinner.parentNode) {
+            this.loadingSpinner.parentNode.removeChild(this.loadingSpinner);
+        }
+        if (this.controlBar && this.controlBar.parentNode) {
+            this.controlBar.parentNode.removeChild(this.controlBar);
+        }
+        if (this.qualityModal && this.qualityModal.parentNode) {
+            this.qualityModal.parentNode.removeChild(this.qualityModal);
+        }
+
+        // Clear bound handlers reference
+        this._boundHandlers = {};
     }
 }
 
