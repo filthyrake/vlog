@@ -205,10 +205,12 @@ class TestCategoryCRUDWorkflow:
         assert test_cat is not None
         assert test_cat["video_count"] == 3
 
-        # Step 4: Try to delete category with videos (should fail or handle gracefully)
-        admin_client.delete(f"/api/categories/{category_id}")
-        # Depends on implementation - either fails or cascades
-        # Let's assume it moves videos to "Uncategorized"
+        # Step 4: Try to delete category with videos
+        # Implementation note: This may fail or cascade depending on API behavior
+        delete_response = admin_client.delete(f"/api/categories/{category_id}")
+        # Accept either: rejection (400/409) or successful cascade delete
+        assert delete_response.status_code in [200, 204, 400, 409], \
+            f"Unexpected status code {delete_response.status_code} when deleting category with videos"
 
         # Step 5: Create another category and move videos
         create_response2 = admin_client.post(
@@ -247,7 +249,7 @@ class TestSoftDeleteRestoreWorkflow:
         public_client,
         test_database,
         test_storage,
-        sample_ready_video,
+        sample_video,
     ):
         """
         Test soft-delete workflow:
@@ -258,8 +260,8 @@ class TestSoftDeleteRestoreWorkflow:
         5. Restore video
         6. Video reappears in public API
         """
-        video_id = sample_ready_video["id"]
-        slug = sample_ready_video["slug"]
+        video_id = sample_video["id"]
+        slug = sample_video["slug"]
 
         # Step 1: Video is visible
         list_response = public_client.get("/api/videos")
@@ -311,7 +313,7 @@ class TestSoftDeleteRestoreWorkflow:
         admin_client,
         test_database,
         test_storage,
-        sample_ready_video,
+        sample_video,
     ):
         """
         Test permanent deletion:
@@ -320,8 +322,8 @@ class TestSoftDeleteRestoreWorkflow:
         3. Permanent delete
         4. Video and files are removed
         """
-        video_id = sample_ready_video["id"]
-        slug = sample_ready_video["slug"]
+        video_id = sample_video["id"]
+        slug = sample_video["slug"]
 
         # Create video files
         video_dir = test_storage["videos"] / slug
@@ -358,7 +360,7 @@ class TestAnalyticsWorkflow:
         self,
         public_client,
         test_database,
-        sample_ready_video,
+        sample_video,
     ):
         """
         Test analytics tracking:
@@ -367,7 +369,7 @@ class TestAnalyticsWorkflow:
         3. Watch time is tracked
         4. Unique viewers vs total views
         """
-        video_id = sample_ready_video["id"]
+        video_id = sample_video["id"]
 
         # Simulate 3 different viewers (using different cookies)
         sessions = []

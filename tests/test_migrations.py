@@ -75,9 +75,9 @@ class TestMigrations:
         inspector = sa.inspect(engine)
         tables = inspector.get_table_names()
 
-        # Only alembic_version (or no tables) should remain
+        # Only alembic_version (or no tables) should remain after downgrade to base
         assert set(tables).issubset({"alembic_version"}), \
-            f"Tables remaining after downgrade: {tables}"
+            f"Unexpected tables after downgrade to base. Expected only 'alembic_version' or empty, got: {tables}"
         engine.dispose()
 
     @pytest.mark.asyncio

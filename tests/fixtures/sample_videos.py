@@ -23,6 +23,11 @@ def create_minimal_mp4(size_bytes: int = 1024) -> bytes:
         Bytes representing a minimal MP4 file
     """
     # MP4 file signature (ftyp atom)
+    # This creates a minimal but valid MP4 container structure with required atoms.
+    # The file is not playable (no actual media data), but it's valid for:
+    # - File type detection and validation
+    # - Upload and storage tests
+    # - Metadata parsing tests
     ftyp = b"\x00\x00\x00\x20"  # size
     ftyp += b"ftyp"  # type
     ftyp += b"isom"  # major brand
