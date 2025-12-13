@@ -1043,3 +1043,167 @@ class TestCombinedFiltersAndSorting:
         data = response.json()
         assert len(data) == 1
         assert data[0]["slug"] == "perfect-match"
+
+
+class TestInvalidInputValidation:
+    """Test validation of invalid input parameters."""
+
+    def test_invalid_duration_value(self, public_client):
+        """Test that invalid duration values return 400 error."""
+        response = public_client.get("/api/videos?duration=invalid")
+        assert response.status_code == 400
+        assert "Invalid duration value" in response.json()["detail"]
+
+    def test_invalid_duration_multiple_values(self, public_client):
+        """Test that one invalid duration among valid ones returns 400 error."""
+        response = public_client.get("/api/videos?duration=short,xshort,medium")
+        assert response.status_code == 400
+        assert "Invalid duration value" in response.json()["detail"]
+
+    def test_invalid_quality_silently_ignored(self, public_client):
+        """Test that invalid quality values are silently ignored (existing behavior)."""
+        # Invalid quality values are filtered out, not rejected
+        response = public_client.get("/api/videos?quality=8k,invalid")
+        assert response.status_code == 200
+        # This tests current behavior - invalid qualities are just filtered out
+
+    def test_invalid_sort_value(self, public_client):
+        """Test that invalid sort values return 400 error."""
+        response = public_client.get("/api/videos?sort=popularity")
+        assert response.status_code == 400
+        assert "Invalid sort value" in response.json()["detail"]
+
+    def test_invalid_sort_rating(self, public_client):
+        """Test that invalid sort value 'rating' returns 400 error."""
+        response = public_client.get("/api/videos?sort=rating")
+        assert response.status_code == 400
+        assert "Invalid sort value" in response.json()["detail"]
+
+    def test_invalid_order_value(self, public_client):
+        """Test that invalid order values return 400 error."""
+        response = public_client.get("/api/videos?order=ascending")
+        assert response.status_code == 400
+        assert "Invalid order value" in response.json()["detail"]
+
+    def test_invalid_order_random(self, public_client):
+        """Test that invalid order value 'random' returns 400 error."""
+        response = public_client.get("/api/videos?order=random")
+        assert response.status_code == 400
+        assert "Invalid order value" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_date_from_after_date_to(self, public_client, test_database):
+        """Test that date_from after date_to returns 400 error."""
+        now = datetime.now(timezone.utc)
+        yesterday = now - timedelta(days=1)
+
+        # Create a video
+        await test_database.execute(
+            videos.insert().values(
+                title="Test Video",
+                slug="test-video",
+                duration=600,
+                status=VideoStatus.READY,
+                published_at=now,
+            )
+        )
+
+        # date_from is after date_to
+        response = public_client.get(
+            f"/api/videos?date_from={now.isoformat()}&date_to={yesterday.isoformat()}"
+        )
+        assert response.status_code == 400
+        assert "Invalid date range" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_date_from_equal_to_date_to(self, public_client, test_database):
+        """Test that date_from equal to date_to is valid."""
+        now = datetime.now(timezone.utc)
+
+        # Create a video
+        await test_database.execute(
+            videos.insert().values(
+                title="Test Video",
+                slug="test-video",
+                duration=600,
+                status=VideoStatus.READY,
+                published_at=now,
+            )
+        )
+
+        # date_from equals date_to - should be valid
+        response = public_client.get(
+            f"/api/videos?date_from={now.isoformat()}&date_to={now.isoformat()}"
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_future_date_filter(self, public_client, test_database):
+        """Test filtering with future dates (edge case)."""
+        now = datetime.now(timezone.utc)
+        future = now + timedelta(days=30)
+
+        # Create a video published today
+        await test_database.execute(
+            videos.insert().values(
+                title="Test Video",
+                slug="test-video",
+                duration=600,
+                status=VideoStatus.READY,
+                published_at=now,
+            )
+        )
+
+        # Filter for videos published in the future
+        response = public_client.get(f"/api/videos?date_from={future.isoformat()}")
+        assert response.status_code == 200
+        data = response.json()
+        # Should return empty list since no videos are published in the future
+        assert len(data) == 0
+
+
+class TestTitleSortingCaseSensitivity:
+    """Test case-insensitive title sorting."""
+
+    @pytest.mark.asyncio
+    async def test_title_sorting_case_insensitive(self, public_client, test_database):
+        """Test that title sorting is case-insensitive."""
+        now = datetime.now(timezone.utc)
+
+        # Create videos with mixed case titles
+        await test_database.execute(
+            videos.insert().values(
+                title="Zebra Video",
+                slug="zebra-video",
+                duration=600,
+                status=VideoStatus.READY,
+                published_at=now,
+            )
+        )
+        await test_database.execute(
+            videos.insert().values(
+                title="apple Video",
+                slug="apple-video",
+                duration=600,
+                status=VideoStatus.READY,
+                published_at=now,
+            )
+        )
+        await test_database.execute(
+            videos.insert().values(
+                title="Banana Video",
+                slug="banana-video",
+                duration=600,
+                status=VideoStatus.READY,
+                published_at=now,
+            )
+        )
+
+        response = public_client.get("/api/videos?sort=title&order=asc")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 3
+        # Should be sorted alphabetically regardless of case
+        assert data[0]["slug"] == "apple-video"
+        assert data[1]["slug"] == "banana-video"
+        assert data[2]["slug"] == "zebra-video"

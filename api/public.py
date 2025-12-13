@@ -355,7 +355,13 @@ async def list_videos(
     if duration:
         duration_filters = [d.strip().lower() for d in duration.split(",")]
         duration_conditions = []
+        valid_durations = {DurationFilter.SHORT, DurationFilter.MEDIUM, DurationFilter.LONG}
         for df in duration_filters:
+            if df not in valid_durations:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
+                )
             if df == DurationFilter.SHORT:
                 duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
             elif df == DurationFilter.MEDIUM:
@@ -380,6 +386,11 @@ async def list_videos(
             query = query.where(videos.c.id.in_(quality_subquery))
 
     # Date range filter
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid date range: date_from must be before or equal to date_to"
+        )
     if date_from:
         query = query.where(videos.c.published_at >= date_from)
     if date_to:
@@ -405,20 +416,39 @@ async def list_videos(
             query = query.where(videos.c.id.notin_(transcription_subquery))
 
     # Sorting
-    sort_by = sort or (SortBy.RELEVANCE if search else SortBy.DATE)
-    sort_order = SortOrder.DESC if order.lower() == "desc" else SortOrder.ASC
+    # Validate and convert sort parameter to enum
+    if sort:
+        try:
+            sort_by = SortBy(sort.lower())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid sort value: '{sort}'. Valid values are: relevance, date, duration, views, title"
+            )
+    else:
+        sort_by = SortBy.RELEVANCE if search else SortBy.DATE
 
-    if sort_by == SortBy.DATE or sort_by == "date":
+    # Validate order parameter
+    order_lower = order.lower()
+    if order_lower not in ("asc", "desc"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid order value: '{order}'. Valid values are: asc, desc"
+        )
+    sort_order = SortOrder.DESC if order_lower == "desc" else SortOrder.ASC
+
+    if sort_by == SortBy.DATE:
         query = query.order_by(videos.c.published_at.desc() if sort_order == SortOrder.DESC else videos.c.published_at.asc())
-    elif sort_by == SortBy.DURATION or sort_by == "duration":
+    elif sort_by == SortBy.DURATION:
         query = query.order_by(videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc())
-    elif sort_by == SortBy.VIEWS or sort_by == "views":
+    elif sort_by == SortBy.VIEWS:
         # Use column label with desc()/asc() for type safety
         view_count_col = sa.literal_column("view_count")
         query = query.order_by(view_count_col.desc() if sort_order == SortOrder.DESC else view_count_col.asc())
-    elif sort_by == SortBy.TITLE or sort_by == "title":
-        query = query.order_by(videos.c.title.asc() if sort_order == SortOrder.ASC else videos.c.title.desc())
-    elif sort_by == SortBy.RELEVANCE or sort_by == "relevance":
+    elif sort_by == SortBy.TITLE:
+        # Case-insensitive sorting for better alphabetical ordering
+        query = query.order_by(sa.func.lower(videos.c.title).asc() if sort_order == SortOrder.ASC else sa.func.lower(videos.c.title).desc())
+    elif sort_by == SortBy.RELEVANCE:
         # For relevance, use published date as fallback (most recent first)
         query = query.order_by(videos.c.published_at.desc())
     else:

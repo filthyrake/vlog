@@ -68,8 +68,8 @@ GET /api/videos?search=tutorial&has_transcription=true
 # Find short videos in 1080p or 4K
 GET /api/videos?duration=short&quality=1080p,2160p
 
-# Most viewed videos this month
-GET /api/videos?date_from=2024-01-01&sort=views&order=desc
+# Most viewed videos this month (adjust date_from to first day of current month)
+GET /api/videos?date_from=YYYY-MM-01&sort=views&order=desc
 
 # Longest videos first
 GET /api/videos?sort=duration&order=desc
