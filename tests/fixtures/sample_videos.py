@@ -13,21 +13,17 @@ def create_minimal_mp4(size_bytes: int = 1024) -> bytes:
     """
     Create minimal valid MP4 file data for testing.
 
-    This is a minimal MP4 container with required atoms.
-    Not playable but sufficient for upload/storage tests.
+    Creates a minimal but valid MP4 container structure with required atoms.
+    The file is not playable (no actual media data), but it's valid for:
+    - File type detection and validation
+    - Upload and storage tests
+    - Metadata parsing tests
 
     Args:
         size_bytes: Approximate size in bytes
 
     Returns:
         Bytes representing a minimal MP4 file
-    """
-    """
-    Creates a minimal but valid MP4 container structure with required atoms.
-    The file is not playable (no actual media data), but it's valid for:
-    - File type detection and validation
-    - Upload and storage tests
-    - Metadata parsing tests
     """
     # MP4 file signature (ftyp atom)
     ftyp = b"\x00\x00\x00\x20"  # size
