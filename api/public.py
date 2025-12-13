@@ -355,18 +355,18 @@ async def list_videos(
     if duration:
         duration_filters = [d.strip().lower() for d in duration.split(",")]
         duration_conditions = []
-        valid_durations = {DurationFilter.SHORT, DurationFilter.MEDIUM, DurationFilter.LONG}
+        valid_durations = {DurationFilter.SHORT.value, DurationFilter.MEDIUM.value, DurationFilter.LONG.value}
         for df in duration_filters:
             if df not in valid_durations:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
                 )
-            if df == DurationFilter.SHORT:
+            if df == DurationFilter.SHORT.value:
                 duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
-            elif df == DurationFilter.MEDIUM:
+            elif df == DurationFilter.MEDIUM.value:
                 duration_conditions.append(sa.and_(videos.c.duration >= 300, videos.c.duration <= 1200))  # 5-20 minutes
-            elif df == DurationFilter.LONG:
+            elif df == DurationFilter.LONG.value:
                 duration_conditions.append(videos.c.duration > 1200)  # > 20 minutes
         if duration_conditions:
             query = query.where(sa.or_(*duration_conditions))
