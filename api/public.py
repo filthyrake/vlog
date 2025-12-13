@@ -49,7 +49,7 @@ from api.db_retry import (
     fetch_one_with_retry,
     fetch_val_with_retry,
 )
-from api.enums import TranscriptionStatus, VideoStatus
+from api.enums import DurationFilter, SortBy, SortOrder, TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
 from api.schemas import (
     CategoryResponse,
@@ -258,10 +258,39 @@ async def list_videos(
     category: Optional[str] = None,
     tag: Optional[str] = None,
     search: Optional[str] = None,
+    duration: Optional[str] = Query(
+        default=None, description="Filter by duration: short (<5min), medium (5-20min), long (>20min). Comma-separated."
+    ),
+    quality: Optional[str] = Query(
+        default=None, description="Filter by available quality: 2160p, 1440p, 1080p, 720p, 480p, 360p. Comma-separated."
+    ),
+    date_from: Optional[datetime] = Query(default=None, description="Filter videos published from this date (ISO 8601)"),
+    date_to: Optional[datetime] = Query(default=None, description="Filter videos published until this date (ISO 8601)"),
+    has_transcription: Optional[bool] = Query(
+        default=None, description="Filter by transcription availability (true/false)"
+    ),
+    sort: Optional[str] = Query(default=None, description="Sort by: relevance, date, duration, views, title"),
+    order: Optional[str] = Query(default="desc", description="Sort order: asc or desc"),
     limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
 ) -> List[VideoListResponse]:
-    """List all published videos. Filter by category, tag, or search term."""
+    """
+    List all published videos with advanced filtering and sorting.
+
+    Filters:
+    - category: Filter by category slug
+    - tag: Filter by tag slug
+    - search: Full-text search in title and description
+    - duration: short (<5min), medium (5-20min), long (>20min)
+    - quality: Filter by available quality variants (e.g., 1080p, 2160p)
+    - date_from/date_to: Filter by publication date range
+    - has_transcription: Filter videos with/without transcriptions
+
+    Sorting:
+    - relevance (default for text searches), date, duration, views, title
+    - order: asc (ascending) or desc (descending)
+    """
+    # Base query with view count for sorting
     query = (
         sa.select(
             videos.c.id,
@@ -274,21 +303,36 @@ async def list_videos(
             videos.c.created_at,
             videos.c.published_at,
             categories.c.name.label("category_name"),
+            sa.func.count(sa.distinct(playback_sessions.c.id)).label("view_count"),
         )
-        .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
+        .select_from(
+            videos.outerjoin(categories, videos.c.category_id == categories.c.id).outerjoin(
+                playback_sessions, videos.c.id == playback_sessions.c.video_id
+            )
+        )
         .where(videos.c.status == VideoStatus.READY)
         .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
         .where(videos.c.published_at.is_not(None))  # Only show published videos
-        .order_by(videos.c.published_at.desc())
-        .limit(limit)
-        .offset(offset)
+        .group_by(
+            videos.c.id,
+            videos.c.title,
+            videos.c.slug,
+            videos.c.description,
+            videos.c.category_id,
+            videos.c.duration,
+            videos.c.status,
+            videos.c.created_at,
+            videos.c.published_at,
+            categories.c.name,
+        )
     )
 
+    # Category filter
     if category:
         query = query.where(categories.c.slug == category)
 
+    # Tag filter
     if tag:
-        # Filter by tag slug - join with video_tags and tags tables
         tag_subquery = (
             sa.select(video_tags.c.video_id)
             .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
@@ -296,6 +340,7 @@ async def list_videos(
         )
         query = query.where(videos.c.id.in_(tag_subquery))
 
+    # Text search
     if search:
         search_term = f"%{search}%"
         query = query.where(
@@ -304,6 +349,78 @@ async def list_videos(
                 videos.c.description.ilike(search_term),
             )
         )
+
+    # Duration filter
+    if duration:
+        duration_filters = [d.strip().lower() for d in duration.split(",")]
+        duration_conditions = []
+        for df in duration_filters:
+            if df == DurationFilter.SHORT:
+                duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
+            elif df == DurationFilter.MEDIUM:
+                duration_conditions.append(sa.and_(videos.c.duration >= 300, videos.c.duration <= 1200))  # 5-20 minutes
+            elif df == DurationFilter.LONG:
+                duration_conditions.append(videos.c.duration > 1200)  # > 20 minutes
+        if duration_conditions:
+            query = query.where(sa.or_(*duration_conditions))
+
+    # Quality filter
+    if quality:
+        quality_filters = [q.strip().lower() for q in quality.split(",")]
+        # Video must have at least one of the requested qualities
+        quality_subquery = (
+            sa.select(video_qualities.c.video_id)
+            .where(video_qualities.c.quality.in_(quality_filters))
+            .distinct()
+        )
+        query = query.where(videos.c.id.in_(quality_subquery))
+
+    # Date range filter
+    if date_from:
+        query = query.where(videos.c.published_at >= date_from)
+    if date_to:
+        query = query.where(videos.c.published_at <= date_to)
+
+    # Transcription filter
+    if has_transcription is not None:
+        if has_transcription:
+            # Has completed transcription
+            transcription_subquery = (
+                sa.select(transcriptions.c.video_id)
+                .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
+                .distinct()
+            )
+            query = query.where(videos.c.id.in_(transcription_subquery))
+        else:
+            # Does not have completed transcription
+            transcription_subquery = (
+                sa.select(transcriptions.c.video_id)
+                .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
+                .distinct()
+            )
+            query = query.where(videos.c.id.notin_(transcription_subquery))
+
+    # Sorting
+    sort_by = sort or (SortBy.RELEVANCE if search else SortBy.DATE)
+    sort_order = SortOrder.DESC if order.lower() == "desc" else SortOrder.ASC
+
+    if sort_by == SortBy.DATE or sort_by == "date":
+        query = query.order_by(videos.c.published_at.desc() if sort_order == SortOrder.DESC else videos.c.published_at.asc())
+    elif sort_by == SortBy.DURATION or sort_by == "duration":
+        query = query.order_by(videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc())
+    elif sort_by == SortBy.VIEWS or sort_by == "views":
+        query = query.order_by(sa.text("view_count DESC" if sort_order == SortOrder.DESC else "view_count ASC"))
+    elif sort_by == SortBy.TITLE or sort_by == "title":
+        query = query.order_by(videos.c.title.asc() if sort_order == SortOrder.ASC else videos.c.title.desc())
+    elif sort_by == SortBy.RELEVANCE or sort_by == "relevance":
+        # For relevance, use published date as fallback (most recent first)
+        query = query.order_by(videos.c.published_at.desc())
+    else:
+        # Default to date descending
+        query = query.order_by(videos.c.published_at.desc())
+
+    # Apply pagination after sorting
+    query = query.limit(limit).offset(offset)
 
     rows = await fetch_all_with_retry(query)
 
