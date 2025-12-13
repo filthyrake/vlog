@@ -206,11 +206,10 @@ class TestCategoryCRUDWorkflow:
         assert test_cat["video_count"] == 3
 
         # Step 4: Try to delete category with videos
-        # Implementation note: This may fail or cascade depending on API behavior
+        # API may either reject (400/409) or allow deletion with cascade (200/204)
         delete_response = admin_client.delete(f"/api/categories/{category_id}")
-        # Accept either: rejection (400/409) or successful cascade delete
         assert delete_response.status_code in [200, 204, 400, 409], \
-            f"Unexpected status code {delete_response.status_code} when deleting category with videos"
+            f"Expected 200/204 (cascade delete) or 400/409 (rejected), got {delete_response.status_code}"
 
         # Step 5: Create another category and move videos
         create_response2 = admin_client.post(

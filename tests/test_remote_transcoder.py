@@ -11,7 +11,7 @@ Tests the full lifecycle of a remote worker:
 
 import io
 import tarfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -198,8 +198,6 @@ class TestRemoteTranscoderLifecycle:
         assert claim_response.status_code == 200
 
         # Manually expire the claim by setting claim_expires_at to the past
-        from datetime import timedelta
-
         await test_database.execute(
             transcoding_jobs.update()
             .where(transcoding_jobs.c.id == job_id)

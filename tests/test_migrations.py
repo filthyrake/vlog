@@ -77,7 +77,7 @@ class TestMigrations:
 
         # Only alembic_version (or no tables) should remain after downgrade to base
         assert set(tables).issubset({"alembic_version"}), \
-            f"Unexpected tables after downgrade to base. Expected only 'alembic_version' or empty, got: {tables}"
+            f"Unexpected tables remaining after downgrade to base: {tables}"
         engine.dispose()
 
     @pytest.mark.asyncio
