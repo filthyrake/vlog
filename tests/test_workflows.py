@@ -27,6 +27,7 @@ from api.enums import VideoStatus
 class TestUploadTranscodePlaybackWorkflow:
     """Test the complete video lifecycle from upload to playback."""
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_complete_video_lifecycle(
         self,
@@ -98,9 +99,10 @@ class TestUploadTranscodePlaybackWorkflow:
         await test_database.execute(
             video_qualities.insert().values(
                 video_id=video_id,
-                name="1080p",
+                quality="1080p",
                 width=1920,
                 height=1080,
+                bitrate=5000000,  # 5 Mbps typical for 1080p
             )
         )
 
@@ -160,6 +162,7 @@ class TestUploadTranscodePlaybackWorkflow:
 class TestCategoryCRUDWorkflow:
     """Test category management with video counts."""
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_category_with_video_counts(
         self,
@@ -241,6 +244,7 @@ class TestCategoryCRUDWorkflow:
 class TestSoftDeleteRestoreWorkflow:
     """Test soft-delete and restore functionality."""
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_soft_delete_and_restore(
         self,
@@ -306,6 +310,7 @@ class TestSoftDeleteRestoreWorkflow:
         restored_video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert restored_video["deleted_at"] is None
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_permanent_delete_after_retention(
         self,
@@ -354,6 +359,7 @@ class TestSoftDeleteRestoreWorkflow:
 class TestAnalyticsWorkflow:
     """Test analytics tracking across viewing sessions."""
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_analytics_tracking_multiple_sessions(
         self,
@@ -411,6 +417,7 @@ class TestAnalyticsWorkflow:
 class TestTagManagementWorkflow:
     """Test tag creation and video filtering."""
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_tag_creation_and_filtering(
         self,
@@ -485,6 +492,7 @@ class TestTagManagementWorkflow:
 class TestBatchOperationsWorkflow:
     """Test batch operations on multiple videos."""
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_batch_category_update(
         self,

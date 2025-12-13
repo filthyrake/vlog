@@ -136,6 +136,15 @@ def test_db_url(test_db_name: str) -> str:
 
 
 @pytest.fixture(scope="function")
+def empty_test_db_url(test_db_name: str) -> str:
+    """Create an empty test database without tables. For migration tests."""
+    db_url = _create_test_database(test_db_name)
+    # Don't create tables - let migrations do it
+    yield db_url
+    _drop_test_database(test_db_name)
+
+
+@pytest.fixture(scope="function")
 def test_storage(tmp_path: Path) -> dict:
     """Create test storage directories."""
     videos_dir = tmp_path / "videos"

@@ -142,7 +142,7 @@ Common fixtures are defined in `tests/conftest.py`:
 - `worker_client`: Test client for worker API
 - `sample_category`: Pre-created category
 - `sample_pending_video`: Video in pending state
-- `sample_ready_video`: Video in ready state
+- `sample_video`: Video in ready state
 - `registered_worker`: Pre-registered worker with API key
 
 ### Test Naming Convention

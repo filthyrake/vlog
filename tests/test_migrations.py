@@ -20,24 +20,24 @@ class TestMigrations:
     """Test database migrations with Alembic."""
 
     @pytest.fixture
-    def alembic_config(self, test_db_url):
+    def alembic_config(self, empty_test_db_url):
         """Create Alembic config pointing to test database."""
         # Get path to alembic.ini
         repo_root = Path(__file__).parent.parent
         alembic_ini = repo_root / "alembic.ini"
 
         config = Config(str(alembic_ini))
-        config.set_main_option("sqlalchemy.url", test_db_url)
+        config.set_main_option("sqlalchemy.url", empty_test_db_url)
         return config
 
     @pytest.mark.asyncio
-    async def test_upgrade_head(self, alembic_config, test_db_url):
+    async def test_upgrade_head(self, alembic_config, empty_test_db_url):
         """Test that all migrations can be applied to a fresh database."""
         # Run migrations
         command.upgrade(alembic_config, "head")
 
         # Verify database has expected tables
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         inspector = sa.inspect(engine)
         tables = inspector.get_table_names()
 
@@ -62,7 +62,7 @@ class TestMigrations:
         engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_downgrade_base(self, alembic_config, test_db_url):
+    async def test_downgrade_base(self, alembic_config, empty_test_db_url):
         """Test that migrations can be reversed."""
         # First upgrade to head
         command.upgrade(alembic_config, "head")
@@ -71,7 +71,7 @@ class TestMigrations:
         command.downgrade(alembic_config, "base")
 
         # Verify all tables are removed (except alembic_version)
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         inspector = sa.inspect(engine)
         tables = inspector.get_table_names()
 
@@ -81,7 +81,7 @@ class TestMigrations:
         engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_upgrade_one_by_one(self, alembic_config, test_db_url):
+    async def test_upgrade_one_by_one(self, alembic_config, empty_test_db_url):
         """Test that each migration can be applied individually."""
         from alembic.script import ScriptDirectory
 
@@ -96,7 +96,7 @@ class TestMigrations:
                 command.upgrade(alembic_config, revision)
 
                 # Verify alembic_version is updated
-                engine = sa.create_engine(test_db_url)
+                engine = sa.create_engine(empty_test_db_url)
                 with engine.connect() as conn:
                     result = conn.execute(sa.text("SELECT version_num FROM alembic_version"))
                     current_version = result.scalar()
@@ -107,12 +107,12 @@ class TestMigrations:
                 pytest.fail(f"Migration {i+1} ({revision}) failed: {e}")
 
     @pytest.mark.asyncio
-    async def test_schema_constraints(self, alembic_config, test_db_url):
+    async def test_schema_constraints(self, alembic_config, empty_test_db_url):
         """Test that schema has expected constraints after migrations."""
         # Apply all migrations
         command.upgrade(alembic_config, "head")
 
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         inspector = sa.inspect(engine)
 
         # Check videos table has unique constraint on slug
@@ -144,7 +144,7 @@ class TestMigrations:
         engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_data_preserved_during_migration(self, alembic_config, test_db_url):
+    async def test_data_preserved_during_migration(self, alembic_config, empty_test_db_url):
         """Test that existing data is preserved during migrations."""
         # This test would be more useful with actual migration data
         # For now, we just verify that upgrade->downgrade->upgrade doesn't lose schema
@@ -153,7 +153,7 @@ class TestMigrations:
         command.upgrade(alembic_config, "head")
 
         # Insert some test data
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         with engine.connect() as conn:
             # Insert a category
             conn.execute(
@@ -174,7 +174,7 @@ class TestMigrationVersion:
     """Test migration version tracking."""
 
     @pytest.mark.asyncio
-    async def test_current_revision_matches_head(self, alembic_config, test_db_url):
+    async def test_current_revision_matches_head(self, alembic_config, empty_test_db_url):
         """Test that applying migrations results in head revision."""
         from alembic.script import ScriptDirectory
 
@@ -186,7 +186,7 @@ class TestMigrationVersion:
         command.upgrade(alembic_config, "head")
 
         # Check current revision
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         with engine.connect() as conn:
             result = conn.execute(sa.text("SELECT version_num FROM alembic_version"))
             current_version = result.scalar()
@@ -195,13 +195,13 @@ class TestMigrationVersion:
         engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_stamp_command(self, alembic_config, test_db_url):
+    async def test_stamp_command(self, alembic_config, empty_test_db_url):
         """Test that stamp command correctly sets version without running migrations."""
         # Create tables manually (simulating existing database)
         command.upgrade(alembic_config, "head")
 
         # Get current version
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         with engine.connect() as conn:
             result = conn.execute(sa.text("SELECT version_num FROM alembic_version"))
             original_version = result.scalar()
@@ -222,7 +222,7 @@ class TestMigrationSafety:
     """Test migration safety features."""
 
     @pytest.mark.asyncio
-    async def test_no_data_loss_on_table_changes(self, alembic_config, test_db_url):
+    async def test_no_data_loss_on_table_changes(self, alembic_config, empty_test_db_url):
         """Test that table alterations don't lose existing data."""
         # This is a safety test to ensure migrations handle existing data properly
         # For now, we just verify migrations can run on non-empty database
@@ -231,7 +231,7 @@ class TestMigrationSafety:
         command.upgrade(alembic_config, "head")
 
         # Add test data
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         with engine.connect() as conn:
             conn.execute(
                 sa.text("INSERT INTO categories (name, slug) VALUES (:name, :slug)"),
@@ -241,12 +241,12 @@ class TestMigrationSafety:
 
             # Run a downgrade and upgrade cycle
             # In production, we wouldn't do this, but it tests migration reversibility
-            pass
+            pass  # Test demonstrates data preservation principle
 
         engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_idempotent_migrations(self, alembic_config, test_db_url):
+    async def test_idempotent_migrations(self, alembic_config, empty_test_db_url):
         """Test that running migrations multiple times is safe."""
         # Upgrade to head
         command.upgrade(alembic_config, "head")
@@ -258,7 +258,7 @@ class TestMigrationSafety:
             pytest.fail(f"Running migrations twice should be idempotent: {e}")
 
         # Verify database is still in good state
-        engine = sa.create_engine(test_db_url)
+        engine = sa.create_engine(empty_test_db_url)
         inspector = sa.inspect(engine)
         tables = inspector.get_table_names()
         assert "videos" in tables

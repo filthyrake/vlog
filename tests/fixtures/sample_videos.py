@@ -6,7 +6,7 @@ without requiring actual video content or ffmpeg in unit tests.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 def create_minimal_mp4(size_bytes: int = 1024) -> bytes:
@@ -47,7 +47,7 @@ def create_minimal_mp4(size_bytes: int = 1024) -> bytes:
 
 def create_sample_hls_playlist(
     video_dir: Path,
-    qualities: Optional[list] = None
+    qualities: Optional[List[str]] = None
 ) -> Path:
     """
     Create sample HLS playlist files for testing.

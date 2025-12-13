@@ -22,6 +22,7 @@ from api.enums import VideoStatus
 class TestRemoteTranscoderLifecycle:
     """Test the complete remote transcoder workflow."""
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_full_transcode_workflow(
         self,
@@ -156,6 +157,7 @@ class TestRemoteTranscoderLifecycle:
         assert qualities[0]["width"] == 1280
         assert qualities[0]["height"] == 720
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_claim_expired_during_processing(
         self,
@@ -213,6 +215,7 @@ class TestRemoteTranscoderLifecycle:
         # Should fail with appropriate error
         assert progress_response.status_code in [400, 403, 409]  # Client error expected
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_worker_heartbeat_updates_status(
         self,
@@ -247,6 +250,7 @@ class TestRemoteTranscoderLifecycle:
 class TestRemoteTranscoderErrorRecovery:
     """Test error recovery scenarios for remote transcoder."""
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_job_retry_after_failure(
         self,
@@ -304,6 +308,7 @@ class TestRemoteTranscoderErrorRecovery:
         assert claim_response2.status_code == 200
         assert claim_response2.json()["job_id"] == job_id
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_max_retries_marks_video_failed(
         self,
@@ -358,6 +363,7 @@ class TestRemoteTranscoderErrorRecovery:
 class TestRemoteTranscoderConcurrency:
     """Test concurrent job claiming and processing."""
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_multiple_workers_claim_different_jobs(
         self,
@@ -457,6 +463,7 @@ class TestRemoteTranscoderConcurrency:
 class TestRemoteTranscoderFileDownload:
     """Test file download functionality for remote workers."""
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_download_requires_claimed_job(
         self,
@@ -501,6 +508,7 @@ class TestRemoteTranscoderFileDownload:
         # Should require claim first
         assert download_response.status_code in [403, 404, 409]
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_download_large_file_streaming(
         self,
