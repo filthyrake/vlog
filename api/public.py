@@ -69,6 +69,7 @@ from api.schemas import (
 from config import (
     CORS_ALLOWED_ORIGINS,
     PUBLIC_PORT,
+    QUALITY_NAMES,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_PUBLIC_ANALYTICS,
     RATE_LIMIT_PUBLIC_DEFAULT,
@@ -367,13 +368,16 @@ async def list_videos(
     # Quality filter
     if quality:
         quality_filters = [q.strip().lower() for q in quality.split(",")]
-        # Video must have at least one of the requested qualities
-        quality_subquery = (
-            sa.select(video_qualities.c.video_id)
-            .where(video_qualities.c.quality.in_(quality_filters))
-            .distinct()
-        )
-        query = query.where(videos.c.id.in_(quality_subquery))
+        # Validate quality values against allowed qualities
+        valid_quality_filters = [q for q in quality_filters if q in QUALITY_NAMES]
+        if valid_quality_filters:
+            # Video must have at least one of the requested qualities
+            quality_subquery = (
+                sa.select(video_qualities.c.video_id)
+                .where(video_qualities.c.quality.in_(valid_quality_filters))
+                .distinct()
+            )
+            query = query.where(videos.c.id.in_(quality_subquery))
 
     # Date range filter
     if date_from:
@@ -409,7 +413,9 @@ async def list_videos(
     elif sort_by == SortBy.DURATION or sort_by == "duration":
         query = query.order_by(videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc())
     elif sort_by == SortBy.VIEWS or sort_by == "views":
-        query = query.order_by(sa.text("view_count DESC" if sort_order == SortOrder.DESC else "view_count ASC"))
+        # Use column label with desc()/asc() for type safety
+        view_count_col = sa.literal_column("view_count")
+        query = query.order_by(view_count_col.desc() if sort_order == SortOrder.DESC else view_count_col.asc())
     elif sort_by == SortBy.TITLE or sort_by == "title":
         query = query.order_by(videos.c.title.asc() if sort_order == SortOrder.ASC else videos.c.title.desc())
     elif sort_by == SortBy.RELEVANCE or sort_by == "relevance":
