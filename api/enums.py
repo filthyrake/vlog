@@ -43,3 +43,28 @@ class TranscodingStep(str, Enum):
     TRANSCODE = "transcode"
     MASTER_PLAYLIST = "master_playlist"
     FINALIZE = "finalize"
+
+
+class DurationFilter(str, Enum):
+    """Video duration filter options."""
+
+    SHORT = "short"  # < 5 minutes
+    MEDIUM = "medium"  # 5-20 minutes
+    LONG = "long"  # > 20 minutes
+
+
+class SortBy(str, Enum):
+    """Sort options for video listing."""
+
+    RELEVANCE = "relevance"  # Default for text searches
+    DATE = "date"  # Published date
+    DURATION = "duration"  # Video length
+    VIEWS = "views"  # View count
+    TITLE = "title"  # Alphabetical
+
+
+class SortOrder(str, Enum):
+    """Sort order direction."""
+
+    ASC = "asc"  # Ascending
+    DESC = "desc"  # Descending
