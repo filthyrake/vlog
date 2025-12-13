@@ -36,9 +36,47 @@ Query parameters:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | category | string | null | Filter by category slug |
+| tag | string | null | Filter by tag slug |
 | search | string | null | Search in title/description |
+| duration | string | null | Filter by length: short, medium, long (comma-separated) |
+| quality | string | null | Filter by available quality: 2160p, 1440p, 1080p, 720p, 480p, 360p (comma-separated) |
+| date_from | datetime | null | Filter videos published from this date (ISO 8601) |
+| date_to | datetime | null | Filter videos published until this date (ISO 8601) |
+| has_transcription | bool | null | Filter by transcription availability (true/false) |
+| sort | string | null | Sort by: relevance, date, duration, views, title |
+| order | string | desc | Sort order: asc or desc |
 | limit | int | 50 | Max items (1-100) |
 | offset | int | 0 | Pagination offset |
+
+**Duration Filter Values:**
+- `short` - Videos less than 5 minutes
+- `medium` - Videos between 5-20 minutes
+- `long` - Videos longer than 20 minutes
+
+**Sort Options:**
+- `relevance` - Default for text searches, sorts by published date
+- `date` - Sort by publication date
+- `duration` - Sort by video length
+- `views` - Sort by view count
+- `title` - Sort alphabetically
+
+**Examples:**
+```
+# Search for tutorials with transcription
+GET /api/videos?search=tutorial&has_transcription=true
+
+# Find short videos in 1080p or 4K
+GET /api/videos?duration=short&quality=1080p,2160p
+
+# Most viewed videos this month (adjust date_from to first day of current month)
+GET /api/videos?date_from=YYYY-MM-01&sort=views&order=desc
+
+# Longest videos first
+GET /api/videos?sort=duration&order=desc
+
+# Multiple filters combined
+GET /api/videos?category=tutorials&duration=medium&quality=1080p&sort=views&order=desc
+```
 
 Response: `VideoListResponse[]`
 ```json
