@@ -278,6 +278,39 @@ sudo journalctl -u vlog-transcription -f
 pip show faster-whisper
 ```
 
+## Testing
+
+VLog has comprehensive test coverage with unit, integration, and end-to-end tests.
+
+```bash
+# Install test dependencies
+pip install pytest pytest-asyncio pytest-cov
+
+# Run all tests with coverage
+VLOG_TEST_MODE=1 pytest
+
+# Run specific test types
+VLOG_TEST_MODE=1 pytest -m integration  # Integration tests only
+VLOG_TEST_MODE=1 pytest -m e2e          # End-to-end tests only
+
+# Generate coverage report
+VLOG_TEST_MODE=1 pytest --cov=api --cov=worker --cov=cli --cov-report=html
+open htmlcov/index.html  # View coverage report
+```
+
+**Requirements:**
+- PostgreSQL server (tests create temporary databases)
+- Test environment variables (see `TESTING.md`)
+
+**Test Coverage:**
+- 37+ test files with 900+ test cases
+- Unit tests for all major components
+- Integration tests for workflows
+- End-to-end tests for complete flows
+- Database migration tests
+
+See [TESTING.md](TESTING.md) for detailed testing guide.
+
 ## Tech Stack
 
 - **Backend:** FastAPI + Uvicorn
