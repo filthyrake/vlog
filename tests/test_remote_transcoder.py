@@ -12,8 +12,6 @@ Tests the full lifecycle of a remote worker:
 import io
 import tarfile
 from datetime import datetime, timezone
-from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -168,7 +166,7 @@ class TestRemoteTranscoderLifecycle:
     ):
         """
         Test that expired claims are handled gracefully.
-        
+
         When a claim expires, progress updates and completion should fail
         with appropriate error messages.
         """
@@ -233,11 +231,7 @@ class TestRemoteTranscoderLifecycle:
         )
         initial_last_seen = initial_worker["last_seen"]
 
-        # Send heartbeat
-        import time
-
-        time.sleep(0.1)  # Small delay to ensure timestamp changes
-
+        # Send heartbeat (timestamp will be updated by the database)
         heartbeat_response = worker_client.post(
             "/api/worker/heartbeat",
             json={"status": "idle"},
@@ -377,7 +371,6 @@ class TestRemoteTranscoderConcurrency:
         Test that multiple workers can claim different jobs simultaneously.
         """
         # Register two workers
-        from api.worker_api import register_worker
 
         worker1_data = {
             "name": "worker-1",

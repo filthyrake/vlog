@@ -15,14 +15,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from api.database import (
-    categories,
     playback_sessions,
     tags,
     transcoding_jobs,
     video_qualities,
-    video_tags,
     videos,
-    viewers,
 )
 from api.enums import VideoStatus
 
@@ -98,7 +95,7 @@ class TestUploadTranscodePlaybackWorkflow:
         (video_dir / "thumbnail.jpg").write_bytes(b"fake thumbnail")
 
         # Add quality record
-        quality_id = await test_database.execute(
+        await test_database.execute(
             video_qualities.insert().values(
                 video_id=video_id,
                 name="1080p",
@@ -209,7 +206,7 @@ class TestCategoryCRUDWorkflow:
         assert test_cat["video_count"] == 3
 
         # Step 4: Try to delete category with videos (should fail or handle gracefully)
-        delete_response = admin_client.delete(f"/api/categories/{category_id}")
+        admin_client.delete(f"/api/categories/{category_id}")
         # Depends on implementation - either fails or cascades
         # Let's assume it moves videos to "Uncategorized"
 
