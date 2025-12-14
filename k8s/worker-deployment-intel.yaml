@@ -125,7 +125,7 @@ spec:
       volumes:
       - name: work-dir
         emptyDir:
-          sizeLimit: 50Gi
+          sizeLimit: 150Gi
       # Host path for GPU device access
       - name: dri
         hostPath:
