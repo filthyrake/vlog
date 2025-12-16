@@ -25,6 +25,8 @@ class VLogPlayerControls {
             verticalSwipeSensitivity: 150,
             // Indicator display duration in ms
             indicatorDisplayDuration: 500,
+            // Volume adjustment step for keyboard controls
+            volumeStep: 0.05,
             ...options
         };
 
@@ -168,7 +170,7 @@ class VLogPlayerControls {
                         </svg>
                     </button>
                     <div class="player-volume-slider-container">
-                        <div class="player-volume-slider">
+                        <div class="player-volume-slider" role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" tabindex="0">
                             <div class="player-volume-track">
                                 <div class="player-volume-fill"></div>
                                 <div class="player-volume-thumb"></div>
@@ -296,11 +298,12 @@ class VLogPlayerControls {
         });
 
         // Volume slider interaction
-        this.volumeSlider.addEventListener('mousedown', (e) => this.startVolumeSeek(e));
-        this.volumeSlider.addEventListener('touchstart', (e) => {
-            e.stopPropagation();
-            this.startVolumeSeek(e);
-        }, { passive: false });
+        this._boundHandlers.onVolumeSliderMouseDown = (e) => this.startVolumeSeek(e);
+        this._boundHandlers.onVolumeSliderTouchStart = (e) => this.handleVolumeSliderTouchStart(e);
+        this._boundHandlers.onVolumeSliderKeyDown = (e) => this.handleVolumeSliderKeyboard(e);
+        this.volumeSlider.addEventListener('mousedown', this._boundHandlers.onVolumeSliderMouseDown);
+        this.volumeSlider.addEventListener('touchstart', this._boundHandlers.onVolumeSliderTouchStart, { passive: false });
+        this.volumeSlider.addEventListener('keydown', this._boundHandlers.onVolumeSliderKeyDown);
         this.qualityBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.showQualityModal();
@@ -512,6 +515,12 @@ class VLogPlayerControls {
         const percent = volume * 100;
         this.volumeFill.style.width = `${percent}%`;
         this.volumeThumb.style.left = `${percent}%`;
+        this.volumeSlider.setAttribute('aria-valuenow', Math.round(percent));
+    }
+
+    handleVolumeSliderTouchStart(e) {
+        e.stopPropagation();
+        this.startVolumeSeek(e);
     }
 
     startVolumeSeek(e) {
@@ -548,6 +557,29 @@ class VLogPlayerControls {
         this.video.volume = Math.max(0, Math.min(1, value));
         this.video.muted = false;
         this.currentVolume = this.video.volume;
+    }
+
+    handleVolumeSliderKeyboard(e) {
+        // Arrow keys for volume adjustment
+        if (e.key === 'ArrowUp' || e.key === 'ArrowRight') {
+            e.preventDefault();
+            e.stopPropagation();
+            const newVolume = Math.min(1, this.video.volume + this.options.volumeStep);
+            this.setVolume(newVolume);
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            e.stopPropagation();
+            const newVolume = Math.max(0, this.video.volume - this.options.volumeStep);
+            this.setVolume(newVolume);
+        } else if (e.key === 'Home') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.setVolume(0);
+        } else if (e.key === 'End') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.setVolume(1);
+        }
     }
 
     // Quality
@@ -1015,6 +1047,13 @@ class VLogPlayerControls {
 
         // Remove container event listener
         this.container.removeEventListener('keydown', this._boundHandlers.onKeyDown);
+
+        // Remove volume slider event listeners
+        if (this.volumeSlider) {
+            this.volumeSlider.removeEventListener('mousedown', this._boundHandlers.onVolumeSliderMouseDown);
+            this.volumeSlider.removeEventListener('touchstart', this._boundHandlers.onVolumeSliderTouchStart);
+            this.volumeSlider.removeEventListener('keydown', this._boundHandlers.onVolumeSliderKeyDown);
+        }
 
         // Remove created DOM elements
         if (this.gestureOverlay && this.gestureOverlay.parentNode) {
