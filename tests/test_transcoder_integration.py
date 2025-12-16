@@ -1252,8 +1252,7 @@ class TestProbeStepWithPendingClaimedStates:
             updated_job = await integration_database.fetch_one(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
             )
-            assert updated_job["current_step"] != "pending"
-            assert updated_job["current_step"] != "probe"
+            assert updated_job["current_step"] in ["thumbnail", "transcode", "finished"]
 
     @pytest.mark.asyncio
     async def test_probe_runs_when_current_step_is_claimed(self, integration_database, integration_video, integration_temp_dir):
@@ -1317,7 +1316,7 @@ class TestProbeStepWithPendingClaimedStates:
             updated_job = await integration_database.fetch_one(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
             )
-            assert updated_job["current_step"] not in ["pending", "claimed", "probe"]
+            assert updated_job["current_step"] in ["thumbnail", "transcode", "finished"]
 
 
 class TestThumbnailGenerationOnRemoteWorkerCrash:
@@ -1331,7 +1330,7 @@ class TestThumbnailGenerationOnRemoteWorkerCrash:
 
         Scenario:
         - Remote worker claimed job and updated current_step to 'transcode'
-        - Remote worker generated thumbnail locally but crashed before uploading it
+        - Remote worker crashed before generating thumbnail
         - Local worker picks up the expired job
         - Local worker should detect missing thumbnail and generate it
         """
