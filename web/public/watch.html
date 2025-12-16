@@ -316,16 +316,95 @@
         }
 
         /* Volume button icons */
+        .volume-btn .volume-low,
         .volume-btn .volume-muted {
             display: none;
         }
 
-        .volume-btn.muted .volume-high {
+        .volume-btn.muted .volume-high,
+        .volume-btn.muted .volume-low {
             display: none;
         }
 
         .volume-btn.muted .volume-muted {
             display: block;
+        }
+
+        .volume-btn.low .volume-high,
+        .volume-btn.low .volume-muted {
+            display: none;
+        }
+
+        .volume-btn.low .volume-low {
+            display: block;
+        }
+
+        /* Volume container and slider */
+        .player-volume-container {
+            display: flex;
+            align-items: center;
+            position: relative;
+        }
+
+        .player-volume-slider-container {
+            width: 0;
+            overflow: hidden;
+            transition: width 0.2s ease;
+        }
+
+        .player-volume-container:hover .player-volume-slider-container,
+        .player-volume-container:focus-within .player-volume-slider-container {
+            width: 80px;
+        }
+
+        .player-volume-slider {
+            width: 80px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            padding: 0 8px;
+            cursor: pointer;
+        }
+
+        .player-volume-track {
+            position: relative;
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 2px;
+        }
+
+        .player-volume-slider:hover .player-volume-track {
+            height: 6px;
+        }
+
+        .player-volume-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: 100%;
+            background: white;
+            border-radius: 2px;
+            pointer-events: none;
+        }
+
+        .player-volume-thumb {
+            position: absolute;
+            top: 50%;
+            left: 100%;
+            width: 12px;
+            height: 12px;
+            background: white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+        }
+
+        .player-volume-slider:hover .player-volume-thumb {
+            opacity: 1;
         }
 
         /* Fullscreen button icons */
@@ -569,6 +648,20 @@
                 left: 50%;
                 right: auto;
                 transform: translate(-50%, -50%);
+            }
+
+            /* Volume slider - always visible on mobile since no hover */
+            .player-volume-slider-container {
+                width: 60px;
+            }
+
+            .player-volume-slider {
+                width: 60px;
+                padding: 0 4px;
+            }
+
+            .player-volume-thumb {
+                opacity: 1;
             }
         }
     </style>
