@@ -1607,7 +1607,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # ----------------------------------------------------------------
         # Step 1: Probe (skip if already done)
         # ----------------------------------------------------------------
-        if job["current_step"] in [None, TranscodingStep.PROBE]:
+        # Include "pending" and "claimed" which are set by admin API and worker API
+        # when jobs are created or claimed but not yet started
+        if job["current_step"] in [None, "pending", "claimed", TranscodingStep.PROBE]:
             await update_job_step(job_id, TranscodingStep.PROBE)
             print("  Step 1: Probing video info...")
 
@@ -1659,26 +1661,30 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # ----------------------------------------------------------------
-        # Step 2: Thumbnail (skip if exists)
+        # Step 2: Thumbnail (generate if missing, even when resuming)
         # ----------------------------------------------------------------
-        if job["current_step"] in [None, TranscodingStep.PROBE, TranscodingStep.THUMBNAIL]:
+        # Always check if thumbnail exists, regardless of current_step.
+        # This handles cases where a remote worker crashed after updating
+        # current_step but before uploading the thumbnail it generated locally.
+        thumb_path = output_dir / "thumbnail.jpg"
+
+        if not thumb_path.exists():
             await update_job_step(job_id, TranscodingStep.THUMBNAIL)
-            thumb_path = output_dir / "thumbnail.jpg"
-
-            if not thumb_path.exists():
-                print("  Step 2: Generating thumbnail...")
-                thumbnail_time = min(5.0, info["duration"] / 4)
-                await generate_thumbnail(source_file, thumb_path, thumbnail_time)
-            else:
-                print("  Step 2: Thumbnail already exists, skipping...")
-
+            print("  Step 2: Generating thumbnail...")
+            thumbnail_time = min(5.0, info["duration"] / 4)
+            await generate_thumbnail(source_file, thumb_path, thumbnail_time)
+            await checkpoint(job_id)
+        elif job["current_step"] in [None, TranscodingStep.PROBE, TranscodingStep.THUMBNAIL]:
+            # Thumbnail exists but we're at an early step - just checkpoint
+            await update_job_step(job_id, TranscodingStep.THUMBNAIL)
+            print("  Step 2: Thumbnail already exists, skipping...")
             await checkpoint(job_id)
 
-            # Check for shutdown after thumbnail
-            if state.shutdown_requested:
-                print("  Shutdown requested, resetting video to pending...")
-                await reset_video_to_pending(video_id)
-                return False
+        # Check for shutdown after thumbnail
+        if state.shutdown_requested:
+            print("  Shutdown requested, resetting video to pending...")
+            await reset_video_to_pending(video_id)
+            return False
 
         # ----------------------------------------------------------------
         # Step 3: Transcode each quality
