@@ -297,10 +297,7 @@ class VLogPlayerControls {
 
         // Volume slider interaction
         this._boundHandlers.onVolumeSliderMouseDown = (e) => this.startVolumeSeek(e);
-        this._boundHandlers.onVolumeSliderTouchStart = (e) => {
-            e.stopPropagation();
-            this.startVolumeSeek(e);
-        };
+        this._boundHandlers.onVolumeSliderTouchStart = (e) => this.handleVolumeSliderTouchStart(e);
         this._boundHandlers.onVolumeSliderKeyDown = (e) => this.handleVolumeSliderKeyboard(e);
         this.volumeSlider.addEventListener('mousedown', this._boundHandlers.onVolumeSliderMouseDown);
         this.volumeSlider.addEventListener('touchstart', this._boundHandlers.onVolumeSliderTouchStart, { passive: false });
@@ -519,6 +516,11 @@ class VLogPlayerControls {
         this.volumeSlider.setAttribute('aria-valuenow', Math.round(percent));
     }
 
+    handleVolumeSliderTouchStart(e) {
+        e.stopPropagation();
+        this.startVolumeSeek(e);
+    }
+
     startVolumeSeek(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -556,16 +558,18 @@ class VLogPlayerControls {
     }
 
     handleVolumeSliderKeyboard(e) {
+        const VOLUME_STEP = 0.05;
+        
         // Arrow keys for volume adjustment
         if (e.key === 'ArrowUp' || e.key === 'ArrowRight') {
             e.preventDefault();
             e.stopPropagation();
-            const newVolume = Math.min(1, this.video.volume + 0.05);
+            const newVolume = Math.min(1, this.video.volume + VOLUME_STEP);
             this.setVolume(newVolume);
         } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
             e.preventDefault();
             e.stopPropagation();
-            const newVolume = Math.max(0, this.video.volume - 0.05);
+            const newVolume = Math.max(0, this.video.volume - VOLUME_STEP);
             this.setVolume(newVolume);
         } else if (e.key === 'Home') {
             e.preventDefault();
