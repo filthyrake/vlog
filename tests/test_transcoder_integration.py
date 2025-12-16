@@ -1475,7 +1475,13 @@ class TestThumbnailGenerationOnRemoteWorkerCrash:
         transcoded_qualities = []
 
         async def mock_transcode_quality(*args, **kwargs):
-            quality_name = args[6]  # quality["name"] is the 7th argument
+            # Extract quality name from kwargs or positional args
+            if "quality" in kwargs:
+                quality_name = kwargs["quality"]["name"]
+            elif len(args) > 2:
+                quality_name = args[2]["name"]  # quality is the 3rd positional argument
+            else:
+                quality_name = "unknown"
             transcoded_qualities.append(quality_name)
 
         async def mock_generate_thumbnail(source, output, time):
