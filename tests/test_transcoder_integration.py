@@ -1185,3 +1185,329 @@ class TestLocalWorkerJobClaiming:
 
             # Should return None because no job exists
             assert job is None
+
+
+class TestProbeStepWithPendingClaimedStates:
+    """Tests for probe step execution with pending and claimed job states."""
+
+    @pytest.mark.asyncio
+    async def test_probe_runs_when_current_step_is_pending(self, integration_database, integration_video, integration_temp_dir):
+        """Test that Step 1 (probe) runs when current_step is 'pending'."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a job with current_step='pending' (set by admin API)
+        now = datetime.now(timezone.utc)
+        job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="LOCAL_WORKER",
+                current_step="pending",
+                progress_percent=0,
+                started_at=now,
+                last_checkpoint=now,
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create a dummy upload file
+        upload_path = integration_temp_dir["uploads"] / f"{integration_video['id']}.mp4"
+        upload_path.write_text("dummy video content")
+
+        # Mock get_video_info to return test metadata
+        mock_info = {
+            "width": 1920,
+            "height": 1080,
+            "duration": 120.5,
+        }
+
+        # Mock necessary functions
+        with (
+            patch.object(transcoder_module, "database", integration_database),
+            patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
+            patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
+            patch.object(transcoder_module, "get_video_info", new_callable=AsyncMock, return_value=mock_info),
+            patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock),
+            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock),
+            patch.object(transcoder_module, "generate_master_playlist", return_value=None),
+            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+        ):
+            # Process the video (this will run the probe step)
+            result = await transcoder_module.process_video(integration_video["id"])
+
+            # Verify probe ran successfully
+            assert result is True
+
+            # Verify video metadata was updated by probe step
+            updated_video = await integration_database.fetch_one(
+                videos.select().where(videos.c.id == integration_video["id"])
+            )
+            assert updated_video["duration"] == 120.5
+            assert updated_video["source_width"] == 1920
+            assert updated_video["source_height"] == 1080
+
+            # Verify job progressed past probe step
+            updated_job = await integration_database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+            )
+            assert updated_job["current_step"] != "pending"
+            assert updated_job["current_step"] != "probe"
+
+    @pytest.mark.asyncio
+    async def test_probe_runs_when_current_step_is_claimed(self, integration_database, integration_video, integration_temp_dir):
+        """Test that Step 1 (probe) runs when current_step is 'claimed'."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a job with current_step='claimed' (set by worker API)
+        now = datetime.now(timezone.utc)
+        job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="LOCAL_WORKER",
+                current_step="claimed",
+                progress_percent=0,
+                started_at=now,
+                last_checkpoint=now,
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create a dummy upload file
+        upload_path = integration_temp_dir["uploads"] / f"{integration_video['id']}.mp4"
+        upload_path.write_text("dummy video content")
+
+        # Mock get_video_info to return test metadata
+        mock_info = {
+            "width": 1280,
+            "height": 720,
+            "duration": 90.0,
+        }
+
+        # Mock necessary functions
+        with (
+            patch.object(transcoder_module, "database", integration_database),
+            patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
+            patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
+            patch.object(transcoder_module, "get_video_info", new_callable=AsyncMock, return_value=mock_info),
+            patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock),
+            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock),
+            patch.object(transcoder_module, "generate_master_playlist", return_value=None),
+            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+        ):
+            # Process the video (this will run the probe step)
+            result = await transcoder_module.process_video(integration_video["id"])
+
+            # Verify probe ran successfully
+            assert result is True
+
+            # Verify video metadata was updated by probe step
+            updated_video = await integration_database.fetch_one(
+                videos.select().where(videos.c.id == integration_video["id"])
+            )
+            assert updated_video["duration"] == 90.0
+            assert updated_video["source_width"] == 1280
+            assert updated_video["source_height"] == 720
+
+            # Verify job progressed past probe and claimed steps
+            updated_job = await integration_database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+            )
+            assert updated_job["current_step"] not in ["pending", "claimed", "probe"]
+
+
+class TestThumbnailGenerationOnRemoteWorkerCrash:
+    """Tests for thumbnail generation when local worker resumes from crashed remote worker."""
+
+    @pytest.mark.asyncio
+    async def test_thumbnail_generated_when_missing_at_transcode_step(
+        self, integration_database, integration_video, integration_temp_dir
+    ):
+        """Test that local worker generates missing thumbnail when resuming from crashed remote worker.
+
+        Scenario:
+        - Remote worker claimed job and updated current_step to 'transcode'
+        - Remote worker generated thumbnail locally but crashed before uploading it
+        - Local worker picks up the expired job
+        - Local worker should detect missing thumbnail and generate it
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a job at 'transcode' step (remote worker crashed after setting this)
+        now = datetime.now(timezone.utc)
+        await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="LOCAL_WORKER",
+                current_step="transcode",
+                progress_percent=10,
+                started_at=now - timedelta(minutes=10),
+                last_checkpoint=now - timedelta(minutes=5),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Set video metadata (would have been set by probe step)
+        await integration_database.execute(
+            videos.update()
+            .where(videos.c.id == integration_video["id"])
+            .values(
+                duration=60.0,
+                source_width=1920,
+                source_height=1080,
+            )
+        )
+
+        # Create upload file
+        upload_path = integration_temp_dir["uploads"] / f"{integration_video['id']}.mp4"
+        upload_path.write_text("dummy video content")
+
+        # Create video output directory but NO thumbnail.jpg
+        video_dir = integration_temp_dir["videos"] / integration_video["slug"]
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+        # Mock generate_thumbnail to track if it was called
+        thumbnail_generated = False
+
+        async def mock_generate_thumbnail(source, output, time):
+            nonlocal thumbnail_generated
+            thumbnail_generated = True
+            output.write_text("thumbnail content")
+
+        # Mock necessary functions
+        with (
+            patch.object(transcoder_module, "database", integration_database),
+            patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
+            patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
+            patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock, side_effect=mock_generate_thumbnail),
+            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock),
+            patch.object(transcoder_module, "generate_master_playlist", return_value=None),
+            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+        ):
+            # Process the video (should detect missing thumbnail and generate it)
+            result = await transcoder_module.process_video(integration_video["id"])
+
+            # Verify processing succeeded
+            assert result is True
+
+            # Verify thumbnail was generated
+            assert thumbnail_generated, "Thumbnail should have been generated when missing"
+            thumb_path = video_dir / "thumbnail.jpg"
+            assert thumb_path.exists(), "Thumbnail file should exist after generation"
+
+    @pytest.mark.asyncio
+    async def test_completed_qualities_preserved_when_thumbnail_missing(
+        self, integration_database, integration_video, integration_temp_dir
+    ):
+        """Test that completed quality variants are preserved when thumbnail is regenerated.
+
+        Scenario:
+        - Remote worker had completed some quality variants
+        - Remote worker crashed before uploading thumbnail
+        - Local worker should generate missing thumbnail but preserve completed qualities
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import worker.transcoder as transcoder_module
+
+        # Create a job at 'transcode' step with some completed qualities
+        now = datetime.now(timezone.utc)
+        job_id = await integration_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=integration_video["id"],
+                worker_id="LOCAL_WORKER",
+                current_step="transcode",
+                progress_percent=50,
+                started_at=now - timedelta(minutes=10),
+                last_checkpoint=now - timedelta(minutes=5),
+                attempt_number=1,
+                max_attempts=3,
+            )
+        )
+
+        # Create quality progress records showing partial completion
+        await integration_database.execute(
+            quality_progress.insert().values(
+                job_id=job_id,
+                quality="1080p",
+                status="completed",
+                progress_percent=100,
+            )
+        )
+        await integration_database.execute(
+            quality_progress.insert().values(
+                job_id=job_id,
+                quality="720p",
+                status="completed",
+                progress_percent=100,
+            )
+        )
+
+        # Set video metadata
+        await integration_database.execute(
+            videos.update()
+            .where(videos.c.id == integration_video["id"])
+            .values(
+                duration=120.0,
+                source_width=1920,
+                source_height=1080,
+            )
+        )
+
+        # Create upload file
+        upload_path = integration_temp_dir["uploads"] / f"{integration_video['id']}.mp4"
+        upload_path.write_text("dummy video content")
+
+        # Create video output directory with completed quality files but NO thumbnail
+        video_dir = integration_temp_dir["videos"] / integration_video["slug"]
+        video_dir.mkdir(parents=True, exist_ok=True)
+        (video_dir / "1080p.m3u8").write_text("1080p playlist")
+        (video_dir / "720p.m3u8").write_text("720p playlist")
+
+        # Track transcode_quality calls (should not be called for completed qualities)
+        transcoded_qualities = []
+
+        async def mock_transcode_quality(*args, **kwargs):
+            quality_name = args[6]  # quality["name"] is the 7th argument
+            transcoded_qualities.append(quality_name)
+
+        async def mock_generate_thumbnail(source, output, time):
+            output.write_text("thumbnail content")
+
+        # Mock necessary functions
+        with (
+            patch.object(transcoder_module, "database", integration_database),
+            patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
+            patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
+            patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock, side_effect=mock_generate_thumbnail),
+            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock, side_effect=mock_transcode_quality),
+            patch.object(transcoder_module, "generate_master_playlist", return_value=None),
+            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+        ):
+            # Process the video
+            result = await transcoder_module.process_video(integration_video["id"])
+
+            # Verify processing succeeded
+            assert result is True
+
+            # Verify thumbnail was generated
+            thumb_path = video_dir / "thumbnail.jpg"
+            assert thumb_path.exists(), "Thumbnail should have been generated"
+
+            # Verify completed qualities were NOT re-transcoded
+            assert "1080p" not in transcoded_qualities, "1080p should not be re-transcoded"
+            assert "720p" not in transcoded_qualities, "720p should not be re-transcoded"
+
+            # Verify original quality progress records are preserved
+            qualities = await integration_database.fetch_all(
+                quality_progress.select().where(quality_progress.c.job_id == job_id)
+            )
+            completed = [q for q in qualities if q["status"] == "completed"]
+            assert len(completed) >= 2, "Completed quality records should be preserved"
