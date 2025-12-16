@@ -25,6 +25,8 @@ class VLogPlayerControls {
             verticalSwipeSensitivity: 150,
             // Indicator display duration in ms
             indicatorDisplayDuration: 500,
+            // Volume adjustment step for keyboard controls
+            volumeStep: 0.05,
             ...options
         };
 
@@ -558,18 +560,16 @@ class VLogPlayerControls {
     }
 
     handleVolumeSliderKeyboard(e) {
-        const VOLUME_STEP = 0.05;
-        
         // Arrow keys for volume adjustment
         if (e.key === 'ArrowUp' || e.key === 'ArrowRight') {
             e.preventDefault();
             e.stopPropagation();
-            const newVolume = Math.min(1, this.video.volume + VOLUME_STEP);
+            const newVolume = Math.min(1, this.video.volume + this.options.volumeStep);
             this.setVolume(newVolume);
         } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
             e.preventDefault();
             e.stopPropagation();
-            const newVolume = Math.max(0, this.video.volume - VOLUME_STEP);
+            const newVolume = Math.max(0, this.video.volume - this.options.volumeStep);
             this.setVolume(newVolume);
         } else if (e.key === 'Home') {
             e.preventDefault();
