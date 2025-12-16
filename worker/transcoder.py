@@ -1679,6 +1679,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             await update_job_step(job_id, TranscodingStep.THUMBNAIL)
             print("  Step 2: Thumbnail already exists, skipping...")
             await checkpoint(job_id)
+        else:
+            # Thumbnail exists and job is resuming from a later step
+            print("  Step 2: Thumbnail already exists, already past this step...")
 
         # Check for shutdown after thumbnail
         if state.shutdown_requested:
