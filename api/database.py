@@ -46,6 +46,9 @@ videos = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
     sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft-delete timestamp (NULL = not deleted)
+    # Thumbnail metadata for custom thumbnail selection
+    sa.Column("thumbnail_source", sa.String(20), default="auto"),  # auto, selected, custom
+    sa.Column("thumbnail_timestamp", sa.Float, nullable=True),  # timestamp for selected thumbnails
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),

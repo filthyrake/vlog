@@ -89,6 +89,10 @@ from api.schemas import (
     TagCreate,
     TagResponse,
     TagUpdate,
+    ThumbnailFrame,
+    ThumbnailFramesResponse,
+    ThumbnailInfoResponse,
+    ThumbnailResponse,
     TranscodingProgressResponse,
     TranscriptionResponse,
     TranscriptionTrigger,
@@ -122,6 +126,7 @@ from config import (
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
     ARCHIVE_DIR,
     JOB_QUEUE_MODE,
+    MAX_THUMBNAIL_UPLOAD_SIZE,
     MAX_UPLOAD_SIZE,
     QUALITY_PRESETS,
     RATE_LIMIT_ADMIN_DEFAULT,
@@ -130,13 +135,16 @@ from config import (
     RATE_LIMIT_STORAGE_URL,
     SSE_HEARTBEAT_INTERVAL,
     SSE_RECONNECT_TIMEOUT_MS,
+    SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_VIDEO_EXTENSIONS,
+    THUMBNAIL_FRAME_PERCENTAGES,
+    THUMBNAIL_WIDTH,
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
-from worker.transcoder import get_video_info
+from worker.transcoder import generate_thumbnail, get_video_info
 
 logger = logging.getLogger(__name__)
 
@@ -843,6 +851,8 @@ async def list_all_videos(
             videos.c.status,
             videos.c.created_at,
             videos.c.published_at,
+            videos.c.thumbnail_source,
+            videos.c.thumbnail_timestamp,
             categories.c.name.label("category_name"),
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
@@ -870,6 +880,8 @@ async def list_all_videos(
             created_at=row["created_at"],
             published_at=row["published_at"],
             thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
+            thumbnail_source=row["thumbnail_source"] or "auto",
+            thumbnail_timestamp=row["thumbnail_timestamp"],
         )
         for row in rows
     ]
@@ -959,6 +971,8 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
         created_at=row["created_at"],
         published_at=row["published_at"],
         thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
+        thumbnail_source=row["thumbnail_source"] or "auto",
+        thumbnail_timestamp=row["thumbnail_timestamp"],
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
         qualities=qualities,
     )
@@ -1353,6 +1367,382 @@ async def remove_video_tag(request: Request, video_id: int, tag_id: int):
     )
 
     return {"status": "ok"}
+
+
+# ============ Thumbnail Selection Endpoints ============
+
+
+def _get_video_source_path(video_id: int, slug: str) -> Optional[Path]:
+    """
+    Find the source video file for thumbnail generation.
+
+    Checks in order:
+    1. Original upload in UPLOADS_DIR
+    2. Highest quality HLS variant in VIDEOS_DIR
+
+    Returns None if no source is available.
+    """
+    # First check uploads directory for original file
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
+        upload_path = UPLOADS_DIR / f"{video_id}{ext}"
+        if upload_path.exists():
+            return upload_path
+
+    # Fall back to highest quality HLS variant
+    video_dir = VIDEOS_DIR / slug
+    if not video_dir.exists():
+        return None
+
+    # Check for original quality first, then descending quality order
+    quality_order = ["original", "2160p", "1440p", "1080p", "720p", "480p", "360p"]
+    for quality in quality_order:
+        playlist = video_dir / f"{quality}.m3u8"
+        if playlist.exists():
+            # Get the first segment file for this quality
+            segments = sorted(video_dir.glob(f"{quality}_*.ts"))
+            if segments:
+                # Return the playlist path - ffmpeg can read HLS directly
+                return playlist
+
+    return None
+
+
+def _cleanup_frames_directory(slug: str) -> None:
+    """Remove the temporary frames directory for a video."""
+    frames_dir = VIDEOS_DIR / slug / "frames"
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir)
+
+
+@app.get("/api/videos/{video_id}/thumbnail")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_thumbnail_info(request: Request, video_id: int) -> ThumbnailInfoResponse:
+    """Get current thumbnail information for a video."""
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    thumbnail_url = None
+    if video["status"] == VideoStatus.READY:
+        thumbnail_path = VIDEOS_DIR / video["slug"] / "thumbnail.jpg"
+        if thumbnail_path.exists():
+            thumbnail_url = f"/videos/{video['slug']}/thumbnail.jpg"
+
+    return ThumbnailInfoResponse(
+        video_id=video_id,
+        thumbnail_url=thumbnail_url,
+        thumbnail_source=video["thumbnail_source"] or "auto",
+        thumbnail_timestamp=video["thumbnail_timestamp"],
+    )
+
+
+@app.post("/api/videos/{video_id}/thumbnail/frames")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def generate_thumbnail_frames(request: Request, video_id: int) -> ThumbnailFramesResponse:
+    """
+    Generate multiple frame options at different timestamps for thumbnail selection.
+
+    Returns URLs to temporary frame images at 10%, 25%, 50%, 75%, 90% of video duration.
+    Frames are stored in VIDEOS_DIR/{slug}/frames/ directory.
+    """
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    duration = video["duration"]
+    if not duration or duration <= 0:
+        raise HTTPException(status_code=400, detail="Video has no duration information")
+
+    # Find source file
+    source_path = _get_video_source_path(video_id, video["slug"])
+    if not source_path:
+        raise HTTPException(
+            status_code=400,
+            detail="No source video available for frame extraction. Original upload may have been deleted.",
+        )
+
+    # Create frames directory
+    frames_dir = VIDEOS_DIR / video["slug"] / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # Calculate timestamps based on percentages
+    timestamps = [duration * pct for pct in THUMBNAIL_FRAME_PERCENTAGES]
+
+    # Generate frames in parallel
+    frames = []
+    tasks = []
+    for i, timestamp in enumerate(timestamps):
+        frame_path = frames_dir / f"frame_{i}.jpg"
+        tasks.append(generate_thumbnail(source_path, frame_path, timestamp=timestamp, timeout=30.0))
+        frames.append(
+            ThumbnailFrame(
+                index=i,
+                timestamp=round(timestamp, 2),
+                url=f"/videos/{video['slug']}/frames/frame_{i}.jpg",
+            )
+        )
+
+    # Run all frame generations concurrently
+    try:
+        await asyncio.gather(*tasks)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate frames: {str(e)}")
+
+    return ThumbnailFramesResponse(video_id=video_id, frames=frames)
+
+
+@app.post("/api/videos/{video_id}/thumbnail/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_custom_thumbnail(
+    request: Request,
+    video_id: int,
+    file: UploadFile = File(...),
+) -> ThumbnailResponse:
+    """
+    Upload a custom thumbnail image.
+
+    Accepts: JPEG, PNG, WebP (max 10MB)
+    Converts to JPEG at 640px width, preserving aspect ratio.
+    """
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Validate file extension
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in SUPPORTED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported image format. Allowed: {', '.join(sorted(SUPPORTED_IMAGE_EXTENSIONS))}",
+        )
+
+    # Check file size via Content-Length header
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_THUMBNAIL_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+        )
+
+    # Save to temp file
+    temp_path = UPLOADS_DIR / f"thumb_temp_{video_id}{ext}"
+    try:
+        total_size = 0
+        with open(temp_path, "wb") as f:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > MAX_THUMBNAIL_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+                    )
+                f.write(chunk)
+
+        # Convert and resize using ffmpeg
+        video_dir = VIDEOS_DIR / video["slug"]
+        video_dir.mkdir(parents=True, exist_ok=True)
+        thumbnail_path = video_dir / "thumbnail.jpg"
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(temp_path),
+            "-vf",
+            f"scale={THUMBNAIL_WIDTH}:-1",
+            "-q:v",
+            "2",
+            str(thumbnail_path),
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise HTTPException(status_code=500, detail="Image conversion timed out")
+
+        if process.returncode != 0:
+            error_msg = stderr.decode("utf-8", errors="ignore")[:200]
+            raise HTTPException(status_code=400, detail=f"Invalid image file: {error_msg}")
+
+        # Update database
+        await db_execute_with_retry(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(thumbnail_source="custom", thumbnail_timestamp=None)
+        )
+
+        # Clean up frames directory if it exists
+        _cleanup_frames_directory(video["slug"])
+
+        # Audit log
+        log_audit(
+            AuditAction.VIDEO_UPDATE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="video",
+            resource_id=video_id,
+            resource_name=video["slug"],
+            details={"action": "thumbnail_upload", "original_filename": file.filename},
+        )
+
+        return ThumbnailResponse(
+            status="ok",
+            thumbnail_url=f"/videos/{video['slug']}/thumbnail.jpg",
+            thumbnail_source="custom",
+            thumbnail_timestamp=None,
+        )
+
+    finally:
+        # Clean up temp file
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@app.post("/api/videos/{video_id}/thumbnail/select")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def select_thumbnail_frame(
+    request: Request,
+    video_id: int,
+    timestamp: float = Form(...),
+) -> ThumbnailResponse:
+    """
+    Select a frame at the specified timestamp as the thumbnail.
+
+    Can use a timestamp from the generated frames or any custom timestamp.
+    """
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    duration = video["duration"]
+    if not duration or duration <= 0:
+        raise HTTPException(status_code=400, detail="Video has no duration information")
+
+    # Validate timestamp
+    if timestamp < 0 or timestamp > duration:
+        raise HTTPException(
+            status_code=400, detail=f"Timestamp must be between 0 and {duration:.2f} seconds"
+        )
+
+    # Find source file
+    source_path = _get_video_source_path(video_id, video["slug"])
+    if not source_path:
+        raise HTTPException(
+            status_code=400,
+            detail="No source video available for thumbnail generation. Original upload may have been deleted.",
+        )
+
+    # Generate thumbnail at the specified timestamp
+    video_dir = VIDEOS_DIR / video["slug"]
+    video_dir.mkdir(parents=True, exist_ok=True)
+    thumbnail_path = video_dir / "thumbnail.jpg"
+
+    try:
+        await generate_thumbnail(source_path, thumbnail_path, timestamp=timestamp, timeout=30.0)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+
+    # Update database
+    await db_execute_with_retry(
+        videos.update()
+        .where(videos.c.id == video_id)
+        .values(thumbnail_source="selected", thumbnail_timestamp=timestamp)
+    )
+
+    # Clean up frames directory
+    _cleanup_frames_directory(video["slug"])
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"action": "thumbnail_select", "timestamp": timestamp},
+    )
+
+    return ThumbnailResponse(
+        status="ok",
+        thumbnail_url=f"/videos/{video['slug']}/thumbnail.jpg",
+        thumbnail_source="selected",
+        thumbnail_timestamp=timestamp,
+    )
+
+
+@app.post("/api/videos/{video_id}/thumbnail/revert")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse:
+    """
+    Revert to the auto-generated thumbnail (default timestamp).
+
+    Regenerates the thumbnail at the default position (5 seconds or 25% of duration).
+    """
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    duration = video["duration"]
+    if not duration or duration <= 0:
+        raise HTTPException(status_code=400, detail="Video has no duration information")
+
+    # Find source file
+    source_path = _get_video_source_path(video_id, video["slug"])
+    if not source_path:
+        raise HTTPException(
+            status_code=400,
+            detail="No source video available for thumbnail generation. Original upload may have been deleted.",
+        )
+
+    # Calculate default timestamp (same as transcoder)
+    default_timestamp = min(5.0, duration / 4)
+
+    # Generate thumbnail at the default timestamp
+    video_dir = VIDEOS_DIR / video["slug"]
+    video_dir.mkdir(parents=True, exist_ok=True)
+    thumbnail_path = video_dir / "thumbnail.jpg"
+
+    try:
+        await generate_thumbnail(source_path, thumbnail_path, timestamp=default_timestamp, timeout=30.0)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+
+    # Update database
+    await db_execute_with_retry(
+        videos.update()
+        .where(videos.c.id == video_id)
+        .values(thumbnail_source="auto", thumbnail_timestamp=None)
+    )
+
+    # Clean up frames directory
+    _cleanup_frames_directory(video["slug"])
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"action": "thumbnail_revert"},
+    )
+
+    return ThumbnailResponse(
+        status="ok",
+        thumbnail_url=f"/videos/{video['slug']}/thumbnail.jpg",
+        thumbnail_source="auto",
+        thumbnail_timestamp=None,
+    )
 
 
 @app.delete("/api/videos/{video_id}")
