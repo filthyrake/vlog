@@ -903,7 +903,7 @@
                 <h4 class="text-sm font-medium mb-2 text-dark-300">Current Thumbnail</h4>
                 <div class="flex items-center gap-4">
                     <div class="w-40 aspect-video bg-dark-800 rounded overflow-hidden">
-                        <img :src="'/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + Date.now()"
+                        <img :src="'/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + thumbnailCacheBust"
                              class="w-full h-full object-cover"
                              @error="$el.style.display='none'">
                     </div>
@@ -927,15 +927,18 @@
                         <span x-show="thumbnailLoading">Generating...</span>
                     </button>
                 </div>
-                <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2">
+                <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
                     <template x-for="frame in thumbnailFrames" :key="frame.index">
                         <button
                             @click="selectThumbnailFrame(frame.timestamp)"
                             :disabled="thumbnailLoading"
-                            class="aspect-video bg-dark-800 rounded overflow-hidden hover:ring-2 hover:ring-cyan-500 transition relative group"
+                            class="bg-dark-800 rounded overflow-hidden hover:ring-2 hover:ring-cyan-500 transition"
+                            style="min-width: 0;"
                         >
-                            <img :src="frame.url + '?t=' + Date.now()" class="w-full h-full object-cover">
-                            <div class="absolute bottom-0 left-0 right-0 bg-black/70 text-xs text-center py-1" x-text="formatDuration(frame.timestamp)"></div>
+                            <div style="position: relative; padding-bottom: 56.25%; overflow: hidden;">
+                                <img :src="frame.url + '?t=' + Date.now()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;">
+                            </div>
+                            <div class="bg-black/70 text-xs text-center py-1" x-text="formatDuration(frame.timestamp)"></div>
                         </button>
                     </template>
                 </div>
@@ -1249,6 +1252,7 @@
                 thumbnailLoading: false,
                 thumbnailUploading: false,
                 thumbnailUploadFile: null,
+                thumbnailCacheBust: Date.now(),
                 thumbnailMessage: '',
                 thumbnailError: false,
 
@@ -1993,6 +1997,7 @@
                     this.thumbnailLoading = false;
                     this.thumbnailUploading = false;
                     this.thumbnailUploadFile = null;
+                    this.thumbnailCacheBust = Date.now();
                     this.thumbnailMessage = '';
                     this.thumbnailError = false;
                     this.thumbnailModal = true;
@@ -2043,6 +2048,7 @@
                         }
 
                         this.thumbnailSource = 'selected';
+                        this.thumbnailCacheBust = Date.now();
                         this.thumbnailMessage = 'Thumbnail updated successfully';
                         this.thumbnailError = false;
                         await this.loadVideos();
@@ -2076,6 +2082,7 @@
                         }
 
                         this.thumbnailSource = 'custom';
+                        this.thumbnailCacheBust = Date.now();
                         this.thumbnailMessage = 'Thumbnail uploaded successfully';
                         this.thumbnailError = false;
                         this.thumbnailUploadFile = null;
@@ -2104,6 +2111,7 @@
                         }
 
                         this.thumbnailSource = 'auto';
+                        this.thumbnailCacheBust = Date.now();
                         this.thumbnailMessage = 'Thumbnail reverted to auto-generated';
                         this.thumbnailError = false;
                         await this.loadVideos();
