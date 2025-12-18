@@ -1398,10 +1398,8 @@ def _get_video_source_path(video_id: int, slug: str) -> Optional[Path]:
     for quality in quality_order:
         playlist = video_dir / f"{quality}.m3u8"
         if playlist.exists():
-            # Get the first segment file for this quality
-            segments = sorted(video_dir.glob(f"{quality}_*.ts"))
-            if segments:
-                # Return the playlist path - ffmpeg can read HLS directly
+            # Verify segments exist before returning playlist (ffmpeg can read HLS directly)
+            if any(video_dir.glob(f"{quality}_*.ts")):
                 return playlist
 
     return None
@@ -1461,8 +1459,10 @@ async def generate_thumbnail_frames(request: Request, video_id: int) -> Thumbnai
             detail="No source video available for frame extraction. Original upload may have been deleted.",
         )
 
-    # Create frames directory
+    # Create frames directory (clean up any existing frames first to avoid stale sets)
     frames_dir = VIDEOS_DIR / video["slug"] / "frames"
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir)
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     # Calculate timestamps based on percentages

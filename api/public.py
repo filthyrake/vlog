@@ -153,8 +153,8 @@ class HLSStaticFiles(StaticFiles):
             elif path.endswith(".m3u8"):
                 response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
                 response.headers["Cache-Control"] = "no-cache"
-            elif path.endswith("thumbnail.jpg") or path.endswith("/frames/"):
-                # Short cache for thumbnails - allow updates to propagate quickly
+            elif path.endswith("thumbnail.jpg") or "/frames/" in path:
+                # Short cache for thumbnails and frame images - allow updates to propagate quickly
                 response.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
             return response
         except (OSError, PermissionError) as e:
@@ -490,6 +490,8 @@ async def list_videos(
             created_at=row["created_at"],
             published_at=row["published_at"],
             thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg?v={get_thumbnail_version(row)}",
+            thumbnail_source=row["thumbnail_source"] or "auto",
+            thumbnail_timestamp=row["thumbnail_timestamp"],
             tags=video_tags_map.get(row["id"], []),
         )
         for row in rows
@@ -575,6 +577,8 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         created_at=row["created_at"],
         published_at=row["published_at"],
         thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}" if row["status"] == VideoStatus.READY else None,
+        thumbnail_source=row["thumbnail_source"] or "auto",
+        thumbnail_timestamp=row["thumbnail_timestamp"],
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
         captions_url=captions_url,
         transcription_status=transcription_status,
