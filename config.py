@@ -144,6 +144,13 @@ PROGRESS_UPDATE_INTERVAL = float(os.getenv("VLOG_PROGRESS_UPDATE_INTERVAL", "5.0
 MAX_UPLOAD_SIZE = int(os.getenv("VLOG_MAX_UPLOAD_SIZE", str(100 * 1024 * 1024 * 1024)))  # 100 GB
 UPLOAD_CHUNK_SIZE = int(os.getenv("VLOG_UPLOAD_CHUNK_SIZE", str(1024 * 1024)))  # 1 MB chunks
 
+# Thumbnail settings
+SUPPORTED_IMAGE_EXTENSIONS = frozenset([".jpg", ".jpeg", ".png", ".webp"])
+MAX_THUMBNAIL_UPLOAD_SIZE = int(os.getenv("VLOG_MAX_THUMBNAIL_SIZE", str(10 * 1024 * 1024)))  # 10 MB
+THUMBNAIL_WIDTH = int(os.getenv("VLOG_THUMBNAIL_WIDTH", "640"))
+# Percentages of video duration for frame picker options
+THUMBNAIL_FRAME_PERCENTAGES = [0.10, 0.25, 0.50, 0.75, 0.90]
+
 # HLS archive extraction limits (prevent tar bomb attacks)
 # Max number of files in an HLS archive (master playlist + quality playlists + segments + thumbnail)
 # 6 qualities × 1200 segments (2hrs @ 6s each) + playlists + thumbnails = ~7200 files for 2hr video
