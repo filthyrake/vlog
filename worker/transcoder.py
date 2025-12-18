@@ -640,13 +640,15 @@ async def generate_thumbnail(input_path: Path, output_path: Path, timestamp: flo
         RuntimeError: If ffmpeg fails or times out
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Use input seeking (-ss before -i) for fast seeking to timestamp
+    # This seeks directly to the nearest keyframe without decoding the entire stream
     cmd = [
         "ffmpeg",
         "-y",
-        "-i",
-        str(input_path),
         "-ss",
         str(timestamp),
+        "-i",
+        str(input_path),
         "-vframes",
         "1",
         "-vf",
