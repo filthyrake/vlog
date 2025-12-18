@@ -306,6 +306,8 @@ async def list_videos(
             videos.c.status,
             videos.c.created_at,
             videos.c.published_at,
+            videos.c.thumbnail_source,
+            videos.c.thumbnail_timestamp,
             categories.c.name.label("category_name"),
             sa.func.count(sa.distinct(playback_sessions.c.id)).label("view_count"),
         )
@@ -467,6 +469,14 @@ async def list_videos(
     video_ids = [row["id"] for row in rows]
     video_tags_map = await get_video_tags(video_ids)
 
+    def get_thumbnail_version(row):
+        """Generate cache-busting version for thumbnail URL."""
+        if row["thumbnail_timestamp"]:
+            return int(row["thumbnail_timestamp"] * 1000)
+        # Use hash of id + source for non-timestamp thumbnails
+        source = row["thumbnail_source"] or "auto"
+        return hash((row["id"], source)) % 1000000000
+
     return [
         VideoListResponse(
             id=row["id"],
@@ -479,7 +489,7 @@ async def list_videos(
             status=row["status"],
             created_at=row["created_at"],
             published_at=row["published_at"],
-            thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg",
+            thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg?v={get_thumbnail_version(row)}",
             tags=video_tags_map.get(row["id"], []),
         )
         for row in rows
@@ -540,6 +550,15 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
     video_tags_map = await get_video_tags([row["id"]])
     video_tag_list = video_tags_map.get(row["id"], [])
 
+    # Generate thumbnail version for cache busting
+    thumb_version = None
+    if row["status"] == VideoStatus.READY:
+        if row["thumbnail_timestamp"]:
+            thumb_version = int(row["thumbnail_timestamp"] * 1000)
+        else:
+            source = row["thumbnail_source"] or "auto"
+            thumb_version = hash((row["id"], source)) % 1000000000
+
     return VideoResponse(
         id=row["id"],
         title=row["title"],
@@ -555,7 +574,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         error_message=sanitize_error_message(row["error_message"], context=f"video_slug={slug}"),
         created_at=row["created_at"],
         published_at=row["published_at"],
-        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
+        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}" if row["status"] == VideoStatus.READY else None,
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
         captions_url=captions_url,
         transcription_status=transcription_status,
