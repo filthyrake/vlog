@@ -320,6 +320,11 @@
                                             x-text="video.published_at ? 'Unpublish' : 'Publish'"
                                         ></button>
                                         <button
+                                            x-show="video.status === 'ready'"
+                                            @click="openThumbnailModal(video)"
+                                            class="text-green-400 hover:text-green-300 text-sm"
+                                        >Thumbnail</button>
+                                        <button
                                             @click="deleteVideo(video.id)"
                                             class="text-red-400 hover:text-red-300 text-sm"
                                         >Delete</button>
@@ -884,6 +889,108 @@
         </div>
     </div>
 
+    <!-- Thumbnail Selection Modal -->
+    <div x-show="thumbnailModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="thumbnailModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
+            <h3 class="text-xl font-semibold mb-2">Select Thumbnail</h3>
+            <p class="text-dark-400 text-sm mb-4">
+                Choose a thumbnail for "<span x-text="thumbnailVideoTitle" class="text-white"></span>"
+            </p>
+
+            <!-- Current Thumbnail -->
+            <div class="mb-6">
+                <h4 class="text-sm font-medium mb-2 text-dark-300">Current Thumbnail</h4>
+                <div class="flex items-center gap-4">
+                    <div class="w-40 aspect-video bg-dark-800 rounded overflow-hidden">
+                        <img :src="'/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + thumbnailCacheBust"
+                             class="w-full h-full object-cover"
+                             @error="$el.style.display='none'">
+                    </div>
+                    <div class="text-sm text-dark-400">
+                        <span>Source:</span>
+                        <span class="text-white capitalize" x-text="thumbnailSource"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Frame Selection -->
+            <div class="mb-6">
+                <div class="flex justify-between items-center mb-3">
+                    <h4 class="text-sm font-medium text-dark-300">Select from Video Frames</h4>
+                    <button
+                        @click="generateThumbnailFrames()"
+                        :disabled="thumbnailLoading"
+                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded transition"
+                    >
+                        <span x-show="!thumbnailLoading">Generate Frames</span>
+                        <span x-show="thumbnailLoading">Generating...</span>
+                    </button>
+                </div>
+                <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
+                    <template x-for="frame in thumbnailFrames" :key="frame.index">
+                        <button
+                            @click="selectThumbnailFrame(frame.timestamp)"
+                            :disabled="thumbnailLoading"
+                            class="bg-dark-800 rounded overflow-hidden hover:ring-2 hover:ring-cyan-500 transition"
+                            style="min-width: 0;"
+                        >
+                            <div style="position: relative; padding-bottom: 56.25%; overflow: hidden;">
+                                <img :src="frame.url + '?t=' + Date.now()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;">
+                            </div>
+                            <div class="bg-black/70 text-xs text-center py-1" x-text="formatDuration(frame.timestamp)"></div>
+                        </button>
+                    </template>
+                </div>
+                <div x-show="thumbnailFrames.length === 0" class="text-dark-500 text-sm py-4 text-center bg-dark-800 rounded">
+                    Click "Generate Frames" to see frame options from the video.
+                </div>
+            </div>
+
+            <!-- Custom Upload -->
+            <div class="mb-6">
+                <h4 class="text-sm font-medium mb-2 text-dark-300">Upload Custom Thumbnail</h4>
+                <div class="flex items-center gap-3">
+                    <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        @change="thumbnailUploadFile = $event.target.files[0]"
+                        class="flex-1 px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-dark-700 file:text-white"
+                    >
+                    <button
+                        @click="uploadCustomThumbnail()"
+                        :disabled="!thumbnailUploadFile || thumbnailUploading"
+                        class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+                    >
+                        <span x-show="!thumbnailUploading">Upload</span>
+                        <span x-show="thumbnailUploading">Uploading...</span>
+                    </button>
+                </div>
+                <p class="text-xs text-dark-500 mt-2">Accepts JPEG, PNG, or WebP (max 10MB). Will be resized to 640px width.</p>
+            </div>
+
+            <!-- Revert Option -->
+            <div class="mb-6" x-show="thumbnailSource !== 'auto'">
+                <button
+                    @click="revertThumbnail()"
+                    :disabled="thumbnailLoading"
+                    class="text-sm text-yellow-400 hover:text-yellow-300 disabled:opacity-50"
+                >Revert to auto-generated thumbnail</button>
+            </div>
+
+            <!-- Messages -->
+            <div x-show="thumbnailMessage" :class="thumbnailError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="thumbnailMessage"></div>
+
+            <!-- Close Button -->
+            <div class="flex justify-end">
+                <button
+                    @click="thumbnailModal = false"
+                    class="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg font-medium transition"
+                >Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Bulk Delete Modal -->
     <div x-show="bulkDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/70" @click="bulkDeleteModal = false"></div>
@@ -1133,6 +1240,21 @@
                 retranscoding: false,
                 retranscodeMessage: '',
                 retranscodeError: false,
+
+                // Thumbnail selection modal
+                thumbnailModal: false,
+                thumbnailVideoId: null,
+                thumbnailVideoSlug: '',
+                thumbnailVideoTitle: '',
+                thumbnailDuration: 0,
+                thumbnailSource: 'auto',
+                thumbnailFrames: [],
+                thumbnailLoading: false,
+                thumbnailUploading: false,
+                thumbnailUploadFile: null,
+                thumbnailCacheBust: Date.now(),
+                thumbnailMessage: '',
+                thumbnailError: false,
 
                 // Analytics
                 analyticsOverview: {},
@@ -1862,6 +1984,143 @@
                 getQualityStatus(quality) {
                     const existing = this.retranscodeExisting.find(q => q.name === quality);
                     return existing ? existing.status : 'not transcoded';
+                },
+
+                // Thumbnail selection methods
+                openThumbnailModal(video) {
+                    this.thumbnailVideoId = video.id;
+                    this.thumbnailVideoSlug = video.slug;
+                    this.thumbnailVideoTitle = video.title;
+                    this.thumbnailDuration = video.duration;
+                    this.thumbnailSource = video.thumbnail_source || 'auto';
+                    this.thumbnailFrames = [];
+                    this.thumbnailLoading = false;
+                    this.thumbnailUploading = false;
+                    this.thumbnailUploadFile = null;
+                    this.thumbnailCacheBust = Date.now();
+                    this.thumbnailMessage = '';
+                    this.thumbnailError = false;
+                    this.thumbnailModal = true;
+                },
+
+                async generateThumbnailFrames() {
+                    this.thumbnailLoading = true;
+                    this.thumbnailMessage = '';
+                    this.thumbnailError = false;
+
+                    try {
+                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/frames`, {
+                            method: 'POST'
+                        });
+
+                        if (!res.ok) {
+                            const data = await res.json();
+                            throw new Error(data.detail || 'Failed to generate frames');
+                        }
+
+                        const data = await res.json();
+                        this.thumbnailFrames = data.frames;
+                    } catch (e) {
+                        this.thumbnailError = true;
+                        this.thumbnailMessage = e.message;
+                    } finally {
+                        this.thumbnailLoading = false;
+                    }
+                },
+
+                async selectThumbnailFrame(timestamp) {
+                    this.thumbnailLoading = true;
+                    this.thumbnailMessage = '';
+                    this.thumbnailError = false;
+
+                    try {
+                        const formData = new FormData();
+                        formData.append('timestamp', timestamp);
+
+                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/select`, {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!res.ok) {
+                            const data = await res.json();
+                            throw new Error(data.detail || 'Failed to select frame');
+                        }
+
+                        this.thumbnailSource = 'selected';
+                        this.thumbnailCacheBust = Date.now();
+                        this.thumbnailMessage = 'Thumbnail updated successfully';
+                        this.thumbnailError = false;
+                        await this.loadVideos();
+                    } catch (e) {
+                        this.thumbnailError = true;
+                        this.thumbnailMessage = e.message;
+                    } finally {
+                        this.thumbnailLoading = false;
+                    }
+                },
+
+                async uploadCustomThumbnail() {
+                    if (!this.thumbnailUploadFile) return;
+
+                    this.thumbnailUploading = true;
+                    this.thumbnailMessage = '';
+                    this.thumbnailError = false;
+
+                    try {
+                        const formData = new FormData();
+                        formData.append('file', this.thumbnailUploadFile);
+
+                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/upload`, {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!res.ok) {
+                            const data = await res.json();
+                            throw new Error(data.detail || 'Failed to upload thumbnail');
+                        }
+
+                        this.thumbnailSource = 'custom';
+                        this.thumbnailCacheBust = Date.now();
+                        this.thumbnailMessage = 'Thumbnail uploaded successfully';
+                        this.thumbnailError = false;
+                        this.thumbnailUploadFile = null;
+                        await this.loadVideos();
+                    } catch (e) {
+                        this.thumbnailError = true;
+                        this.thumbnailMessage = e.message;
+                    } finally {
+                        this.thumbnailUploading = false;
+                    }
+                },
+
+                async revertThumbnail() {
+                    this.thumbnailLoading = true;
+                    this.thumbnailMessage = '';
+                    this.thumbnailError = false;
+
+                    try {
+                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/revert`, {
+                            method: 'POST'
+                        });
+
+                        if (!res.ok) {
+                            const data = await res.json();
+                            throw new Error(data.detail || 'Failed to revert thumbnail');
+                        }
+
+                        this.thumbnailSource = 'auto';
+                        this.thumbnailCacheBust = Date.now();
+                        this.thumbnailMessage = 'Thumbnail reverted to auto-generated';
+                        this.thumbnailError = false;
+                        await this.loadVideos();
+                    } catch (e) {
+                        this.thumbnailError = true;
+                        this.thumbnailMessage = e.message;
+                    } finally {
+                        this.thumbnailLoading = false;
+                    }
                 },
 
                 openEditModal(video) {

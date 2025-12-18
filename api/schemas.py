@@ -164,6 +164,8 @@ class VideoResponse(BaseModel):
     created_at: datetime
     published_at: Optional[datetime]
     thumbnail_url: Optional[str] = None
+    thumbnail_source: str = "auto"  # auto, selected, custom
+    thumbnail_timestamp: Optional[float] = None  # timestamp for selected thumbnails
     stream_url: Optional[str] = None
     captions_url: Optional[str] = None  # WebVTT captions URL
     transcription_status: Optional[str] = None  # pending, processing, completed, failed
@@ -183,6 +185,8 @@ class VideoListResponse(BaseModel):
     created_at: datetime
     published_at: Optional[datetime]
     thumbnail_url: Optional[str] = None
+    thumbnail_source: str = "auto"  # auto, selected, custom
+    thumbnail_timestamp: Optional[float] = None  # timestamp for selected thumbnails
     tags: List[VideoTagInfo] = []
 
 
@@ -641,3 +645,39 @@ class VideoTagsUpdate(BaseModel):
     """Request to set tags on a video."""
 
     tag_ids: List[int] = Field(..., max_length=20, description="List of tag IDs (max 20 tags per video)")
+
+
+# ============ Thumbnail Selection Models ============
+
+
+class ThumbnailFrame(BaseModel):
+    """A single frame option for thumbnail selection."""
+
+    index: int
+    timestamp: float
+    url: str
+
+
+class ThumbnailFramesResponse(BaseModel):
+    """Response containing generated frame options for thumbnail selection."""
+
+    video_id: int
+    frames: List[ThumbnailFrame]
+
+
+class ThumbnailResponse(BaseModel):
+    """Response after thumbnail update operations."""
+
+    status: str
+    thumbnail_url: str
+    thumbnail_source: str  # auto, selected, custom
+    thumbnail_timestamp: Optional[float] = None
+
+
+class ThumbnailInfoResponse(BaseModel):
+    """Current thumbnail information for a video."""
+
+    video_id: int
+    thumbnail_url: Optional[str]
+    thumbnail_source: str  # auto, selected, custom
+    thumbnail_timestamp: Optional[float] = None
