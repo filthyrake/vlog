@@ -153,6 +153,9 @@ class HLSStaticFiles(StaticFiles):
             elif path.endswith(".m3u8"):
                 response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
                 response.headers["Cache-Control"] = "no-cache"
+            elif path.endswith("thumbnail.jpg") or path.endswith("/frames/"):
+                # Short cache for thumbnails - allow updates to propagate quickly
+                response.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
             return response
         except (OSError, PermissionError) as e:
             # Storage unavailable - return 503 with helpful message
