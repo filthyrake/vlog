@@ -279,8 +279,8 @@ class TestSearchFilters:
             )
         )
 
-        # Filter from yesterday
-        response = public_client.get(f"/api/videos?date_from={yesterday.isoformat()}")
+        # Filter from yesterday (use params= for proper URL encoding of + in timezone)
+        response = public_client.get("/api/videos", params={"date_from": yesterday.isoformat()})
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -289,7 +289,7 @@ class TestSearchFilters:
         assert "today-video" in slugs
 
         # Filter until yesterday
-        response = public_client.get(f"/api/videos?date_to={yesterday.isoformat()}")
+        response = public_client.get("/api/videos", params={"date_to": yesterday.isoformat()})
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -298,7 +298,10 @@ class TestSearchFilters:
         assert "yesterday-video" in slugs
 
         # Filter range
-        response = public_client.get(f"/api/videos?date_from={two_days_ago.isoformat()}&date_to={yesterday.isoformat()}")
+        response = public_client.get(
+            "/api/videos",
+            params={"date_from": two_days_ago.isoformat(), "date_to": yesterday.isoformat()},
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
@@ -1034,10 +1037,16 @@ class TestCombinedFiltersAndSorting:
             )
         )
 
-        # Apply all filters
+        # Apply all filters (use params= for proper URL encoding of + in timezone)
         date_from_str = (now - timedelta(hours=1)).isoformat()
         response = public_client.get(
-            f"/api/videos?duration=medium&quality=1080p&has_transcription=true&date_from={date_from_str}"
+            "/api/videos",
+            params={
+                "duration": "medium",
+                "quality": "1080p",
+                "has_transcription": "true",
+                "date_from": date_from_str,
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -1108,9 +1117,10 @@ class TestInvalidInputValidation:
             )
         )
 
-        # date_from is after date_to
+        # date_from is after date_to (use params= for proper URL encoding)
         response = public_client.get(
-            f"/api/videos?date_from={now.isoformat()}&date_to={yesterday.isoformat()}"
+            "/api/videos",
+            params={"date_from": now.isoformat(), "date_to": yesterday.isoformat()},
         )
         assert response.status_code == 400
         assert "Invalid date range" in response.json()["detail"]
@@ -1131,9 +1141,10 @@ class TestInvalidInputValidation:
             )
         )
 
-        # date_from equals date_to - should be valid
+        # date_from equals date_to - should be valid (use params= for proper URL encoding)
         response = public_client.get(
-            f"/api/videos?date_from={now.isoformat()}&date_to={now.isoformat()}"
+            "/api/videos",
+            params={"date_from": now.isoformat(), "date_to": now.isoformat()},
         )
         assert response.status_code == 200
 
@@ -1154,8 +1165,8 @@ class TestInvalidInputValidation:
             )
         )
 
-        # Filter for videos published in the future
-        response = public_client.get(f"/api/videos?date_from={future.isoformat()}")
+        # Filter for videos published in the future (use params= for proper URL encoding)
+        response = public_client.get("/api/videos", params={"date_from": future.isoformat()})
         assert response.status_code == 200
         data = response.json()
         # Should return empty list since no videos are published in the future

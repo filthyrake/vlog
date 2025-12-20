@@ -12,8 +12,10 @@ from config import DATABASE_URL
 config = context.config
 
 # Set the database URL dynamically from project config
+# Only set if not already configured (allows tests to override)
 # Supports both PostgreSQL (default) and SQLite
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
