@@ -77,7 +77,7 @@ class TestRemoteTranscoderLifecycle:
 
         # Step 2: Worker downloads source file
         download_response = worker_client.get(
-            f"/api/worker/{job_id}/download",
+            f"/api/worker/source/{video_id}",
             headers=headers,
         )
         assert download_response.status_code == 200
@@ -99,20 +99,32 @@ class TestRemoteTranscoderLifecycle:
         assert progress_response.status_code == 200
 
         # Step 4: Worker uploads HLS output
-        # Create a minimal tar.gz with HLS files
-        tar_buffer = io.BytesIO()
-        with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
-            # Add master playlist
-            master_content = b"#EXTM3U\n#EXT-X-VERSION:3\n"
-            master_info = tarfile.TarInfo(name="master.m3u8")
-            master_info.size = len(master_content)
-            tar.addfile(master_info, io.BytesIO(master_content))
-
+        # First upload the 720p quality
+        quality_tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=quality_tar_buffer, mode="w:gz") as tar:
             # Add 720p playlist
             playlist_content = b"#EXTM3U\n#EXT-X-TARGETDURATION:6\n"
             playlist_info = tarfile.TarInfo(name="720p.m3u8")
             playlist_info.size = len(playlist_content)
             tar.addfile(playlist_info, io.BytesIO(playlist_content))
+
+        quality_tar_buffer.seek(0)
+
+        quality_upload_response = worker_client.post(
+            f"/api/worker/upload/{video_id}/quality/720p",
+            files={"file": ("720p.tar.gz", quality_tar_buffer, "application/gzip")},
+            headers=headers,
+        )
+        assert quality_upload_response.status_code == 200
+
+        # Then upload finalize files (master playlist, thumbnail)
+        finalize_tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=finalize_tar_buffer, mode="w:gz") as tar:
+            # Add master playlist
+            master_content = b"#EXTM3U\n#EXT-X-VERSION:3\n"
+            master_info = tarfile.TarInfo(name="master.m3u8")
+            master_info.size = len(master_content)
+            tar.addfile(master_info, io.BytesIO(master_content))
 
             # Add thumbnail
             thumb_content = b"fake thumbnail"
@@ -120,14 +132,14 @@ class TestRemoteTranscoderLifecycle:
             thumb_info.size = len(thumb_content)
             tar.addfile(thumb_info, io.BytesIO(thumb_content))
 
-        tar_buffer.seek(0)
+        finalize_tar_buffer.seek(0)
 
-        upload_response = worker_client.post(
-            f"/api/worker/{job_id}/upload",
-            files={"file": ("output.tar.gz", tar_buffer, "application/gzip")},
+        finalize_upload_response = worker_client.post(
+            f"/api/worker/upload/{video_id}/finalize",
+            files={"file": ("finalize.tar.gz", finalize_tar_buffer, "application/gzip")},
             headers=headers,
         )
-        assert upload_response.status_code == 200
+        assert finalize_upload_response.status_code == 200
 
         # Verify HLS files were extracted
         slug = (await test_database.fetch_one(videos.select().where(videos.c.id == video_id)))["slug"]
@@ -139,7 +151,7 @@ class TestRemoteTranscoderLifecycle:
         # Step 5: Worker marks job complete
         complete_response = worker_client.post(
             f"/api/worker/{job_id}/complete",
-            json={"quality_info": [{"name": "720p", "width": 1280, "height": 720}]},
+            json={"qualities": [{"name": "720p", "width": 1280, "height": 720, "bitrate": 2500}]},
             headers=headers,
         )
         assert complete_response.status_code == 200
@@ -153,7 +165,7 @@ class TestRemoteTranscoderLifecycle:
             video_qualities.select().where(video_qualities.c.video_id == video_id)
         )
         assert len(qualities) == 1
-        assert qualities[0]["name"] == "720p"
+        assert qualities[0]["quality"] == "720p"
         assert qualities[0]["width"] == 1280
         assert qualities[0]["height"] == 720
 
@@ -226,11 +238,11 @@ class TestRemoteTranscoderLifecycle:
         """Test that worker heartbeats update the last_seen timestamp."""
         headers = {"X-Worker-API-Key": registered_worker["api_key"]}
 
-        # Get initial last_seen
+        # Get initial last_heartbeat
         initial_worker = await test_database.fetch_one(
-            workers.select().where(workers.c.id == registered_worker["worker_id"])
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
         )
-        initial_last_seen = initial_worker["last_seen"]
+        initial_last_heartbeat = initial_worker["last_heartbeat"]
 
         # Send heartbeat (timestamp will be updated by the database)
         heartbeat_response = worker_client.post(
@@ -240,11 +252,11 @@ class TestRemoteTranscoderLifecycle:
         )
         assert heartbeat_response.status_code == 200
 
-        # Verify last_seen updated
+        # Verify last_heartbeat updated
         updated_worker = await test_database.fetch_one(
-            workers.select().where(workers.c.id == registered_worker["worker_id"])
+            workers.select().where(workers.c.worker_id == registered_worker["worker_id"])
         )
-        assert updated_worker["last_seen"] > initial_last_seen
+        assert updated_worker["last_heartbeat"] > initial_last_heartbeat
 
 
 class TestRemoteTranscoderErrorRecovery:
@@ -297,9 +309,9 @@ class TestRemoteTranscoderErrorRecovery:
         )
         assert fail_response.status_code == 200
 
-        # Verify job is back to pending state
+        # Verify job is reset and can be claimed again
         job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
-        assert job["current_step"] == "pending"
+        assert job["current_step"] is None  # Reset to unclaimed state
         assert job["attempt_number"] == 2  # Incremented
         assert job["worker_id"] is None  # Released
 
@@ -368,6 +380,7 @@ class TestRemoteTranscoderConcurrency:
     async def test_multiple_workers_claim_different_jobs(
         self,
         worker_client,
+        worker_admin_headers,
         test_database,
         test_storage,
     ):
@@ -377,14 +390,10 @@ class TestRemoteTranscoderConcurrency:
         # Register two workers
 
         worker1_data = {
-            "name": "worker-1",
-            "labels": {"region": "us-west"},
-            "capabilities": {"codecs": ["h264"], "max_resolution": 1080},
+            "worker_name": "worker-1",
         }
         worker2_data = {
-            "name": "worker-2",
-            "labels": {"region": "us-east"},
-            "capabilities": {"codecs": ["h264"], "max_resolution": 720},
+            "worker_name": "worker-2",
         }
 
         # Create two pending videos and jobs
@@ -429,6 +438,7 @@ class TestRemoteTranscoderConcurrency:
         register_resp1 = worker_client.post(
             "/api/worker/register",
             json=worker1_data,
+            headers=worker_admin_headers,
         )
         assert register_resp1.status_code == 200
         api_key1 = register_resp1.json()["api_key"]
@@ -436,6 +446,7 @@ class TestRemoteTranscoderConcurrency:
         register_resp2 = worker_client.post(
             "/api/worker/register",
             json=worker2_data,
+            headers=worker_admin_headers,
         )
         assert register_resp2.status_code == 200
         api_key2 = register_resp2.json()["api_key"]
@@ -488,7 +499,7 @@ class TestRemoteTranscoderFileDownload:
         source_path = test_storage["uploads"] / f"{video_id}.mp4"
         source_path.write_bytes(source_content)
 
-        job_id = await test_database.execute(
+        await test_database.execute(
             transcoding_jobs.insert().values(
                 video_id=video_id,
                 current_step="pending",
@@ -502,11 +513,11 @@ class TestRemoteTranscoderFileDownload:
 
         # Try to download without claiming - should fail
         download_response = worker_client.get(
-            f"/api/worker/{job_id}/download",
+            f"/api/worker/source/{video_id}",
             headers=headers,
         )
-        # Should require claim first
-        assert download_response.status_code in [403, 404, 409]
+        # Should require claim first (403 = not your job)
+        assert download_response.status_code == 403
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -534,7 +545,7 @@ class TestRemoteTranscoderFileDownload:
         source_path = test_storage["uploads"] / f"{video_id}.mp4"
         source_path.write_bytes(source_content)
 
-        job_id = await test_database.execute(
+        await test_database.execute(
             transcoding_jobs.insert().values(
                 video_id=video_id,
                 current_step="pending",
@@ -552,7 +563,7 @@ class TestRemoteTranscoderFileDownload:
 
         # Download the file
         download_response = worker_client.get(
-            f"/api/worker/{job_id}/download",
+            f"/api/worker/source/{video_id}",
             headers=headers,
         )
         assert download_response.status_code == 200
