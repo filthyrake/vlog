@@ -1224,18 +1224,33 @@ class TestProbeStepWithPendingClaimedStates:
         }
 
         # Mock necessary functions
+        mock_state = MagicMock(shutdown_requested=False, gpu_caps=None)
+        # Mock create_original_quality to return success (success, error, quality_info)
+        mock_original_result = (True, None, {"bitrate_bps": 5000000})
+        # Mock transcode_quality_with_progress to return success (success, error)
+        mock_transcode_result = (True, None)
+
+        # Create wrapper for fetch_one_with_retry that uses integration_database
+        async def mock_fetch_one_with_retry(query, **kwargs):
+            return await integration_database.fetch_one(query)
+
         with (
             patch.object(transcoder_module, "database", integration_database),
             patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
             patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
             patch.object(transcoder_module, "get_video_info", new_callable=AsyncMock, return_value=mock_info),
             patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock),
-            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock),
+            patch.object(transcoder_module, "transcode_quality_with_progress", new_callable=AsyncMock, return_value=mock_transcode_result),
+            patch.object(transcoder_module, "create_original_quality", new_callable=AsyncMock, return_value=mock_original_result),
             patch.object(transcoder_module, "generate_master_playlist", return_value=None),
-            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+            patch.object(transcoder_module, "get_worker_state", return_value=mock_state),
+            patch.object(transcoder_module, "fetch_one_with_retry", side_effect=mock_fetch_one_with_retry),
+            patch.object(transcoder_module, "mark_job_completed", new_callable=AsyncMock),
         ):
             # Process the video (this will run the probe step)
-            result = await transcoder_module.process_video(integration_video["id"])
+            result = await transcoder_module.process_video_resumable(
+                integration_video["id"], integration_video["slug"], state=mock_state
+            )
 
             # Verify probe ran successfully
             assert result is True
@@ -1252,7 +1267,7 @@ class TestProbeStepWithPendingClaimedStates:
             updated_job = await integration_database.fetch_one(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
             )
-            assert updated_job["current_step"] in ["thumbnail", "transcode", "finished"]
+            assert updated_job["current_step"] in ["thumbnail", "transcode", "finalize", "finished"]
 
     @pytest.mark.asyncio
     async def test_probe_runs_when_current_step_is_claimed(self, integration_database, integration_video, integration_temp_dir):
@@ -1288,18 +1303,33 @@ class TestProbeStepWithPendingClaimedStates:
         }
 
         # Mock necessary functions
+        mock_state = MagicMock(shutdown_requested=False, gpu_caps=None)
+        # Mock create_original_quality to return success (success, error, quality_info)
+        mock_original_result = (True, None, {"bitrate_bps": 2500000})
+        # Mock transcode_quality_with_progress to return success (success, error)
+        mock_transcode_result = (True, None)
+
+        # Create wrapper for fetch_one_with_retry that uses integration_database
+        async def mock_fetch_one_with_retry(query, **kwargs):
+            return await integration_database.fetch_one(query)
+
         with (
             patch.object(transcoder_module, "database", integration_database),
             patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
             patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
             patch.object(transcoder_module, "get_video_info", new_callable=AsyncMock, return_value=mock_info),
             patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock),
-            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock),
+            patch.object(transcoder_module, "transcode_quality_with_progress", new_callable=AsyncMock, return_value=mock_transcode_result),
+            patch.object(transcoder_module, "create_original_quality", new_callable=AsyncMock, return_value=mock_original_result),
             patch.object(transcoder_module, "generate_master_playlist", return_value=None),
-            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+            patch.object(transcoder_module, "get_worker_state", return_value=mock_state),
+            patch.object(transcoder_module, "fetch_one_with_retry", side_effect=mock_fetch_one_with_retry),
+            patch.object(transcoder_module, "mark_job_completed", new_callable=AsyncMock),
         ):
             # Process the video (this will run the probe step)
-            result = await transcoder_module.process_video(integration_video["id"])
+            result = await transcoder_module.process_video_resumable(
+                integration_video["id"], integration_video["slug"], state=mock_state
+            )
 
             # Verify probe ran successfully
             assert result is True
@@ -1316,7 +1346,7 @@ class TestProbeStepWithPendingClaimedStates:
             updated_job = await integration_database.fetch_one(
                 transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
             )
-            assert updated_job["current_step"] in ["thumbnail", "transcode", "finished"]
+            assert updated_job["current_step"] in ["thumbnail", "transcode", "finalize", "finished"]
 
 
 class TestThumbnailGenerationOnRemoteWorkerCrash:
@@ -1381,17 +1411,32 @@ class TestThumbnailGenerationOnRemoteWorkerCrash:
             output.write_text("thumbnail content")
 
         # Mock necessary functions
+        mock_state = MagicMock(shutdown_requested=False, gpu_caps=None)
+        # Mock create_original_quality to return success (success, error, quality_info)
+        mock_original_result = (True, None, {"bitrate_bps": 5000000})
+        # Mock transcode_quality_with_progress to return success (success, error)
+        mock_transcode_result = (True, None)
+
+        # Create wrapper for fetch_one_with_retry that uses integration_database
+        async def mock_fetch_one_with_retry(query, **kwargs):
+            return await integration_database.fetch_one(query)
+
         with (
             patch.object(transcoder_module, "database", integration_database),
             patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
             patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
             patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock, side_effect=mock_generate_thumbnail),
-            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock),
+            patch.object(transcoder_module, "transcode_quality_with_progress", new_callable=AsyncMock, return_value=mock_transcode_result),
+            patch.object(transcoder_module, "create_original_quality", new_callable=AsyncMock, return_value=mock_original_result),
             patch.object(transcoder_module, "generate_master_playlist", return_value=None),
-            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+            patch.object(transcoder_module, "get_worker_state", return_value=mock_state),
+            patch.object(transcoder_module, "fetch_one_with_retry", side_effect=mock_fetch_one_with_retry),
+            patch.object(transcoder_module, "mark_job_completed", new_callable=AsyncMock),
         ):
             # Process the video (should detect missing thumbnail and generate it)
-            result = await transcoder_module.process_video(integration_video["id"])
+            result = await transcoder_module.process_video_resumable(
+                integration_video["id"], integration_video["slug"], state=mock_state
+            )
 
             # Verify processing succeeded
             assert result is True
@@ -1470,10 +1515,10 @@ class TestThumbnailGenerationOnRemoteWorkerCrash:
         (video_dir / "1080p.m3u8").write_text("1080p playlist")
         (video_dir / "720p.m3u8").write_text("720p playlist")
 
-        # Track transcode_quality calls (should not be called for completed qualities)
+        # Track transcode_quality_with_progress calls (should not be called for completed qualities)
         transcoded_qualities = []
 
-        async def mock_transcode_quality(*args, **kwargs):
+        async def mock_transcode_quality_with_progress(*args, **kwargs):
             # Extract quality name from kwargs or positional args
             if "quality" in kwargs:
                 quality_name = kwargs["quality"]["name"]
@@ -1482,22 +1527,37 @@ class TestThumbnailGenerationOnRemoteWorkerCrash:
             else:
                 quality_name = "unknown"
             transcoded_qualities.append(quality_name)
+            # Return success tuple (success, error_message)
+            return (True, None)
 
         async def mock_generate_thumbnail(source, output, time):
             output.write_text("thumbnail content")
 
         # Mock necessary functions
+        mock_state = MagicMock(shutdown_requested=False, gpu_caps=None)
+        # Mock create_original_quality to return success
+        mock_original_result = (True, None, {"bitrate_bps": 5000000})
+
+        # Create wrapper for fetch_one_with_retry that uses integration_database
+        async def mock_fetch_one_with_retry(query, **kwargs):
+            return await integration_database.fetch_one(query)
+
         with (
             patch.object(transcoder_module, "database", integration_database),
             patch.object(transcoder_module, "UPLOADS_DIR", integration_temp_dir["uploads"]),
             patch.object(transcoder_module, "VIDEOS_DIR", integration_temp_dir["videos"]),
             patch.object(transcoder_module, "generate_thumbnail", new_callable=AsyncMock, side_effect=mock_generate_thumbnail),
-            patch.object(transcoder_module, "transcode_quality", new_callable=AsyncMock, side_effect=mock_transcode_quality),
+            patch.object(transcoder_module, "transcode_quality_with_progress", new_callable=AsyncMock, side_effect=mock_transcode_quality_with_progress),
+            patch.object(transcoder_module, "create_original_quality", new_callable=AsyncMock, return_value=mock_original_result),
             patch.object(transcoder_module, "generate_master_playlist", return_value=None),
-            patch.object(transcoder_module, "state", MagicMock(shutdown_requested=False)),
+            patch.object(transcoder_module, "get_worker_state", return_value=mock_state),
+            patch.object(transcoder_module, "fetch_one_with_retry", side_effect=mock_fetch_one_with_retry),
+            patch.object(transcoder_module, "mark_job_completed", new_callable=AsyncMock),
         ):
             # Process the video
-            result = await transcoder_module.process_video(integration_video["id"])
+            result = await transcoder_module.process_video_resumable(
+                integration_video["id"], integration_video["slug"], state=mock_state
+            )
 
             # Verify processing succeeded
             assert result is True
