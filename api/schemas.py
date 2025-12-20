@@ -152,7 +152,7 @@ class VideoResponse(BaseModel):
     id: int
     title: str
     slug: str
-    description: str
+    description: str = ""
     category_id: Optional[int]
     category_name: Optional[str] = None
     category_slug: Optional[str] = None
@@ -161,7 +161,7 @@ class VideoResponse(BaseModel):
     source_height: int
     status: str
     error_message: Optional[str]
-    created_at: datetime
+    created_at: Optional[datetime] = None
     published_at: Optional[datetime]
     thumbnail_url: Optional[str] = None
     thumbnail_source: str = "auto"  # auto, selected, custom
@@ -172,22 +172,46 @@ class VideoResponse(BaseModel):
     qualities: List[VideoQualityResponse] = []
     tags: List[VideoTagInfo] = []
 
+    @field_validator("description", mode="before")
+    @classmethod
+    def default_description(cls, v):
+        return v if v is not None else ""
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def default_created_at(cls, v):
+        from datetime import timezone
+
+        return v if v is not None else datetime.now(timezone.utc)
+
 
 class VideoListResponse(BaseModel):
     id: int
     title: str
     slug: str
-    description: str
+    description: str = ""
     category_id: Optional[int]
     category_name: Optional[str] = None
     duration: float
     status: str
-    created_at: datetime
+    created_at: Optional[datetime] = None
     published_at: Optional[datetime]
     thumbnail_url: Optional[str] = None
     thumbnail_source: str = "auto"  # auto, selected, custom
     thumbnail_timestamp: Optional[float] = None  # timestamp for selected thumbnails
     tags: List[VideoTagInfo] = []
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def default_description(cls, v):
+        return v if v is not None else ""
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def default_created_at(cls, v):
+        from datetime import timezone
+
+        return v if v is not None else datetime.now(timezone.utc)
 
 
 # Analytics request models

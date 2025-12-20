@@ -16,19 +16,20 @@ from alembic import command
 from alembic.config import Config
 
 
+@pytest.fixture
+def alembic_config(empty_test_db_url):
+    """Create Alembic config pointing to test database."""
+    # Get path to alembic.ini
+    repo_root = Path(__file__).parent.parent
+    alembic_ini = repo_root / "alembic.ini"
+
+    config = Config(str(alembic_ini))
+    config.set_main_option("sqlalchemy.url", empty_test_db_url)
+    return config
+
+
 class TestMigrations:
     """Test database migrations with Alembic."""
-
-    @pytest.fixture
-    def alembic_config(self, empty_test_db_url):
-        """Create Alembic config pointing to test database."""
-        # Get path to alembic.ini
-        repo_root = Path(__file__).parent.parent
-        alembic_ini = repo_root / "alembic.ini"
-
-        config = Config(str(alembic_ini))
-        config.set_main_option("sqlalchemy.url", empty_test_db_url)
-        return config
 
     @pytest.mark.asyncio
     async def test_upgrade_head(self, alembic_config, empty_test_db_url):
