@@ -1,5 +1,7 @@
 # VLog - Self-Hosted Video Platform
 
+> **Note:** This project was built almost entirely with AI assistance (Claude Code). It's a "vibe-coded" project - functional and useful, but built through AI pair-programming rather than traditional development. Use accordingly, and contributions are welcome!
+
 A lightweight, self-hosted video platform with 4K support, HLS adaptive streaming, auto-transcription, and a clean modern UI.
 
 ## Features
