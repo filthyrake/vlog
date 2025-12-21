@@ -11,6 +11,7 @@ Priority queue support with three levels:
 - low: Processed last (e.g., bulk imports)
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -378,15 +379,17 @@ class JobQueue:
 # Global job queue instance for API use
 _job_queue: Optional[JobQueue] = None
 _job_queue_initialized: bool = False
+_job_queue_init_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_job_queue() -> JobQueue:
     """Get or create the global job queue instance, initialized for API publishing."""
     global _job_queue, _job_queue_initialized
-    if _job_queue is None:
-        _job_queue = JobQueue()
-    if not _job_queue_initialized:
-        # Initialize for API publishing (no consumer operations needed)
-        await _job_queue.initialize(consumer_name="api-publisher")
-        _job_queue_initialized = True
+    async with _job_queue_init_lock:
+        if _job_queue is None:
+            _job_queue = JobQueue()
+        if not _job_queue_initialized:
+            # Initialize for API publishing (no consumer operations needed)
+            await _job_queue.initialize(consumer_name="api-publisher")
+            _job_queue_initialized = True
     return _job_queue
