@@ -42,3 +42,7 @@ CLAUDE.md
 # Local systemd service files (use .template files for distribution)
 systemd/*.service
 !systemd/*.service.template
+
+# Kubernetes secrets (never commit real credentials)
+k8s/secret.yaml
+k8s/*-secret.yaml
