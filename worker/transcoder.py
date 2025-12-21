@@ -269,6 +269,27 @@ def calculate_ffmpeg_timeout(duration: float, height: int = 1080) -> float:
     return max(FFMPEG_TIMEOUT_MINIMUM, min(timeout, FFMPEG_TIMEOUT_MAXIMUM))
 
 
+async def cleanup_ffmpeg_process(process: asyncio.subprocess.Process, context: str = "FFmpeg") -> None:
+    """
+    Clean up an FFmpeg subprocess, handling race conditions where the process
+    may exit between checking returncode and calling kill().
+
+    Args:
+        process: The asyncio subprocess to clean up
+        context: Description for logging (e.g., "FFmpeg", "FFmpeg remux")
+    """
+    if process.returncode is None:
+        try:
+            process.kill()
+        except (ProcessLookupError, OSError):
+            # Process already terminated - this is expected in race conditions
+            pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            print(f"  WARNING: {context} process did not terminate after kill")
+
+
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
@@ -833,15 +854,7 @@ async def transcode_quality_with_progress(
             pass
 
         # Ensure FFmpeg process is cleaned up on any exception or early exit
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass  # Process already terminated
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                print("  WARNING: FFmpeg process did not terminate after kill")
+        await cleanup_ffmpeg_process(process, "FFmpeg")
 
     if timed_out:
         elapsed = asyncio.get_running_loop().time() - start_time
@@ -964,15 +977,7 @@ async def create_original_quality(
             pass
 
         # Ensure FFmpeg process is cleaned up on any exception or early exit
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass  # Process already terminated
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                print("  WARNING: FFmpeg remux process did not terminate after kill")
+        await cleanup_ffmpeg_process(process, "FFmpeg remux")
 
     if timed_out:
         elapsed = asyncio.get_running_loop().time() - start_time
