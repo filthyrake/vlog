@@ -28,10 +28,11 @@ def upgrade() -> None:
     op.create_table(
         "admin_sessions",
         sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("session_token", sa.String(64), unique=True, nullable=False),
-        sa.Column("created_at", sa.DateTime, nullable=False),
-        sa.Column("expires_at", sa.DateTime, nullable=False),
-        sa.Column("last_used_at", sa.DateTime, nullable=True),
+        # 128 chars provides safety margin for 64-char tokens from secrets.token_urlsafe(48)
+        sa.Column("session_token", sa.String(128), unique=True, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ip_address", sa.String(45), nullable=True),  # IPv6 max length
         sa.Column("user_agent", sa.String(512), nullable=True),
     )

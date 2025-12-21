@@ -238,7 +238,8 @@ admin_sessions = sa.Table(
     "admin_sessions",
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
-    sa.Column("session_token", sa.String(64), unique=True, nullable=False),
+    # 128 chars provides safety margin for 64-char tokens from secrets.token_urlsafe(48)
+    sa.Column("session_token", sa.String(128), unique=True, nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),

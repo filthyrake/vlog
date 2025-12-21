@@ -616,9 +616,30 @@ async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal
             logger.warning(f"Failed to publish job to Redis: {e}")
 
 
+# Background task for periodic session cleanup
+_session_cleanup_task: Optional[asyncio.Task] = None
+
+
+async def _periodic_session_cleanup():
+    """Background task to periodically clean up expired sessions."""
+    while True:
+        try:
+            # Run cleanup every hour
+            await asyncio.sleep(3600)
+            deleted = await cleanup_expired_sessions()
+            if deleted:
+                logger.info(f"Cleaned up {deleted} expired admin sessions")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"Error during session cleanup: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
+    global _session_cleanup_task
+
     # Warn about in-memory rate limiting limitations
     if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
         logger.warning(
@@ -633,7 +654,24 @@ async def lifespan(app: FastAPI):
     # Clean up any orphaned transcoding jobs from previous crashes/bugs
     await cleanup_orphaned_jobs()
 
+    # Clean up expired sessions on startup
+    expired_count = await cleanup_expired_sessions()
+    if expired_count:
+        logger.info(f"Cleaned up {expired_count} expired admin sessions on startup")
+
+    # Start background task for periodic session cleanup
+    _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
+
     yield
+
+    # Cancel background cleanup task
+    if _session_cleanup_task:
+        _session_cleanup_task.cancel()
+        try:
+            await _session_cleanup_task
+        except asyncio.CancelledError:
+            pass
+
     await database.disconnect()
 
 
