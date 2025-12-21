@@ -390,22 +390,29 @@ class AdminAuthMiddleware:
 
 async def delete_video_and_job(video_id: int) -> None:
     """
-    Delete a video and its transcoding job safely.
+    Delete a video and all its related records safely.
 
     IMPORTANT: Always use this instead of videos.delete() directly!
     SQLite foreign key CASCADE is unreliable with the async databases library
     because foreign_keys pragma is per-connection and connections are pooled.
 
     This explicitly deletes related records to prevent orphaned data.
+    Deletes: quality_progress, transcoding_jobs, playback_sessions,
+    transcriptions, video_qualities, video_tags, and the video itself.
     """
-    # Get job_id first (if exists)
+    # Get job_id first (if exists) for quality_progress cleanup
     job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
     if job:
         # Delete quality_progress entries first (FK to transcoding_jobs)
         await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
         # Delete transcoding job
         await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.id == job["id"]))
-    # Now delete the video
+    # Delete all related records
+    await database.execute(playback_sessions.delete().where(playback_sessions.c.video_id == video_id))
+    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
+    await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
+    await database.execute(video_tags.delete().where(video_tags.c.video_id == video_id))
+    # Delete video record last (after all FK dependencies are removed)
     await database.execute(videos.delete().where(videos.c.id == video_id))
 
 
