@@ -78,9 +78,41 @@ NetworkPolicy requires a CNI that supports it. Common options:
 
 **Note**: Default k3s/k8s networking does NOT enforce NetworkPolicy. Verify your CNI supports it before relying on this policy.
 
+### Configuration Required
+
+Before applying the policy, you must configure the Worker API egress rule. Edit `networkpolicy.yaml` and uncomment one of the options:
+
+**Option A: External Worker API** - If your Worker API runs outside the cluster:
+```yaml
+- to:
+    - ipBlock:
+        cidr: 192.168.1.100/32  # Replace with your API server's IP
+  ports:
+    - protocol: TCP
+      port: 9002
+```
+
+**Option B: In-cluster Worker API** - If the API is deployed as a Kubernetes service:
+```yaml
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: vlog
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vlog
+          app.kubernetes.io/component: worker-api
+  ports:
+    - protocol: TCP
+      port: 9002
+```
+
 ### Applying the NetworkPolicy
 
 ```bash
+# Edit the policy to configure Worker API egress
+vim k8s/networkpolicy.yaml
+
 # Apply the network policy
 kubectl apply -f k8s/networkpolicy.yaml
 
@@ -88,13 +120,9 @@ kubectl apply -f k8s/networkpolicy.yaml
 kubectl get networkpolicy -n vlog
 ```
 
-### Customization
+### Optional: Redis Egress
 
-The default policy allows egress to any IP on port 9002 (for external Worker API). For stricter security:
-
-1. **External API with known IP**: Restrict the `ipBlock` CIDR to your API server's IP
-2. **In-cluster API**: Use the commented pod selector instead of `ipBlock`
-3. **Redis enabled**: Uncomment the Redis egress rule
+If using Redis for instant job dispatch, uncomment one of the Redis egress options in the policy file and configure the appropriate CIDR or pod selector for your Redis deployment.
 
 ## Secrets Management
 
