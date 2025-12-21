@@ -332,7 +332,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             # Per-quality progress callback
             async def update_quality_progress(pct: int, qidx: int = quality_idx, qname: str = quality_name):
                 now = time.time()
-                # Check timing under progress_lock (for last_update_times and quality_progresses)
+                # Check timing and calculate avg_progress under progress_lock
+                # (for last_update_times and quality_progresses)
+                # Note: avg_progress is computed here to avoid nested lock acquisition (issue #329)
                 async with progress_lock:
                     last_update = last_update_times.get(qname, 0)
                     # Only update every 5 seconds to avoid flooding the API
@@ -341,6 +343,13 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     # Update progress tracking under this lock
                     quality_progresses[qname] = pct
                     last_update_times[qname] = now
+                    # Calculate overall progress based on all quality progresses
+                    # Uses len(qualities) to include skipped qualities (already at 100%)
+                    avg_progress = (
+                        sum(quality_progresses.values()) / len(qualities)
+                        if qualities
+                        else 0
+                    )
 
                 # Update quality_progress_list under its dedicated lock
                 async with progress_list_lock:
@@ -350,14 +359,6 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "progress": pct,
                     }
                     try:
-                        # Calculate overall progress based on all quality progresses
-                        # Uses len(qualities) to include skipped qualities (already at 100%)
-                        async with progress_lock:
-                            avg_progress = (
-                                sum(quality_progresses.values()) / len(qualities)
-                                if qualities
-                                else 0
-                            )
                         overall = 15 + int(avg_progress * 0.75)
                         await client.update_progress(job_id, "transcode", overall, quality_progress_list)
                     except WorkerAPIError as e:
