@@ -57,6 +57,44 @@ kubectl apply -f k8s/worker-hpa.yaml
 - `worker-deployment-intel.yaml` - Intel Arc/QuickSync worker deployment (VAAPI)
 - `worker-hpa.yaml` - Horizontal Pod Autoscaler for auto-scaling
 - `cleanup-cronjob.yaml` - CronJob for cleaning up stale transcoding jobs
+- `networkpolicy.yaml` - NetworkPolicy restricting worker pod network access
+
+## Network Security
+
+The `networkpolicy.yaml` restricts network access for worker pods to limit the blast radius if a pod is compromised. Workers only need:
+
+1. **Egress to Worker API** (port 9002) - For job claiming, progress updates, file transfers
+2. **Egress to DNS** (port 53) - For hostname resolution
+3. **Optionally, egress to Redis** (port 6379) - For instant job dispatch
+
+All ingress is denied since workers don't need incoming connections.
+
+### Prerequisites
+
+NetworkPolicy requires a CNI that supports it. Common options:
+- **Calico** - Full NetworkPolicy support
+- **Cilium** - Full support with enhanced features
+- **Weave Net** - Full support
+
+**Note**: Default k3s/k8s networking does NOT enforce NetworkPolicy. Verify your CNI supports it before relying on this policy.
+
+### Applying the NetworkPolicy
+
+```bash
+# Apply the network policy
+kubectl apply -f k8s/networkpolicy.yaml
+
+# Verify the policy is active
+kubectl get networkpolicy -n vlog
+```
+
+### Customization
+
+The default policy allows egress to any IP on port 9002 (for external Worker API). For stricter security:
+
+1. **External API with known IP**: Restrict the `ipBlock` CIDR to your API server's IP
+2. **In-cluster API**: Use the commented pod selector instead of `ipBlock`
+3. **Redis enabled**: Uncomment the Redis egress rule
 
 ## Secrets Management
 

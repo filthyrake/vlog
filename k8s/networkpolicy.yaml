@@ -1,0 +1,93 @@
+# VLog Worker NetworkPolicy
+# kubectl apply -f k8s/networkpolicy.yaml
+#
+# This policy restricts network access for worker pods to minimize
+# the blast radius if a pod is compromised. Workers only need:
+# 1. Egress to the Worker API (port 9002)
+# 2. Egress to DNS for hostname resolution
+# 3. Optionally, egress to Redis for job queue (port 6379)
+#
+# IMPORTANT: This policy requires a CNI that supports NetworkPolicy
+# (e.g., Calico, Cilium, Weave Net). Default k3s/k8s networking
+# does NOT enforce NetworkPolicy without a compatible CNI.
+#
+# Verify your CNI supports NetworkPolicy before relying on this.
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vlog-worker-network-policy
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+spec:
+  # Apply to all worker pods
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vlog
+      app.kubernetes.io/component: worker
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # Workers don't need any inbound connections
+  # Empty list = deny all ingress
+  ingress: []
+
+  egress:
+    # Allow DNS resolution (required for external API URLs)
+    # CoreDNS/kube-dns runs in kube-system namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Allow egress to Worker API
+    # Option 1: If Worker API runs externally (outside cluster)
+    # This allows egress to any external IP on port 9002
+    # For stricter security, replace with specific CIDR blocks
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # Exclude private networks if API is only accessible externally
+            # Uncomment to restrict to public IPs only:
+            # except:
+            #   - 10.0.0.0/8
+            #   - 172.16.0.0/12
+            #   - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 9002
+
+    # Option 2: If Worker API runs in-cluster (uncomment and customize)
+    # Replace the ipBlock rule above with this for in-cluster API:
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: vlog
+    #       podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: vlog
+    #           app.kubernetes.io/component: worker-api
+    #   ports:
+    #     - protocol: TCP
+    #       port: 9002
+
+    # Optional: Allow Redis access for job queue
+    # Uncomment if using Redis for instant job dispatch
+    # - to:
+    #     - ipBlock:
+    #         cidr: 0.0.0.0/0
+    #   ports:
+    #     - protocol: TCP
+    #       port: 6379
