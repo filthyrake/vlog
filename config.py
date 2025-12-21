@@ -1,5 +1,103 @@
+import logging
 import os
 from pathlib import Path
+from typing import Optional
+
+# Configure logger for config module warnings
+logger = logging.getLogger(__name__)
+
+
+def get_int_env(
+    name: str,
+    default: int,
+    min_val: Optional[int] = None,
+    max_val: Optional[int] = None,
+) -> int:
+    """Get an integer from environment variable with error handling and validation.
+
+    Args:
+        name: Environment variable name
+        default: Default value if env var is missing or invalid
+        min_val: Optional minimum value (inclusive)
+        max_val: Optional maximum value (inclusive)
+
+    Returns:
+        Parsed integer value, or default if parsing fails or value is out of range
+    """
+    value = os.getenv(name)
+    if value is None:
+        # Environment variable not set; use default without validation
+        return default
+
+    try:
+        result = int(value)
+    except ValueError:
+        logger.warning(f"Invalid {name}='{value}', using default {default}")
+        return default
+
+    # Range validation (only applied to user-provided values)
+    if min_val is not None and result < min_val:
+        logger.warning(
+            f"{name}={result} is below minimum {min_val}, using default {default}"
+        )
+        return default
+    if max_val is not None and result > max_val:
+        logger.warning(
+            f"{name}={result} is above maximum {max_val}, using default {default}"
+        )
+        return default
+
+    return result
+
+
+def get_float_env(
+    name: str,
+    default: float,
+    min_val: Optional[float] = None,
+    max_val: Optional[float] = None,
+) -> float:
+    """Get a float from environment variable with error handling and validation.
+
+    Args:
+        name: Environment variable name
+        default: Default value if env var is missing or invalid
+        min_val: Optional minimum value (inclusive)
+        max_val: Optional maximum value (inclusive)
+
+    Returns:
+        Parsed float value, or default if parsing fails or value is out of range
+    """
+    import math
+
+    value = os.getenv(name)
+    if value is None:
+        # Environment variable not set; use default without validation
+        return default
+
+    try:
+        result = float(value)
+    except ValueError:
+        logger.warning(f"Invalid {name}='{value}', using default {default}")
+        return default
+
+    # Reject special float values (inf, -inf, nan)
+    if math.isinf(result) or math.isnan(result):
+        logger.warning(f"Invalid {name}='{value}' (special float), using default {default}")
+        return default
+
+    # Range validation (only applied to user-provided values)
+    if min_val is not None and result < min_val:
+        logger.warning(
+            f"{name}={result} is below minimum {min_val}, using default {default}"
+        )
+        return default
+    if max_val is not None and result > max_val:
+        logger.warning(
+            f"{name}={result} is above maximum {max_val}, using default {default}"
+        )
+        return default
+
+    return result
 
 # Supported video file extensions (centralized to avoid duplication)
 SUPPORTED_VIDEO_EXTENSIONS = frozenset([".mp4", ".mkv", ".webm", ".mov", ".avi"])
@@ -28,11 +126,11 @@ if not os.environ.get("VLOG_TEST_MODE"):
         pass  # CI environment without NAS access
 
 # Soft-delete settings
-ARCHIVE_RETENTION_DAYS = int(os.getenv("VLOG_ARCHIVE_RETENTION_DAYS", "30"))
+ARCHIVE_RETENTION_DAYS = get_int_env("VLOG_ARCHIVE_RETENTION_DAYS", 30, min_val=0)
 
 # Server ports
-PUBLIC_PORT = int(os.getenv("VLOG_PUBLIC_PORT", "9000"))
-ADMIN_PORT = int(os.getenv("VLOG_ADMIN_PORT", "9001"))
+PUBLIC_PORT = get_int_env("VLOG_PUBLIC_PORT", 9000, min_val=1, max_val=65535)
+ADMIN_PORT = get_int_env("VLOG_ADMIN_PORT", 9001, min_val=1, max_val=65535)
 
 # Transcoding quality presets (YouTube-style)
 QUALITY_PRESETS = [
@@ -48,22 +146,22 @@ QUALITY_PRESETS = [
 QUALITY_NAMES = frozenset([q["name"] for q in QUALITY_PRESETS] + ["original"])
 
 # HLS settings
-HLS_SEGMENT_DURATION = int(os.getenv("VLOG_HLS_SEGMENT_DURATION", "6"))
+HLS_SEGMENT_DURATION = get_int_env("VLOG_HLS_SEGMENT_DURATION", 6, min_val=1)
 
 # Checkpoint/resumable transcoding settings
-CHECKPOINT_INTERVAL = int(os.getenv("VLOG_CHECKPOINT_INTERVAL", "30"))
-JOB_STALE_TIMEOUT = int(os.getenv("VLOG_JOB_STALE_TIMEOUT", "1800"))
-MAX_RETRY_ATTEMPTS = int(os.getenv("VLOG_MAX_RETRY_ATTEMPTS", "3"))
-RETRY_BACKOFF_BASE = int(os.getenv("VLOG_RETRY_BACKOFF_BASE", "60"))
+CHECKPOINT_INTERVAL = get_int_env("VLOG_CHECKPOINT_INTERVAL", 30, min_val=1)
+JOB_STALE_TIMEOUT = get_int_env("VLOG_JOB_STALE_TIMEOUT", 1800, min_val=60)
+MAX_RETRY_ATTEMPTS = get_int_env("VLOG_MAX_RETRY_ATTEMPTS", 3, min_val=0)
+RETRY_BACKOFF_BASE = get_int_env("VLOG_RETRY_BACKOFF_BASE", 60, min_val=0)
 CLEANUP_PARTIAL_ON_FAILURE = os.getenv("VLOG_CLEANUP_PARTIAL_ON_FAILURE", "true").lower() == "true"
 KEEP_COMPLETED_QUALITIES = os.getenv("VLOG_KEEP_COMPLETED_QUALITIES", "true").lower() == "true"
 CLEANUP_SOURCE_ON_PERMANENT_FAILURE = os.getenv("VLOG_CLEANUP_SOURCE_ON_PERMANENT_FAILURE", "true").lower() == "true"
 
 # FFmpeg timeout settings (prevents stuck transcoding jobs)
 # Base multiplier applied to video duration (scaled by resolution)
-FFMPEG_TIMEOUT_BASE_MULTIPLIER = float(os.getenv("VLOG_FFMPEG_TIMEOUT_BASE_MULTIPLIER", "2.0"))
-FFMPEG_TIMEOUT_MINIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MINIMUM", "300"))
-FFMPEG_TIMEOUT_MAXIMUM = int(os.getenv("VLOG_FFMPEG_TIMEOUT_MAXIMUM", "14400"))  # 4 hours
+FFMPEG_TIMEOUT_BASE_MULTIPLIER = get_float_env("VLOG_FFMPEG_TIMEOUT_BASE_MULTIPLIER", 2.0, min_val=0.1)
+FFMPEG_TIMEOUT_MINIMUM = get_int_env("VLOG_FFMPEG_TIMEOUT_MINIMUM", 300, min_val=1)
+FFMPEG_TIMEOUT_MAXIMUM = get_int_env("VLOG_FFMPEG_TIMEOUT_MAXIMUM", 14400, min_val=60)  # 4 hours
 
 # Per-resolution timeout multipliers (applied on top of base multiplier)
 # Lower resolutions encode faster, higher resolutions need more time
@@ -82,8 +180,8 @@ TRANSCRIPTION_ENABLED = os.getenv("VLOG_TRANSCRIPTION_ENABLED", "true").lower() 
 TRANSCRIPTION_LANGUAGE = os.getenv("VLOG_TRANSCRIPTION_LANGUAGE", None) or None
 TRANSCRIPTION_ON_UPLOAD = os.getenv("VLOG_TRANSCRIPTION_ON_UPLOAD", "true").lower() == "true"
 TRANSCRIPTION_COMPUTE_TYPE = os.getenv("VLOG_TRANSCRIPTION_COMPUTE_TYPE", "int8")
-TRANSCRIPTION_TIMEOUT = int(os.getenv("VLOG_TRANSCRIPTION_TIMEOUT", "3600"))
-AUDIO_EXTRACTION_TIMEOUT = int(os.getenv("VLOG_AUDIO_EXTRACTION_TIMEOUT", "300"))
+TRANSCRIPTION_TIMEOUT = get_int_env("VLOG_TRANSCRIPTION_TIMEOUT", 3600, min_val=60)
+AUDIO_EXTRACTION_TIMEOUT = get_int_env("VLOG_AUDIO_EXTRACTION_TIMEOUT", 300, min_val=10)
 
 # Hardware Acceleration Settings (for remote workers with GPUs)
 # VLOG_HWACCEL_TYPE: "auto" (detect), "nvidia", "intel", or "none"
@@ -93,14 +191,14 @@ HWACCEL_PREFERRED_CODEC = os.getenv("VLOG_HWACCEL_PREFERRED_CODEC", "h264")
 # Fall back to CPU encoding if GPU encoding fails
 HWACCEL_FALLBACK_TO_CPU = os.getenv("VLOG_HWACCEL_FALLBACK_TO_CPU", "true").lower() == "true"
 # Max concurrent encode sessions (NVIDIA consumer GPUs have limits: RTX 3090=3, RTX 4090=5)
-HWACCEL_MAX_CONCURRENT_SESSIONS = int(os.getenv("VLOG_HWACCEL_MAX_SESSIONS", "3"))
+HWACCEL_MAX_CONCURRENT_SESSIONS = get_int_env("VLOG_HWACCEL_MAX_SESSIONS", 3, min_val=1)
 # Intel VAAPI device path (auto-detected if empty)
 HWACCEL_VAAPI_DEVICE = os.getenv("VLOG_HWACCEL_VAAPI_DEVICE", "")
 
 # Parallel Quality Encoding Settings
 # Number of qualities to encode simultaneously (1 = sequential, 3 = recommended for GPUs)
 # Used when PARALLEL_QUALITIES_AUTO is false, or when no GPU is detected
-PARALLEL_QUALITIES = int(os.getenv("VLOG_PARALLEL_QUALITIES", "1"))
+PARALLEL_QUALITIES = get_int_env("VLOG_PARALLEL_QUALITIES", 1, min_val=1)
 # Auto-detect optimal parallelism based on GPU capabilities
 # When true AND a GPU is detected, overrides PARALLEL_QUALITIES with min(3, gpu.max_sessions - 1)
 # When true but no GPU is detected, falls back to PARALLEL_QUALITIES value
@@ -108,11 +206,11 @@ PARALLEL_QUALITIES_AUTO = os.getenv("VLOG_PARALLEL_QUALITIES_AUTO", "true").lowe
 
 # Worker settings (event-driven processing for local worker)
 WORKER_USE_FILESYSTEM_WATCHER = os.getenv("VLOG_WORKER_USE_FILESYSTEM_WATCHER", "true").lower() == "true"
-WORKER_FALLBACK_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_FALLBACK_POLL_INTERVAL", "60"))
-WORKER_DEBOUNCE_DELAY = float(os.getenv("VLOG_WORKER_DEBOUNCE_DELAY", "1.0"))
+WORKER_FALLBACK_POLL_INTERVAL = get_int_env("VLOG_WORKER_FALLBACK_POLL_INTERVAL", 60, min_val=1)
+WORKER_DEBOUNCE_DELAY = get_float_env("VLOG_WORKER_DEBOUNCE_DELAY", 1.0, min_val=0.0)
 
 # Worker API service settings (for distributed workers)
-WORKER_API_PORT = int(os.getenv("VLOG_WORKER_API_PORT", "9002"))
+WORKER_API_PORT = get_int_env("VLOG_WORKER_API_PORT", 9002, min_val=1, max_val=65535)
 
 # Remote worker client settings
 WORKER_API_URL = os.getenv("VLOG_WORKER_API_URL", "http://localhost:9002")
@@ -130,27 +228,27 @@ WORKER_ADMIN_SECRET = os.getenv("VLOG_WORKER_ADMIN_SECRET", "")
 ADMIN_API_SECRET = os.getenv("VLOG_ADMIN_API_SECRET", "")
 # Session expiry for admin UI (hours). Sessions are stored server-side with HTTP-only cookies.
 # See: https://github.com/filthyrake/vlog/issues/324
-ADMIN_SESSION_EXPIRY_HOURS = int(os.getenv("VLOG_ADMIN_SESSION_EXPIRY_HOURS", "24"))
-WORKER_HEARTBEAT_INTERVAL = int(os.getenv("VLOG_WORKER_HEARTBEAT_INTERVAL", "30"))
-WORKER_CLAIM_DURATION_MINUTES = int(os.getenv("VLOG_WORKER_CLAIM_DURATION", "30"))
-WORKER_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_POLL_INTERVAL", "10"))
+ADMIN_SESSION_EXPIRY_HOURS = get_int_env("VLOG_ADMIN_SESSION_EXPIRY_HOURS", 24, min_val=1)
+WORKER_HEARTBEAT_INTERVAL = get_int_env("VLOG_WORKER_HEARTBEAT_INTERVAL", 30, min_val=1)
+WORKER_CLAIM_DURATION_MINUTES = get_int_env("VLOG_WORKER_CLAIM_DURATION", 30, min_val=1)
+WORKER_POLL_INTERVAL = get_int_env("VLOG_WORKER_POLL_INTERVAL", 10, min_val=1)
 WORKER_WORK_DIR = Path(os.getenv("VLOG_WORKER_WORK_DIR", "/tmp/vlog-worker"))
-WORKER_OFFLINE_THRESHOLD_MINUTES = int(os.getenv("VLOG_WORKER_OFFLINE_THRESHOLD", "5"))
+WORKER_OFFLINE_THRESHOLD_MINUTES = get_int_env("VLOG_WORKER_OFFLINE_THRESHOLD", 5, min_val=1)
 
 # How often to check for stale jobs from offline workers (in seconds)
-STALE_JOB_CHECK_INTERVAL = int(os.getenv("VLOG_STALE_JOB_CHECK_INTERVAL", "60"))
+STALE_JOB_CHECK_INTERVAL = get_int_env("VLOG_STALE_JOB_CHECK_INTERVAL", 60, min_val=1)
 
 # Progress update rate limiting (prevents database overload during transcoding)
-PROGRESS_UPDATE_INTERVAL = float(os.getenv("VLOG_PROGRESS_UPDATE_INTERVAL", "5.0"))
+PROGRESS_UPDATE_INTERVAL = get_float_env("VLOG_PROGRESS_UPDATE_INTERVAL", 5.0, min_val=0.1)
 
 # Upload size limits (default 100GB - reasonable for 4K video)
-MAX_UPLOAD_SIZE = int(os.getenv("VLOG_MAX_UPLOAD_SIZE", str(100 * 1024 * 1024 * 1024)))  # 100 GB
-UPLOAD_CHUNK_SIZE = int(os.getenv("VLOG_UPLOAD_CHUNK_SIZE", str(1024 * 1024)))  # 1 MB chunks
+MAX_UPLOAD_SIZE = get_int_env("VLOG_MAX_UPLOAD_SIZE", 100 * 1024 * 1024 * 1024, min_val=1)  # 100 GB
+UPLOAD_CHUNK_SIZE = get_int_env("VLOG_UPLOAD_CHUNK_SIZE", 1024 * 1024, min_val=1024)  # 1 MB chunks
 
 # Thumbnail settings
 SUPPORTED_IMAGE_EXTENSIONS = frozenset([".jpg", ".jpeg", ".png", ".webp"])
-MAX_THUMBNAIL_UPLOAD_SIZE = int(os.getenv("VLOG_MAX_THUMBNAIL_SIZE", str(10 * 1024 * 1024)))  # 10 MB
-THUMBNAIL_WIDTH = int(os.getenv("VLOG_THUMBNAIL_WIDTH", "640"))
+MAX_THUMBNAIL_UPLOAD_SIZE = get_int_env("VLOG_MAX_THUMBNAIL_SIZE", 10 * 1024 * 1024, min_val=1024)  # 10 MB
+THUMBNAIL_WIDTH = get_int_env("VLOG_THUMBNAIL_WIDTH", 640, min_val=1)
 # Percentages of video duration for frame picker options
 THUMBNAIL_FRAME_PERCENTAGES = [0.10, 0.25, 0.50, 0.75, 0.90]
 
@@ -158,11 +256,11 @@ THUMBNAIL_FRAME_PERCENTAGES = [0.10, 0.25, 0.50, 0.75, 0.90]
 # Max number of files in an HLS archive (master playlist + quality playlists + segments + thumbnail)
 # 6 qualities × 1200 segments (2hrs @ 6s each) + playlists + thumbnails = ~7200 files for 2hr video
 # Using 50,000 as generous default to support very long videos (8+ hours)
-MAX_HLS_ARCHIVE_FILES = int(os.getenv("VLOG_MAX_HLS_ARCHIVE_FILES", "50000"))
+MAX_HLS_ARCHIVE_FILES = get_int_env("VLOG_MAX_HLS_ARCHIVE_FILES", 50000, min_val=1)
 # Max total extracted size (200 GB - generous for long 4K HLS output with all qualities)
-MAX_HLS_ARCHIVE_SIZE = int(os.getenv("VLOG_MAX_HLS_ARCHIVE_SIZE", str(200 * 1024 * 1024 * 1024)))
+MAX_HLS_ARCHIVE_SIZE = get_int_env("VLOG_MAX_HLS_ARCHIVE_SIZE", 200 * 1024 * 1024 * 1024, min_val=1)
 # Max size per individual file (500 MB - largest reasonable .ts segment at high bitrate)
-MAX_HLS_SINGLE_FILE_SIZE = int(os.getenv("VLOG_MAX_HLS_SINGLE_FILE_SIZE", str(500 * 1024 * 1024)))
+MAX_HLS_SINGLE_FILE_SIZE = get_int_env("VLOG_MAX_HLS_SINGLE_FILE_SIZE", 500 * 1024 * 1024, min_val=1)
 
 # CORS Configuration
 # Set VLOG_CORS_ORIGINS to comma-separated origins, or leave empty/unset to allow same-origin only
@@ -206,10 +304,10 @@ RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
 # Set VLOG_REDIS_URL to enable Redis features (e.g., "redis://localhost:6379")
 # Empty string disables Redis features (database polling used instead)
 REDIS_URL = os.getenv("VLOG_REDIS_URL", "")
-REDIS_POOL_SIZE = int(os.getenv("VLOG_REDIS_POOL_SIZE", "10"))
-REDIS_SOCKET_TIMEOUT = float(os.getenv("VLOG_REDIS_SOCKET_TIMEOUT", "5.0"))
-REDIS_SOCKET_CONNECT_TIMEOUT = float(os.getenv("VLOG_REDIS_SOCKET_CONNECT_TIMEOUT", "5.0"))
-REDIS_HEALTH_CHECK_INTERVAL = int(os.getenv("VLOG_REDIS_HEALTH_CHECK_INTERVAL", "30"))
+REDIS_POOL_SIZE = get_int_env("VLOG_REDIS_POOL_SIZE", 10, min_val=1)
+REDIS_SOCKET_TIMEOUT = get_float_env("VLOG_REDIS_SOCKET_TIMEOUT", 5.0, min_val=0.1)
+REDIS_SOCKET_CONNECT_TIMEOUT = get_float_env("VLOG_REDIS_SOCKET_CONNECT_TIMEOUT", 5.0, min_val=0.1)
+REDIS_HEALTH_CHECK_INTERVAL = get_int_env("VLOG_REDIS_HEALTH_CHECK_INTERVAL", 30, min_val=1)
 
 # Job Queue Mode
 # "database" (default) - Poll database for jobs (current behavior, always works)
@@ -218,17 +316,17 @@ REDIS_HEALTH_CHECK_INTERVAL = int(os.getenv("VLOG_REDIS_HEALTH_CHECK_INTERVAL", 
 JOB_QUEUE_MODE = os.getenv("VLOG_JOB_QUEUE_MODE", "database")
 
 # Redis Streams Settings
-REDIS_STREAM_MAX_LEN = int(os.getenv("VLOG_REDIS_STREAM_MAX_LEN", "10000"))
+REDIS_STREAM_MAX_LEN = get_int_env("VLOG_REDIS_STREAM_MAX_LEN", 10000, min_val=100)
 REDIS_CONSUMER_GROUP = os.getenv("VLOG_REDIS_CONSUMER_GROUP", "vlog-workers")
-REDIS_CONSUMER_BLOCK_MS = int(os.getenv("VLOG_REDIS_CONSUMER_BLOCK_MS", "5000"))
-REDIS_PENDING_TIMEOUT_MS = int(os.getenv("VLOG_REDIS_PENDING_TIMEOUT_MS", "300000"))  # 5 min
+REDIS_CONSUMER_BLOCK_MS = get_int_env("VLOG_REDIS_CONSUMER_BLOCK_MS", 5000, min_val=100)
+REDIS_PENDING_TIMEOUT_MS = get_int_env("VLOG_REDIS_PENDING_TIMEOUT_MS", 300000, min_val=1000)  # 5 min
 
 # Pub/Sub Channel Settings
 REDIS_PUBSUB_PREFIX = os.getenv("VLOG_REDIS_PUBSUB_PREFIX", "vlog")
 
 # SSE (Server-Sent Events) Settings
-SSE_HEARTBEAT_INTERVAL = int(os.getenv("VLOG_SSE_HEARTBEAT_INTERVAL", "30"))
-SSE_RECONNECT_TIMEOUT_MS = int(os.getenv("VLOG_SSE_RECONNECT_TIMEOUT_MS", "3000"))
+SSE_HEARTBEAT_INTERVAL = get_int_env("VLOG_SSE_HEARTBEAT_INTERVAL", 30, min_val=1)
+SSE_RECONNECT_TIMEOUT_MS = get_int_env("VLOG_SSE_RECONNECT_TIMEOUT_MS", 3000, min_val=100)
 
 # Trusted proxy configuration for X-Forwarded-For header
 # Only trust X-Forwarded-For when request comes from these IPs
@@ -247,7 +345,7 @@ SECURE_COOKIES = os.getenv("VLOG_SECURE_COOKIES", "true").lower() not in ("false
 ANALYTICS_CACHE_ENABLED = os.getenv("VLOG_ANALYTICS_CACHE_ENABLED", "true").lower() not in ("false", "0", "no")
 
 # Cache TTL in seconds (default: 60 seconds)
-ANALYTICS_CACHE_TTL = int(os.getenv("VLOG_ANALYTICS_CACHE_TTL", "60"))
+ANALYTICS_CACHE_TTL = get_int_env("VLOG_ANALYTICS_CACHE_TTL", 60, min_val=1)
 
 # Storage backend for analytics cache
 # Options: "memory" (default, per-process), or a Redis URL like "redis://localhost:6379"
@@ -256,12 +354,12 @@ ANALYTICS_CACHE_STORAGE_URL = os.getenv("VLOG_ANALYTICS_CACHE_STORAGE_URL", "mem
 
 # Client-side cache max-age in seconds (default: 60 seconds)
 # This controls the Cache-Control header sent to clients
-ANALYTICS_CLIENT_CACHE_MAX_AGE = int(os.getenv("VLOG_ANALYTICS_CLIENT_CACHE_MAX_AGE", "60"))
+ANALYTICS_CLIENT_CACHE_MAX_AGE = get_int_env("VLOG_ANALYTICS_CLIENT_CACHE_MAX_AGE", 60, min_val=0)
 
 # Storage Health Check Configuration
 # Timeout for health check storage access test (seconds)
 # Reduced from 5 to 2 for faster failure detection on stale NFS mounts
-STORAGE_CHECK_TIMEOUT = int(os.getenv("VLOG_STORAGE_CHECK_TIMEOUT", "2"))
+STORAGE_CHECK_TIMEOUT = get_int_env("VLOG_STORAGE_CHECK_TIMEOUT", 2, min_val=1)
 
 # Audit Logging Configuration
 AUDIT_LOG_ENABLED = os.getenv("VLOG_AUDIT_LOG_ENABLED", "true").lower() not in ("false", "0", "no")
@@ -270,16 +368,16 @@ AUDIT_LOG_LEVEL = os.getenv("VLOG_AUDIT_LOG_LEVEL", "INFO").upper()
 
 # Error Message Truncation Limits
 # Standardized limits for consistent debugging experience across the codebase
-ERROR_SUMMARY_MAX_LENGTH = int(os.getenv("VLOG_ERROR_SUMMARY_MAX_LENGTH", "100"))  # Brief error summaries
-ERROR_DETAIL_MAX_LENGTH = int(os.getenv("VLOG_ERROR_DETAIL_MAX_LENGTH", "500"))  # Detailed error messages
-ERROR_LOG_MAX_LENGTH = int(os.getenv("VLOG_ERROR_LOG_MAX_LENGTH", "2000"))  # Full error logs
+ERROR_SUMMARY_MAX_LENGTH = get_int_env("VLOG_ERROR_SUMMARY_MAX_LENGTH", 100, min_val=10)  # Brief error summaries
+ERROR_DETAIL_MAX_LENGTH = get_int_env("VLOG_ERROR_DETAIL_MAX_LENGTH", 500, min_val=10)  # Detailed error messages
+ERROR_LOG_MAX_LENGTH = get_int_env("VLOG_ERROR_LOG_MAX_LENGTH", 2000, min_val=10)  # Full error logs
 
 # Alerting Configuration
 # Webhook URL for sending alerts (stale jobs, max retries exceeded, etc.)
 # Leave empty to disable webhook alerts
 ALERT_WEBHOOK_URL = os.getenv("VLOG_ALERT_WEBHOOK_URL", "")
 # Timeout for webhook requests in seconds
-ALERT_WEBHOOK_TIMEOUT = int(os.getenv("VLOG_ALERT_WEBHOOK_TIMEOUT", "10"))
+ALERT_WEBHOOK_TIMEOUT = get_int_env("VLOG_ALERT_WEBHOOK_TIMEOUT", 10, min_val=1)
 # Minimum interval between alerts for the same event type (seconds)
 # Prevents alert flooding when multiple jobs fail in quick succession
-ALERT_RATE_LIMIT_SECONDS = int(os.getenv("VLOG_ALERT_RATE_LIMIT_SECONDS", "300"))
+ALERT_RATE_LIMIT_SECONDS = get_int_env("VLOG_ALERT_RATE_LIMIT_SECONDS", 300, min_val=0)
