@@ -17,7 +17,7 @@
         <div class="max-w-7xl mx-auto px-4 py-4">
             <div class="flex items-center justify-between">
                 <h1 class="text-2xl font-bold text-white">VLog Admin</h1>
-                <div class="flex gap-4">
+                <div class="flex gap-4 items-center">
                     <button
                         @click="tab = 'videos'"
                         :class="tab === 'videos' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
@@ -43,6 +43,14 @@
                         :class="tab === 'analytics' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
                         class="font-medium"
                     >Analytics</button>
+                    <!-- Logout button - only shown when auth is enabled and user is logged in -->
+                    <button
+                        x-show="authRequired && isAuthenticated"
+                        x-cloak
+                        @click="logout()"
+                        class="ml-4 px-3 py-1 text-sm text-dark-400 hover:text-red-400 border border-dark-700 hover:border-red-500 rounded transition"
+                        title="Log out"
+                    >Logout</button>
                 </div>
             </div>
         </div>
@@ -1178,7 +1186,7 @@
                     </button>
                 </div>
             </form>
-            <p class="text-dark-500 text-xs mt-4 text-center">Secret is stored for this browser session (cleared when you close this tab)</p>
+            <p class="text-dark-500 text-xs mt-4 text-center">Session is managed securely on the server</p>
         </div>
     </div>
 
@@ -1186,7 +1194,9 @@
         function admin() {
             return {
                 // Authentication state
-                adminSecret: sessionStorage.getItem('adminSecret') || '',
+                // Note: Auth is now managed via HTTP-only cookies set by the server
+                // See: https://github.com/filthyrake/vlog/issues/324
+                isAuthenticated: false,
                 showAuthModal: false,
                 authSecretInput: '',
                 authError: '',
@@ -1290,50 +1300,53 @@
                 bulkOpError: false,
 
                 // Helper function to make authenticated API requests
+                // Note: Authentication is now via HTTP-only cookies (set by /api/auth/login)
+                // Cookies are sent automatically with same-origin requests
                 async apiFetch(url, options = {}) {
-                    // Create a new headers object to avoid mutating the caller's object
-                    const headers = { ...(options.headers || {}) };
-                    if (this.adminSecret) {
-                        headers['X-Admin-Secret'] = this.adminSecret;
-                    }
-                    const response = await fetch(url, { ...options, headers });
+                    const response = await fetch(url, {
+                        ...options,
+                        credentials: 'same-origin',  // Ensure cookies are sent
+                    });
 
                     // Handle auth errors
                     if (response.status === 401 || response.status === 403) {
                         this.authRequired = true;
+                        this.isAuthenticated = false;
                         this.showAuthModal = true;
-                        this.adminSecret = '';
-                        sessionStorage.removeItem('adminSecret');
                         throw new Error('Authentication required');
                     }
 
                     return response;
                 },
 
-                // Submit authentication
+                // Submit authentication via server-side session
                 async submitAuth() {
                     this.authError = '';
                     this.authLoading = true;
 
                     try {
-                        // Test the secret by making a request
-                        const response = await fetch('/api/categories', {
-                            headers: { 'X-Admin-Secret': this.authSecretInput }
+                        // Authenticate via the login endpoint
+                        // Server will set an HTTP-only cookie on success
+                        const response = await fetch('/api/auth/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ secret: this.authSecretInput })
                         });
 
-                        if (response.status === 401 || response.status === 403) {
+                        if (response.status === 403) {
                             this.authError = 'Invalid admin secret';
                             return;
                         }
 
                         if (!response.ok) {
-                            this.authError = `Server error: ${response.status}`;
+                            const data = await response.json().catch(() => ({}));
+                            this.authError = data.detail || `Server error: ${response.status}`;
                             return;
                         }
 
-                        // Success - save the secret
-                        this.adminSecret = this.authSecretInput;
-                        sessionStorage.setItem('adminSecret', this.adminSecret);
+                        // Success - server has set the session cookie
+                        this.isAuthenticated = true;
                         this.showAuthModal = false;
                         this.authSecretInput = '';
 
@@ -1349,23 +1362,39 @@
                     }
                 },
 
+                // Log out and clear session
+                async logout() {
+                    try {
+                        await fetch('/api/auth/logout', {
+                            method: 'POST',
+                            credentials: 'same-origin'
+                        });
+                    } catch (e) {
+                        console.error('Logout failed:', e);
+                    }
+                    this.isAuthenticated = false;
+                    this.authRequired = true;
+                    this.showAuthModal = true;
+                },
+
                 // Check if authentication is required
                 async checkAuth() {
                     try {
-                        const response = await fetch('/api/categories', {
-                            headers: this.adminSecret ? { 'X-Admin-Secret': this.adminSecret } : {}
+                        const response = await fetch('/api/auth/check', {
+                            credentials: 'same-origin'
                         });
-
-                        if (response.status === 401 || response.status === 403) {
-                            this.authRequired = true;
-                            this.showAuthModal = true;
-                            this.adminSecret = '';
-                            sessionStorage.removeItem('adminSecret');
-                            return false;
-                        }
 
                         if (!response.ok) {
                             console.error('Auth check failed with status:', response.status);
+                            return false;
+                        }
+
+                        const data = await response.json();
+                        this.authRequired = data.auth_required;
+                        this.isAuthenticated = data.authenticated;
+
+                        if (!data.authenticated && data.auth_required) {
+                            this.showAuthModal = true;
                             return false;
                         }
 
@@ -1674,9 +1703,7 @@
                     try {
                         const xhr = new XMLHttpRequest();
                         xhr.open('POST', '/api/videos', true);
-                        if (this.adminSecret) {
-                            xhr.setRequestHeader('X-Admin-Secret', this.adminSecret);
-                        }
+                        xhr.withCredentials = true;  // Send cookies for authentication
 
                         xhr.upload.onprogress = (e) => {
                             if (e.lengthComputable) {
@@ -1695,9 +1722,8 @@
                                 this.loadVideos();
                             } else if (xhr.status === 401 || xhr.status === 403) {
                                 this.authRequired = true;
+                                this.isAuthenticated = false;
                                 this.showAuthModal = true;
-                                this.adminSecret = '';
-                                sessionStorage.removeItem('adminSecret');
                                 this.uploadMessage = 'Authentication required';
                                 this.uploadError = true;
                             } else {
@@ -1818,9 +1844,7 @@
                     try {
                         const xhr = new XMLHttpRequest();
                         xhr.open('POST', `/api/videos/${this.reuploadVideoId}/re-upload`, true);
-                        if (this.adminSecret) {
-                            xhr.setRequestHeader('X-Admin-Secret', this.adminSecret);
-                        }
+                        xhr.withCredentials = true;  // Send cookies for authentication
 
                         xhr.upload.onprogress = (e) => {
                             if (e.lengthComputable) {
@@ -1840,9 +1864,8 @@
                                 }, 1500);
                             } else if (xhr.status === 401 || xhr.status === 403) {
                                 this.authRequired = true;
+                                this.isAuthenticated = false;
                                 this.showAuthModal = true;
-                                this.adminSecret = '';
-                                sessionStorage.removeItem('adminSecret');
                                 this.reuploadMessage = 'Authentication required';
                                 this.reuploadError = true;
                             } else {

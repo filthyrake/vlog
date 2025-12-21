@@ -231,6 +231,24 @@ video_tags = sa.Table(
     sa.Index("ix_video_tags_tag_id", "tag_id"),
 )
 
+# Admin sessions for secure HTTP-only cookie-based authentication
+# Fixes XSS vulnerability where admin secret was stored in sessionStorage
+# See: https://github.com/filthyrake/vlog/issues/324
+admin_sessions = sa.Table(
+    "admin_sessions",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    # 128 chars provides safety margin for 64-char tokens from secrets.token_urlsafe(48)
+    sa.Column("session_token", sa.String(128), unique=True, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ip_address", sa.String(45), nullable=True),  # IPv6 max length
+    sa.Column("user_agent", sa.String(512), nullable=True),
+    sa.Index("ix_admin_sessions_session_token", "session_token"),
+    sa.Index("ix_admin_sessions_expires_at", "expires_at"),
+)
+
 
 def create_tables():
     """
