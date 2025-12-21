@@ -195,7 +195,7 @@ class JobQueue:
 
         redis = await get_redis()
         if not redis:
-            self._redis_available = False
+            # Redis temporarily unavailable; RedisClient handles recovery via circuit breaker
             return None
 
         try:
@@ -214,8 +214,8 @@ class JobQueue:
             return None
 
         except Exception as e:
+            # Log warning but don't disable Redis; RedisClient handles recovery
             logger.warning(f"Redis claim failed: {e}")
-            self._redis_available = False
             return None
 
     async def _recover_abandoned_messages(self, redis) -> Optional[JobDispatch]:
