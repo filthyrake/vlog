@@ -1,7 +1,7 @@
 [Unit]
 Description=VLog Video Platform
 After=postgresql.service
-Wants=vlog-public.service vlog-admin.service vlog-worker.service vlog-transcription.service postgresql.service
+Wants=vlog-public.service vlog-admin.service vlog-worker.service vlog-worker-api.service vlog-transcription.service postgresql.service
 
 [Install]
 WantedBy=multi-user.target
