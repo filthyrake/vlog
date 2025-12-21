@@ -655,6 +655,95 @@ class TestGlobalJobQueue:
         api.job_queue._job_queue_initialized = False
 
 
+class TestRedisRecovery:
+    """Tests for Redis recovery after transient failures (issue #327)."""
+
+    @pytest.mark.asyncio
+    async def test_claim_job_preserves_redis_available_when_redis_returns_none(self):
+        """Should preserve _redis_available when get_redis() returns None.
+
+        This ensures that after Redis recovers, the queue can use it again.
+        The RedisClient circuit breaker handles availability, not JobQueue.
+        """
+        queue = JobQueue()
+        queue._redis_available = True
+        queue._consumer_name = "test-consumer"
+
+        with patch("api.job_queue.JOB_QUEUE_MODE", "redis"):
+            # Simulate Redis being temporarily unavailable
+            with patch("api.job_queue.get_redis", return_value=None):
+                result = await queue.claim_job()
+
+                # Should return None but NOT set _redis_available to False
+                assert result is None
+                assert queue._redis_available is True
+
+    @pytest.mark.asyncio
+    async def test_claim_job_preserves_redis_available_on_exception(self):
+        """Should preserve _redis_available on Redis exceptions.
+
+        The RedisClient circuit breaker handles failure tracking and recovery.
+        """
+        queue = JobQueue()
+        queue._redis_available = True
+        queue._consumer_name = "test-consumer"
+        mock_redis = AsyncMock()
+        mock_redis.xpending_range = AsyncMock(
+            side_effect=Exception("Connection lost")
+        )
+
+        with patch("api.job_queue.JOB_QUEUE_MODE", "redis"):
+            with patch("api.job_queue.get_redis", return_value=mock_redis):
+                result = await queue.claim_job()
+
+                # Should return None but NOT set _redis_available to False
+                assert result is None
+                assert queue._redis_available is True
+
+    @pytest.mark.asyncio
+    async def test_claim_job_works_after_redis_recovery(self):
+        """Should successfully claim jobs after Redis recovers from failure.
+
+        This is the key test for issue #327: verifying that transient Redis
+        failures don't permanently disable Redis queue functionality.
+        """
+        queue = JobQueue()
+        queue._redis_available = True
+        queue._consumer_name = "test-consumer"
+        mock_redis = AsyncMock()
+        mock_redis.xpending_range = AsyncMock(return_value=[])
+        mock_redis.xreadgroup = AsyncMock(
+            return_value=[
+                [
+                    "vlog:jobs:normal",
+                    [
+                        (
+                            "1234-0",
+                            {
+                                "job_id": "1",
+                                "video_id": "100",
+                                "video_slug": "test-video",
+                            },
+                        )
+                    ],
+                ]
+            ]
+        )
+
+        with patch("api.job_queue.JOB_QUEUE_MODE", "redis"):
+            # First, Redis is unavailable
+            with patch("api.job_queue.get_redis", return_value=None):
+                result = await queue.claim_job()
+                assert result is None
+
+            # Then, Redis recovers and we should be able to claim jobs
+            with patch("api.job_queue.get_redis", return_value=mock_redis):
+                result = await queue.claim_job()
+                assert result is not None
+                assert result.job_id == 1
+                assert result.video_id == 100
+
+
 class TestPriorityConstants:
     """Tests for priority stream constants."""
 

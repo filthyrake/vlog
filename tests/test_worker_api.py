@@ -142,9 +142,10 @@ class TestAuthenticationEdgeCases:
 
         assert response.status_code == 200
 
-        # Request should complete quickly (< 100ms) even if DB update is slow
-        # This verifies the update doesn't block the response
-        assert request_time < 0.1, f"Request took {request_time}s, should be non-blocking"
+        # Request should complete quickly even if DB update is slow
+        # Using 0.5s threshold to account for CI environment variability
+        # (blocking behavior would take several seconds, not sub-second)
+        assert request_time < 0.5, f"Request took {request_time}s, should be non-blocking"
 
         # Give background task time to complete
         await asyncio.sleep(0.1)
