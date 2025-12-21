@@ -68,13 +68,16 @@ After registering a worker, create the secret directly:
 
 ```bash
 # Register a worker to get an API key
+# Note: VLOG_WORKER_ADMIN_SECRET must be set in your environment
 vlog worker register --name "k8s-worker"
-# Or via curl:
+
+# Or via curl (include admin secret header):
 curl -X POST http://your-vlog-server:9002/api/worker/register \
   -H "Content-Type: application/json" \
-  -d '{"name": "k8s-worker"}'
+  -H "X-Admin-Secret: $VLOG_WORKER_ADMIN_SECRET" \
+  -d '{"worker_name": "k8s-worker"}'
 
-# Create the secret (replace with your actual API key)
+# Create the secret (replace with your actual API key from registration response)
 kubectl create secret generic vlog-worker-credentials \
   --namespace vlog \
   --from-literal=VLOG_WORKER_API_KEY="your-actual-api-key"
