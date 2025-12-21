@@ -52,12 +52,55 @@ kubectl apply -f k8s/worker-hpa.yaml
 
 - `namespace.yaml` - Creates the `vlog` namespace
 - `configmap.yaml` - Worker configuration (API URL, intervals)
-- `secret.yaml` - Template for API key secret
 - `worker-deployment.yaml` - CPU-only worker deployment
 - `worker-deployment-nvidia.yaml` - NVIDIA GPU worker deployment (NVENC)
 - `worker-deployment-intel.yaml` - Intel Arc/QuickSync worker deployment (VAAPI)
 - `worker-hpa.yaml` - Horizontal Pod Autoscaler for auto-scaling
 - `cleanup-cronjob.yaml` - CronJob for cleaning up stale transcoding jobs
+
+## Secrets Management
+
+**Important:** Kubernetes secrets should never be committed to version control.
+
+### Creating Secrets via kubectl (Recommended)
+
+After registering a worker, create the secret directly:
+
+```bash
+# Register a worker to get an API key
+# Note: VLOG_WORKER_ADMIN_SECRET must be set in your environment
+vlog worker register --name "k8s-worker"
+
+# Or via curl (include admin secret header):
+curl -X POST http://your-vlog-server:9002/api/worker/register \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Secret: $VLOG_WORKER_ADMIN_SECRET" \
+  -d '{"worker_name": "k8s-worker"}'
+
+# Create the secret (replace with your actual API key from registration response)
+kubectl create secret generic vlog-worker-credentials \
+  --namespace vlog \
+  --from-literal=VLOG_WORKER_API_KEY="your-actual-api-key"
+```
+
+### Updating Secrets
+
+To update an existing secret:
+
+```bash
+kubectl delete secret vlog-worker-credentials -n vlog
+kubectl create secret generic vlog-worker-credentials \
+  --namespace vlog \
+  --from-literal=VLOG_WORKER_API_KEY="new-api-key"
+```
+
+### External Secrets Management (Production)
+
+For production environments, consider using external secrets management:
+
+- **[Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets)** - Encrypt secrets that can be safely committed to Git
+- **[External Secrets Operator](https://external-secrets.io/)** - Sync secrets from AWS Secrets Manager, HashiCorp Vault, etc.
+- **[HashiCorp Vault](https://www.vaultproject.io/)** - Centralized secrets management with dynamic credentials
 
 ## GPU-Accelerated Workers
 
