@@ -11,6 +11,7 @@ from worker.hwaccel import (
     GPUCapabilities,
     HWAccelType,
     VideoCodec,
+    _extract_ffmpeg_error,
     _get_nvidia_session_limit,
     _test_nvenc_encoder,
     _test_vaapi_encoder,
@@ -253,6 +254,34 @@ class TestBuildTranscodeCommand:
         assert "-vaapi_device" not in cmd
 
 
+class TestFFmpegErrorExtraction:
+    """Tests for FFmpeg error message extraction."""
+
+    def test_extracts_first_non_bracket_line(self):
+        """Test extraction skips FFmpeg info lines."""
+        stderr = "[libx264 @ 0x55f] Error initializing\nEncoder failed to start\nMore details"
+        assert _extract_ffmpeg_error(stderr) == "Encoder failed to start"
+
+    def test_extracts_from_single_line(self):
+        """Test extraction from single error line."""
+        stderr = "NVENC encoder initialization failed"
+        assert _extract_ffmpeg_error(stderr) == "NVENC encoder initialization failed"
+
+    def test_returns_unknown_for_empty_stderr(self):
+        """Test fallback for empty stderr."""
+        assert _extract_ffmpeg_error("") == "unknown error"
+
+    def test_returns_unknown_for_only_bracket_lines(self):
+        """Test fallback when all lines are FFmpeg info."""
+        stderr = "[libx264 @ 0x55f] info\n[libx264 @ 0x55f] more info"
+        assert _extract_ffmpeg_error(stderr) == "unknown error"
+
+    def test_strips_whitespace(self):
+        """Test whitespace is stripped from extracted line."""
+        stderr = "  \n  Error message with spaces  \n"
+        assert _extract_ffmpeg_error(stderr) == "Error message with spaces"
+
+
 class TestGPUDetection:
     """Tests for GPU detection functions."""
 
@@ -278,12 +307,18 @@ class TestGPUDetection:
     async def test_nvenc_encoder_validation_failure(self):
         """Test NVENC encoder validation when encoder fails."""
         with patch("worker.hwaccel._run_command") as mock_run:
-            # Mock failed encode test
-            mock_run.return_value = (1, "", "NVENC encoder initialization failed")
+            with patch("worker.hwaccel.logger") as mock_logger:
+                # Mock failed encode test
+                mock_run.return_value = (1, "", "NVENC encoder initialization failed")
 
-            result = await _test_nvenc_encoder("h264_nvenc")
+                result = await _test_nvenc_encoder("h264_nvenc")
 
-            assert result is False
+                assert result is False
+                # Verify warning was logged with error details
+                mock_logger.warning.assert_called_once()
+                log_msg = mock_logger.warning.call_args[0][0]
+                assert "h264_nvenc" in log_msg
+                assert "NVENC encoder initialization failed" in log_msg
 
     @pytest.mark.asyncio
     async def test_vaapi_encoder_validation_success(self):
@@ -306,12 +341,18 @@ class TestGPUDetection:
     async def test_vaapi_encoder_validation_failure(self):
         """Test VAAPI encoder validation when encoder fails."""
         with patch("worker.hwaccel._run_command") as mock_run:
-            # Mock failed encode test
-            mock_run.return_value = (1, "", "VAAPI encoder initialization failed")
+            with patch("worker.hwaccel.logger") as mock_logger:
+                # Mock failed encode test
+                mock_run.return_value = (1, "", "VAAPI encoder initialization failed")
 
-            result = await _test_vaapi_encoder("h264_vaapi", "/dev/dri/renderD128")
+                result = await _test_vaapi_encoder("h264_vaapi", "/dev/dri/renderD128")
 
-            assert result is False
+                assert result is False
+                # Verify warning was logged with error details
+                mock_logger.warning.assert_called_once()
+                log_msg = mock_logger.warning.call_args[0][0]
+                assert "h264_vaapi" in log_msg
+                assert "VAAPI encoder initialization failed" in log_msg
 
     @pytest.mark.asyncio
     async def test_detect_nvidia_gpu_available(self):

@@ -2,6 +2,8 @@
 Tests for the CLI module error handling and response validation.
 """
 
+# Import CLI functions and classes
+import argparse
 import os
 from pathlib import Path
 from unittest import mock
@@ -9,8 +11,14 @@ from unittest import mock
 import httpx
 import pytest
 
-# Import CLI functions and classes
-from cli.main import CLIError, ProgressFileWrapper, safe_json_response, validate_file, validate_url
+from cli.main import (
+    CLIError,
+    ProgressFileWrapper,
+    positive_int,
+    safe_json_response,
+    validate_file,
+    validate_url,
+)
 
 
 class TestProgressFileWrapper:
@@ -1372,3 +1380,37 @@ class TestMainParser:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 2  # argparse error code
+
+
+class TestPositiveIntValidator:
+    """Tests for the positive_int argparse type validator."""
+
+    def test_accepts_positive_integer(self):
+        """Test that positive integers are accepted."""
+        assert positive_int("1") == 1
+        assert positive_int("42") == 42
+        assert positive_int("999") == 999
+
+    def test_rejects_zero(self):
+        """Test that zero is rejected."""
+        with pytest.raises(argparse.ArgumentTypeError) as exc_info:
+            positive_int("0")
+        assert "must be a positive integer" in str(exc_info.value)
+        assert "0" in str(exc_info.value)
+
+    def test_rejects_negative_integer(self):
+        """Test that negative integers are rejected."""
+        with pytest.raises(argparse.ArgumentTypeError) as exc_info:
+            positive_int("-5")
+        assert "must be a positive integer" in str(exc_info.value)
+        assert "-5" in str(exc_info.value)
+
+    def test_rejects_non_numeric(self):
+        """Test that non-numeric values are rejected."""
+        with pytest.raises(ValueError):
+            positive_int("abc")
+
+    def test_rejects_float_string(self):
+        """Test that float strings are rejected."""
+        with pytest.raises(ValueError):
+            positive_int("3.14")
