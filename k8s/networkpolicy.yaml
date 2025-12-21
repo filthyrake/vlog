@@ -1,0 +1,114 @@
+# VLog Worker NetworkPolicy
+# kubectl apply -f k8s/networkpolicy.yaml
+#
+# This policy restricts network access for worker pods to minimize
+# the blast radius if a pod is compromised. Workers only need:
+# 1. Egress to the Worker API (port 9002)
+# 2. Egress to DNS for hostname resolution
+# 3. Optionally, egress to Redis for job queue (port 6379)
+#
+# IMPORTANT: This policy requires a CNI that supports NetworkPolicy
+# (e.g., Calico, Cilium, Weave Net). Default k3s/k8s networking
+# does NOT enforce NetworkPolicy without a compatible CNI.
+#
+# Verify your CNI supports NetworkPolicy before relying on this.
+#
+# CONFIGURATION REQUIRED: You must customize the Worker API egress rule
+# below to match your deployment. See comments for options.
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vlog-worker-network-policy
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+spec:
+  # Apply to all worker pods
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vlog
+      app.kubernetes.io/component: worker
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # Workers don't need any inbound connections
+  # Empty list = deny all ingress
+  ingress: []
+
+  egress:
+    # Allow DNS resolution (required for external API URLs)
+    # Targets the kube-system namespace where CoreDNS/kube-dns runs
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # =========================================================================
+    # WORKER API EGRESS - CONFIGURATION REQUIRED
+    # =========================================================================
+    # Uncomment ONE of the options below based on your deployment:
+    #
+    # Option A: Worker API runs externally (specific IP/CIDR)
+    # Replace the CIDR with your Worker API server's IP address or range.
+    # Example: 192.168.1.100/32 for a single host, or 10.0.0.0/24 for a subnet
+    #
+    # - to:
+    #     - ipBlock:
+    #         cidr: 192.168.1.100/32  # REPLACE with your Worker API IP/CIDR
+    #   ports:
+    #     - protocol: TCP
+    #       port: 9002
+    #
+    # Option B: Worker API runs in-cluster
+    # Use this if the Worker API is deployed as a Kubernetes service.
+    # Adjust the namespace and labels to match your API deployment.
+    #
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: vlog
+    #       podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: vlog
+    #           app.kubernetes.io/component: worker-api
+    #   ports:
+    #     - protocol: TCP
+    #       port: 9002
+
+    # =========================================================================
+    # REDIS EGRESS - OPTIONAL
+    # =========================================================================
+    # Uncomment ONE of the options below if using Redis for instant job dispatch.
+    #
+    # Option A: Redis runs in-cluster
+    # Adjust the namespace and labels to match your Redis deployment.
+    #
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: vlog
+    #       podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: redis
+    #   ports:
+    #     - protocol: TCP
+    #       port: 6379
+    #
+    # Option B: Redis is external (specific IP/CIDR)
+    # Replace the CIDR with your Redis server's IP address or range.
+    #
+    # - to:
+    #     - ipBlock:
+    #         cidr: 192.168.1.101/32  # REPLACE with your Redis IP/CIDR
+    #   ports:
+    #     - protocol: TCP
+    #       port: 6379

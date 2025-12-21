@@ -57,6 +57,72 @@ kubectl apply -f k8s/worker-hpa.yaml
 - `worker-deployment-intel.yaml` - Intel Arc/QuickSync worker deployment (VAAPI)
 - `worker-hpa.yaml` - Horizontal Pod Autoscaler for auto-scaling
 - `cleanup-cronjob.yaml` - CronJob for cleaning up stale transcoding jobs
+- `networkpolicy.yaml` - NetworkPolicy restricting worker pod network access
+
+## Network Security
+
+The `networkpolicy.yaml` restricts network access for worker pods to limit the blast radius if a pod is compromised. Workers only need:
+
+1. **Egress to Worker API** (port 9002) - For job claiming, progress updates, file transfers
+2. **Egress to DNS** (port 53) - For hostname resolution
+3. **Optionally, egress to Redis** (port 6379) - For instant job dispatch
+
+All ingress is denied since workers don't need incoming connections.
+
+### Prerequisites
+
+NetworkPolicy requires a CNI that supports it. Common options:
+- **Calico** - Full NetworkPolicy support
+- **Cilium** - Full support with enhanced features
+- **Weave Net** - Full support
+
+**Note**: Default k3s/k8s networking does NOT enforce NetworkPolicy. Verify your CNI supports it before relying on this policy.
+
+### Configuration Required
+
+Before applying the policy, you must configure the Worker API egress rule. Edit `networkpolicy.yaml` and uncomment one of the options:
+
+**Option A: External Worker API** - If your Worker API runs outside the cluster:
+```yaml
+- to:
+    - ipBlock:
+        cidr: 192.168.1.100/32  # Replace with your API server's IP
+  ports:
+    - protocol: TCP
+      port: 9002
+```
+
+**Option B: In-cluster Worker API** - If the API is deployed as a Kubernetes service:
+```yaml
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: vlog
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vlog
+          app.kubernetes.io/component: worker-api
+  ports:
+    - protocol: TCP
+      port: 9002
+```
+
+### Applying the NetworkPolicy
+
+```bash
+# Edit the policy to configure Worker API egress
+vim k8s/networkpolicy.yaml
+
+# Apply the network policy
+kubectl apply -f k8s/networkpolicy.yaml
+
+# Verify the policy is active
+kubectl get networkpolicy -n vlog
+```
+
+### Optional: Redis Egress
+
+If using Redis for instant job dispatch, uncomment one of the Redis egress options in the policy file and configure the appropriate CIDR or pod selector for your Redis deployment.
 
 ## Secrets Management
 
