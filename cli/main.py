@@ -33,6 +33,14 @@ from config import (
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
 
+
+def positive_int(value: str) -> int:
+    """Argparse type converter that validates positive integers."""
+    i = int(value)
+    if i <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {i}")
+    return i
+
 # Default timeout for API requests (30 seconds)
 DEFAULT_API_TIMEOUT = int(os.getenv("VLOG_API_TIMEOUT", "30"))
 
@@ -678,7 +686,7 @@ def main():
 
     # Delete command
     del_parser = subparsers.add_parser("delete", help="Delete a video")
-    del_parser.add_argument("video_id", type=int, help="Video ID to delete")
+    del_parser.add_argument("video_id", type=positive_int, help="Video ID to delete")
     del_parser.set_defaults(func=cmd_delete)
 
     # Download command (from YouTube)

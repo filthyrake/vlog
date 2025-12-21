@@ -1383,7 +1383,7 @@ async def upload_video(
         )
     except Exception as e:
         # Log but don't fail the upload - transcoder will get this info later
-        logging.warning(f"Failed to probe video {video_id}: {e}")
+        logger.warning(f"Failed to probe video {video_id}: {e}")
 
     # Create transcoding job for remote workers to claim
     # If this fails, clean up to avoid orphaned video record (issue #162)
@@ -2868,7 +2868,7 @@ async def re_upload_video(
         )
     except Exception as e:
         # Log but don't fail the upload - transcoder will get this info later
-        logging.warning(f"Failed to probe re-uploaded video {video_id}: {e}")
+        logger.warning(f"Failed to probe re-uploaded video {video_id}: {e}")
 
     # Audit log
     log_audit(
