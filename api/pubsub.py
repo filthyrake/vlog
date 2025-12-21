@@ -93,7 +93,7 @@ class Publisher:
             await redis.publish(channel_name("progress", "all"), payload)
             return True
         except Exception as e:
-            logger.debug(f"Failed to publish progress: {e}")
+            logger.warning(f"Failed to publish progress: {e}")
             return False
 
     @staticmethod
@@ -144,7 +144,7 @@ class Publisher:
             await redis.publish(channel_name("workers", "status"), json.dumps(message))
             return True
         except Exception as e:
-            logger.debug(f"Failed to publish worker status: {e}")
+            logger.warning(f"Failed to publish worker status: {e}")
             return False
 
     @staticmethod
@@ -196,7 +196,7 @@ class Publisher:
             await redis.publish(channel_name("progress", "all"), payload)
             return True
         except Exception as e:
-            logger.debug(f"Failed to publish job completion: {e}")
+            logger.warning(f"Failed to publish job completion: {e}")
             return False
 
     @staticmethod
@@ -253,7 +253,7 @@ class Publisher:
             await redis.publish(channel_name("progress", "all"), payload)
             return True
         except Exception as e:
-            logger.debug(f"Failed to publish job failure: {e}")
+            logger.warning(f"Failed to publish job failure: {e}")
             return False
 
 
