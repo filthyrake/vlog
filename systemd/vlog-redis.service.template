@@ -5,7 +5,11 @@ Requires=docker.service
 
 [Service]
 Type=simple
-User=root
+# Replace <YOUR_USER> with your username
+# IMPORTANT: User must be in the docker group for docker socket access
+# To add your user to docker group: sudo usermod -aG docker <YOUR_USER>
+User=<YOUR_USER>
+Group=<YOUR_USER>
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=300
