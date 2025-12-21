@@ -8,8 +8,10 @@ Tests cover:
 - Dead letter queue for failed jobs
 - Recovery of abandoned messages
 - Queue statistics
+- Concurrent initialization (race condition fix #326)
 """
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -653,6 +655,46 @@ class TestGlobalJobQueue:
         # Clean up
         api.job_queue._job_queue = None
         api.job_queue._job_queue_initialized = False
+
+    @pytest.mark.asyncio
+    async def test_get_job_queue_concurrent_calls_single_initialization(self):
+        """Concurrent calls to get_job_queue should only initialize once (issue #326)."""
+        # Reset global state
+        api.job_queue._job_queue = None
+        api.job_queue._job_queue_initialized = False
+        api.job_queue._job_queue_init_lock = None
+
+        initialize_call_count = 0
+        original_initialize = JobQueue.initialize
+
+        async def mock_initialize(self, consumer_name: str = "worker") -> None:
+            nonlocal initialize_call_count
+            initialize_call_count += 1
+            # Add a small delay to increase chance of race condition
+            await asyncio.sleep(0.01)
+            await original_initialize(self, consumer_name)
+
+        with patch("api.job_queue.JOB_QUEUE_MODE", "database"):
+            with patch.object(JobQueue, "initialize", mock_initialize):
+                # Launch multiple concurrent calls
+                results = await asyncio.gather(
+                    get_job_queue(),
+                    get_job_queue(),
+                    get_job_queue(),
+                    get_job_queue(),
+                    get_job_queue(),
+                )
+
+        # All results should be the same instance
+        assert all(r is results[0] for r in results)
+
+        # Initialize should only have been called once
+        assert initialize_call_count == 1
+
+        # Clean up
+        api.job_queue._job_queue = None
+        api.job_queue._job_queue_initialized = False
+        api.job_queue._job_queue_init_lock = None
 
 
 class TestRedisRecovery:

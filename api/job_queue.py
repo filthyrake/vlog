@@ -379,13 +379,40 @@ class JobQueue:
 # Global job queue instance for API use
 _job_queue: Optional[JobQueue] = None
 _job_queue_initialized: bool = False
-_job_queue_init_lock: asyncio.Lock = asyncio.Lock()
+_job_queue_init_lock: Optional[asyncio.Lock] = None
+
+
+def _get_job_queue_init_lock() -> asyncio.Lock:
+    """Get or create the job queue initialization lock.
+
+    The lock is created lazily to ensure it's bound to the correct event loop.
+    This is necessary because the lock may be used across different event loops
+    in testing or when the application restarts.
+    """
+    global _job_queue_init_lock
+
+    if _job_queue_init_lock is None:
+        _job_queue_init_lock = asyncio.Lock()
+        return _job_queue_init_lock
+
+    # Check if the lock is bound to a different event loop
+    try:
+        current_loop = asyncio.get_running_loop()
+        lock_loop = getattr(_job_queue_init_lock, "_loop", None)
+        if lock_loop is not None and lock_loop is not current_loop:
+            # Lock is from a different event loop, create a new one
+            _job_queue_init_lock = asyncio.Lock()
+    except RuntimeError:
+        # No event loop running, the existing lock should be fine
+        pass
+
+    return _job_queue_init_lock
 
 
 async def get_job_queue() -> JobQueue:
     """Get or create the global job queue instance, initialized for API publishing."""
     global _job_queue, _job_queue_initialized
-    async with _job_queue_init_lock:
+    async with _get_job_queue_init_lock():
         if _job_queue is None:
             _job_queue = JobQueue()
         if not _job_queue_initialized:
