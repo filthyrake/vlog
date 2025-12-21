@@ -7,6 +7,7 @@ import asyncio
 import hmac
 import json
 import logging
+import secrets
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -39,6 +40,7 @@ from api.common import (
     rate_limit_exceeded_handler,
 )
 from api.database import (
+    admin_sessions,
     categories,
     configure_database,
     create_tables,
@@ -120,6 +122,7 @@ from config import (
     ADMIN_API_SECRET,
     ADMIN_CORS_ALLOWED_ORIGINS,
     ADMIN_PORT,
+    ADMIN_SESSION_EXPIRY_HOURS,
     ANALYTICS_CACHE_ENABLED,
     ANALYTICS_CACHE_STORAGE_URL,
     ANALYTICS_CACHE_TTL,
@@ -133,6 +136,7 @@ from config import (
     RATE_LIMIT_ADMIN_UPLOAD,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
+    SECURE_COOKIES,
     SSE_HEARTBEAT_INTERVAL,
     SSE_RECONNECT_TIMEOUT_MS,
     SUPPORTED_IMAGE_EXTENSIONS,
@@ -172,15 +176,99 @@ MAX_DESCRIPTION_LENGTH = 5000
 # Security event logger for authentication events
 security_logger = logging.getLogger("security.admin_auth")
 
+# Session cookie name
+ADMIN_SESSION_COOKIE = "vlog_admin_session"
+
+
+async def validate_session_token(session_token: str) -> bool:
+    """
+    Validate a session token against the database.
+    Returns True if valid, False if invalid or expired.
+    Updates last_used_at timestamp for valid sessions.
+    """
+    if not session_token:
+        return False
+
+    now = datetime.now(timezone.utc)
+    query = admin_sessions.select().where(
+        admin_sessions.c.session_token == session_token,
+        admin_sessions.c.expires_at > now,
+    )
+    session = await database.fetch_one(query)
+
+    if not session:
+        return False
+
+    # Update last_used_at
+    update_query = (
+        admin_sessions.update()
+        .where(admin_sessions.c.session_token == session_token)
+        .values(last_used_at=now)
+    )
+    await database.execute(update_query)
+
+    return True
+
+
+async def create_admin_session(
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> str:
+    """
+    Create a new admin session and return the session token.
+    """
+    session_token = secrets.token_urlsafe(48)  # 64 chars base64
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=ADMIN_SESSION_EXPIRY_HOURS)
+
+    query = admin_sessions.insert().values(
+        session_token=session_token,
+        created_at=now,
+        expires_at=expires_at,
+        last_used_at=now,
+        ip_address=ip_address[:45] if ip_address else None,
+        user_agent=user_agent[:512] if user_agent else None,
+    )
+    await database.execute(query)
+
+    security_logger.info(
+        "Admin session created",
+        extra={"event": "session_created", "client_ip": ip_address, "expires_at": expires_at.isoformat()},
+    )
+
+    return session_token
+
+
+async def delete_admin_session(session_token: str) -> None:
+    """
+    Delete an admin session if it exists.
+    """
+    query = admin_sessions.delete().where(admin_sessions.c.session_token == session_token)
+    await database.execute(query)
+
+
+async def cleanup_expired_sessions() -> int:
+    """
+    Delete expired sessions. Returns the number of sessions deleted.
+    Called periodically to clean up stale sessions.
+    """
+    now = datetime.now(timezone.utc)
+    query = admin_sessions.delete().where(admin_sessions.c.expires_at < now)
+    return await database.execute(query)
+
 
 class AdminAuthMiddleware:
     """
-    Middleware to protect Admin API endpoints with API key authentication.
+    Middleware to protect Admin API endpoints with authentication.
+
+    Supports two authentication methods:
+    1. X-Admin-Secret header - for API clients and CLI tools
+    2. Session cookie - for browser-based UI (HTTP-only, secure)
 
     When ADMIN_API_SECRET is configured:
-    - All /api/* paths require X-Admin-Secret header
-    - Returns 401 if header is missing
-    - Returns 403 if header value is incorrect
+    - All /api/* paths (except /api/auth/*) require authentication
+    - Authentication can be via X-Admin-Secret header OR valid session cookie
+    - Returns 401 if neither is provided or valid
 
     When ADMIN_API_SECRET is not configured (empty):
     - All requests are allowed (backwards compatible)
@@ -190,10 +278,23 @@ class AdminAuthMiddleware:
     - /health (monitoring)
     - /static/* (static files)
     - /videos/* (video file serving for preview)
+    - /api/auth/* (login, logout, check endpoints)
     """
 
     def __init__(self, app):
         self.app = app
+
+    def _parse_cookies(self, cookie_header: bytes) -> dict:
+        """Parse Cookie header into a dict."""
+        cookies = {}
+        if cookie_header:
+            cookie_str = cookie_header.decode("utf-8", errors="ignore")
+            for item in cookie_str.split(";"):
+                item = item.strip()
+                if "=" in item:
+                    key, value = item.split("=", 1)
+                    cookies[key.strip()] = value.strip()
+        return cookies
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -213,6 +314,11 @@ class AdminAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Skip auth for auth endpoints (login, logout, check)
+        if path.startswith("/api/auth/"):
+            await self.app(scope, receive, send)
+            return
+
         # If ADMIN_API_SECRET is not configured, allow all requests (backwards compatible)
         if not ADMIN_API_SECRET:
             await self.app(scope, receive, send)
@@ -222,41 +328,64 @@ class AdminAuthMiddleware:
         client = scope.get("client")
         client_ip = client[0] if client else "unknown"
 
-        # Extract X-Admin-Secret header
+        # Extract headers
         headers = dict(scope.get("headers", []))
+
+        # Method 1: Check X-Admin-Secret header (for API clients/CLI)
         admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
+        if admin_secret:
+            if hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+                # Header auth successful
+                security_logger.info(
+                    "Admin API auth successful via header",
+                    extra={"event": "auth_success", "method": "header", "path": path, "client_ip": client_ip},
+                )
+                await self.app(scope, receive, send)
+                return
+            else:
+                security_logger.warning(
+                    "Admin API auth failed: invalid secret header",
+                    extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
+                )
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "Invalid admin secret"},
+                )
+                await response(scope, receive, send)
+                return
 
-        if not admin_secret:
-            security_logger.warning(
-                "Admin API auth failed: missing X-Admin-Secret header",
-                extra={"event": "auth_failure", "reason": "missing_header", "path": path, "client_ip": client_ip},
-            )
-            response = JSONResponse(
-                status_code=401,
-                content={"detail": "X-Admin-Secret header required"},
-            )
-            await response(scope, receive, send)
-            return
+        # Method 2: Check session cookie (for browser UI)
+        cookie_header = headers.get(b"cookie", b"")
+        cookies = self._parse_cookies(cookie_header)
+        session_token = cookies.get(ADMIN_SESSION_COOKIE, "")
 
-        # Use constant-time comparison to prevent timing attacks
-        if not hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
-            security_logger.warning(
-                "Admin API auth failed: invalid secret",
-                extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
-            )
-            response = JSONResponse(
-                status_code=403,
-                content={"detail": "Invalid admin secret"},
-            )
-            await response(scope, receive, send)
-            return
+        if session_token:
+            # Validate session against database
+            is_valid = await validate_session_token(session_token)
+            if is_valid:
+                # Cookie auth successful
+                security_logger.info(
+                    "Admin API auth successful via session cookie",
+                    extra={"event": "auth_success", "method": "cookie", "path": path, "client_ip": client_ip},
+                )
+                await self.app(scope, receive, send)
+                return
+            else:
+                security_logger.warning(
+                    "Admin API auth failed: invalid or expired session",
+                    extra={"event": "auth_failure", "reason": "invalid_session", "path": path, "client_ip": client_ip},
+                )
 
-        # Auth successful
-        security_logger.info(
-            "Admin API auth successful",
-            extra={"event": "auth_success", "path": path, "client_ip": client_ip},
+        # No valid authentication provided
+        security_logger.warning(
+            "Admin API auth failed: no valid credentials",
+            extra={"event": "auth_failure", "reason": "no_credentials", "path": path, "client_ip": client_ip},
         )
-        await self.app(scope, receive, send)
+        response = JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"},
+        )
+        await response(scope, receive, send)
 
 
 async def delete_video_and_job(video_id: int) -> None:
@@ -580,6 +709,127 @@ async def health_check():
             },
         },
     )
+
+
+# ============ Authentication ============
+# Server-side session management for secure browser authentication.
+# Fixes XSS vulnerability where admin secret was stored in sessionStorage.
+# See: https://github.com/filthyrake/vlog/issues/324
+
+
+@app.post("/api/auth/login")
+@limiter.limit("10/minute")
+async def auth_login(request: Request, response: Response):
+    """
+    Authenticate with admin secret and create a session.
+
+    Validates the admin secret and creates a server-side session.
+    Sets an HTTP-only, Secure cookie for subsequent requests.
+
+    Request body: {"secret": "your-admin-secret"}
+    """
+    # If auth is not configured, sessions aren't needed
+    if not ADMIN_API_SECRET:
+        return {"authenticated": True, "message": "Authentication not required"}
+
+    try:
+        body = await request.json()
+        secret = body.get("secret", "")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
+    if not secret:
+        raise HTTPException(status_code=400, detail="Secret is required")
+
+    # Validate the secret
+    if not hmac.compare_digest(secret, ADMIN_API_SECRET):
+        client_ip = get_real_ip(request)
+        security_logger.warning(
+            "Admin login failed: invalid secret",
+            extra={"event": "login_failure", "client_ip": client_ip},
+        )
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
+
+    # Create session
+    client_ip = get_real_ip(request)
+    user_agent = request.headers.get("user-agent", "")
+    session_token = await create_admin_session(ip_address=client_ip, user_agent=user_agent)
+
+    # Set HTTP-only cookie
+    # SameSite=Lax allows the cookie to be sent with top-level navigations
+    response.set_cookie(
+        key=ADMIN_SESSION_COOKIE,
+        value=session_token,
+        httponly=True,
+        secure=SECURE_COOKIES,
+        samesite="lax",
+        max_age=ADMIN_SESSION_EXPIRY_HOURS * 3600,
+        path="/",
+    )
+
+    security_logger.info(
+        "Admin login successful",
+        extra={"event": "login_success", "client_ip": client_ip},
+    )
+
+    return {"authenticated": True, "message": "Login successful"}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    """
+    Log out and destroy the current session.
+
+    Deletes the server-side session and clears the cookie.
+    """
+    # Get session token from cookie
+    session_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+
+    if session_token:
+        await delete_admin_session(session_token)
+        client_ip = get_real_ip(request)
+        security_logger.info(
+            "Admin logout",
+            extra={"event": "logout", "client_ip": client_ip},
+        )
+
+    # Clear the cookie
+    response.delete_cookie(
+        key=ADMIN_SESSION_COOKIE,
+        path="/",
+        httponly=True,
+        secure=SECURE_COOKIES,
+        samesite="lax",
+    )
+
+    return {"authenticated": False, "message": "Logged out"}
+
+
+@app.get("/api/auth/check")
+async def auth_check(request: Request):
+    """
+    Check if the current session is authenticated.
+
+    Returns authentication status without requiring credentials.
+    Used by the UI to determine if login is needed.
+    """
+    # If auth is not configured, always authenticated
+    if not ADMIN_API_SECRET:
+        return {"authenticated": True, "auth_required": False}
+
+    # Check for X-Admin-Secret header (for API clients)
+    admin_secret = request.headers.get("x-admin-secret", "")
+    if admin_secret and hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+        return {"authenticated": True, "auth_required": True}
+
+    # Check session cookie
+    session_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+    if session_token:
+        is_valid = await validate_session_token(session_token)
+        if is_valid:
+            return {"authenticated": True, "auth_required": True}
+
+    return {"authenticated": False, "auth_required": True}
 
 
 # ============ Categories ============

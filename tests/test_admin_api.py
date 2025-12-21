@@ -1802,7 +1802,8 @@ class TestAdminAPIAuth:
         with TestClient(app, raise_server_exceptions=False) as client:
             response = client.get("/api/categories")
             assert response.status_code == 401
-            assert "X-Admin-Secret header required" in response.json()["detail"]
+            # Message changed in #324 to support both header and cookie auth
+            assert "Authentication required" in response.json()["detail"]
 
     def test_auth_enabled_returns_403_with_wrong_secret(self, test_storage, test_db_url, monkeypatch):
         """When ADMIN_API_SECRET is set, requests with wrong secret should return 403."""
@@ -1984,3 +1985,195 @@ class TestAdminAPIAuth:
                 headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
             )
             assert response.status_code == 200
+
+    def test_auth_login_endpoint_no_auth_required(self, test_storage, test_db_url, monkeypatch):
+        """Auth login endpoint should be accessible without existing auth."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Auth check endpoint should be accessible without auth
+            response = client.get("/api/auth/check")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["authenticated"] is False
+            assert data["auth_required"] is True
+
+    def test_auth_login_with_valid_secret(self, test_storage, test_db_url, monkeypatch):
+        """Successful login should set session cookie."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login with valid secret
+            response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert response.status_code == 200
+            assert response.json()["authenticated"] is True
+
+            # Should have set a cookie
+            assert "vlog_admin_session" in response.cookies
+
+    def test_auth_login_with_invalid_secret(self, test_storage, test_db_url, monkeypatch):
+        """Login with invalid secret should return 403."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login with invalid secret
+            response = client.post(
+                "/api/auth/login",
+                json={"secret": "wrong-secret"},
+            )
+            assert response.status_code == 403
+
+    def test_session_cookie_auth(self, test_storage, test_db_url, monkeypatch):
+        """Session cookie should authenticate subsequent requests."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # First, login to get session cookie
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+
+            # Get the session token from cookies
+            session_token = login_response.cookies.get("vlog_admin_session")
+            assert session_token is not None
+
+            # Now make authenticated request with cookie explicitly set
+            # TestClient should include cookies automatically, but let's verify
+            response = client.get(
+                "/api/categories",
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert response.status_code == 200
+
+    def test_auth_logout(self, test_storage, test_db_url, monkeypatch):
+        """Logout should clear session and cookie."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+
+            # Get the session token
+            session_token = login_response.cookies.get("vlog_admin_session")
+            assert session_token is not None
+
+            # Verify we're authenticated (with explicit cookie)
+            check_response = client.get(
+                "/api/auth/check",
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert check_response.json()["authenticated"] is True
+
+            # Logout (with explicit cookie)
+            logout_response = client.post(
+                "/api/auth/logout",
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert logout_response.status_code == 200
+            assert logout_response.json()["authenticated"] is False
+
+            # After logout, session should be invalid even if cookie is still present
+            check_after = client.get(
+                "/api/auth/check",
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert check_after.json()["authenticated"] is False

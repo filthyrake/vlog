@@ -128,6 +128,9 @@ WORKER_ADMIN_SECRET = os.getenv("VLOG_WORKER_ADMIN_SECRET", "")
 # If empty/unset, Admin API endpoints are unauthenticated (for backwards compatibility)
 # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
 ADMIN_API_SECRET = os.getenv("VLOG_ADMIN_API_SECRET", "")
+# Session expiry for admin UI (hours). Sessions are stored server-side with HTTP-only cookies.
+# See: https://github.com/filthyrake/vlog/issues/324
+ADMIN_SESSION_EXPIRY_HOURS = int(os.getenv("VLOG_ADMIN_SESSION_EXPIRY_HOURS", "24"))
 WORKER_HEARTBEAT_INTERVAL = int(os.getenv("VLOG_WORKER_HEARTBEAT_INTERVAL", "30"))
 WORKER_CLAIM_DURATION_MINUTES = int(os.getenv("VLOG_WORKER_CLAIM_DURATION", "30"))
 WORKER_POLL_INTERVAL = int(os.getenv("VLOG_WORKER_POLL_INTERVAL", "10"))
