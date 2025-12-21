@@ -13,7 +13,10 @@ StartLimitBurst=5
 
 # Load Redis password from environment file
 # Copy vlog-redis.env.example to /etc/vlog/redis.env and set REDIS_PASSWORD
-EnvironmentFile=/etc/vlog/redis.env
+EnvironmentFile=-/etc/vlog/redis.env
+
+# Validate environment file exists before starting
+ExecStartPre=/usr/bin/test -f /etc/vlog/redis.env
 
 # Stop and remove any existing container before starting
 ExecStartPre=-/usr/bin/docker stop vlog-redis

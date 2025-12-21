@@ -155,7 +155,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now vlog-redis
 
 # Verify (use password from above)
-docker exec vlog-redis redis-cli -a "$REDIS_PASS" ping  # Should return PONG
+docker exec vlog-redis redis-cli --no-auth-warning -a "$REDIS_PASS" ping  # Should return PONG
 
 # Configure VLog to use Redis (include password in URL)
 # VLOG_REDIS_URL=redis://:YOUR_REDIS_PASSWORD@localhost:6379
@@ -170,15 +170,16 @@ sudo dnf install redis  # RHEL/Rocky
 # OR
 sudo apt install redis-server  # Debian/Ubuntu
 
-# Configure password authentication
-echo "requirepass YOUR_STRONG_PASSWORD" | sudo tee -a /etc/redis.conf
-# OR for Debian/Ubuntu: /etc/redis/redis.conf
+# Configure password authentication (edit config file directly)
+# Find and uncomment/add the requirepass line:
+sudo nano /etc/redis.conf  # or /etc/redis/redis.conf on Debian/Ubuntu
+# Add or update: requirepass YOUR_STRONG_PASSWORD
 
 # Enable and start
-sudo systemctl enable --now redis
+sudo systemctl restart redis
 
 # Verify
-redis-cli -a YOUR_STRONG_PASSWORD ping  # Should return PONG
+redis-cli --no-auth-warning -a YOUR_STRONG_PASSWORD ping  # Should return PONG
 
 # Configure VLog to use Redis (include password in URL)
 # VLOG_REDIS_URL=redis://:YOUR_STRONG_PASSWORD@localhost:6379
