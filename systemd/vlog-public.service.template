@@ -7,8 +7,8 @@
 
 [Unit]
 Description=VLog Public API
-After=network.target mnt-nas.mount
-Wants=mnt-nas.mount
+After=network.target postgresql.service mnt-nas.mount
+Wants=mnt-nas.mount postgresql.service
 
 [Service]
 Type=simple

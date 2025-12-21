@@ -59,8 +59,8 @@ spec:
         - name: VLOG_WORKER_API_KEY
           valueFrom:
             secretKeyRef:
-              name: vlog-worker-secret
-              key: intel-api-key
+              name: vlog-worker-credentials
+              key: VLOG_WORKER_API_KEY
         # GPU-specific settings
         - name: VLOG_HWACCEL_TYPE
           value: "intel"
