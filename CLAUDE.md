@@ -174,13 +174,20 @@ migrations/
 
 To enable Redis:
 ```bash
+# Set up Redis password (required for security)
+sudo mkdir -p /etc/vlog
+sudo cp systemd/vlog-redis.env.example /etc/vlog/redis.env
+sudo chmod 600 /etc/vlog/redis.env
+# Edit /etc/vlog/redis.env and set REDIS_PASSWORD to a strong value
+# Generate password: python -c "import secrets; print(secrets.token_urlsafe(32))"
+
 # Start Redis container (systemd service provided)
-sudo cp systemd/vlog-redis.service /etc/systemd/system/
+sudo cp systemd/vlog-redis.service.template /etc/systemd/system/vlog-redis.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now vlog-redis
 
-# Configure vlog to use Redis
-export VLOG_REDIS_URL="redis://localhost:6379"
+# Configure vlog to use Redis (include password in URL)
+export VLOG_REDIS_URL="redis://:YOUR_REDIS_PASSWORD@localhost:6379"
 export VLOG_JOB_QUEUE_MODE="hybrid"  # or "redis" for Redis-only
 ```
 

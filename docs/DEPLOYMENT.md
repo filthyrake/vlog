@@ -132,7 +132,37 @@ sudo -u postgres createdb -O vlog vlog
 
 #### Redis Setup (Optional)
 
-Enable Redis for instant job dispatch and real-time progress updates:
+Enable Redis for instant job dispatch and real-time progress updates.
+
+**Option 1: Docker Container (recommended)**
+
+Use the provided systemd service file which runs Redis in a Docker container with password authentication:
+
+```bash
+# Set up Redis password
+sudo mkdir -p /etc/vlog
+sudo cp systemd/vlog-redis.env.example /etc/vlog/redis.env
+sudo chmod 600 /etc/vlog/redis.env
+
+# Generate and set a strong password
+REDIS_PASS=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+sudo sed -i "s/CHANGE_ME_TO_A_SECURE_PASSWORD/$REDIS_PASS/" /etc/vlog/redis.env
+echo "Redis password: $REDIS_PASS"  # Save this!
+
+# Install and start Redis container service
+sudo cp systemd/vlog-redis.service.template /etc/systemd/system/vlog-redis.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now vlog-redis
+
+# Verify (use password from above)
+docker exec vlog-redis redis-cli -a "$REDIS_PASS" ping  # Should return PONG
+
+# Configure VLog to use Redis (include password in URL)
+# VLOG_REDIS_URL=redis://:YOUR_REDIS_PASSWORD@localhost:6379
+# VLOG_JOB_QUEUE_MODE=hybrid
+```
+
+**Option 2: System Redis**
 
 ```bash
 # Install Redis
@@ -140,14 +170,18 @@ sudo dnf install redis  # RHEL/Rocky
 # OR
 sudo apt install redis-server  # Debian/Ubuntu
 
+# Configure password authentication
+echo "requirepass YOUR_STRONG_PASSWORD" | sudo tee -a /etc/redis.conf
+# OR for Debian/Ubuntu: /etc/redis/redis.conf
+
 # Enable and start
 sudo systemctl enable --now redis
 
 # Verify
-redis-cli ping  # Should return PONG
+redis-cli -a YOUR_STRONG_PASSWORD ping  # Should return PONG
 
-# Configure VLog to use Redis (add to environment or systemd service files)
-# VLOG_REDIS_URL=redis://localhost:6379
+# Configure VLog to use Redis (include password in URL)
+# VLOG_REDIS_URL=redis://:YOUR_STRONG_PASSWORD@localhost:6379
 # VLOG_JOB_QUEUE_MODE=hybrid
 ```
 

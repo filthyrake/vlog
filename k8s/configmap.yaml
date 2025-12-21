@@ -26,7 +26,9 @@ data:
 
   # Redis URL for job queue (optional - enables instant job dispatch)
   # If empty, workers will poll the database for jobs
-  # VLOG_REDIS_URL: "redis://vlog-server.example.com:6379"
+  # Include password in URL: redis://:PASSWORD@host:6379
+  # Note: For production, store the Redis URL in a Secret instead of ConfigMap
+  # VLOG_REDIS_URL: "redis://:YOUR_REDIS_PASSWORD@vlog-server.example.com:6379"
 
   # Job queue mode: database (polling only), redis (Redis only), hybrid (Redis with DB fallback)
   # VLOG_JOB_QUEUE_MODE: "hybrid"

@@ -1,0 +1,47 @@
+[Unit]
+Description=VLog Redis Container
+After=docker.service network.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Load Redis password from environment file
+# Copy vlog-redis.env.example to /etc/vlog/redis.env and set REDIS_PASSWORD
+EnvironmentFile=/etc/vlog/redis.env
+
+# Stop and remove any existing container before starting
+ExecStartPre=-/usr/bin/docker stop vlog-redis
+ExecStartPre=-/usr/bin/docker rm vlog-redis
+
+# Run Redis container
+# - Bound to all interfaces (for remote k8s worker access)
+# - Data persisted in named volume
+# - AOF persistence enabled for durability
+# - Password authentication required (set in /etc/vlog/redis.env)
+#
+# Security notes:
+# - REDIS_PASSWORD must be set in /etc/vlog/redis.env
+# - Generate a strong password: python -c "import secrets; print(secrets.token_urlsafe(32))"
+# - Use firewall rules to limit access to trusted worker IPs
+# - Clients must use: redis://:PASSWORD@host:6379 in VLOG_REDIS_URL
+ExecStart=/usr/bin/docker run --rm \
+    --name vlog-redis \
+    -p 6379:6379 \
+    -v vlog-redis-data:/data \
+    redis:7-alpine \
+    redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+
+ExecStop=/usr/bin/docker stop vlog-redis
+
+# Timeouts
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
