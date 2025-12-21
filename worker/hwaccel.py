@@ -18,12 +18,15 @@ Usage:
 """
 
 import asyncio
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class HWAccelType(Enum):
@@ -138,6 +141,15 @@ async def _run_command(cmd: List[str], timeout: float = 10.0) -> Tuple[int, str,
         return -1, "", f"Command not found: {cmd[0]}"
     except Exception as e:
         return -1, "", str(e)
+
+
+def _extract_ffmpeg_error(stderr: str) -> str:
+    """Extract the first meaningful error line from FFmpeg stderr output."""
+    for line in stderr.strip().split("\n"):
+        # Skip FFmpeg info lines that start with [
+        if line and not line.startswith("["):
+            return line.strip()
+    return "unknown error"
 
 
 async def _probe_ffmpeg_encoders() -> Dict[str, bool]:
@@ -351,8 +363,13 @@ async def _test_vaapi_encoder(encoder_name: str, device_path: str) -> bool:
         "-",
     ]
 
-    returncode, _, _ = await _run_command(cmd, timeout=15.0)
-    return returncode == 0
+    returncode, _, stderr = await _run_command(cmd, timeout=15.0)
+    if returncode != 0:
+        logger.warning(
+            f"VAAPI encoder {encoder_name} test failed: {_extract_ffmpeg_error(stderr)}"
+        )
+        return False
+    return True
 
 
 async def _test_nvenc_encoder(encoder_name: str) -> bool:
@@ -376,8 +393,13 @@ async def _test_nvenc_encoder(encoder_name: str) -> bool:
         "-",
     ]
 
-    returncode, _, _ = await _run_command(cmd, timeout=15.0)
-    return returncode == 0
+    returncode, _, stderr = await _run_command(cmd, timeout=15.0)
+    if returncode != 0:
+        logger.warning(
+            f"NVENC encoder {encoder_name} test failed: {_extract_ffmpeg_error(stderr)}"
+        )
+        return False
+    return True
 
 
 async def detect_gpu_capabilities() -> Optional[GPUCapabilities]:
