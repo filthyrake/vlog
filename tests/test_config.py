@@ -80,6 +80,28 @@ class TestGetIntEnv:
             result = get_int_env("TEST_INT", 0)
             assert result == -5
 
+    def test_returns_default_on_empty_string(self, caplog):
+        """Should return default and log warning when value is empty string."""
+        from config import get_int_env
+
+        with mock.patch.dict(os.environ, {"TEST_INT": ""}):
+            with caplog.at_level(logging.WARNING):
+                result = get_int_env("TEST_INT", 42)
+                assert result == 42
+                assert "Invalid TEST_INT=''" in caplog.text
+
+    def test_no_warning_when_env_not_set_with_validation(self, caplog):
+        """Should not log warning when env is not set, even if default would fail validation."""
+        from config import get_int_env
+
+        # Default of 0 would fail min_val=1 validation, but since env is not set,
+        # we should return default without any warning
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with caplog.at_level(logging.WARNING):
+                result = get_int_env("NONEXISTENT_VAR", 0, min_val=1)
+                assert result == 0
+                assert caplog.text == ""  # No warning should be logged
+
 
 class TestGetFloatEnv:
     """Tests for get_float_env helper function."""
@@ -145,6 +167,56 @@ class TestGetFloatEnv:
         with mock.patch.dict(os.environ, {"TEST_FLOAT": "5.5"}):
             result = get_float_env("TEST_FLOAT", 1.0, min_val=0.1, max_val=10.0)
             assert result == 5.5
+
+    def test_returns_default_on_empty_string(self, caplog):
+        """Should return default and log warning when value is empty string."""
+        from config import get_float_env
+
+        with mock.patch.dict(os.environ, {"TEST_FLOAT": ""}):
+            with caplog.at_level(logging.WARNING):
+                result = get_float_env("TEST_FLOAT", 1.0)
+                assert result == 1.0
+                assert "Invalid TEST_FLOAT=''" in caplog.text
+
+    def test_no_warning_when_env_not_set_with_validation(self, caplog):
+        """Should not log warning when env is not set, even if default would fail validation."""
+        from config import get_float_env
+
+        # Default of 0.0 would fail min_val=1.0 validation, but since env is not set,
+        # we should return default without any warning
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with caplog.at_level(logging.WARNING):
+                result = get_float_env("NONEXISTENT_VAR", 0.0, min_val=1.0)
+                assert result == 0.0
+                assert caplog.text == ""  # No warning should be logged
+
+    def test_rejects_infinity(self, caplog):
+        """Should return default and log warning when value is infinity."""
+        from config import get_float_env
+
+        with mock.patch.dict(os.environ, {"TEST_FLOAT": "inf"}):
+            with caplog.at_level(logging.WARNING):
+                result = get_float_env("TEST_FLOAT", 1.0)
+                assert result == 1.0
+                assert "special float" in caplog.text
+
+        caplog.clear()
+
+        with mock.patch.dict(os.environ, {"TEST_FLOAT": "-inf"}):
+            with caplog.at_level(logging.WARNING):
+                result = get_float_env("TEST_FLOAT", 1.0)
+                assert result == 1.0
+                assert "special float" in caplog.text
+
+    def test_rejects_nan(self, caplog):
+        """Should return default and log warning when value is NaN."""
+        from config import get_float_env
+
+        with mock.patch.dict(os.environ, {"TEST_FLOAT": "nan"}):
+            with caplog.at_level(logging.WARNING):
+                result = get_float_env("TEST_FLOAT", 1.0)
+                assert result == 1.0
+                assert "special float" in caplog.text
 
 
 class TestPortValidation:

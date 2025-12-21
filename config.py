@@ -24,14 +24,18 @@ def get_int_env(
     Returns:
         Parsed integer value, or default if parsing fails or value is out of range
     """
-    value = os.getenv(name, str(default))
+    value = os.getenv(name)
+    if value is None:
+        # Environment variable not set; use default without validation
+        return default
+
     try:
         result = int(value)
     except ValueError:
         logger.warning(f"Invalid {name}='{value}', using default {default}")
         return default
 
-    # Range validation
+    # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
         logger.warning(
             f"{name}={result} is below minimum {min_val}, using default {default}"
@@ -63,14 +67,25 @@ def get_float_env(
     Returns:
         Parsed float value, or default if parsing fails or value is out of range
     """
-    value = os.getenv(name, str(default))
+    import math
+
+    value = os.getenv(name)
+    if value is None:
+        # Environment variable not set; use default without validation
+        return default
+
     try:
         result = float(value)
     except ValueError:
         logger.warning(f"Invalid {name}='{value}', using default {default}")
         return default
 
-    # Range validation
+    # Reject special float values (inf, -inf, nan)
+    if math.isinf(result) or math.isnan(result):
+        logger.warning(f"Invalid {name}='{value}' (special float), using default {default}")
+        return default
+
+    # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
         logger.warning(
             f"{name}={result} is below minimum {min_val}, using default {default}"
