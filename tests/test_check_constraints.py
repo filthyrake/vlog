@@ -45,8 +45,10 @@ class TestCheckConstraints:
             status="invalid_status"
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_videos_status" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_videos_thumbnail_source_valid_values(self, test_database):
@@ -76,8 +78,10 @@ class TestCheckConstraints:
             thumbnail_source="invalid_source"
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_videos_thumbnail_source" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_quality_progress_status_valid_values(self, test_database, sample_video):
@@ -91,7 +95,7 @@ class TestCheckConstraints:
         for status in valid_statuses:
             query = database.quality_progress.insert().values(
                 job_id=job_id,
-                quality=f"{status}-720p",
+                quality=f"{status[:2]}p",  # Keep quality short (e.g., "pep", "inp", etc.)
                 status=status
             )
             result = await test_database.execute(query)
@@ -110,8 +114,10 @@ class TestCheckConstraints:
             status="invalid_status"
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_quality_progress_status" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_transcriptions_status_valid_values(self, test_database, sample_video):
@@ -141,8 +147,10 @@ class TestCheckConstraints:
             status="invalid_status"
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_transcriptions_status" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_workers_status_valid_values(self, test_database):
@@ -167,8 +175,10 @@ class TestCheckConstraints:
             registered_at=sa.func.now()
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_workers_status" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_workers_worker_type_valid_values(self, test_database):
@@ -193,8 +203,10 @@ class TestCheckConstraints:
             registered_at=sa.func.now()
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_workers_worker_type" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_video_qualities_quality_valid_values(self, test_database, sample_video):
@@ -217,42 +229,58 @@ class TestCheckConstraints:
         """Test that invalid quality values are rejected."""
         query = database.video_qualities.insert().values(
             video_id=sample_video["id"],
-            quality="invalid_quality",
+            quality="invalid",  # Short enough to not trigger varchar length error
             width=1920,
             height=1080,
             bitrate=5000
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_video_qualities_quality" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_playback_sessions_quality_used_valid_values(self, test_database, sample_video, sample_viewer):
+    async def test_playback_sessions_quality_used_valid_values(self, test_database, sample_video):
         """Test that valid quality_used values are accepted (including NULL)."""
+        # Create a viewer for the tests
+        from api.database import viewers
+        viewer_id = await test_database.execute(
+            viewers.insert().values(session_id="test-viewer-session")
+        )
+        
         valid_qualities = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original", None]
         
         for quality in valid_qualities:
             query = database.playback_sessions.insert().values(
                 video_id=sample_video["id"],
-                viewer_id=sample_viewer["id"],
-                session_token=f"session-{quality or 'null'}",
+                viewer_id=viewer_id,
+                session_token=f"session-{quality or 'null'}-test",
                 quality_used=quality
             )
             result = await test_database.execute(query)
             assert result is not None
 
     @pytest.mark.asyncio
-    async def test_playback_sessions_quality_used_invalid_value(self, test_database, sample_video, sample_viewer):
+    async def test_playback_sessions_quality_used_invalid_value(self, test_database, sample_video):
         """Test that invalid quality_used values are rejected."""
-        query = database.playback_sessions.insert().values(
-            video_id=sample_video["id"],
-            viewer_id=sample_viewer["id"],
-            session_token="session-invalid",
-            quality_used="invalid_quality"
+        # Create a viewer for the tests
+        from api.database import viewers
+        viewer_id = await test_database.execute(
+            viewers.insert().values(session_id="test-viewer-invalid")
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        query = database.playback_sessions.insert().values(
+            video_id=sample_video["id"],
+            viewer_id=viewer_id,
+            session_token="session-invalid-quality",
+            quality_used="invalid"  # Short enough to not trigger varchar length error
+        )
+        
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_playback_sessions_quality_used" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
 
 class TestProgressPercentConstraints:
@@ -286,8 +314,10 @@ class TestProgressPercentConstraints:
             progress_percent=-1
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_transcoding_jobs_progress_percent_range" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_transcoding_jobs_progress_percent_above_100(self, test_database):
@@ -304,8 +334,10 @@ class TestProgressPercentConstraints:
             progress_percent=101
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_transcoding_jobs_progress_percent_range" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_quality_progress_progress_percent_valid_range(self, test_database, sample_video):
@@ -319,7 +351,8 @@ class TestProgressPercentConstraints:
         for percent in valid_percents:
             query = database.quality_progress.insert().values(
                 job_id=job_id,
-                quality=f"720p-{percent}",
+                quality=f"{percent}p",  # Use percent as quality name for uniqueness
+                status="pending",  # Required field
                 progress_percent=percent
             )
             result = await test_database.execute(query)
@@ -335,11 +368,14 @@ class TestProgressPercentConstraints:
         query = database.quality_progress.insert().values(
             job_id=job_id,
             quality="720p",
+            status="pending",  # Required field
             progress_percent=-1
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_quality_progress_percent_range" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_quality_progress_progress_percent_above_100(self, test_database, sample_video):
@@ -351,8 +387,12 @@ class TestProgressPercentConstraints:
         query = database.quality_progress.insert().values(
             job_id=job_id,
             quality="720p",
+            status="pending",  # Required field
             progress_percent=101
         )
         
-        with pytest.raises((IntegrityError, sa.exc.IntegrityError)):
+        with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_quality_progress_percent_range" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
+
