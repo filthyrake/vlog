@@ -290,6 +290,120 @@ async def cleanup_ffmpeg_process(process: asyncio.subprocess.Process, context: s
             print(f"  WARNING: {context} process did not terminate after kill")
 
 
+async def run_ffmpeg_with_progress(
+    cmd: List[str],
+    duration: float,
+    timeout: float,
+    progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
+    context: str = "FFmpeg",
+) -> Tuple[bool, Optional[str]]:
+    """
+    Run an FFmpeg command with timeout and progress tracking.
+
+    This is the shared implementation for both transcoding and remuxing operations.
+    It handles:
+    - Process spawning with progress output on stdout
+    - Progress parsing from FFmpeg's progress output format
+    - Timeout handling with graceful process termination
+    - Proper cleanup on any exit path
+
+    Args:
+        cmd: FFmpeg command as list of arguments
+        duration: Video duration in seconds (for progress calculation)
+        timeout: Maximum time to wait for FFmpeg to complete
+        progress_callback: Optional async callback for progress updates (0-100)
+        context: Description for logging (e.g., "FFmpeg", "FFmpeg remux")
+
+    Returns:
+        Tuple[bool, Optional[str]]: (success, error_message) where error_message
+        is None on success or contains the error details on failure.
+    """
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,  # Don't capture stderr - it fills pipe and blocks ffmpeg
+    )
+
+    last_progress_update = 0
+    start_time = asyncio.get_running_loop().time()
+    timed_out = False
+
+    async def read_progress():
+        """Read and parse ffmpeg progress output."""
+        nonlocal last_progress_update
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+
+            line_str = line.decode("utf-8", errors="ignore").strip()
+
+            # Parse time from progress output (format: out_time_ms=123456789)
+            if line_str.startswith("out_time_ms="):
+                try:
+                    time_ms = int(line_str.split("=")[1])
+                    current_seconds = time_ms / 1000000.0
+                    if duration > 0:
+                        progress = min(100, int(current_seconds / duration * 100))
+                        # Only update if progress changed significantly
+                        if progress > last_progress_update:
+                            last_progress_update = progress
+                            if progress_callback:
+                                await progress_callback(progress)
+                except (ValueError, IndexError):
+                    # Ignore malformed progress lines - continue reading ffmpeg output
+                    pass
+
+    async def drain_and_wait():
+        """Read all output and wait for process to complete."""
+        await read_progress()
+        await process.wait()
+
+    async def timeout_killer():
+        """Kill process after timeout."""
+        nonlocal timed_out
+        await asyncio.sleep(timeout)
+        timed_out = True
+        elapsed = asyncio.get_running_loop().time() - start_time
+        print(f"  TIMEOUT: {context} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass  # Process already terminated
+
+    # Run drain_and_wait with a timeout killer running concurrently
+    # The timeout_killer will kill the process if needed, which causes
+    # drain_and_wait to complete (stdout closes when process dies)
+    timeout_task = asyncio.create_task(timeout_killer())
+    try:
+        await drain_and_wait()
+    except Exception as e:
+        # Log unexpected exceptions before cleanup
+        print(f"  ERROR: Unexpected exception during {context}: {e}")
+        raise
+    finally:
+        # Cancel the timeout task
+        timeout_task.cancel()
+        try:
+            await timeout_task
+        except asyncio.CancelledError:
+            pass
+
+        # Ensure FFmpeg process is cleaned up on any exception or early exit
+        await cleanup_ffmpeg_process(process, context)
+
+    if timed_out:
+        elapsed = asyncio.get_running_loop().time() - start_time
+        return False, f"{context} timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
+
+    if process.returncode != 0:
+        error_msg = f"{context} exited with code {process.returncode}"
+        print(f"  ERROR: {error_msg}")
+        return False, error_msg
+
+    return True, None
+
+
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
@@ -783,89 +897,19 @@ async def transcode_quality_with_progress(
             str(output_dir / playlist_name),
         ]
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,  # Don't capture stderr - it fills pipe and blocks ffmpeg
+    # Use shared helper for running FFmpeg with progress and timeout
+    success, error_msg = await run_ffmpeg_with_progress(
+        cmd=cmd,
+        duration=duration,
+        timeout=timeout,
+        progress_callback=progress_callback,
+        context=f"FFmpeg transcode {name}",
     )
 
-    last_progress_update = 0
-    start_time = asyncio.get_running_loop().time()
-    timed_out = False
-
-    async def read_progress():
-        """Read and parse ffmpeg progress output."""
-        nonlocal last_progress_update
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-
-            line_str = line.decode("utf-8", errors="ignore").strip()
-
-            # Parse time from progress output (format: out_time_ms=123456789)
-            if line_str.startswith("out_time_ms="):
-                try:
-                    time_ms = int(line_str.split("=")[1])
-                    current_seconds = time_ms / 1000000.0
-                    if duration > 0:
-                        progress = min(100, int(current_seconds / duration * 100))
-                        # Only update if progress changed significantly
-                        if progress > last_progress_update:
-                            last_progress_update = progress
-                            if progress_callback:
-                                await progress_callback(progress)
-                except (ValueError, IndexError):
-                    pass
-
-    async def drain_and_wait():
-        """Read all output and wait for process to complete."""
-        await read_progress()
-        await process.wait()
-
-    async def timeout_killer():
-        """Kill process after timeout, then drain pipes to prevent deadlock."""
-        nonlocal timed_out
-        await asyncio.sleep(timeout)
-        timed_out = True
-        elapsed = asyncio.get_running_loop().time() - start_time
-        print(f"  TIMEOUT: ffmpeg exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass  # Process already terminated
-
-    # Run drain_and_wait with a timeout killer running concurrently
-    # The timeout_killer will kill the process if needed, which causes
-    # drain_and_wait to complete (stdout closes when process dies)
-    timeout_task = asyncio.create_task(timeout_killer())
-    try:
-        await drain_and_wait()
-    except Exception as e:
-        # Log unexpected exceptions before cleanup
-        print(f"  ERROR: Unexpected exception during transcoding: {e}")
-        raise
-    finally:
-        # Cancel the timeout task
-        timeout_task.cancel()
-        try:
-            await timeout_task
-        except asyncio.CancelledError:
-            pass
-
-        # Ensure FFmpeg process is cleaned up on any exception or early exit
-        await cleanup_ffmpeg_process(process, "FFmpeg")
-
-    if timed_out:
-        elapsed = asyncio.get_running_loop().time() - start_time
-        return False, f"Transcoding timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
-
-    if process.returncode != 0:
-        error_msg = f"FFmpeg exited with code {process.returncode}"
+    if not success and error_msg:
         print(f"  ERROR: Failed to transcode {name}: {error_msg}")
-        return False, error_msg
 
-    return True, None
+    return success, error_msg
 
 
 async def create_original_quality(
@@ -913,79 +957,18 @@ async def create_original_quality(
         str(output_dir / playlist_name),
     ]
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,  # Don't capture stderr - it fills pipe and blocks ffmpeg
+    # Use shared helper for running FFmpeg with progress and timeout
+    success, error_msg = await run_ffmpeg_with_progress(
+        cmd=cmd,
+        duration=duration,
+        timeout=timeout,
+        progress_callback=progress_callback,
+        context="FFmpeg remux original",
     )
 
-    last_progress_update = 0
-    start_time = asyncio.get_running_loop().time()
-    timed_out = False
-
-    async def read_progress():
-        nonlocal last_progress_update
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            line_str = line.decode("utf-8", errors="ignore").strip()
-            if line_str.startswith("out_time_ms="):
-                try:
-                    time_ms = int(line_str.split("=")[1])
-                    current_seconds = time_ms / 1000000.0
-                    if duration > 0:
-                        progress = min(100, int(current_seconds / duration * 100))
-                        if progress > last_progress_update:
-                            last_progress_update = progress
-                            if progress_callback:
-                                await progress_callback(progress)
-                except (ValueError, IndexError):
-                    pass
-
-    async def drain_and_wait():
-        """Read all output and wait for process to complete."""
-        await read_progress()
-        await process.wait()
-
-    async def timeout_killer():
-        """Kill process after timeout, then drain pipes to prevent deadlock."""
-        nonlocal timed_out
-        await asyncio.sleep(timeout)
-        timed_out = True
-        elapsed = asyncio.get_running_loop().time() - start_time
-        print(f"  TIMEOUT: ffmpeg remux exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass  # Process already terminated
-
-    # Run drain_and_wait with a timeout killer running concurrently
-    timeout_task = asyncio.create_task(timeout_killer())
-    try:
-        await drain_and_wait()
-    except Exception as e:
-        # Log unexpected exceptions before cleanup
-        print(f"  ERROR: Unexpected exception during remux: {e}")
-        raise
-    finally:
-        # Cancel the timeout task
-        timeout_task.cancel()
-        try:
-            await timeout_task
-        except asyncio.CancelledError:
-            pass
-
-        # Ensure FFmpeg process is cleaned up on any exception or early exit
-        await cleanup_ffmpeg_process(process, "FFmpeg remux")
-
-    if timed_out:
-        elapsed = asyncio.get_running_loop().time() - start_time
-        return False, f"Remux timed out after {elapsed:.0f} seconds", None
-
-    if process.returncode != 0:
-        error_msg = f"FFmpeg remux exited with code {process.returncode}"
-        print(f"  ERROR: Failed to create original quality: {error_msg}")
+    if not success:
+        if error_msg:
+            print(f"  ERROR: Failed to create original quality: {error_msg}")
         return False, error_msg, None
 
     # Get the actual bitrate from the source for master playlist
