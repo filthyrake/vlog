@@ -85,8 +85,8 @@
 
                     try {
                         const [catRes, videosRes] = await Promise.all([
-                            fetch(`/api/categories/${slug}`),
-                            fetch(`/api/videos?category=${slug}`)
+                            VLogUtils.fetchWithTimeout(`/api/categories/${slug}`),
+                            VLogUtils.fetchWithTimeout(`/api/videos?category=${slug}`)
                         ]);
 
                         if (!catRes.ok) {

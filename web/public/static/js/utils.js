@@ -3,6 +3,38 @@
  */
 window.VLogUtils = {
     /**
+     * Default timeout for API requests in milliseconds
+     */
+    DEFAULT_TIMEOUT: 10000,
+
+    /**
+     * Fetch with timeout support using AbortController
+     * @param {string} url - URL to fetch
+     * @param {Object} options - Fetch options (method, headers, body, etc.)
+     * @param {number} timeoutMs - Timeout in milliseconds (default: 10000)
+     * @returns {Promise<Response>} Fetch response
+     * @throws {Error} Throws 'Request timed out' on timeout
+     */
+    async fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            return response;
+        } catch (e) {
+            clearTimeout(timeoutId);
+            if (e.name === 'AbortError') {
+                throw new Error('Request timed out');
+            }
+            throw e;
+        }
+    },
+
+    /**
      * Format seconds into human-readable duration (H:MM:SS or M:SS)
      * @param {number} seconds - Duration in seconds
      * @param {string} fallback - Return value when seconds is falsy (default: '0:00')

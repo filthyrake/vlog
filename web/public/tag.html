@@ -93,8 +93,8 @@
 
                     try {
                         const [tagRes, videosRes] = await Promise.all([
-                            fetch(`/api/tags/${slug}`),
-                            fetch(`/api/videos?tag=${slug}`)
+                            VLogUtils.fetchWithTimeout(`/api/tags/${slug}`),
+                            VLogUtils.fetchWithTimeout(`/api/videos?tag=${slug}`)
                         ]);
 
                         if (!tagRes.ok) {

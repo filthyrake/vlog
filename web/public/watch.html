@@ -772,7 +772,7 @@
 
             async startSession(quality) {
                 try {
-                    const res = await fetch('/api/analytics/session', {
+                    const res = await VLogUtils.fetchWithTimeout('/api/analytics/session', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
@@ -780,7 +780,7 @@
                             video_id: this.videoId,
                             quality: quality
                         })
-                    });
+                    }, 5000);
                     const data = await res.json();
                     this.sessionToken = data.session_token;
                     this.startHeartbeat();
@@ -797,7 +797,7 @@
                 if (!this.sessionToken) return;
 
                 try {
-                    await fetch('/api/analytics/heartbeat', {
+                    await VLogUtils.fetchWithTimeout('/api/analytics/heartbeat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
@@ -807,7 +807,7 @@
                             quality: this.getCurrentQuality(),
                             playing: !this.player.paused()
                         })
-                    });
+                    }, 5000);
                 } catch (e) {
                     console.error('Heartbeat failed:', e);
                 }
@@ -842,12 +842,12 @@
                     if (navigator.sendBeacon) {
                         navigator.sendBeacon('/api/analytics/end', new Blob([data], { type: 'application/json' }));
                     } else {
-                        await fetch('/api/analytics/end', {
+                        await VLogUtils.fetchWithTimeout('/api/analytics/end', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             credentials: 'include',
                             body: data
-                        });
+                        }, 5000);
                     }
                 } catch (e) {
                     console.error('Failed to end session:', e);
@@ -879,7 +879,7 @@
                     }
 
                     try {
-                        const res = await fetch(`/api/videos/${slug}`);
+                        const res = await VLogUtils.fetchWithTimeout(`/api/videos/${slug}`);
                         if (!res.ok) {
                             throw new Error('Video not found');
                         }

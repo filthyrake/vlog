@@ -365,6 +365,103 @@ class TestVideoManagementHTTP:
         assert response.status_code == 404
 
 
+class TestVideoPublishHTTP:
+    """HTTP-level tests for video publish/unpublish endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_unpublish_video_success(self, admin_client, sample_video):
+        """Test unpublishing a published video sets published_at to null."""
+        # sample_video is published by default
+        response = admin_client.post(f"/api/videos/{sample_video['id']}/unpublish")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["published"] is False
+
+        # Verify video is now unpublished
+        get_response = admin_client.get(f"/api/videos/{sample_video['id']}")
+        assert get_response.status_code == 200
+        video_data = get_response.json()
+        assert video_data["published_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_unpublish_already_unpublished_video(self, admin_client, test_database, sample_category):
+        """Test unpublishing an already unpublished video is idempotent."""
+        # Create a video without published_at
+        now = datetime.now(timezone.utc)
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Unpublished Video",
+                slug="unpublished-video",
+                description="A video that was never published",
+                category_id=sample_category["id"],
+                duration=60.0,
+                source_width=1920,
+                source_height=1080,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=None,  # Not published
+            )
+        )
+
+        response = admin_client.post(f"/api/videos/{video_id}/unpublish")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["published"] is False
+
+    def test_unpublish_video_not_found(self, admin_client):
+        """Test unpublishing a non-existent video returns 404."""
+        response = admin_client.post("/api/videos/99999/unpublish")
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_unpublish_deleted_video_fails(self, admin_client, sample_deleted_video):
+        """Test unpublishing a soft-deleted video returns 400."""
+        response = admin_client.post(f"/api/videos/{sample_deleted_video['id']}/unpublish")
+        assert response.status_code == 400
+        assert "deleted" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_publish_then_unpublish_video(self, admin_client, test_database, sample_category):
+        """Test full publish/unpublish cycle."""
+        # Create an unpublished video
+        now = datetime.now(timezone.utc)
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Cycle Test Video",
+                slug="cycle-test-video",
+                description="Testing publish/unpublish cycle",
+                category_id=sample_category["id"],
+                duration=90.0,
+                source_width=1920,
+                source_height=1080,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=None,  # Start unpublished
+            )
+        )
+
+        # Publish the video
+        pub_response = admin_client.post(f"/api/videos/{video_id}/publish")
+        assert pub_response.status_code == 200
+        assert pub_response.json()["published"] is True
+
+        # Verify it's published
+        get_response = admin_client.get(f"/api/videos/{video_id}")
+        assert get_response.json()["published_at"] is not None
+
+        # Unpublish the video
+        unpub_response = admin_client.post(f"/api/videos/{video_id}/unpublish")
+        assert unpub_response.status_code == 200
+        assert unpub_response.json()["published"] is False
+
+        # Verify it's unpublished
+        get_response = admin_client.get(f"/api/videos/{video_id}")
+        assert get_response.json()["published_at"] is None
+
+
 class TestVideoRestoreHTTP:
     """HTTP-level tests for video restore endpoint."""
 
@@ -656,7 +753,6 @@ class TestAnalyticsAdminHTTP:
         assert "unique_viewers" in data
         assert "total_watch_time_hours" in data
 
-    @pytest.mark.skip(reason="Raw SQL query bug in analytics endpoint - uses sa.text with params incorrectly")
     def test_analytics_videos(self, admin_client):
         """Test analytics videos list endpoint."""
         response = admin_client.get("/api/analytics/videos")
@@ -665,7 +761,6 @@ class TestAnalyticsAdminHTTP:
         assert "videos" in data
         assert "total_count" in data
 
-    @pytest.mark.skip(reason="Raw SQL query bug in analytics endpoint - uses sa.text with params incorrectly")
     @pytest.mark.asyncio
     async def test_analytics_video_detail(self, admin_client, sample_video):
         """Test analytics video detail endpoint."""
@@ -681,7 +776,6 @@ class TestAnalyticsAdminHTTP:
         response = admin_client.get("/api/analytics/videos/99999")
         assert response.status_code == 404
 
-    @pytest.mark.skip(reason="Raw SQL query bug in analytics endpoint - uses sa.text with params incorrectly")
     def test_analytics_trends(self, admin_client):
         """Test analytics trends endpoint."""
         response = admin_client.get("/api/analytics/trends")
