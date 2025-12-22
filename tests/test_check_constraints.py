@@ -91,11 +91,12 @@ class TestCheckConstraints:
         job_id = await test_database.execute(job_query)
         
         valid_statuses = ["pending", "in_progress", "completed", "failed", "skipped"]
+        valid_qualities = ["720p", "1080p", "1440p", "2160p", "360p"]  # Use valid quality values
         
-        for status in valid_statuses:
+        for i, status in enumerate(valid_statuses):
             query = database.quality_progress.insert().values(
                 job_id=job_id,
-                quality=f"{status[:2]}p",  # Keep quality short (e.g., "pep", "inp", etc.)
+                quality=valid_qualities[i],  # Use a different valid quality for each status
                 status=status
             )
             result = await test_database.execute(query)
@@ -347,11 +348,12 @@ class TestProgressPercentConstraints:
         job_id = await test_database.execute(job_query)
         
         valid_percents = [0, 25, 50, 75, 100]
+        valid_qualities = ["720p", "1080p", "1440p", "2160p", "360p"]  # Use valid quality values
         
-        for percent in valid_percents:
+        for i, percent in enumerate(valid_percents):
             query = database.quality_progress.insert().values(
                 job_id=job_id,
-                quality=f"{percent}p",  # Use percent as quality name for uniqueness
+                quality=valid_qualities[i],  # Use a different valid quality for each percent
                 status="pending",  # Required field
                 progress_percent=percent
             )
