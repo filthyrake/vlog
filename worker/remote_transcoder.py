@@ -262,18 +262,15 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     try:
                         # Define progress callback to extend claim during upload (issue #266)
                         async def upload_progress_callback_original(bytes_sent: int, total_bytes: int):
-                            try:
-                                quality_progress_list[0] = {
-                                    "name": "original",
-                                    "status": "uploading",
-                                    "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
-                                }
-                                await client.update_progress(job_id, "upload", 90, quality_progress_list)
-                            except WorkerAPIError as e:
-                                if e.status_code == 409:
-                                    # Claim expired - stop upload
-                                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                                print(f"      Upload progress update failed: {e.message}")
+                            quality_progress_list[0] = {
+                                "name": "original",
+                                "status": "uploading",
+                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                            }
+                            # Use wrapper to convert 409 to ClaimExpiredError (will interrupt upload)
+                            await check_claim_expiration(
+                                client.update_progress(job_id, "upload", 90, quality_progress_list)
+                            )
 
                         await check_claim_expiration(
                             client.upload_quality(
@@ -391,12 +388,13 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     }
                     try:
                         overall = 15 + int(avg_progress * 0.75)
-                        await client.update_progress(job_id, "transcode", overall, quality_progress_list)
-                    except WorkerAPIError as e:
-                        if e.status_code == 409:
-                            print(f"      {qname}: Claim expired - aborting job")
-                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                        print(f"      {qname}: Progress update failed: {e.message}")
+                        # Use wrapper to convert 409 to ClaimExpiredError (will abort job)
+                        await check_claim_expiration(
+                            client.update_progress(job_id, "transcode", overall, quality_progress_list)
+                        )
+                    except ClaimExpiredError:
+                        print(f"      {qname}: Claim expired - aborting job")
+                        raise
                     except Exception as e:
                         print(f"      {qname}: Progress update failed: {e}")
 
@@ -460,18 +458,16 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     qidx: int = quality_idx,
                     qname: str = quality_name,
                 ):
-                    try:
-                        async with progress_list_lock:
-                            quality_progress_list[qidx] = {
-                                "name": qname,
-                                "status": "uploading",
-                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
-                            }
-                        await client.update_progress(job_id, "upload", 90, quality_progress_list)
-                    except WorkerAPIError as e:
-                        if e.status_code == 409:
-                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                        print(f"      {qname}: Upload progress failed: {e.message}")
+                    async with progress_list_lock:
+                        quality_progress_list[qidx] = {
+                            "name": qname,
+                            "status": "uploading",
+                            "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                        }
+                    # Use wrapper to convert 409 to ClaimExpiredError (will interrupt upload)
+                    await check_claim_expiration(
+                        client.update_progress(job_id, "upload", 90, quality_progress_list)
+                    )
 
                 await check_claim_expiration(
                     client.upload_quality(video_id, quality_name, output_dir, progress_callback=upload_progress_callback)
