@@ -86,6 +86,31 @@ class ClaimExpiredError(Exception):
     pass
 
 
+async def check_claim_expiration(coro):
+    """
+    Wrapper to check for claim expiration (409 status) from API operations.
+
+    Wraps any async API call and converts 409 WorkerAPIError responses into
+    ClaimExpiredError, allowing consistent handling across all job operations.
+
+    Args:
+        coro: Coroutine representing an API call to execute
+
+    Returns:
+        Result from the coroutine if successful
+
+    Raises:
+        ClaimExpiredError: If the API returns 409 (claim expired)
+        WorkerAPIError: For other API errors
+    """
+    try:
+        return await coro
+    except WorkerAPIError as e:
+        if e.status_code == 409:
+            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
+        raise
+
+
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     global shutdown_requested
@@ -141,13 +166,13 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     try:
         # Download source file
         print("  Downloading source file...")
-        await client.update_progress(job_id, "download", 0)
-        await client.download_source(video_id, source_path)
-        await client.update_progress(job_id, "download", 5)
+        await check_claim_expiration(client.update_progress(job_id, "download", 0))
+        await check_claim_expiration(client.download_source(video_id, source_path))
+        await check_claim_expiration(client.update_progress(job_id, "download", 5))
 
         # Probe video
         print("  Probing video info...")
-        await client.update_progress(job_id, "probe", 5)
+        await check_claim_expiration(client.update_progress(job_id, "probe", 5))
         info = await get_video_info(source_path)
         duration = info["duration"]
         source_width = info["width"]
@@ -155,18 +180,20 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         print(f"    Source: {source_width}x{source_height}, {duration:.1f}s, codec={info['codec']}")
 
         # Update video metadata immediately after probing to prevent data loss if worker crashes
-        await client.update_progress(
-            job_id,
-            "probe",
-            8,
-            duration=duration,
-            source_width=source_width,
-            source_height=source_height,
+        await check_claim_expiration(
+            client.update_progress(
+                job_id,
+                "probe",
+                8,
+                duration=duration,
+                source_width=source_width,
+                source_height=source_height,
+            )
         )
 
         # Generate thumbnail
         print("  Generating thumbnail...")
-        await client.update_progress(job_id, "thumbnail", 10)
+        await check_claim_expiration(client.update_progress(job_id, "thumbnail", 10))
         thumb_path = output_dir / "thumbnail.jpg"
         thumbnail_time = min(5.0, duration / 4)
         await generate_thumbnail(source_path, thumb_path, thumbnail_time)
@@ -184,7 +211,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
         quality_names = [q["name"] for q in qualities]
         print(f"  Transcoding to: original + {quality_names}")
-        await client.update_progress(job_id, "transcode", 15)
+        await check_claim_expiration(client.update_progress(job_id, "transcode", 15))
 
         successful_qualities: List[dict] = []
         failed_qualities: List[str] = []
@@ -204,7 +231,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         else:
             print("    original: Remuxing...")
             quality_progress_list[0] = {"name": "original", "status": "in_progress", "progress": 0}
-            await client.update_progress(job_id, "transcode", 15, quality_progress_list)
+            await check_claim_expiration(
+                client.update_progress(job_id, "transcode", 15, quality_progress_list)
+            )
 
             success, error, quality_info = await create_original_quality(source_path, output_dir, duration, None)
             if success:
@@ -233,21 +262,27 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     try:
                         # Define progress callback to extend claim during upload (issue #266)
                         async def upload_progress_callback_original(bytes_sent: int, total_bytes: int):
+                            quality_progress_list[0] = {
+                                "name": "original",
+                                "status": "uploading",
+                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                            }
                             try:
-                                quality_progress_list[0] = {
-                                    "name": "original",
-                                    "status": "uploading",
-                                    "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
-                                }
-                                await client.update_progress(job_id, "upload", 90, quality_progress_list)
-                            except WorkerAPIError as e:
-                                if e.status_code == 409:
-                                    # Claim expired - stop upload
-                                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                                print(f"      Upload progress update failed: {e.message}")
+                                # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
+                                await check_claim_expiration(
+                                    client.update_progress(job_id, "upload", 90, quality_progress_list)
+                                )
+                            except ClaimExpiredError:
+                                # Propagate claim expiration so the upload is interrupted
+                                raise
+                            except Exception as e:
+                                # Other errors are logged but don't abort the upload
+                                print(f"      Upload progress update failed: {e}")
 
-                        await client.upload_quality(
-                            video_id, "original", output_dir, progress_callback=upload_progress_callback_original
+                        await check_claim_expiration(
+                            client.upload_quality(
+                                video_id, "original", output_dir, progress_callback=upload_progress_callback_original
+                            )
                         )
                         quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
                         print("    original: Uploaded")
@@ -360,13 +395,16 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     }
                     try:
                         overall = 15 + int(avg_progress * 0.75)
-                        await client.update_progress(job_id, "transcode", overall, quality_progress_list)
-                    except WorkerAPIError as e:
-                        if e.status_code == 409:
-                            print(f"      {qname}: Claim expired - aborting job")
-                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                        print(f"      {qname}: Progress update failed: {e.message}")
+                        # Use wrapper to detect claim expiration - ClaimExpiredError will abort job
+                        await check_claim_expiration(
+                            client.update_progress(job_id, "transcode", overall, quality_progress_list)
+                        )
+                    except ClaimExpiredError:
+                        # Log claim expiration before propagating to abort job
+                        print(f"      {qname}: Claim expired - aborting job")
+                        raise
                     except Exception as e:
+                        # Other errors are logged but don't abort the job
                         print(f"      {qname}: Progress update failed: {e}")
 
             success, error = await transcode_quality_with_progress(
@@ -429,20 +467,27 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     qidx: int = quality_idx,
                     qname: str = quality_name,
                 ):
+                    async with progress_list_lock:
+                        quality_progress_list[qidx] = {
+                            "name": qname,
+                            "status": "uploading",
+                            "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
+                        }
                     try:
-                        async with progress_list_lock:
-                            quality_progress_list[qidx] = {
-                                "name": qname,
-                                "status": "uploading",
-                                "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
-                            }
-                        await client.update_progress(job_id, "upload", 90, quality_progress_list)
-                    except WorkerAPIError as e:
-                        if e.status_code == 409:
-                            raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
-                        print(f"      {qname}: Upload progress failed: {e.message}")
+                        # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
+                        await check_claim_expiration(
+                            client.update_progress(job_id, "upload", 90, quality_progress_list)
+                        )
+                    except ClaimExpiredError:
+                        # Propagate claim expiration so the upload is interrupted
+                        raise
+                    except Exception as e:
+                        # Other errors are logged but don't abort the upload
+                        print(f"      {qname}: Upload progress update failed: {e}")
 
-                await client.upload_quality(video_id, quality_name, output_dir, progress_callback=upload_progress_callback)
+                await check_claim_expiration(
+                    client.upload_quality(video_id, quality_name, output_dir, progress_callback=upload_progress_callback)
+                )
                 async with progress_list_lock:
                     quality_progress_list[quality_idx] = {
                         "name": quality_name,
@@ -524,12 +569,14 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             print("  Selective retranscode - keeping existing master playlist")
             # Still upload thumbnail if it was regenerated
             print("  Uploading thumbnail...")
-            await client.update_progress(job_id, "upload", 98, quality_progress_list)
-            await client.upload_finalize(video_id, output_dir, skip_master=True)
+            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
+            await check_claim_expiration(client.upload_finalize(video_id, output_dir, skip_master=True))
         else:
             # Full transcode - generate and upload new master playlist
             print("  Generating master playlist...")
-            await client.update_progress(job_id, "master_playlist", 95, quality_progress_list)
+            await check_claim_expiration(
+                client.update_progress(job_id, "master_playlist", 95, quality_progress_list)
+            )
 
             # Convert successful_qualities to format expected by generate_master_playlist
             master_qualities = []
@@ -560,8 +607,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             # Upload finalize files (master.m3u8 + thumbnail.jpg)
             # Quality files were already uploaded incrementally after each transcode
             print("  Uploading master playlist and thumbnail...")
-            await client.update_progress(job_id, "upload", 98, quality_progress_list)
-            await client.upload_finalize(video_id, output_dir)
+            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
+            await check_claim_expiration(client.upload_finalize(video_id, output_dir))
         print("  Finalize files uploaded")
 
         # Complete job with retry logic to ensure server-side completion is verified
@@ -569,19 +616,21 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         print("  Marking job complete...")
         for attempt in range(COMPLETE_JOB_MAX_RETRIES):
             try:
-                await client.complete_job(
-                    job_id,
-                    successful_qualities,
-                    duration=duration,
-                    source_width=source_width,
-                    source_height=source_height,
+                await check_claim_expiration(
+                    client.complete_job(
+                        job_id,
+                        successful_qualities,
+                        duration=duration,
+                        source_width=source_width,
+                        source_height=source_height,
+                    )
                 )
                 completion_verified = True
                 break
+            except ClaimExpiredError:
+                # Claim expired - don't retry, job may have been reassigned
+                raise
             except Exception as e:
-                # Check for claim expiration (409) - don't retry, job may have been reassigned
-                if isinstance(e, WorkerAPIError) and e.status_code == 409:
-                    raise ClaimExpiredError(CLAIM_EXPIRED_ERROR)
                 # Retry on other errors
                 if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
                     error_msg = e.message if isinstance(e, WorkerAPIError) else str(e)
@@ -608,19 +657,14 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         return False
 
     except WorkerAPIError as e:
-        # Handle claim expiration from API responses specially - don't retry
-        if e.status_code == 409:
-            print(f"  {CLAIM_EXPIRED_ERROR}")
-            # Don't report failure - the job may already be claimed by another worker
-            # Safe to cleanup since we don't own this job anymore
-            completion_verified = True  # Mark for cleanup
-            return False
-
         # Other API errors - don't cleanup, files may be needed for manual recovery
         error_msg = f"API error: {e.message}"[:500]
         print(f"  Error: {error_msg}")
         try:
-            await client.fail_job(job_id, error_msg, retry=True)
+            await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
+        except ClaimExpiredError:
+            # Claim expired while trying to report failure - ignore since job is lost anyway
+            print("  Claim expired while reporting error (job may have been reassigned)")
         except Exception as fail_e:
             print(f"  Failed to report error: {fail_e}")
         return False
@@ -630,7 +674,10 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         error_msg = str(e)[:500]
         print(f"  Error: {error_msg}")
         try:
-            await client.fail_job(job_id, error_msg, retry=True)
+            await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
+        except ClaimExpiredError:
+            # Claim expired while trying to report failure - ignore since job is lost anyway
+            print("  Claim expired while reporting error (job may have been reassigned)")
         except Exception as fail_e:
             print(f"  Failed to report error: {fail_e}")
         return False

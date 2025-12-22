@@ -1086,7 +1086,17 @@ async def complete_job(
     if job["worker_id"] != worker["worker_id"]:
         raise HTTPException(status_code=403, detail="Not your job")
 
+    # Check if claim has expired
     now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(
+                status_code=409,
+                detail="Claim expired - job may have been reassigned",
+            )
 
     async def do_complete_transaction():
         """Execute the completion transaction - wrapped with retry logic."""
@@ -1187,8 +1197,19 @@ async def fail_job(
     if job["worker_id"] != worker["worker_id"]:
         raise HTTPException(status_code=403, detail="Not your job")
 
-    will_retry = data.retry and job["attempt_number"] < job["max_attempts"]
+    # Check if claim has expired
     now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(
+                status_code=409,
+                detail="Claim expired - job may have been reassigned",
+            )
+
+    will_retry = data.retry and job["attempt_number"] < job["max_attempts"]
 
     async def do_fail_transaction():
         """Execute the failure transaction - wrapped with retry logic."""
@@ -1291,6 +1312,18 @@ async def download_source(
     if not job:
         raise HTTPException(status_code=403, detail="Not your job or job not found")
 
+    # Check if claim has expired
+    now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(
+                status_code=409,
+                detail="Claim expired - job may have been reassigned",
+            )
+
     # Find source file
     source_file: Optional[Path] = None
     for ext in SUPPORTED_VIDEO_EXTENSIONS:
@@ -1338,6 +1371,18 @@ async def upload_quality(
     )
     if not job:
         raise HTTPException(status_code=403, detail="Not your job or job not found")
+
+    # Check if claim has expired
+    now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(
+                status_code=409,
+                detail="Claim expired - job may have been reassigned",
+            )
 
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not video:
@@ -1413,6 +1458,18 @@ async def upload_finalize(
     )
     if not job:
         raise HTTPException(status_code=403, detail="Not your job or job not found")
+
+    # Check if claim has expired
+    now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(
+                status_code=409,
+                detail="Claim expired - job may have been reassigned",
+            )
 
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not video:
