@@ -103,9 +103,9 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     # Python settings
     PYTHONUNBUFFERED=1
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python3 -c "import sys; sys.exit(0)"
+# Health check - verify worker is functional (API connectivity, FFmpeg, GPU, etc.)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python3 -m worker.health_check
 
 # Run the remote transcoder
 CMD ["python3", "-m", "worker.remote_transcoder"]

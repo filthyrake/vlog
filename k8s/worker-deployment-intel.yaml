@@ -89,25 +89,27 @@ spec:
         - name: dri
           mountPath: /dev/dri
 
-        # Liveness probe
+        # Liveness probe - worker is alive and functional
+        # Checks: Worker API connectivity, FFmpeg availability, GPU availability
         livenessProbe:
           exec:
             command:
             - python3
-            - -c
-            - "import sys; sys.exit(0)"
+            - -m
+            - worker.health_check
           initialDelaySeconds: 30
           periodSeconds: 60
           timeoutSeconds: 10
           failureThreshold: 3
 
-        # Readiness probe
+        # Readiness probe - worker can accept jobs
+        # Same checks as liveness but more frequent
         readinessProbe:
           exec:
             command:
             - python3
-            - -c
-            - "import sys; sys.exit(0)"
+            - -m
+            - worker.health_check
           initialDelaySeconds: 10
           periodSeconds: 30
           timeoutSeconds: 10
