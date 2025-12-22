@@ -117,7 +117,7 @@
 
                 async loadCategories() {
                     try {
-                        const res = await fetch('/api/categories');
+                        const res = await VLogUtils.fetchWithTimeout('/api/categories', {}, 10000);
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
@@ -138,7 +138,7 @@
                         if (this.searchQuery) {
                             url += `search=${encodeURIComponent(this.searchQuery)}&`;
                         }
-                        const res = await fetch(url);
+                        const res = await VLogUtils.fetchWithTimeout(url, {}, 10000);
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }

@@ -6,6 +6,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none';">
     <title>VLog Admin</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
+    <script src="/static/js/utils.js"></script>
     <script defer src="/static/vendor/alpine.min.js"></script>
     <style>
         [x-cloak] { display: none !important; }
@@ -1302,11 +1303,11 @@
                 // Helper function to make authenticated API requests
                 // Note: Authentication is now via HTTP-only cookies (set by /api/auth/login)
                 // Cookies are sent automatically with same-origin requests
-                async apiFetch(url, options = {}) {
-                    const response = await fetch(url, {
+                async apiFetch(url, options = {}, timeoutMs = 30000) {
+                    const response = await VLogUtils.fetchWithTimeout(url, {
                         ...options,
                         credentials: 'same-origin',  // Ensure cookies are sent
-                    });
+                    }, timeoutMs);
 
                     // Handle auth errors
                     if (response.status === 401 || response.status === 403) {
@@ -1327,7 +1328,7 @@
                     try {
                         // Authenticate via the login endpoint
                         // Server will set an HTTP-only cookie on success
-                        const response = await fetch('/api/auth/login', {
+                        const response = await VLogUtils.fetchWithTimeout('/api/auth/login', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             credentials: 'same-origin',
@@ -1365,7 +1366,7 @@
                 // Log out and clear session
                 async logout() {
                     try {
-                        await fetch('/api/auth/logout', {
+                        await VLogUtils.fetchWithTimeout('/api/auth/logout', {
                             method: 'POST',
                             credentials: 'same-origin'
                         });
@@ -1380,7 +1381,7 @@
                 // Check if authentication is required
                 async checkAuth() {
                     try {
-                        const response = await fetch('/api/auth/check', {
+                        const response = await VLogUtils.fetchWithTimeout('/api/auth/check', {
                             credentials: 'same-origin'
                         });
 
