@@ -267,10 +267,17 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                                 "status": "uploading",
                                 "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
                             }
-                            # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
-                            await check_claim_expiration(
-                                client.update_progress(job_id, "upload", 90, quality_progress_list)
-                            )
+                            try:
+                                # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
+                                await check_claim_expiration(
+                                    client.update_progress(job_id, "upload", 90, quality_progress_list)
+                                )
+                            except ClaimExpiredError:
+                                # Propagate claim expiration so the upload is interrupted
+                                raise
+                            except Exception as e:
+                                # Other errors are logged but don't abort the upload
+                                print(f"      Upload progress update failed: {e}")
 
                         await check_claim_expiration(
                             client.upload_quality(
@@ -466,10 +473,17 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             "status": "uploading",
                             "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
                         }
-                    # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
-                    await check_claim_expiration(
-                        client.update_progress(job_id, "upload", 90, quality_progress_list)
-                    )
+                    try:
+                        # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
+                        await check_claim_expiration(
+                            client.update_progress(job_id, "upload", 90, quality_progress_list)
+                        )
+                    except ClaimExpiredError:
+                        # Propagate claim expiration so the upload is interrupted
+                        raise
+                    except Exception as e:
+                        # Other errors are logged but don't abort the upload
+                        print(f"      {qname}: Upload progress update failed: {e}")
 
                 await check_claim_expiration(
                     client.upload_quality(video_id, quality_name, output_dir, progress_callback=upload_progress_callback)
