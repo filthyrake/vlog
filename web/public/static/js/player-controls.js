@@ -594,7 +594,8 @@ class VLogPlayerControls {
         if (this.currentQualityIndex === -1) {
             this.qualityLabel.textContent = 'Auto';
         } else if (this.qualities && this.qualities[this.currentQualityIndex]) {
-            this.qualityLabel.textContent = this.qualities[this.currentQualityIndex].height + 'p';
+            const level = this.qualities[this.currentQualityIndex];
+            this.qualityLabel.textContent = level.isOriginal ? 'Original' : level.height + 'p';
         }
     }
 
@@ -616,7 +617,7 @@ class VLogPlayerControls {
         this.qualities.forEach((level, index) => {
             const option = document.createElement('button');
             option.className = 'quality-option' + (index === this.currentQualityIndex ? ' active' : '');
-            option.textContent = level.height + 'p';
+            option.textContent = level.isOriginal ? 'Original' : level.height + 'p';
             option.addEventListener('click', () => {
                 this.selectQuality(index);
             });

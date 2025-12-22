@@ -927,6 +927,22 @@
                             debugLog('HLS manifest parsed, levels:', data.levels);
                             // Populate quality levels for selector (sorted by height descending)
                             this.hlsLevels = data.levels.slice().sort((a, b) => b.height - a.height);
+
+                            // Mark the original quality: highest bitrate at max resolution
+                            // The "original" is a remux of the source, so it has the highest bitrate
+                            // at the source resolution (which is the max height in the list)
+                            if (this.hlsLevels.length > 0) {
+                                const maxHeight = this.hlsLevels[0].height;
+                                const levelsAtMaxHeight = this.hlsLevels.filter(l => l.height === maxHeight);
+                                if (levelsAtMaxHeight.length > 1) {
+                                    // Multiple levels at max resolution - highest bitrate is original
+                                    const original = levelsAtMaxHeight.reduce((a, b) =>
+                                        (a.bitrate || 0) > (b.bitrate || 0) ? a : b
+                                    );
+                                    original.isOriginal = true;
+                                }
+                            }
+
                             // Update custom player controls with quality levels
                             if (this.playerControls) {
                                 this.playerControls.setQualities(this.hlsLevels, -1);
