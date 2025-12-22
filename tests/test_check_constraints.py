@@ -9,7 +9,6 @@ Tests that verify:
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
 
 from api import database
 
@@ -240,6 +239,42 @@ class TestCheckConstraints:
             await test_database.execute(query)
         # Should be a check constraint violation
         assert "ck_video_qualities_quality" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_quality_progress_quality_valid_values(self, test_database, sample_video):
+        """Test that valid quality_progress.quality values are accepted."""
+        # Create a transcoding job first
+        job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
+        job_id = await test_database.execute(job_query)
+        
+        valid_qualities = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original"]
+        
+        for quality in valid_qualities:
+            query = database.quality_progress.insert().values(
+                job_id=job_id,
+                quality=quality,
+                status="pending"
+            )
+            result = await test_database.execute(query)
+            assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_quality_progress_quality_invalid_value(self, test_database, sample_video):
+        """Test that invalid quality_progress.quality values are rejected."""
+        # Create a transcoding job first
+        job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
+        job_id = await test_database.execute(job_query)
+        
+        query = database.quality_progress.insert().values(
+            job_id=job_id,
+            quality="invalid",  # Invalid quality value
+            status="pending"
+        )
+        
+        with pytest.raises(Exception) as exc_info:
+            await test_database.execute(query)
+        # Should be a check constraint violation
+        assert "ck_quality_progress_quality" in str(exc_info.value) or "check constraint" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_playback_sessions_quality_used_valid_values(self, test_database, sample_video):

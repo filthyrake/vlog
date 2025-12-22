@@ -46,6 +46,13 @@ def upgrade() -> None:
         "status IN ('pending', 'in_progress', 'completed', 'failed', 'skipped')"
     )
     
+    # quality_progress.quality - Quality preset names
+    op.create_check_constraint(
+        "ck_quality_progress_quality",
+        "quality_progress",
+        "quality IN ('2160p', '1440p', '1080p', '720p', '480p', '360p', 'original')"
+    )
+    
     # quality_progress.progress_percent - Range validation (0-100)
     op.create_check_constraint(
         "ck_quality_progress_percent_range",
@@ -107,6 +114,7 @@ def downgrade() -> None:
     op.drop_constraint("ck_transcriptions_status", "transcriptions")
     op.drop_constraint("ck_transcoding_jobs_progress_percent_range", "transcoding_jobs")
     op.drop_constraint("ck_quality_progress_percent_range", "quality_progress")
+    op.drop_constraint("ck_quality_progress_quality", "quality_progress")
     op.drop_constraint("ck_quality_progress_status", "quality_progress")
     op.drop_constraint("ck_videos_thumbnail_source", "videos")
     op.drop_constraint("ck_videos_status", "videos")

@@ -172,7 +172,15 @@ quality_progress = sa.Table(
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("job_id", sa.Integer, sa.ForeignKey("transcoding_jobs.id", ondelete="CASCADE"), nullable=False),
-    sa.Column("quality", sa.String(10), nullable=False),  # 2160p, 1080p, etc.
+    sa.Column(
+        "quality",
+        sa.String(10),
+        sa.CheckConstraint(
+            "quality IN ('2160p', '1440p', '1080p', '720p', '480p', '360p', 'original')",
+            name="ck_quality_progress_quality"
+        ),
+        nullable=False
+    ),  # 2160p, 1080p, etc.
     sa.Column(
         "status",
         sa.String(20),
