@@ -165,7 +165,7 @@ class TestTranscodingJobDatabase:
         # Create quality progress for multiple qualities
         for quality_name, status in [
             ("1080p", "completed"),
-            ("720p", "processing"),
+            ("720p", "in_progress"),
             ("480p", "pending"),
         ]:
             await integration_database.execute(
@@ -173,7 +173,7 @@ class TestTranscodingJobDatabase:
                     job_id=job_id,
                     quality=quality_name,
                     status=status,
-                    progress_percent=100 if status == "completed" else 50 if status == "processing" else 0,
+                    progress_percent=100 if status == "completed" else 50 if status == "in_progress" else 0,
                 )
             )
 
@@ -217,7 +217,7 @@ class TestTranscodingJobDatabase:
             quality_progress.insert().values(
                 job_id=job_id,
                 quality="720p",
-                status="processing",
+                status="in_progress",
                 progress_percent=50,
             )
         )
@@ -250,9 +250,9 @@ class TestVideoStatusTransitions:
     """Tests for video status transitions during transcoding."""
 
     @pytest.mark.asyncio
-    async def test_pending_to_processing(self, integration_database, integration_video):
-        """Test video status transition from pending to processing."""
-        # Update status to processing
+    async def test_pending_to_in_progress(self, integration_database, integration_video):
+        """Test video status transition from pending to in_progress."""
+        # Update status to in_progress
         await integration_database.execute(
             videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
@@ -261,11 +261,11 @@ class TestVideoStatusTransitions:
         assert video["status"] == VideoStatus.PROCESSING
 
     @pytest.mark.asyncio
-    async def test_processing_to_ready(self, integration_database, integration_video):
-        """Test video status transition from processing to ready."""
+    async def test_in_progress_to_ready(self, integration_database, integration_video):
+        """Test video status transition from in_progress to ready."""
         now = datetime.now(timezone.utc)
 
-        # Set to processing first
+        # Set to in_progress first
         await integration_database.execute(
             videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
@@ -290,9 +290,9 @@ class TestVideoStatusTransitions:
         assert video["source_height"] == 1080
 
     @pytest.mark.asyncio
-    async def test_processing_to_failed(self, integration_database, integration_video):
-        """Test video status transition from processing to failed."""
-        # Set to processing first
+    async def test_in_progress_to_failed(self, integration_database, integration_video):
+        """Test video status transition from in_progress to failed."""
+        # Set to in_progress first
         await integration_database.execute(
             videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
@@ -624,7 +624,7 @@ class TestErrorRecovery:
             quality_progress.insert().values(
                 job_id=job_id,
                 quality="720p",
-                status="processing",
+                status="in_progress",
                 progress_percent=30,
             )
         )
@@ -740,7 +740,7 @@ class TestTranscodingPipelineMocked:
         video_dir = integration_temp_dir["videos"] / integration_video["slug"]
         video_dir.mkdir(parents=True, exist_ok=True)
 
-        # 3. Update status to processing
+        # 3. Update status to in_progress
         await integration_database.execute(
             videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
@@ -772,7 +772,7 @@ class TestTranscodingPipelineMocked:
                 quality_progress.insert().values(
                     job_id=job_id,
                     quality=quality_name,
-                    status="processing",
+                    status="in_progress",
                     progress_percent=0,
                 )
             )
@@ -866,7 +866,7 @@ class TestTranscodingPipelineMocked:
         video_dir = integration_temp_dir["videos"] / integration_video["slug"]
         video_dir.mkdir(parents=True, exist_ok=True)
 
-        # Start processing
+        # Start in_progress
         await integration_database.execute(
             videos.update().where(videos.c.id == integration_video["id"]).values(status=VideoStatus.PROCESSING)
         )
@@ -901,7 +901,7 @@ class TestTranscodingPipelineMocked:
             quality_progress.insert().values(
                 job_id=job_id,
                 quality="720p",
-                status="processing",
+                status="in_progress",
                 progress_percent=50,
             )
         )
@@ -1438,7 +1438,7 @@ class TestThumbnailGenerationOnRemoteWorkerCrash:
                 integration_video["id"], integration_video["slug"], state=mock_state
             )
 
-            # Verify processing succeeded
+            # Verify in_progress succeeded
             assert result is True
 
             # Verify thumbnail was generated
@@ -1559,7 +1559,7 @@ class TestThumbnailGenerationOnRemoteWorkerCrash:
                 integration_video["id"], integration_video["slug"], state=mock_state
             )
 
-            # Verify processing succeeded
+            # Verify in_progress succeeded
             assert result is True
 
             # Verify thumbnail was generated
