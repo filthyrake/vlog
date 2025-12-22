@@ -41,13 +41,29 @@ videos = sa.Table(
     sa.Column("duration", sa.Float, default=0),  # seconds
     sa.Column("source_width", sa.Integer, default=0),
     sa.Column("source_height", sa.Integer, default=0),
-    sa.Column("status", sa.String(20), default="pending"),  # pending, processing, ready, failed
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'processing', 'ready', 'failed')",
+            name="ck_videos_status"
+        ),
+        default="pending"
+    ),  # pending, processing, ready, failed
     sa.Column("error_message", sa.Text, nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
     sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft-delete timestamp (NULL = not deleted)
     # Thumbnail metadata for custom thumbnail selection
-    sa.Column("thumbnail_source", sa.String(20), default="auto"),  # auto, selected, custom
+    sa.Column(
+        "thumbnail_source",
+        sa.String(20),
+        sa.CheckConstraint(
+            "thumbnail_source IN ('auto', 'selected', 'custom')",
+            name="ck_videos_thumbnail_source"
+        ),
+        default="auto"
+    ),  # auto, selected, custom
     sa.Column("thumbnail_timestamp", sa.Float, nullable=True),  # timestamp for selected thumbnails
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
@@ -62,7 +78,14 @@ video_qualities = sa.Table(
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE")),
-    sa.Column("quality", sa.String(10)),  # 2160p, 1080p, etc.
+    sa.Column(
+        "quality",
+        sa.String(10),
+        sa.CheckConstraint(
+            "quality IN ('2160p', '1440p', '1080p', '720p', '480p', '360p', 'original')",
+            name="ck_video_qualities_quality"
+        )
+    ),  # 2160p, 1080p, etc.
     sa.Column("width", sa.Integer),
     sa.Column("height", sa.Integer),
     sa.Column("bitrate", sa.Integer),  # kbps
@@ -91,7 +114,15 @@ playback_sessions = sa.Table(
     sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("duration_watched", sa.Float, default=0),  # seconds actually watched
     sa.Column("max_position", sa.Float, default=0),  # furthest point reached
-    sa.Column("quality_used", sa.String(10), nullable=True),  # primary quality
+    sa.Column(
+        "quality_used",
+        sa.String(10),
+        sa.CheckConstraint(
+            "quality_used IN ('2160p', '1440p', '1080p', '720p', '480p', '360p', 'original') OR quality_used IS NULL",
+            name="ck_playback_sessions_quality_used"
+        ),
+        nullable=True
+    ),  # primary quality
     sa.Column("completed", sa.Boolean, default=False),  # watched >= 90%
     sa.Index("ix_playback_sessions_video_id", "video_id"),
     sa.Index("ix_playback_sessions_viewer_id", "viewer_id"),
@@ -107,7 +138,15 @@ transcoding_jobs = sa.Table(
     sa.Column("worker_id", sa.String(36), nullable=True),
     # Progress tracking
     sa.Column("current_step", sa.String(50), nullable=True),  # probe, thumbnail, transcode, master_playlist, finalize
-    sa.Column("progress_percent", sa.Integer, default=0),
+    sa.Column(
+        "progress_percent",
+        sa.Integer,
+        sa.CheckConstraint(
+            "progress_percent >= 0 AND progress_percent <= 100",
+            name="ck_transcoding_jobs_progress_percent_range"
+        ),
+        default=0
+    ),
     # Timing
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("last_checkpoint", sa.DateTime(timezone=True), nullable=True),
@@ -135,11 +174,26 @@ quality_progress = sa.Table(
     sa.Column("job_id", sa.Integer, sa.ForeignKey("transcoding_jobs.id", ondelete="CASCADE"), nullable=False),
     sa.Column("quality", sa.String(10), nullable=False),  # 2160p, 1080p, etc.
     sa.Column(
-        "status", sa.String(20), nullable=False, default="pending"
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'in_progress', 'completed', 'failed', 'skipped')",
+            name="ck_quality_progress_status"
+        ),
+        nullable=False,
+        default="pending"
     ),  # pending, in_progress, completed, failed, skipped
     sa.Column("segments_total", sa.Integer, nullable=True),
     sa.Column("segments_completed", sa.Integer, default=0),
-    sa.Column("progress_percent", sa.Integer, default=0),
+    sa.Column(
+        "progress_percent",
+        sa.Integer,
+        sa.CheckConstraint(
+            "progress_percent >= 0 AND progress_percent <= 100",
+            name="ck_quality_progress_percent_range"
+        ),
+        default=0
+    ),
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("error_message", sa.Text, nullable=True),
@@ -154,7 +208,16 @@ transcriptions = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False, unique=True),
     # Status tracking
-    sa.Column("status", sa.String(20), nullable=False, default="pending"),  # pending, processing, completed, failed
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed')",
+            name="ck_transcriptions_status"
+        ),
+        nullable=False,
+        default="pending"
+    ),  # pending, processing, completed, failed
     sa.Column("language", sa.String(10), default="en"),  # detected or specified language
     # Timing
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
@@ -176,10 +239,26 @@ workers = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("worker_id", sa.String(36), unique=True, nullable=False),  # UUID
     sa.Column("worker_name", sa.String(100), nullable=True),
-    sa.Column("worker_type", sa.String(20), default="remote"),  # 'local' or 'remote'
+    sa.Column(
+        "worker_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "worker_type IN ('local', 'remote')",
+            name="ck_workers_worker_type"
+        ),
+        default="remote"
+    ),  # 'local' or 'remote'
     sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_heartbeat", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("status", sa.String(20), default="active"),  # 'active', 'offline', 'disabled'
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('active', 'offline', 'disabled')",
+            name="ck_workers_status"
+        ),
+        default="active"
+    ),  # 'active', 'offline', 'disabled'
     sa.Column(
         "current_job_id",
         sa.Integer,
