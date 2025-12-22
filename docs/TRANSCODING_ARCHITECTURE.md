@@ -344,7 +344,7 @@ stateDiagram-v2
 **Race Condition Prevention:**
 - **Worker offline check:** Conditional update with timestamp check prevents marking worker offline after valid heartbeat
 - **Job release:** Only releases jobs with expired claims, not all jobs from offline workers
-- **Grace period:** 2-minute delay after API startup allows workers to reconnect
+- **Grace period:** 2-minute hardcoded delay after API startup allows workers to reconnect (not configurable)
 
 **Stale vs. Expired:**
 - **Stale worker:** No heartbeat for 5+ minutes (offline threshold)
@@ -462,10 +462,10 @@ WHERE id = ?
 **Problem:** API restarts, workers continue processing but appear stale
 
 **Solution:** Startup grace period
-- Stale checker waits 2 minutes after API start
+- Stale checker waits 2 minutes after API start (hardcoded in worker_api.py)
 - Allows workers to send heartbeats and reconnect
 - Prevents false-positive stale detection
-- Configurable via `STALE_CHECK_STARTUP_GRACE_PERIOD`
+- Not configurable via environment variable
 
 ### 7. Worker Completes Job After Claim Expired
 
@@ -587,10 +587,10 @@ WHERE (last_heartbeat < ? OR
 ### Stale Detection
 - `VLOG_WORKER_OFFLINE_THRESHOLD_MINUTES`: Offline threshold (default: 5)
 - `VLOG_STALE_JOB_CHECK_INTERVAL`: Check frequency in seconds (default: 60)
-- `VLOG_JOB_STALE_TIMEOUT`: Maximum job duration in seconds (default: 7200)
+- `VLOG_JOB_STALE_TIMEOUT`: Maximum job duration in seconds (default: 1800)
 
 ### Retry Logic
-- `VLOG_MAX_TRANSCODE_ATTEMPTS`: Maximum retry attempts (default: 3)
+- `VLOG_MAX_RETRY_ATTEMPTS`: Maximum retry attempts (default: 3)
 - `VLOG_KEEP_COMPLETED_QUALITIES`: Preserve completed qualities on retry (default: true)
 - `VLOG_CLEANUP_PARTIAL_ON_FAILURE`: Delete partial HLS on failure (default: true)
 

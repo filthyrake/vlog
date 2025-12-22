@@ -41,7 +41,7 @@ Key State Transitions:
 4. Job Completion: Set completed_at, video.status = ready
 5. Job Failure: Increment attempt_number, retry if < max_attempts, else failed
 6. Claim Expiration: Stale job checker releases claims from offline workers
-   - Runs every STALE_JOB_CHECK_INTERVAL seconds
+   - Runs every VLOG_STALE_JOB_CHECK_INTERVAL seconds
    - Only releases jobs with expired claims (claim_expires_at < NOW())
 7. Worker Offline: No heartbeat for WORKER_OFFLINE_THRESHOLD_MINUTES
    - Atomic conditional update prevents race with concurrent heartbeat
