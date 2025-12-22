@@ -14,7 +14,7 @@ This migration adds a compound index to optimize these queries.
 
 Revision ID: 010
 Revises: 009
-Create Date: 2024-12-21
+Create Date: 2025-12-21
 """
 
 from alembic import op
@@ -32,14 +32,14 @@ def upgrade():
     # The transcoding_jobs table is queried with:
     # - claimed_at IS NULL (unclaimed jobs)
     # - completed_at IS NULL (incomplete jobs)
-    # - ORDER BY started_at/created_at (via videos.created_at in join)
+    # - ORDER BY videos.created_at (in the joined query, not transcoding_jobs)
     #
-    # Note: The actual claim query joins with videos table for status check,
-    # but having an index on transcoding_jobs columns helps filter quickly.
+    # Note: The actual claim query joins with videos table for status check
+    # and ordering. This index helps filter transcoding_jobs rows quickly.
     op.create_index(
         "ix_transcoding_jobs_claim_search",
         "transcoding_jobs",
-        ["claimed_at", "completed_at", "started_at"],
+        ["claimed_at", "completed_at"],
         postgresql_where="claimed_at IS NULL AND completed_at IS NULL",
     )
 

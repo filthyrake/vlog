@@ -96,7 +96,7 @@ class TestHLSStaticFiles:
         """Test that .ts segments return video/mp2t MIME type (not TypeScript)."""
         response = hls_client.get("/videos/test-video/1080p_0000.ts")
         assert response.status_code == 200
-        # CRITICAL: Must be video/mp2t, NOT video/mp2t or text/vnd.qt.linguist
+        # CRITICAL: Must be video/mp2t, NOT text/typescript or text/vnd.qt.linguist
         assert response.headers["content-type"] == "video/mp2t"
 
     def test_ts_segment_has_long_cache(self, hls_client):

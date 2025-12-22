@@ -351,6 +351,7 @@ async def run_ffmpeg_with_progress(
                             if progress_callback:
                                 await progress_callback(progress)
                 except (ValueError, IndexError):
+                    # Ignore malformed progress lines - continue reading ffmpeg output
                     pass
 
     async def drain_and_wait():
