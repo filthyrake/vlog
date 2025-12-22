@@ -1,0 +1,31 @@
+# VLog Intel GPU Worker PodDisruptionBudget
+# Ensures at least 1 Intel GPU worker pod remains available during voluntary disruptions
+# kubectl apply -f k8s/worker-pdb-intel.yaml
+#
+# Prevents all Intel GPU worker pods from being evicted simultaneously during:
+# - Node drains (kubectl drain)
+# - Cluster autoscaling
+# - Node upgrades/maintenance
+# - Voluntary disruptions
+#
+# Note: PDB does not prevent involuntary disruptions (e.g., node failure, OOM kills)
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vlog-worker-intel-pdb
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/gpu-type: intel
+spec:
+  # Ensure at least 1 Intel GPU worker pod remains available
+  # Adjust based on your minimum GPU capacity requirements
+  minAvailable: 1
+  
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/gpu-type: intel

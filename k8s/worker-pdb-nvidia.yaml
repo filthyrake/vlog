@@ -1,0 +1,31 @@
+# VLog NVIDIA GPU Worker PodDisruptionBudget
+# Ensures at least 1 NVIDIA GPU worker pod remains available during voluntary disruptions
+# kubectl apply -f k8s/worker-pdb-nvidia.yaml
+#
+# Prevents all NVIDIA GPU worker pods from being evicted simultaneously during:
+# - Node drains (kubectl drain)
+# - Cluster autoscaling
+# - Node upgrades/maintenance
+# - Voluntary disruptions
+#
+# Note: PDB does not prevent involuntary disruptions (e.g., node failure, OOM kills)
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vlog-worker-nvidia-pdb
+  namespace: vlog
+  labels:
+    app.kubernetes.io/name: vlog
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/gpu-type: nvidia
+spec:
+  # Ensure at least 1 NVIDIA GPU worker pod remains available
+  # Adjust based on your minimum GPU capacity requirements
+  minAvailable: 1
+  
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/gpu-type: nvidia
