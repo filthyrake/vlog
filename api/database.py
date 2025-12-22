@@ -185,12 +185,12 @@ quality_progress = sa.Table(
         "status",
         sa.String(20),
         sa.CheckConstraint(
-            "status IN ('pending', 'in_progress', 'completed', 'failed', 'skipped')",
+            "status IN ('pending', 'in_progress', 'completed', 'failed', 'skipped', 'uploaded')",
             name="ck_quality_progress_status"
         ),
         nullable=False,
         default="pending"
-    ),  # pending, in_progress, completed, failed, skipped
+    ),  # pending, in_progress, completed, failed, skipped, uploaded
     sa.Column("segments_total", sa.Integer, nullable=True),
     sa.Column("segments_completed", sa.Integer, default=0),
     sa.Column(
@@ -262,11 +262,11 @@ workers = sa.Table(
         "status",
         sa.String(20),
         sa.CheckConstraint(
-            "status IN ('active', 'offline', 'disabled')",
+            "status IN ('active', 'idle', 'busy', 'offline', 'disabled')",
             name="ck_workers_status"
         ),
         default="active"
-    ),  # 'active', 'offline', 'disabled'
+    ),  # 'active', 'idle', 'busy', 'offline', 'disabled'
     sa.Column(
         "current_job_id",
         sa.Integer,

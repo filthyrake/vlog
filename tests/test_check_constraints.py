@@ -89,8 +89,8 @@ class TestCheckConstraints:
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
 
-        valid_statuses = ["pending", "in_progress", "completed", "failed", "skipped"]
-        valid_qualities = ["720p", "1080p", "1440p", "2160p", "360p"]  # Use valid quality values
+        valid_statuses = ["pending", "in_progress", "completed", "failed", "skipped", "uploaded"]
+        valid_qualities = ["720p", "1080p", "1440p", "2160p", "360p", "480p"]  # Use valid quality values
 
         for i, status in enumerate(valid_statuses):
             query = database.quality_progress.insert().values(
@@ -155,7 +155,7 @@ class TestCheckConstraints:
     @pytest.mark.asyncio
     async def test_workers_status_valid_values(self, test_database):
         """Test that valid worker status values are accepted."""
-        valid_statuses = ["active", "offline", "disabled"]
+        valid_statuses = ["active", "idle", "busy", "offline", "disabled"]
 
         for status in valid_statuses:
             query = database.workers.insert().values(
