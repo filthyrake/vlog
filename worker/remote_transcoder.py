@@ -645,14 +645,6 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         return False
 
     except WorkerAPIError as e:
-        # Handle claim expiration from API responses specially - don't retry
-        if e.status_code == 409:
-            print(f"  {CLAIM_EXPIRED_ERROR}")
-            # Don't report failure - the job may already be claimed by another worker
-            # Safe to cleanup since we don't own this job anymore
-            completion_verified = True  # Mark for cleanup
-            return False
-
         # Other API errors - don't cleanup, files may be needed for manual recovery
         error_msg = f"API error: {e.message}"[:500]
         print(f"  Error: {error_msg}")
