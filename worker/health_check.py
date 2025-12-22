@@ -16,6 +16,7 @@ Exit codes:
 """
 
 import asyncio
+import glob
 import os
 import subprocess
 import sys
@@ -85,8 +86,6 @@ def check_gpu_optional() -> Tuple[bool, str]:
     if hwaccel_type in ("intel", "auto"):
         try:
             # Check for /dev/dri/renderD* devices
-            import glob
-
             dri_devices = glob.glob("/dev/dri/renderD*")
             if dri_devices:
                 return True, ""
