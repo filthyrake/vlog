@@ -267,7 +267,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                                 "status": "uploading",
                                 "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
                             }
-                            # Use wrapper to convert 409 to ClaimExpiredError (will interrupt upload)
+                            # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
                             await check_claim_expiration(
                                 client.update_progress(job_id, "upload", 90, quality_progress_list)
                             )
@@ -388,14 +388,16 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     }
                     try:
                         overall = 15 + int(avg_progress * 0.75)
-                        # Use wrapper to convert 409 to ClaimExpiredError (will abort job)
+                        # Use wrapper to detect claim expiration - ClaimExpiredError will abort job
                         await check_claim_expiration(
                             client.update_progress(job_id, "transcode", overall, quality_progress_list)
                         )
                     except ClaimExpiredError:
+                        # Log claim expiration before propagating to abort job
                         print(f"      {qname}: Claim expired - aborting job")
                         raise
                     except Exception as e:
+                        # Other errors are logged but don't abort the job
                         print(f"      {qname}: Progress update failed: {e}")
 
             success, error = await transcode_quality_with_progress(
@@ -464,7 +466,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             "status": "uploading",
                             "progress": int(bytes_sent * 100 / total_bytes) if total_bytes > 0 else 0,
                         }
-                    # Use wrapper to convert 409 to ClaimExpiredError (will interrupt upload)
+                    # Check claim expiration - ClaimExpiredError will propagate and interrupt upload
                     await check_claim_expiration(
                         client.update_progress(job_id, "upload", 90, quality_progress_list)
                     )
