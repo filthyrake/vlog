@@ -1,12 +1,11 @@
 # VLog NVIDIA GPU Worker PodDisruptionBudget
-# Ensures at least 1 NVIDIA GPU worker pod remains available during voluntary disruptions
+# Protects NVIDIA GPU worker pods from voluntary disruption
 # kubectl apply -f k8s/worker-pdb-nvidia.yaml
 #
-# Prevents all NVIDIA GPU worker pods from being evicted simultaneously during:
+# With maxUnavailable: 0, prevents eviction during voluntary disruptions:
 # - Node drains (kubectl drain)
 # - Cluster autoscaling
 # - Node upgrades/maintenance
-# - Voluntary disruptions
 #
 # Note: PDB does not prevent involuntary disruptions (e.g., node failure, OOM kills)
 
@@ -20,9 +19,10 @@ metadata:
     app.kubernetes.io/component: worker
     app.kubernetes.io/gpu-type: nvidia
 spec:
-  # Ensure at least 1 NVIDIA GPU worker pod remains available
-  # Adjust based on your minimum GPU capacity requirements
-  minAvailable: 1
+  # Prevent voluntary disruption of NVIDIA GPU worker pods
+  # With a single replica, this will block eviction of the only pod (maxUnavailable: 0)
+  # To allow voluntary disruptions while maintaining capacity, run at least 2 replicas
+  maxUnavailable: 0
   
   selector:
     matchLabels:

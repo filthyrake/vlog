@@ -59,7 +59,7 @@ kubectl apply -f k8s/worker-hpa.yaml
 - `worker-deployment-nvidia.yaml` - NVIDIA GPU worker deployment (NVENC)
 - `worker-deployment-intel.yaml` - Intel Arc/QuickSync worker deployment (VAAPI)
 - `worker-hpa.yaml` - Horizontal Pod Autoscaler for auto-scaling
-- `worker-pdb.yaml` - PodDisruptionBudget for CPU workers (prevents all pods from being evicted)
+- `worker-pdb.yaml` - PodDisruptionBudget for CPU workers (ensures minimum availability during disruptions)
 - `worker-pdb-nvidia.yaml` - PodDisruptionBudget for NVIDIA GPU workers
 - `worker-pdb-intel.yaml` - PodDisruptionBudget for Intel GPU workers
 - `cleanup-cronjob.yaml` - CronJob for cleaning up stale transcoding jobs
