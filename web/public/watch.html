@@ -879,7 +879,7 @@
                     }
 
                     try {
-                        const res = await VLogUtils.fetchWithTimeout(`/api/videos/${slug}`);
+                        const res = await VLogUtils.fetchWithTimeout(`/api/videos/${slug}`, {}, 10000);
                         if (!res.ok) {
                             throw new Error('Video not found');
                         }
