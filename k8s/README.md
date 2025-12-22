@@ -44,7 +44,10 @@ kubectl create secret generic vlog-worker-credentials \
 kubectl apply -f k8s/configmap.yaml
 kubectl apply -f k8s/worker-deployment.yaml
 
-# 7. (Optional) Enable auto-scaling
+# 7. (Optional) Enable PodDisruptionBudget for high availability
+kubectl apply -f k8s/worker-pdb.yaml
+
+# 8. (Optional) Enable auto-scaling
 kubectl apply -f k8s/worker-hpa.yaml
 ```
 
@@ -56,8 +59,59 @@ kubectl apply -f k8s/worker-hpa.yaml
 - `worker-deployment-nvidia.yaml` - NVIDIA GPU worker deployment (NVENC)
 - `worker-deployment-intel.yaml` - Intel Arc/QuickSync worker deployment (VAAPI)
 - `worker-hpa.yaml` - Horizontal Pod Autoscaler for auto-scaling
+- `worker-pdb.yaml` - PodDisruptionBudget for CPU workers (ensures minimum availability during disruptions)
+- `worker-pdb-nvidia.yaml` - PodDisruptionBudget for NVIDIA GPU workers
+- `worker-pdb-intel.yaml` - PodDisruptionBudget for Intel GPU workers
 - `cleanup-cronjob.yaml` - CronJob for cleaning up stale transcoding jobs
 - `networkpolicy.yaml` - NetworkPolicy restricting worker pod network access
+
+## PodDisruptionBudgets (High Availability)
+
+PodDisruptionBudgets (PDBs) protect worker pods from being evicted simultaneously during voluntary disruptions. This ensures transcoding jobs aren't interrupted during:
+
+- **Node drains** - `kubectl drain` for maintenance
+- **Cluster autoscaling** - When downscaling removes nodes
+- **Node upgrades** - Rolling updates of cluster nodes
+- **Other voluntary disruptions** - Planned maintenance events
+
+Each worker type has a PDB configured with `minAvailable: 1`, ensuring at least one pod remains running during disruptions.
+
+### Applying PodDisruptionBudgets
+
+```bash
+# Apply PDB for CPU workers
+kubectl apply -f k8s/worker-pdb.yaml
+
+# Apply PDB for NVIDIA GPU workers (if using GPU workers)
+kubectl apply -f k8s/worker-pdb-nvidia.yaml
+
+# Apply PDB for Intel GPU workers (if using GPU workers)
+kubectl apply -f k8s/worker-pdb-intel.yaml
+
+# Verify PDBs are active
+kubectl get poddisruptionbudget -n vlog
+```
+
+### Important Notes
+
+- **PDBs only protect against voluntary disruptions**, not involuntary ones (node failures, OOM kills, etc.)
+- **Requires at least 2 replicas** - With only 1 replica, the PDB cannot be satisfied during disruptions
+- **Adjust `minAvailable`** - For production, consider `minAvailable: 2` or use `maxUnavailable: 1` instead
+- **GPU workers** - PDBs prevent GPU resource contention during rolling updates
+
+### Tuning for Your Workload
+
+If you have critical transcoding requirements, consider:
+
+```yaml
+# Option 1: Guarantee minimum capacity (50% of replicas)
+spec:
+  minAvailable: 50%
+
+# Option 2: Limit maximum disruption (only 1 pod at a time)
+spec:
+  maxUnavailable: 1
+```
 
 ## Network Security
 
@@ -189,6 +243,9 @@ docker save vlog-worker-gpu:latest | ssh user@node 'sudo k3s ctr images import -
 
 # Deploy NVIDIA GPU workers
 kubectl apply -f k8s/worker-deployment-nvidia.yaml
+
+# (Optional) Apply PodDisruptionBudget for NVIDIA workers
+kubectl apply -f k8s/worker-pdb-nvidia.yaml
 ```
 
 **Important**: The deployment uses `runtimeClassName: nvidia` which is required for GPU access. If your cluster uses a different runtime class name, update the deployment accordingly.
@@ -210,6 +267,9 @@ Prerequisites:
 ```bash
 # Deploy Intel GPU workers
 kubectl apply -f k8s/worker-deployment-intel.yaml
+
+# (Optional) Apply PodDisruptionBudget for Intel workers
+kubectl apply -f k8s/worker-pdb-intel.yaml
 ```
 
 Supported encoders: `h264_vaapi`, `hevc_vaapi`, `av1_vaapi`
