@@ -20,7 +20,7 @@ class TestCheckConstraints:
     async def test_videos_status_valid_values(self, test_database):
         """Test that valid video status values are accepted."""
         valid_statuses = ["pending", "processing", "ready", "failed"]
-        
+
         for status in valid_statuses:
             query = database.videos.insert().values(
                 title=f"Video with {status} status",
@@ -29,7 +29,7 @@ class TestCheckConstraints:
             )
             result = await test_database.execute(query)
             assert result is not None
-            
+
             # Clean up
             await test_database.execute(
                 database.videos.delete().where(database.videos.c.id == result)
@@ -43,7 +43,7 @@ class TestCheckConstraints:
             slug="video-invalid",
             status="invalid_status"
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -53,7 +53,7 @@ class TestCheckConstraints:
     async def test_videos_thumbnail_source_valid_values(self, test_database):
         """Test that valid thumbnail_source values are accepted."""
         valid_sources = ["auto", "selected", "custom"]
-        
+
         for source in valid_sources:
             query = database.videos.insert().values(
                 title=f"Video with {source} thumbnail",
@@ -62,7 +62,7 @@ class TestCheckConstraints:
             )
             result = await test_database.execute(query)
             assert result is not None
-            
+
             # Clean up
             await test_database.execute(
                 database.videos.delete().where(database.videos.c.id == result)
@@ -76,7 +76,7 @@ class TestCheckConstraints:
             slug="video-thumb-invalid",
             thumbnail_source="invalid_source"
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -88,10 +88,10 @@ class TestCheckConstraints:
         # Create a transcoding job first
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
-        
+
         valid_statuses = ["pending", "in_progress", "completed", "failed", "skipped"]
         valid_qualities = ["720p", "1080p", "1440p", "2160p", "360p"]  # Use valid quality values
-        
+
         for i, status in enumerate(valid_statuses):
             query = database.quality_progress.insert().values(
                 job_id=job_id,
@@ -107,13 +107,13 @@ class TestCheckConstraints:
         # Create a transcoding job first
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
-        
+
         query = database.quality_progress.insert().values(
             job_id=job_id,
             quality="720p",
             status="invalid_status"
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -123,7 +123,7 @@ class TestCheckConstraints:
     async def test_transcriptions_status_valid_values(self, test_database, sample_video):
         """Test that valid transcription status values are accepted."""
         valid_statuses = ["pending", "processing", "completed", "failed"]
-        
+
         for status in valid_statuses:
             # Clean up any existing transcription
             await test_database.execute(
@@ -131,7 +131,7 @@ class TestCheckConstraints:
                     database.transcriptions.c.video_id == sample_video["id"]
                 )
             )
-            
+
             query = database.transcriptions.insert().values(
                 video_id=sample_video["id"],
                 status=status
@@ -146,7 +146,7 @@ class TestCheckConstraints:
             video_id=sample_video["id"],
             status="invalid_status"
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -156,7 +156,7 @@ class TestCheckConstraints:
     async def test_workers_status_valid_values(self, test_database):
         """Test that valid worker status values are accepted."""
         valid_statuses = ["active", "offline", "disabled"]
-        
+
         for status in valid_statuses:
             query = database.workers.insert().values(
                 worker_id=f"worker-{status}",
@@ -174,7 +174,7 @@ class TestCheckConstraints:
             status="invalid_status",
             registered_at=sa.func.now()
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -184,7 +184,7 @@ class TestCheckConstraints:
     async def test_workers_worker_type_valid_values(self, test_database):
         """Test that valid worker_type values are accepted."""
         valid_types = ["local", "remote"]
-        
+
         for worker_type in valid_types:
             query = database.workers.insert().values(
                 worker_id=f"worker-type-{worker_type}",
@@ -202,7 +202,7 @@ class TestCheckConstraints:
             worker_type="invalid_type",
             registered_at=sa.func.now()
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -212,7 +212,7 @@ class TestCheckConstraints:
     async def test_video_qualities_quality_valid_values(self, test_database, sample_video):
         """Test that valid quality values are accepted."""
         valid_qualities = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original"]
-        
+
         for quality in valid_qualities:
             query = database.video_qualities.insert().values(
                 video_id=sample_video["id"],
@@ -234,7 +234,7 @@ class TestCheckConstraints:
             height=1080,
             bitrate=5000
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -246,9 +246,9 @@ class TestCheckConstraints:
         # Create a transcoding job first
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
-        
+
         valid_qualities = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original"]
-        
+
         for quality in valid_qualities:
             query = database.quality_progress.insert().values(
                 job_id=job_id,
@@ -264,13 +264,13 @@ class TestCheckConstraints:
         # Create a transcoding job first
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
-        
+
         query = database.quality_progress.insert().values(
             job_id=job_id,
             quality="invalid",  # Invalid quality value
             status="pending"
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -284,9 +284,9 @@ class TestCheckConstraints:
         viewer_id = await test_database.execute(
             viewers.insert().values(session_id="test-viewer-session")
         )
-        
+
         valid_qualities = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original", None]
-        
+
         for quality in valid_qualities:
             query = database.playback_sessions.insert().values(
                 video_id=sample_video["id"],
@@ -305,14 +305,14 @@ class TestCheckConstraints:
         viewer_id = await test_database.execute(
             viewers.insert().values(session_id="test-viewer-invalid")
         )
-        
+
         query = database.playback_sessions.insert().values(
             video_id=sample_video["id"],
             viewer_id=viewer_id,
             session_token="session-invalid-quality",
             quality_used="invalid"  # Short enough to not trigger varchar length error
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -326,7 +326,7 @@ class TestProgressPercentConstraints:
     async def test_transcoding_jobs_progress_percent_valid_range(self, test_database, sample_video):
         """Test that valid progress_percent values (0-100) are accepted."""
         valid_percents = [0, 25, 50, 75, 100]
-        
+
         for percent in valid_percents:
             # Clean up existing job
             await test_database.execute(
@@ -334,7 +334,7 @@ class TestProgressPercentConstraints:
                     database.transcoding_jobs.c.video_id == sample_video["id"]
                 )
             )
-            
+
             query = database.transcoding_jobs.insert().values(
                 video_id=sample_video["id"],
                 progress_percent=percent
@@ -349,7 +349,7 @@ class TestProgressPercentConstraints:
             video_id=sample_video["id"],
             progress_percent=-1
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -364,12 +364,12 @@ class TestProgressPercentConstraints:
             slug="video-progress-test"
         )
         video_id = await test_database.execute(video_query)
-        
+
         query = database.transcoding_jobs.insert().values(
             video_id=video_id,
             progress_percent=101
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -381,10 +381,10 @@ class TestProgressPercentConstraints:
         # Create a transcoding job first
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
-        
+
         valid_percents = [0, 25, 50, 75, 100]
         valid_qualities = ["720p", "1080p", "1440p", "2160p", "360p"]  # Use valid quality values
-        
+
         for i, percent in enumerate(valid_percents):
             query = database.quality_progress.insert().values(
                 job_id=job_id,
@@ -401,14 +401,14 @@ class TestProgressPercentConstraints:
         # Create a transcoding job first
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
-        
+
         query = database.quality_progress.insert().values(
             job_id=job_id,
             quality="720p",
             status="pending",  # Required field
             progress_percent=-1
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
@@ -420,14 +420,14 @@ class TestProgressPercentConstraints:
         # Create a transcoding job first
         job_query = database.transcoding_jobs.insert().values(video_id=sample_video["id"])
         job_id = await test_database.execute(job_query)
-        
+
         query = database.quality_progress.insert().values(
             job_id=job_id,
             quality="720p",
             status="pending",  # Required field
             progress_percent=101
         )
-        
+
         with pytest.raises(Exception) as exc_info:
             await test_database.execute(query)
         # Should be a check constraint violation
