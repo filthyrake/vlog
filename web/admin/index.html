@@ -44,6 +44,11 @@
                         :class="tab === 'analytics' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
                         class="font-medium"
                     >Analytics</button>
+                    <button
+                        @click="tab = 'settings'; loadWatermarkSettings()"
+                        :class="tab === 'settings' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        class="font-medium"
+                    >Settings</button>
                     <!-- Logout button - only shown when auth is enabled and user is logged in -->
                     <button
                         x-show="authRequired && isAuthenticated"
@@ -702,6 +707,142 @@
                 </div>
             </div>
         </div>
+
+        <!-- Settings Tab -->
+        <div x-show="tab === 'settings'" x-cloak>
+            <div class="max-w-4xl">
+                <h2 class="text-xl font-semibold mb-6">Settings</h2>
+
+                <!-- Watermark Settings -->
+                <div class="bg-dark-900 rounded-xl p-6 mb-6">
+                    <h3 class="text-lg font-semibold mb-4">Watermark</h3>
+                    <p class="text-dark-400 text-sm mb-6">
+                        Add a logo or text overlay to videos. The watermark is displayed client-side and does not modify the original video files.
+                    </p>
+
+                    <!-- Loading state -->
+                    <div x-show="watermarkLoading" class="text-center py-8">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                    </div>
+
+                    <!-- Settings content -->
+                    <div x-show="!watermarkLoading && watermarkSettings" class="space-y-6">
+                        <!-- Current Status -->
+                        <div class="flex items-center gap-4 p-4 rounded-lg" :class="watermarkSettings.enabled ? 'bg-green-900/20 border border-green-800' : 'bg-dark-800'">
+                            <div class="flex-1">
+                                <div class="font-medium" x-text="watermarkSettings.enabled ? 'Watermark Enabled' : 'Watermark Disabled'"></div>
+                                <div class="text-sm text-dark-400" x-show="watermarkSettings.enabled">
+                                    Type: <span class="text-dark-200" x-text="watermarkSettings.type"></span> |
+                                    Position: <span class="text-dark-200" x-text="watermarkSettings.position"></span> |
+                                    Opacity: <span class="text-dark-200" x-text="(watermarkSettings.opacity * 100).toFixed(0) + '%'"></span>
+                                </div>
+                            </div>
+                            <div x-show="watermarkSettings.enabled" class="text-green-400">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Image Watermark Section -->
+                        <div class="border-t border-dark-800 pt-6">
+                            <h4 class="font-medium mb-4">Image Watermark</h4>
+
+                            <!-- Current image preview -->
+                            <div x-show="watermarkSettings.image_exists" class="mb-4">
+                                <div class="text-sm text-dark-400 mb-2">Current watermark image:</div>
+                                <div class="flex items-start gap-4">
+                                    <div class="bg-dark-800 p-4 rounded-lg inline-block">
+                                        <img :src="watermarkSettings.image_url" class="max-h-24 max-w-48" alt="Current watermark">
+                                    </div>
+                                    <div class="text-sm text-dark-400">
+                                        <div x-text="watermarkSettings.image"></div>
+                                        <button
+                                            @click="deleteWatermarkImage()"
+                                            class="text-red-400 hover:text-red-300 mt-2"
+                                        >Delete image</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Upload new image -->
+                            <div class="space-y-3">
+                                <label class="block text-sm text-dark-400">Upload new watermark image (PNG with transparency recommended)</label>
+                                <div class="flex gap-3">
+                                    <input
+                                        type="file"
+                                        accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+                                        @change="watermarkImageFile = $event.target.files[0]"
+                                        class="flex-1 px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm"
+                                        :disabled="watermarkUploading"
+                                    >
+                                    <button
+                                        @click="uploadWatermarkImage()"
+                                        :disabled="!watermarkImageFile || watermarkUploading"
+                                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 disabled:text-dark-500 rounded-lg font-medium transition"
+                                    >
+                                        <span x-show="!watermarkUploading">Upload</span>
+                                        <span x-show="watermarkUploading">Uploading...</span>
+                                    </button>
+                                </div>
+                                <!-- Upload progress -->
+                                <div x-show="watermarkUploading" class="w-full bg-dark-800 rounded-full h-2">
+                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + watermarkUploadProgress + '%'"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Text Watermark Section -->
+                        <div class="border-t border-dark-800 pt-6">
+                            <h4 class="font-medium mb-4">Text Watermark</h4>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-dark-400 mb-1">Current text</label>
+                                    <div class="px-4 py-2 bg-dark-800 rounded-lg text-dark-200" x-text="watermarkSettings.text || '(not set)'"></div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-dark-400 mb-1">Font size / Color</label>
+                                    <div class="px-4 py-2 bg-dark-800 rounded-lg text-dark-200" x-text="watermarkSettings.text_size + 'px / ' + watermarkSettings.text_color"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Configuration Note -->
+                        <div class="border-t border-dark-800 pt-6">
+                            <div class="bg-dark-800 rounded-lg p-4">
+                                <h4 class="font-medium mb-2 flex items-center gap-2">
+                                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                    Configuration
+                                </h4>
+                                <p class="text-sm text-dark-400 mb-3">
+                                    Watermark settings are configured via environment variables. After uploading an image, set the following and restart services:
+                                </p>
+                                <pre class="bg-dark-950 rounded p-3 text-sm text-dark-300 overflow-x-auto">VLOG_WATERMARK_ENABLED=true
+VLOG_WATERMARK_TYPE=image  # or "text"
+VLOG_WATERMARK_IMAGE=<span x-text="watermarkSettings.image || 'watermark.png'"></span>
+VLOG_WATERMARK_POSITION=bottom-right  # top-left, top-right, bottom-left, center
+VLOG_WATERMARK_OPACITY=0.5  # 0.0 to 1.0
+VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
+                            </div>
+                        </div>
+
+                        <!-- Message display -->
+                        <div x-show="watermarkMessage" class="mt-4">
+                            <div :class="watermarkError ? 'bg-red-900/20 border-red-800 text-red-400' : 'bg-green-900/20 border-green-800 text-green-400'" class="border rounded-lg px-4 py-3 text-sm">
+                                <span x-text="watermarkMessage"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Not loaded state -->
+                    <div x-show="!watermarkLoading && !watermarkSettings" class="text-center py-8 text-dark-400">
+                        Failed to load watermark settings. <button @click="loadWatermarkSettings()" class="text-blue-400 hover:underline">Retry</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- Edit Video Modal -->
@@ -1285,6 +1426,15 @@
                 workersSSE: null,
                 sseReconnectAttempts: 0,
                 maxSseReconnectDelay: 30000,
+
+                // Watermark settings
+                watermarkSettings: null,
+                watermarkLoading: false,
+                watermarkImageFile: null,
+                watermarkUploading: false,
+                watermarkUploadProgress: 0,
+                watermarkMessage: '',
+                watermarkError: false,
 
                 // Bulk operations
                 selectedVideos: [],
@@ -2552,6 +2702,119 @@
                         URL.revokeObjectURL(url);
                     } catch (e) {
                         alert('Export failed: ' + e.message);
+                    }
+                },
+
+                // Watermark settings methods
+                async loadWatermarkSettings() {
+                    this.watermarkLoading = true;
+                    this.watermarkMessage = '';
+                    this.watermarkError = false;
+
+                    try {
+                        const res = await this.apiFetch('/api/settings/watermark');
+                        if (res.ok) {
+                            this.watermarkSettings = await res.json();
+                        } else {
+                            console.error('Failed to load watermark settings:', res.status);
+                            this.watermarkSettings = null;
+                        }
+                    } catch (e) {
+                        console.error('Failed to load watermark settings:', e);
+                        this.watermarkSettings = null;
+                    } finally {
+                        this.watermarkLoading = false;
+                    }
+                },
+
+                async uploadWatermarkImage() {
+                    if (!this.watermarkImageFile) return;
+
+                    this.watermarkUploading = true;
+                    this.watermarkUploadProgress = 0;
+                    this.watermarkMessage = '';
+                    this.watermarkError = false;
+
+                    const formData = new FormData();
+                    formData.append('file', this.watermarkImageFile);
+
+                    try {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/api/settings/watermark/upload', true);
+                        xhr.withCredentials = true;
+
+                        // Add auth header if we have a session cookie
+                        // (apiFetch handles this, but XHR needs manual handling)
+
+                        xhr.upload.onprogress = (e) => {
+                            if (e.lengthComputable) {
+                                this.watermarkUploadProgress = Math.round((e.loaded / e.total) * 100);
+                            }
+                        };
+
+                        xhr.onload = async () => {
+                            this.watermarkUploading = false;
+                            this.watermarkUploadProgress = 0;
+
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                                const data = JSON.parse(xhr.responseText);
+                                this.watermarkMessage = data.message || 'Watermark uploaded successfully';
+                                this.watermarkError = false;
+                                this.watermarkImageFile = null;
+                                // Reload settings to show new image
+                                await this.loadWatermarkSettings();
+                            } else {
+                                try {
+                                    const data = JSON.parse(xhr.responseText);
+                                    this.watermarkMessage = data.detail || 'Upload failed';
+                                } catch {
+                                    this.watermarkMessage = 'Upload failed: ' + xhr.statusText;
+                                }
+                                this.watermarkError = true;
+                            }
+                        };
+
+                        xhr.onerror = () => {
+                            this.watermarkUploading = false;
+                            this.watermarkUploadProgress = 0;
+                            this.watermarkMessage = 'Upload failed: Network error';
+                            this.watermarkError = true;
+                        };
+
+                        xhr.send(formData);
+                    } catch (e) {
+                        this.watermarkUploading = false;
+                        this.watermarkUploadProgress = 0;
+                        this.watermarkMessage = 'Upload failed: ' + e.message;
+                        this.watermarkError = true;
+                    }
+                },
+
+                async deleteWatermarkImage() {
+                    if (!confirm('Delete the watermark image?')) return;
+
+                    this.watermarkMessage = '';
+                    this.watermarkError = false;
+
+                    try {
+                        const res = await this.apiFetch('/api/settings/watermark', {
+                            method: 'DELETE'
+                        });
+
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.watermarkMessage = data.message || 'Watermark deleted';
+                            this.watermarkError = false;
+                            // Reload settings
+                            await this.loadWatermarkSettings();
+                        } else {
+                            const data = await res.json();
+                            this.watermarkMessage = data.detail || 'Delete failed';
+                            this.watermarkError = true;
+                        }
+                    } catch (e) {
+                        this.watermarkMessage = 'Delete failed: ' + e.message;
+                        this.watermarkError = true;
                     }
                 }
             };
