@@ -84,28 +84,26 @@ spec:
         - name: work-dir
           mountPath: /tmp/vlog-worker
 
-        # Liveness probe
+        # Liveness probe - worker process is alive
+        # Checks /health endpoint on built-in health server (port 8080)
         livenessProbe:
-          exec:
-            command:
-            - python3
-            - -c
-            - "import sys; sys.exit(0)"
+          httpGet:
+            path: /health
+            port: 8080
           initialDelaySeconds: 30
           periodSeconds: 60
-          timeoutSeconds: 10
+          timeoutSeconds: 5
           failureThreshold: 3
 
-        # Readiness probe
+        # Readiness probe - worker can accept jobs
+        # Checks /ready endpoint which verifies API connection and FFmpeg availability
         readinessProbe:
-          exec:
-            command:
-            - python3
-            - -c
-            - "import sys; sys.exit(0)"
-          initialDelaySeconds: 10
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 15
           periodSeconds: 30
-          timeoutSeconds: 10
+          timeoutSeconds: 5
           failureThreshold: 3
 
         # Security context

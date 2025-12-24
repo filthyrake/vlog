@@ -37,10 +37,12 @@ from config import (
     QUALITY_PRESETS,
     WORKER_API_KEY,
     WORKER_API_URL,
+    WORKER_HEALTH_PORT,
     WORKER_HEARTBEAT_INTERVAL,
     WORKER_POLL_INTERVAL,
     WORKER_WORK_DIR,
 )
+from worker.health_server import HealthServer
 from worker.http_client import WorkerAPIClient, WorkerAPIError
 from worker.hwaccel import (
     GPUCapabilities,
@@ -68,6 +70,9 @@ GPU_CAPS: Optional[GPUCapabilities] = None
 
 # Global job queue (initialized at startup if Redis enabled)
 JOB_QUEUE: Optional[JobQueue] = None
+
+# Global health server (for K8s probes)
+HEALTH_SERVER: Optional[HealthServer] = None
 
 # Worker ID for Redis consumer name (generated at startup)
 WORKER_UUID: str = ""
@@ -120,15 +125,23 @@ def signal_handler(sig, frame):
 
 async def heartbeat_loop(client: WorkerAPIClient, state: dict):
     """Background task to send periodic heartbeats."""
+    global HEALTH_SERVER
     while not shutdown_requested:
         # Determine status based on whether we're processing a job
         status = "busy" if state.get("processing_job") else "idle"
         try:
             await client.heartbeat(status=status)
+            # Update health server heartbeat status on success
+            if HEALTH_SERVER:
+                HEALTH_SERVER.set_heartbeat_status(True)
         except WorkerAPIError as e:
             print(f"Heartbeat failed: {e.message}")
+            if HEALTH_SERVER:
+                HEALTH_SERVER.set_heartbeat_status(False)
         except Exception as e:
             print(f"Heartbeat error: {e}")
+            if HEALTH_SERVER:
+                HEALTH_SERVER.set_heartbeat_status(False)
         await asyncio.sleep(WORKER_HEARTBEAT_INTERVAL)
 
 
@@ -695,7 +708,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
 async def worker_loop():
     """Main worker loop."""
-    global shutdown_requested, GPU_CAPS, JOB_QUEUE, WORKER_UUID
+    global shutdown_requested, GPU_CAPS, JOB_QUEUE, HEALTH_SERVER, WORKER_UUID
 
     # Set up signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
@@ -712,6 +725,10 @@ async def worker_loop():
 
     # Create work directory
     WORKER_WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Start health server for K8s probes
+    HEALTH_SERVER = HealthServer(port=WORKER_HEALTH_PORT)
+    await HEALTH_SERVER.start()
 
     client = WorkerAPIClient(WORKER_API_URL, WORKER_API_KEY)
 
@@ -753,6 +770,9 @@ async def worker_loop():
     try:
         await client.heartbeat(status="idle", metadata={"capabilities": worker_caps})
         print("  Connected to Worker API")
+        # Mark worker as ready after successful API connection
+        HEALTH_SERVER.set_ready(True)
+        HEALTH_SERVER.set_heartbeat_status(True)
     except WorkerAPIError as e:
         print(f"ERROR: Failed to connect to Worker API: {e.message}")
         sys.exit(1)
@@ -839,6 +859,10 @@ async def worker_loop():
             await heartbeat_task
         except asyncio.CancelledError:
             pass
+
+        # Stop health server
+        if HEALTH_SERVER:
+            await HEALTH_SERVER.stop()
 
         # Close HTTP client
         await client.close()
