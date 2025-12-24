@@ -46,3 +46,4 @@ systemd/*.service
 # Kubernetes secrets (never commit real credentials)
 k8s/secret.yaml
 k8s/*-secret.yaml
+CLAUDE.md
