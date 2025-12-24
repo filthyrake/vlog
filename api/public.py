@@ -68,6 +68,7 @@ from api.schemas import (
 )
 from config import (
     CORS_ALLOWED_ORIGINS,
+    NAS_STORAGE,
     PUBLIC_PORT,
     QUALITY_NAMES,
     RATE_LIMIT_ENABLED,
@@ -77,6 +78,16 @@ from config import (
     RATE_LIMIT_STORAGE_URL,
     SECURE_COOKIES,
     VIDEOS_DIR,
+    WATERMARK_ENABLED,
+    WATERMARK_IMAGE,
+    WATERMARK_MAX_WIDTH_PERCENT,
+    WATERMARK_OPACITY,
+    WATERMARK_PADDING,
+    WATERMARK_POSITION,
+    WATERMARK_TEXT,
+    WATERMARK_TEXT_COLOR,
+    WATERMARK_TEXT_SIZE,
+    WATERMARK_TYPE,
 )
 
 logger = logging.getLogger(__name__)
@@ -815,6 +826,93 @@ async def get_tag(request: Request, slug: str) -> TagResponse:
         slug=row["slug"],
         created_at=row["created_at"],
         video_count=count or 0,
+    )
+
+
+# ============================================================================
+# Watermark Configuration
+# ============================================================================
+
+
+@app.get("/api/config/watermark")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_watermark_config(request: Request):
+    """
+    Get watermark configuration for client-side overlay.
+
+    Returns watermark settings if enabled, or enabled=false if disabled.
+    Supports two watermark types:
+    - "image": Logo/image overlay (image_url points to /watermark/image)
+    - "text": Text overlay with custom font size and color
+    """
+    if not WATERMARK_ENABLED:
+        return {"enabled": False}
+
+    # Check watermark type
+    if WATERMARK_TYPE == "text":
+        # Text watermark
+        if not WATERMARK_TEXT:
+            return {"enabled": False}
+
+        return {
+            "enabled": True,
+            "type": "text",
+            "text": WATERMARK_TEXT,
+            "text_size": WATERMARK_TEXT_SIZE,
+            "text_color": WATERMARK_TEXT_COLOR,
+            "position": WATERMARK_POSITION,
+            "opacity": WATERMARK_OPACITY,
+            "padding": WATERMARK_PADDING,
+        }
+    else:
+        # Image watermark (default)
+        if not WATERMARK_IMAGE:
+            return {"enabled": False}
+
+        # Verify watermark image exists
+        watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+        if not watermark_path.exists():
+            logger.warning(f"Watermark image not found: {watermark_path}")
+            return {"enabled": False}
+
+        return {
+            "enabled": True,
+            "type": "image",
+            "image_url": "/watermark/image",
+            "position": WATERMARK_POSITION,
+            "opacity": WATERMARK_OPACITY,
+            "padding": WATERMARK_PADDING,
+            "max_width_percent": WATERMARK_MAX_WIDTH_PERCENT,
+        }
+
+
+@app.get("/watermark/image")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_watermark_image(request: Request):
+    """Serve the watermark image file."""
+    if not WATERMARK_ENABLED or not WATERMARK_IMAGE:
+        raise HTTPException(status_code=404, detail="Watermark not configured")
+
+    watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+    if not watermark_path.exists():
+        raise HTTPException(status_code=404, detail="Watermark image not found")
+
+    # Determine content type from extension
+    ext = watermark_path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        watermark_path,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},  # Cache for 1 day
     )
 
 

@@ -71,6 +71,9 @@ class AuditAction(str, Enum):
     WORKER_ENABLE = "worker_enable"
     WORKER_DELETE = "worker_delete"
 
+    # Settings actions
+    SETTINGS_CHANGE = "settings_change"
+
 
 class AuditLogger:
     """

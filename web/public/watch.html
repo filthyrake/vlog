@@ -18,6 +18,41 @@
             height: 100%;
             background: #000;
         }
+
+        /* Watermark overlay */
+        .player-watermark {
+            position: absolute;
+            z-index: 15;
+            pointer-events: none;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+        .player-watermark img {
+            display: block;
+            height: auto;
+        }
+        .player-watermark-text {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-weight: 500;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+            white-space: nowrap;
+        }
+        .player-watermark.top-left { top: var(--watermark-padding); left: var(--watermark-padding); }
+        .player-watermark.top-right { top: var(--watermark-padding); right: var(--watermark-padding); }
+        .player-watermark.bottom-left { bottom: calc(var(--watermark-padding) + 60px); left: var(--watermark-padding); }
+        .player-watermark.bottom-right { bottom: calc(var(--watermark-padding) + 60px); right: var(--watermark-padding); }
+        .player-watermark.center {
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        /* Hide watermark when controls are visible to avoid overlap */
+        .player-container.controls-visible .player-watermark.bottom-left,
+        .player-container.controls-visible .player-watermark.bottom-right {
+            opacity: 0.3;
+            transition: opacity 0.3s ease;
+        }
+
         /* Caption styling */
         #player::cue {
             background: rgba(0, 0, 0, 0.8);
@@ -714,6 +749,34 @@
                         :aria-label="video?.title"
                     >
                     </video>
+                    <!-- Watermark overlay (loaded dynamically if enabled) -->
+                    <template x-if="watermark?.enabled && watermark?.type === 'image'">
+                        <div
+                            class="player-watermark"
+                            :class="watermark?.position"
+                            :style="`--watermark-padding: ${watermark?.padding || 16}px; opacity: ${watermark?.opacity || 0.5};`"
+                        >
+                            <img
+                                :src="watermark?.image_url"
+                                :style="`max-width: ${watermark?.max_width_percent || 15}%;`"
+                                alt=""
+                                draggable="false"
+                            >
+                        </div>
+                    </template>
+                    <template x-if="watermark?.enabled && watermark?.type === 'text'">
+                        <div
+                            class="player-watermark"
+                            :class="watermark?.position"
+                            :style="`--watermark-padding: ${watermark?.padding || 16}px; opacity: ${watermark?.opacity || 0.5};`"
+                        >
+                            <span
+                                class="player-watermark-text"
+                                :style="`font-size: ${watermark?.text_size || 16}px; color: ${watermark?.text_color || 'white'};`"
+                                x-text="watermark?.text"
+                            ></span>
+                        </div>
+                    </template>
                     <!-- Custom controls are injected by VLogPlayerControls (native controls removed on init) -->
                 </div>
             </div>
@@ -869,8 +932,12 @@
                 hlsLevels: [],
                 captionsEnabled: false,
                 captionsTrack: null,
+                watermark: null,
 
                 async init() {
+                    // Fetch watermark config (non-blocking)
+                    this.loadWatermarkConfig();
+
                     const slug = window.location.pathname.split('/').pop();
                     if (!slug) {
                         this.error = 'Video not found';
@@ -901,6 +968,18 @@
                     } catch (e) {
                         this.error = e.message;
                         this.loading = false;
+                    }
+                },
+
+                async loadWatermarkConfig() {
+                    try {
+                        const res = await VLogUtils.fetchWithTimeout('/api/config/watermark', {}, 5000);
+                        if (res.ok) {
+                            this.watermark = await res.json();
+                        }
+                    } catch (e) {
+                        // Watermark is optional, don't show errors
+                        debugLog('Failed to load watermark config:', e);
                     }
                 },
 

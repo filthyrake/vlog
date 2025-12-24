@@ -141,6 +141,10 @@ migrations/
 
 **Rate limiting**: Configurable per-endpoint rate limits using slowapi. Supports memory or Redis storage.
 
+**Watermark overlay**: Client-side watermark displayed on the video player (does not modify video files). Two types available:
+- **Image watermark**: Set `VLOG_WATERMARK_TYPE=image` and `VLOG_WATERMARK_IMAGE=watermark.png`. Upload via Admin API (`POST /api/settings/watermark/upload`) or place directly in NAS storage. Supports PNG (with transparency), JPEG, WebP, SVG, GIF.
+- **Text watermark**: Set `VLOG_WATERMARK_TYPE=text` and `VLOG_WATERMARK_TEXT="© 2025 MyBrand"`. Configure font size with `VLOG_WATERMARK_TEXT_SIZE` and color with `VLOG_WATERMARK_TEXT_COLOR`.
+
 **Database migrations**: Schema changes are managed by Alembic. New databases get all tables via `python api/database.py`. Existing databases being upgraded should first run `python api/database.py stamp 001` to mark current state, then future migrations apply normally.
 
 **Distributed transcoding**: Remote workers register via Worker API and receive API keys. Workers poll for jobs, claim them atomically, download source files via HTTP, transcode locally, and upload HLS output as tar.gz. Progress updates are sent to the API and visible in the admin UI.
@@ -285,6 +289,7 @@ When running multiple API instances (e.g., behind a load balancer):
   - Redis: `VLOG_REDIS_URL` (empty = disabled), `VLOG_JOB_QUEUE_MODE` (database, redis, hybrid), `VLOG_REDIS_POOL_SIZE` (default: 10)
   - SSE: `VLOG_SSE_HEARTBEAT_INTERVAL` (default: 30s), `VLOG_SSE_RECONNECT_TIMEOUT_MS` (default: 3000)
   - Alerting: `VLOG_ALERT_WEBHOOK_URL` (empty = disabled), `VLOG_ALERT_WEBHOOK_TIMEOUT` (default: 10s), `VLOG_ALERT_RATE_LIMIT_SECONDS` (default: 300)
+  - Watermark: `VLOG_WATERMARK_ENABLED` (default: false), `VLOG_WATERMARK_TYPE` (image or text), `VLOG_WATERMARK_IMAGE` (path for image type), `VLOG_WATERMARK_TEXT` (text content for text type), `VLOG_WATERMARK_TEXT_SIZE` (8-72px, default: 16), `VLOG_WATERMARK_TEXT_COLOR` (CSS color, default: white), `VLOG_WATERMARK_POSITION` (top-left, top-right, bottom-left, bottom-right, center), `VLOG_WATERMARK_OPACITY` (0.0-1.0, default: 0.5), `VLOG_WATERMARK_PADDING` (pixels, default: 16), `VLOG_WATERMARK_MAX_WIDTH_PERCENT` (1-50, default: 15, for images only)
 - NAS mount: Configure your NAS share in `/etc/fstab` to mount at `/mnt/nas`
 - systemd services: Located in `systemd/` folder, use venv Python with security hardening
 - Package installed in development mode: `pip install -e .` makes `vlog` CLI available
