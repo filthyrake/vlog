@@ -131,6 +131,7 @@ from config import (
     JOB_QUEUE_MODE,
     MAX_THUMBNAIL_UPLOAD_SIZE,
     MAX_UPLOAD_SIZE,
+    NAS_STORAGE,
     QUALITY_PRESETS,
     RATE_LIMIT_ADMIN_DEFAULT,
     RATE_LIMIT_ADMIN_UPLOAD,
@@ -146,6 +147,16 @@ from config import (
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
+    WATERMARK_ENABLED,
+    WATERMARK_IMAGE,
+    WATERMARK_MAX_WIDTH_PERCENT,
+    WATERMARK_OPACITY,
+    WATERMARK_PADDING,
+    WATERMARK_POSITION,
+    WATERMARK_TEXT,
+    WATERMARK_TEXT_COLOR,
+    WATERMARK_TEXT_SIZE,
+    WATERMARK_TYPE,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
 from worker.transcoder import generate_thumbnail, get_video_info
@@ -4741,6 +4752,202 @@ async def _get_workers_state() -> dict:
         "active_jobs": active_jobs,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ============================================================================
+# Watermark Settings Endpoints
+# ============================================================================
+
+
+@app.get("/api/settings/watermark")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_watermark_settings(request: Request):
+    """
+    Get current watermark configuration.
+
+    Returns the current watermark settings from environment configuration.
+    Supports both image and text watermark types.
+    Note: Watermark settings are configured via environment variables.
+    """
+    watermark_exists = False
+    if WATERMARK_IMAGE:
+        watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+        watermark_exists = watermark_path.exists()
+
+    return {
+        "enabled": WATERMARK_ENABLED,
+        "type": WATERMARK_TYPE,
+        # Image settings
+        "image": WATERMARK_IMAGE,
+        "image_exists": watermark_exists,
+        "image_url": "/api/settings/watermark/image" if watermark_exists else None,
+        "max_width_percent": WATERMARK_MAX_WIDTH_PERCENT,
+        # Text settings
+        "text": WATERMARK_TEXT,
+        "text_size": WATERMARK_TEXT_SIZE,
+        "text_color": WATERMARK_TEXT_COLOR,
+        # Common settings
+        "position": WATERMARK_POSITION,
+        "opacity": WATERMARK_OPACITY,
+        "padding": WATERMARK_PADDING,
+    }
+
+
+@app.get("/api/settings/watermark/image")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_watermark_image(request: Request):
+    """Serve the watermark image for admin preview."""
+    if not WATERMARK_IMAGE:
+        raise HTTPException(status_code=404, detail="No watermark configured")
+
+    watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+    if not watermark_path.exists():
+        raise HTTPException(status_code=404, detail="Watermark image not found")
+
+    # Determine content type from extension
+    ext = watermark_path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(watermark_path, media_type=content_type)
+
+
+@app.post("/api/settings/watermark/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_watermark_image(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a new watermark image.
+
+    The image is saved to the configured watermark path (VLOG_WATERMARK_IMAGE).
+    If no path is configured, saves to 'watermark.png' in NAS_STORAGE.
+
+    Accepts: PNG, JPEG, WebP, SVG, GIF (max 10MB)
+    For best results, use a PNG with transparency.
+
+    Note: After uploading, you must set VLOG_WATERMARK_ENABLED=true and
+    restart the services for the watermark to appear.
+    """
+    # Validate file extension
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"}
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported image format. Allowed: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    # Check file size via Content-Length header
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_THUMBNAIL_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+        )
+
+    # Determine target path
+    if WATERMARK_IMAGE:
+        target_path = NAS_STORAGE / WATERMARK_IMAGE
+    else:
+        # Default to watermark.png if not configured
+        target_path = NAS_STORAGE / f"watermark{ext}"
+
+    # Save file
+    temp_path = NAS_STORAGE / f"watermark_temp_{uuid.uuid4()}{ext}"
+    try:
+        total_size = 0
+        with open(temp_path, "wb") as f:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > MAX_THUMBNAIL_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+                    )
+                f.write(chunk)
+
+        # Move temp file to target (atomic on same filesystem)
+        shutil.move(str(temp_path), str(target_path))
+
+        # Audit log
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="watermark",
+            resource_id=None,
+            resource_name=str(target_path.name),
+            details={"action": "watermark_upload", "original_filename": file.filename, "size": total_size},
+        )
+
+        return {
+            "status": "ok",
+            "message": "Watermark uploaded successfully",
+            "path": str(target_path.relative_to(NAS_STORAGE)),
+            "size": total_size,
+            "note": "Set VLOG_WATERMARK_ENABLED=true and VLOG_WATERMARK_IMAGE="
+            + str(target_path.relative_to(NAS_STORAGE))
+            + " in your environment, then restart services.",
+        }
+
+    except Exception as e:
+        # Clean up temp file on error
+        if temp_path.exists():
+            temp_path.unlink()
+        logger.error(f"Failed to upload watermark: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save watermark image")
+
+
+@app.delete("/api/settings/watermark")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_watermark_image(request: Request):
+    """
+    Delete the current watermark image.
+
+    Removes the watermark file from storage. You should also set
+    VLOG_WATERMARK_ENABLED=false to disable the watermark overlay.
+    """
+    if not WATERMARK_IMAGE:
+        raise HTTPException(status_code=404, detail="No watermark configured")
+
+    watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+    if not watermark_path.exists():
+        raise HTTPException(status_code=404, detail="Watermark image not found")
+
+    try:
+        watermark_path.unlink()
+
+        # Audit log
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="watermark",
+            resource_id=None,
+            resource_name=WATERMARK_IMAGE,
+            details={"action": "watermark_delete"},
+        )
+
+        return {
+            "status": "ok",
+            "message": "Watermark deleted successfully",
+            "note": "Set VLOG_WATERMARK_ENABLED=false in your environment to disable the watermark overlay.",
+        }
+    except Exception as e:
+        logger.error(f"Failed to delete watermark: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete watermark image")
 
 
 if __name__ == "__main__":

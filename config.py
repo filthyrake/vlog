@@ -381,3 +381,27 @@ ALERT_WEBHOOK_TIMEOUT = get_int_env("VLOG_ALERT_WEBHOOK_TIMEOUT", 10, min_val=1)
 # Minimum interval between alerts for the same event type (seconds)
 # Prevents alert flooding when multiple jobs fail in quick succession
 ALERT_RATE_LIMIT_SECONDS = get_int_env("VLOG_ALERT_RATE_LIMIT_SECONDS", 300, min_val=0)
+
+# Watermark Configuration (client-side overlay, does not modify video files)
+# Enable/disable watermark overlay on video player
+WATERMARK_ENABLED = os.getenv("VLOG_WATERMARK_ENABLED", "false").lower() in ("true", "1", "yes")
+# Watermark type: "image" or "text"
+WATERMARK_TYPE = os.getenv("VLOG_WATERMARK_TYPE", "image")
+# Path to watermark image (relative to NAS_STORAGE, e.g., "watermark.png")
+# Only used when WATERMARK_TYPE is "image"
+WATERMARK_IMAGE = os.getenv("VLOG_WATERMARK_IMAGE", "")
+# Text to display as watermark (e.g., "© 2025 MyBrand" or "Example.com")
+# Only used when WATERMARK_TYPE is "text"
+WATERMARK_TEXT = os.getenv("VLOG_WATERMARK_TEXT", "")
+# Text watermark font size in pixels (default: 16)
+WATERMARK_TEXT_SIZE = get_int_env("VLOG_WATERMARK_TEXT_SIZE", 16, min_val=8, max_val=72)
+# Text watermark color (CSS color value, e.g., "white", "#ffffff", "rgba(255,255,255,0.8)")
+WATERMARK_TEXT_COLOR = os.getenv("VLOG_WATERMARK_TEXT_COLOR", "white")
+# Position: top-left, top-right, bottom-left, bottom-right, center
+WATERMARK_POSITION = os.getenv("VLOG_WATERMARK_POSITION", "bottom-right")
+# Opacity: 0.0 (invisible) to 1.0 (fully opaque)
+WATERMARK_OPACITY = get_float_env("VLOG_WATERMARK_OPACITY", 0.5, min_val=0.0, max_val=1.0)
+# Padding from edge in pixels
+WATERMARK_PADDING = get_int_env("VLOG_WATERMARK_PADDING", 16, min_val=0)
+# Maximum width as percentage of video player (keeps watermark proportional, for images only)
+WATERMARK_MAX_WIDTH_PERCENT = get_int_env("VLOG_WATERMARK_MAX_WIDTH_PERCENT", 15, min_val=1, max_val=50)
