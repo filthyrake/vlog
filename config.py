@@ -235,6 +235,9 @@ WORKER_POLL_INTERVAL = get_int_env("VLOG_WORKER_POLL_INTERVAL", 10, min_val=1)
 WORKER_WORK_DIR = Path(os.getenv("VLOG_WORKER_WORK_DIR", "/tmp/vlog-worker"))
 WORKER_OFFLINE_THRESHOLD_MINUTES = get_int_env("VLOG_WORKER_OFFLINE_THRESHOLD", 5, min_val=1)
 
+# Worker health check server port (for K8s liveness/readiness probes)
+WORKER_HEALTH_PORT = get_int_env("VLOG_WORKER_HEALTH_PORT", 8080, min_val=1, max_val=65535)
+
 # How often to check for stale jobs from offline workers (in seconds)
 STALE_JOB_CHECK_INTERVAL = get_int_env("VLOG_STALE_JOB_CHECK_INTERVAL", 60, min_val=1)
 
