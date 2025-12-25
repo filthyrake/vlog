@@ -40,6 +40,8 @@ from api.database import (
 from api.db_retry import DatabaseRetryableError, execute_with_retry, fetch_one_with_retry
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from api.errors import truncate_error
+
+# Import config for backwards compatibility and fallback values
 from config import (
     ARCHIVE_DIR,
     ARCHIVE_RETENTION_DAYS,
@@ -96,6 +98,95 @@ logger = logging.getLogger(__name__)
 
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
+
+# Cached transcoding settings (refreshed periodically)
+_cached_transcoder_settings: Dict[str, Any] = {}
+_cached_transcoder_settings_time: float = 0
+_TRANSCODER_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+
+async def get_transcoder_settings() -> Dict[str, Any]:
+    """
+    Get transcoding settings from database with caching and env var fallback.
+
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    on every transcoding operation. The cache is separate from the main
+    SettingsService cache to minimize import dependencies in the worker.
+
+    Returns:
+        Dict with keys:
+        - hls_segment_duration: HLS segment duration in seconds
+        - progress_update_interval: How often to update progress (seconds)
+        - job_stale_timeout: Time before a job is considered stale (seconds)
+        - cleanup_partial_on_failure: Whether to clean up partial files on failure
+        - keep_completed_qualities: Whether to keep completed qualities on failure
+        - ffmpeg_timeout_multiplier: Base multiplier for ffmpeg timeout
+        - ffmpeg_timeout_minimum: Minimum ffmpeg timeout (seconds)
+        - ffmpeg_timeout_maximum: Maximum ffmpeg timeout (seconds)
+        - fallback_poll_interval: Polling interval when filesystem watcher unavailable
+        - debounce_delay: Debounce delay for filesystem events (seconds)
+
+    Falls back to environment variables (via config.py) if database is unavailable.
+    """
+    global _cached_transcoder_settings, _cached_transcoder_settings_time
+
+    now = time.time()
+    if _cached_transcoder_settings and (now - _cached_transcoder_settings_time) < _TRANSCODER_SETTINGS_CACHE_TTL:
+        return _cached_transcoder_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        # Fetch settings with fallback to config values
+        settings = {
+            "hls_segment_duration": await service.get("transcoding.hls_segment_duration", HLS_SEGMENT_DURATION),
+            "progress_update_interval": await service.get("workers.progress_update_interval", PROGRESS_UPDATE_INTERVAL),
+            "job_stale_timeout": await service.get("transcoding.job_stale_timeout", JOB_STALE_TIMEOUT),
+            "cleanup_partial_on_failure": await service.get(
+                "transcoding.cleanup_partial_on_failure", CLEANUP_PARTIAL_ON_FAILURE
+            ),
+            "keep_completed_qualities": await service.get(
+                "transcoding.keep_completed_qualities", KEEP_COMPLETED_QUALITIES
+            ),
+            "ffmpeg_timeout_multiplier": await service.get(
+                "transcoding.ffmpeg_timeout_multiplier", FFMPEG_TIMEOUT_BASE_MULTIPLIER
+            ),
+            "ffmpeg_timeout_minimum": await service.get("transcoding.ffmpeg_timeout_minimum", FFMPEG_TIMEOUT_MINIMUM),
+            "ffmpeg_timeout_maximum": await service.get("transcoding.ffmpeg_timeout_maximum", FFMPEG_TIMEOUT_MAXIMUM),
+            "fallback_poll_interval": await service.get(
+                "workers.fallback_poll_interval", WORKER_FALLBACK_POLL_INTERVAL
+            ),
+            "debounce_delay": await service.get("workers.debounce_delay", WORKER_DEBOUNCE_DELAY),
+        }
+        _cached_transcoder_settings = settings
+        _cached_transcoder_settings_time = now
+    except Exception as e:
+        # Fall back to config values on error
+        logger.debug(f"Failed to get transcoder settings from DB: {e}")
+        _cached_transcoder_settings = {
+            "hls_segment_duration": HLS_SEGMENT_DURATION,
+            "progress_update_interval": PROGRESS_UPDATE_INTERVAL,
+            "job_stale_timeout": JOB_STALE_TIMEOUT,
+            "cleanup_partial_on_failure": CLEANUP_PARTIAL_ON_FAILURE,
+            "keep_completed_qualities": KEEP_COMPLETED_QUALITIES,
+            "ffmpeg_timeout_multiplier": FFMPEG_TIMEOUT_BASE_MULTIPLIER,
+            "ffmpeg_timeout_minimum": FFMPEG_TIMEOUT_MINIMUM,
+            "ffmpeg_timeout_maximum": FFMPEG_TIMEOUT_MAXIMUM,
+            "fallback_poll_interval": WORKER_FALLBACK_POLL_INTERVAL,
+            "debounce_delay": WORKER_DEBOUNCE_DELAY,
+        }
+        _cached_transcoder_settings_time = now
+
+    return _cached_transcoder_settings
+
+
+def reset_transcoder_settings_cache() -> None:
+    """Reset the cached transcoder settings. Useful for testing."""
+    global _cached_transcoder_settings, _cached_transcoder_settings_time
+    _cached_transcoder_settings = {}
+    _cached_transcoder_settings_time = 0
 
 
 def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) -> List[List[dict]]:
@@ -461,10 +552,16 @@ class UploadEventHandler(FileSystemEventHandler):
 
     VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, event: asyncio.Event):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        event: asyncio.Event,
+        debounce_delay: float = WORKER_DEBOUNCE_DELAY,
+    ):
         super().__init__()
         self.loop = loop
         self.event = event
+        self.debounce_delay = debounce_delay
         self._debounce_timer = None
         self._lock = threading.Lock()
 
@@ -489,7 +586,7 @@ class UploadEventHandler(FileSystemEventHandler):
         with self._lock:
             if self._debounce_timer is not None:
                 self._debounce_timer.cancel()
-            self._debounce_timer = threading.Timer(WORKER_DEBOUNCE_DELAY, self._trigger_event)
+            self._debounce_timer = threading.Timer(self.debounce_delay, self._trigger_event)
             self._debounce_timer.start()
 
     def on_created(self, event):
@@ -517,16 +614,27 @@ class UploadEventHandler(FileSystemEventHandler):
                 self._debounce_timer = None
 
 
-def start_filesystem_watcher(loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> Optional[Observer]:
+def start_filesystem_watcher(
+    loop: asyncio.AbstractEventLoop,
+    event: asyncio.Event,
+    debounce_delay: float = WORKER_DEBOUNCE_DELAY,
+) -> Optional[Observer]:
     """
     Start the filesystem watcher for the uploads directory.
-    Returns the Observer instance or None if watchdog is not available.
+
+    Args:
+        loop: The asyncio event loop
+        event: The asyncio event to signal on file detection
+        debounce_delay: Delay to debounce file events (seconds)
+
+    Returns:
+        The Observer instance or None if watchdog is not available.
     """
     if not WATCHDOG_AVAILABLE:
         return None
 
     try:
-        handler = UploadEventHandler(loop, event)
+        handler = UploadEventHandler(loop, event, debounce_delay=debounce_delay)
         observer = Observer()
         observer.schedule(handler, str(UPLOADS_DIR), recursive=False)
         observer.start()
@@ -1447,8 +1555,12 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
         state = get_worker_state()
     print(f"Worker {state.worker_id[:8]} checking for interrupted jobs...")
 
+    # Get stale timeout from settings service
+    settings = await get_transcoder_settings()
+    job_stale_timeout = settings["job_stale_timeout"]
+
     # Find jobs that have a checkpoint but no completion and are stale
-    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
+    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=job_stale_timeout)
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
@@ -1488,12 +1600,14 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             if cleanup_source_file(job["video_id"]):
                 print(f"    Cleaned up source file for video {job['video_id']}")
             # Send alert for max retries exceeded (fire-and-forget)
-            send_alert_fire_and_forget(alert_max_retries_exceeded(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                max_attempts=job["max_attempts"],
-                last_error=job.get("last_error"),
-            ))
+            send_alert_fire_and_forget(
+                alert_max_retries_exceeded(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    max_attempts=job["max_attempts"],
+                    last_error=job.get("last_error"),
+                )
+            )
         else:
             # Reset for retry - use transaction to ensure consistency
             print(f"    Resetting for retry (attempt {job['attempt_number'] + 1})")
@@ -1512,12 +1626,14 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
                 )
 
             # Send alert for stale job recovered (fire-and-forget)
-            send_alert_fire_and_forget(alert_stale_job_recovered(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                attempt_number=job["attempt_number"],
-                worker_id=job.get("worker_id"),
-            ))
+            send_alert_fire_and_forget(
+                alert_stale_job_recovered(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    attempt_number=job["attempt_number"],
+                    worker_id=job.get("worker_id"),
+                )
+            )
 
     if stale_jobs:
         print(f"  Recovered {len(stale_jobs)} interrupted job(s)")
@@ -2099,8 +2215,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             raise RuntimeError(error_message)
         elif failed_qualities:
             # Partial success - some qualities failed
+            completed = len(successful_qualities)
             print(
-                f"  WARNING: Partial transcoding success - {len(successful_qualities)}/{total_qualities} quality variants completed"
+                f"  WARNING: Partial transcoding success - {completed}/{total_qualities} quality variants completed"
             )
             print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
@@ -2175,13 +2292,15 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 )
             )
             # Send alert for job failure (fire-and-forget, will retry)
-            send_alert_fire_and_forget(alert_job_failed(
-                video_id=video_id,
-                video_slug=video_slug,
-                attempt_number=job["attempt_number"],
-                error=str(e),
-                will_retry=True,
-            ))
+            send_alert_fire_and_forget(
+                alert_job_failed(
+                    video_id=video_id,
+                    video_slug=video_slug,
+                    attempt_number=job["attempt_number"],
+                    error=str(e),
+                    will_retry=True,
+                )
+            )
         else:
             # Final failure - mark job as completed (finished, even though failed)
             await mark_job_failed(job_id, str(e), final=True)
@@ -2195,12 +2314,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             )
             # Send alert for max retries exceeded (fire-and-forget)
             if job:
-                send_alert_fire_and_forget(alert_max_retries_exceeded(
-                    video_id=video_id,
-                    video_slug=video_slug,
-                    max_attempts=job["max_attempts"],
-                    last_error=str(e),
-                ))
+                send_alert_fire_and_forget(
+                    alert_max_retries_exceeded(
+                        video_id=video_id,
+                        video_slug=video_slug,
+                        max_attempts=job["max_attempts"],
+                        last_error=str(e),
+                    )
+                )
 
         return False
 
@@ -2217,7 +2338,11 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
     if state is None:
         state = get_worker_state()
 
-    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
+    # Get stale timeout from settings service
+    settings = await get_transcoder_settings()
+    job_stale_timeout = settings["job_stale_timeout"]
+
+    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=job_stale_timeout)
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
@@ -2255,12 +2380,14 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
             if cleanup_source_file(job["video_id"]):
                 print(f"  Cleaned up source file for video {job['video_id']}")
             # Send alert for max retries exceeded (fire-and-forget)
-            send_alert_fire_and_forget(alert_max_retries_exceeded(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                max_attempts=job["max_attempts"],
-                last_error=job.get("last_error"),
-            ))
+            send_alert_fire_and_forget(
+                alert_max_retries_exceeded(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    max_attempts=job["max_attempts"],
+                    last_error=job.get("last_error"),
+                )
+            )
         else:
             print(f"Found stale job for '{video['slug']}', resetting for retry")
             async with database.transaction():
@@ -2269,12 +2396,14 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
                     videos.update().where(videos.c.id == job["video_id"]).values(status=VideoStatus.PENDING)
                 )
             # Send alert for stale job recovered (fire-and-forget)
-            send_alert_fire_and_forget(alert_stale_job_recovered(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                attempt_number=job["attempt_number"],
-                worker_id=job.get("worker_id"),
-            ))
+            send_alert_fire_and_forget(
+                alert_stale_job_recovered(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    attempt_number=job["attempt_number"],
+                    worker_id=job.get("worker_id"),
+                )
+            )
 
 
 async def cleanup_expired_archives():
@@ -2379,19 +2508,24 @@ async def worker_loop(state: Optional[WorkerState] = None):
     loop = asyncio.get_running_loop()
     state.new_upload_event = asyncio.Event()
 
+    # Get worker settings from database with caching
+    worker_settings = await get_transcoder_settings()
+    fallback_poll_interval = worker_settings["fallback_poll_interval"]
+    debounce_delay = worker_settings["debounce_delay"]
+
     # Start filesystem watcher if available
     observer = None
     if WORKER_USE_FILESYSTEM_WATCHER and WATCHDOG_AVAILABLE:
-        observer = start_filesystem_watcher(loop, state.new_upload_event)
+        observer = start_filesystem_watcher(loop, state.new_upload_event, debounce_delay=debounce_delay)
         if observer:
-            print(f"  Mode: Event-driven (inotify) with {WORKER_FALLBACK_POLL_INTERVAL}s fallback poll")
+            print(f"  Mode: Event-driven (inotify) with {fallback_poll_interval}s fallback poll")
         else:
-            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watcher failed)")
+            print(f"  Mode: Polling every {fallback_poll_interval}s (watcher failed)")
     else:
         if not WORKER_USE_FILESYSTEM_WATCHER:
-            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watcher disabled)")
+            print(f"  Mode: Polling every {fallback_poll_interval}s (watcher disabled)")
         else:
-            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watchdog not available)")
+            print(f"  Mode: Polling every {fallback_poll_interval}s (watchdog not available)")
 
     print("Watching for new videos...")
 
@@ -2403,11 +2537,13 @@ async def worker_loop(state: Optional[WorkerState] = None):
 
     # Send worker startup alert (fire-and-forget)
     gpu_info = state.gpu_caps.device_name if state.gpu_caps else None
-    send_alert_fire_and_forget(alert_worker_startup(
-        worker_id=state.worker_id,
-        gpu_info=gpu_info,
-        recovered_jobs=recovered_count,
-    ))
+    send_alert_fire_and_forget(
+        alert_worker_startup(
+            worker_id=state.worker_id,
+            gpu_info=gpu_info,
+            recovered_jobs=recovered_count,
+        )
+    )
 
     last_stale_check = datetime.now(timezone.utc)
     stale_check_interval = 300  # Check every 5 minutes
@@ -2454,10 +2590,14 @@ async def worker_loop(state: Optional[WorkerState] = None):
 
             # Wait for new uploads or fallback timeout
             if not state.shutdown_requested:
+                # Refresh settings periodically (cache has 60s TTL)
+                worker_settings = await get_transcoder_settings()
+                poll_interval = worker_settings["fallback_poll_interval"]
+
                 if use_event_driven:
                     # Event-driven: wait for filesystem event OR fallback timeout
                     try:
-                        await asyncio.wait_for(state.new_upload_event.wait(), timeout=WORKER_FALLBACK_POLL_INTERVAL)
+                        await asyncio.wait_for(state.new_upload_event.wait(), timeout=poll_interval)
                         # Event was set - new file detected
                         state.new_upload_event.clear()
                     except asyncio.TimeoutError:
@@ -2465,7 +2605,7 @@ async def worker_loop(state: Optional[WorkerState] = None):
                         pass
                 else:
                     # Polling mode: just wait the fallback interval
-                    await asyncio.sleep(WORKER_FALLBACK_POLL_INTERVAL)
+                    await asyncio.sleep(poll_interval)
 
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt received.")
@@ -2519,10 +2659,12 @@ async def worker_loop(state: Optional[WorkerState] = None):
                 print("No jobs to reset.")
 
             # Send worker shutdown alert (fire-and-forget)
-            send_alert_fire_and_forget(alert_worker_shutdown(
-                worker_id=state.worker_id,
-                jobs_reset=reset_count,
-            ))
+            send_alert_fire_and_forget(
+                alert_worker_shutdown(
+                    worker_id=state.worker_id,
+                    jobs_reset=reset_count,
+                )
+            )
         except Exception as e:
             print(f"Error during cleanup: {e}")
 

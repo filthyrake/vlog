@@ -116,7 +116,12 @@ class TestSendWebhookAlert:
     @pytest.mark.asyncio
     async def test_no_webhook_url_configured(self):
         """Test that no alert is sent when webhook URL is not configured."""
-        with patch("worker.alerts.ALERT_WEBHOOK_URL", ""):
+        mock_settings = AsyncMock(return_value={
+            "webhook_url": "",
+            "webhook_timeout": 10,
+            "rate_limit_seconds": 300,
+        })
+        with patch("worker.alerts._get_alert_settings", mock_settings):
             result = await send_webhook_alert(
                 AlertType.JOB_STALE_RECOVERED,
                 {"test": "data"},
@@ -129,7 +134,12 @@ class TestSendWebhookAlert:
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
 
-        with patch("worker.alerts.ALERT_WEBHOOK_URL", "https://example.com/webhook"):
+        mock_settings = AsyncMock(return_value={
+            "webhook_url": "https://example.com/webhook",
+            "webhook_timeout": 10,
+            "rate_limit_seconds": 300,
+        })
+        with patch("worker.alerts._get_alert_settings", mock_settings):
             with patch("httpx.AsyncClient") as mock_client:
                 mock_instance = AsyncMock()
                 mock_instance.post = AsyncMock(return_value=mock_response)
@@ -157,7 +167,12 @@ class TestSendWebhookAlert:
         metrics = get_metrics()
         metrics.record_alert_sent(AlertType.JOB_FAILED.value)
 
-        with patch("worker.alerts.ALERT_WEBHOOK_URL", "https://example.com/webhook"):
+        mock_settings = AsyncMock(return_value={
+            "webhook_url": "https://example.com/webhook",
+            "webhook_timeout": 10,
+            "rate_limit_seconds": 300,
+        })
+        with patch("worker.alerts._get_alert_settings", mock_settings):
             result = await send_webhook_alert(
                 AlertType.JOB_FAILED,
                 {"test": "data"},
@@ -174,7 +189,12 @@ class TestSendWebhookAlert:
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
 
-        with patch("worker.alerts.ALERT_WEBHOOK_URL", "https://example.com/webhook"):
+        mock_settings = AsyncMock(return_value={
+            "webhook_url": "https://example.com/webhook",
+            "webhook_timeout": 10,
+            "rate_limit_seconds": 300,
+        })
+        with patch("worker.alerts._get_alert_settings", mock_settings):
             with patch("httpx.AsyncClient") as mock_client:
                 mock_instance = AsyncMock()
                 mock_instance.post = AsyncMock(return_value=mock_response)
@@ -190,7 +210,12 @@ class TestSendWebhookAlert:
     @pytest.mark.asyncio
     async def test_timeout_error(self):
         """Test handling of timeout errors."""
-        with patch("worker.alerts.ALERT_WEBHOOK_URL", "https://example.com/webhook"):
+        mock_settings = AsyncMock(return_value={
+            "webhook_url": "https://example.com/webhook",
+            "webhook_timeout": 10,
+            "rate_limit_seconds": 300,
+        })
+        with patch("worker.alerts._get_alert_settings", mock_settings):
             with patch("httpx.AsyncClient") as mock_client:
                 mock_instance = AsyncMock()
                 mock_instance.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
@@ -208,7 +233,12 @@ class TestSendWebhookAlert:
     @pytest.mark.asyncio
     async def test_http_error(self):
         """Test handling of HTTP errors."""
-        with patch("worker.alerts.ALERT_WEBHOOK_URL", "https://example.com/webhook"):
+        mock_settings = AsyncMock(return_value={
+            "webhook_url": "https://example.com/webhook",
+            "webhook_timeout": 10,
+            "rate_limit_seconds": 300,
+        })
+        with patch("worker.alerts._get_alert_settings", mock_settings):
             with patch("httpx.AsyncClient") as mock_client:
                 mock_instance = AsyncMock()
                 mock_response = MagicMock()

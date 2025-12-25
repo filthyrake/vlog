@@ -501,6 +501,94 @@ Reduced from 5 to 2 for faster failure detection on stale NFS mounts.
 
 ---
 
+## Database-Backed Settings System
+
+VLog supports a database-backed settings system that allows runtime configuration changes without restarting services.
+
+### Overview
+
+Settings are stored in a PostgreSQL table and can be managed via:
+- **Admin UI**: Settings tab in the admin interface
+- **CLI**: `vlog settings` command
+- **API**: `/api/settings/*` endpoints
+
+### Bootstrap vs Runtime Settings
+
+**Bootstrap settings** are required at startup and cannot be changed at runtime:
+- Database connection URL
+- Storage paths
+- Server ports
+- API secrets
+
+**Runtime settings** can be changed without restart:
+- Transcoding parameters (HLS segment duration, timeouts)
+- Watermark configuration
+- Analytics cache settings
+- Alert webhook configuration
+- Worker poll intervals
+
+### Settings Migration
+
+To migrate existing environment variables to the database:
+
+```bash
+# Migrate all migrateable settings from environment
+vlog settings migrate-from-env
+
+# List all settings
+vlog settings list
+
+# Get a specific setting
+vlog settings get transcoding.hls_segment_duration
+
+# Set a setting
+vlog settings set transcoding.hls_segment_duration 10
+```
+
+### Auto-Seeding
+
+On fresh installations, VLog automatically seeds the database with settings from environment variables. This happens once during the first startup when no settings exist in the database.
+
+### Settings Categories
+
+| Category | Description |
+|----------|-------------|
+| `transcoding` | HLS, timeout, and retry settings |
+| `watermark` | Watermark overlay configuration |
+| `workers` | Worker poll intervals and heartbeat settings |
+| `analytics` | Analytics caching configuration |
+| `alerts` | Webhook and notification settings |
+| `storage` | Upload size limits |
+
+### Cache Behavior
+
+Settings are cached in memory for 60 seconds to avoid database round-trips on every request. This means:
+- Changes take up to 60 seconds to take effect
+- No restart required for runtime settings
+- Bootstrap settings still require restart
+
+### Deprecation Warnings
+
+When using deprecated environment variables, VLog logs warnings at startup with guidance on migrating to the database-backed system:
+
+```
+DEPRECATION WARNING: Environment variable 'VLOG_HLS_SEGMENT_DURATION' is deprecated.
+Use 'vlog settings set transcoding.hls_segment_duration <value>' to configure via database.
+Run 'vlog settings migrate-from-env' to migrate all settings.
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/settings` | GET | List all settings |
+| `/api/settings/{key}` | GET | Get a specific setting |
+| `/api/settings/{key}` | PUT | Update a setting |
+| `/api/settings/seed` | POST | Seed settings from environment |
+| `/api/settings/export` | GET | Export all settings as JSON |
+
+---
+
 ## Test Mode
 
 Set `VLOG_TEST_MODE=1` to:

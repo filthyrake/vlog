@@ -30,6 +30,13 @@ from config import (
     WORKER_API_PORT,
 )
 
+
+# Import for settings migration (lazy to avoid circular imports)
+def _get_settings_module():
+    """Lazy import settings module to avoid circular imports."""
+    from api import settings_service
+    return settings_service
+
 # Download timeout in seconds (default 1 hour, configurable via environment)
 DOWNLOAD_TIMEOUT = int(os.getenv("VLOG_DOWNLOAD_TIMEOUT", "3600"))
 
@@ -656,6 +663,159 @@ def cmd_worker(args):
         sys.exit(1)
 
 
+def cmd_settings(args):
+    """Settings management commands."""
+    import asyncio
+
+    if args.settings_command == "migrate-from-env":
+        # Migrate settings from environment variables to database
+        print("Migrating settings from environment variables to database...")
+        print()
+
+        try:
+            settings_module = _get_settings_module()
+
+            async def do_migration():
+                return await settings_module.seed_settings_from_env(updated_by="cli-migration")
+
+            result = asyncio.run(do_migration())
+
+            seeded = result.get("seeded", 0)
+            skipped = result.get("skipped", 0)
+            details = result.get("details", [])
+
+            if seeded > 0:
+                print(f"✓ Migrated {seeded} settings to database")
+                for d in details:
+                    if d["status"] == "seeded":
+                        print(f"  • {d['key']}: {d['value']} (from {d['from_env']})")
+                print()
+
+            if skipped > 0 and args.verbose:
+                print(f"Skipped {skipped} settings (already exist or no env var)")
+                for d in details:
+                    if d["status"] == "skipped":
+                        print(f"  • {d['key']}: {d.get('reason', 'unknown')}")
+                print()
+
+            # Show which env vars are safe to remove
+            safe_to_remove = []
+            for d in details:
+                if d["status"] == "seeded":
+                    safe_to_remove.append(d["from_env"])
+
+            if safe_to_remove:
+                print("The following environment variables can now be removed from .env:")
+                for env_var in sorted(safe_to_remove):
+                    print(f"  {env_var}")
+                print()
+                print("Note: Keep bootstrap variables (ports, paths, secrets, database URL)")
+
+            if seeded == 0 and skipped > 0:
+                print("No new settings to migrate. Settings may already exist in the database.")
+                print("Use --verbose to see skipped settings.")
+
+        except Exception as e:
+            print(f"Error during migration: {e}")
+            sys.exit(1)
+
+    elif args.settings_command == "list":
+        # List settings from database
+        try:
+            response = httpx.get(f"{API_BASE}/settings", timeout=DEFAULT_API_TIMEOUT)
+            result = safe_json_response(response)
+
+            if not result:
+                print("No settings found in database.")
+                print("Run 'vlog settings migrate-from-env' to migrate from environment variables.")
+                return
+
+            for category, settings_list in result.items():
+                print(f"\n[{category}]")
+                for s in settings_list:
+                    value_display = s["value"]
+                    if isinstance(value_display, str) and len(value_display) > 50:
+                        value_display = value_display[:47] + "..."
+                    print(f"  {s['key']}: {value_display}")
+
+        except httpx.ConnectError:
+            print(f"Error: Could not connect to admin API at {API_BASE}")
+            sys.exit(1)
+        except httpx.TimeoutException:
+            print(f"Error: Request timed out while connecting to {API_BASE}")
+            sys.exit(1)
+        except CLIError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif args.settings_command == "get":
+        # Get a single setting
+        key = args.key
+        try:
+            response = httpx.get(f"{API_BASE}/settings/key/{key}", timeout=DEFAULT_API_TIMEOUT)
+            result = safe_json_response(response)
+
+            print(f"Key: {result['key']}")
+            print(f"Value: {result['value']}")
+            print(f"Type: {result['value_type']}")
+            print(f"Category: {result['category']}")
+            if result.get("description"):
+                print(f"Description: {result['description']}")
+            if result.get("constraints"):
+                print(f"Constraints: {result['constraints']}")
+
+        except httpx.ConnectError:
+            print(f"Error: Could not connect to admin API at {API_BASE}")
+            sys.exit(1)
+        except httpx.TimeoutException:
+            print(f"Error: Request timed out while connecting to {API_BASE}")
+            sys.exit(1)
+        except CLIError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif args.settings_command == "set":
+        # Set a setting value
+        key = args.key
+        value = args.value
+
+        # Try to parse as JSON first (for booleans, numbers, etc.)
+        import json as json_module
+        try:
+            parsed_value = json_module.loads(value)
+        except json_module.JSONDecodeError:
+            # Keep as string
+            parsed_value = value
+
+        try:
+            response = httpx.post(
+                f"{API_BASE}/settings",
+                json={"key": key, "value": parsed_value},
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            safe_json_response(response)
+            print(f"Setting updated: {key} = {parsed_value}")
+
+        except httpx.ConnectError:
+            print(f"Error: Could not connect to admin API at {API_BASE}")
+            sys.exit(1)
+        except httpx.TimeoutException:
+            print(f"Error: Request timed out while connecting to {API_BASE}")
+            sys.exit(1)
+        except CLIError as e:
+            error_msg = str(e)
+            # Check for common validation errors and provide helpful messages
+            if "must be" in error_msg.lower() or "invalid" in error_msg.lower():
+                print(f"Validation error for '{key}': {error_msg}")
+                print("\nUse 'vlog settings get <key>' to see valid constraints.")
+            elif "not found" in error_msg.lower():
+                print(f"Setting '{key}' not found in database.")
+                print("Run 'vlog settings migrate-from-env' first, or use 'vlog settings list' to see available settings.")
+            else:
+                print(f"Error: {error_msg}")
+            sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="vlog", description="VLog CLI - Manage your video library")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -719,6 +879,33 @@ def main():
     worker_revoke.add_argument("worker_id", help="Worker ID (UUID) to revoke")
 
     worker_parser.set_defaults(func=cmd_worker)
+
+    # Settings management command
+    settings_parser = subparsers.add_parser("settings", help="Manage database-backed settings")
+    settings_subparsers = settings_parser.add_subparsers(dest="settings_command", required=True)
+
+    # settings migrate-from-env
+    migrate_parser = settings_subparsers.add_parser(
+        "migrate-from-env",
+        help="Migrate settings from environment variables to database",
+    )
+    migrate_parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Show skipped settings details"
+    )
+
+    # settings list
+    settings_subparsers.add_parser("list", help="List all settings from database")
+
+    # settings get
+    get_parser = settings_subparsers.add_parser("get", help="Get a single setting value")
+    get_parser.add_argument("key", help="Setting key (e.g., transcoding.hls_segment_duration)")
+
+    # settings set
+    set_parser = settings_subparsers.add_parser("set", help="Set a setting value")
+    set_parser.add_argument("key", help="Setting key")
+    set_parser.add_argument("value", help="New value (JSON-parseable for numbers/booleans)")
+
+    settings_parser.set_defaults(func=cmd_settings)
 
     args = parser.parse_args()
     args.func(args)
