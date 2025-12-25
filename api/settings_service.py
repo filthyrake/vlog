@@ -223,6 +223,10 @@ class SettingsService:
         Returns:
             Environment variable name (e.g., "VLOG_HLS_SEGMENT_DURATION")
         """
+        # Check for explicit mapping first (for non-standard env var names)
+        if setting_key in SETTING_TO_ENV_MAP:
+            return SETTING_TO_ENV_MAP[setting_key]
+
         # Remove category prefix for env var lookup
         # e.g., "transcoding.hls_segment_duration" -> "HLS_SEGMENT_DURATION"
         if "." in setting_key:
@@ -681,26 +685,203 @@ async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) ->
 
 
 # Known settings that can be seeded from environment variables
-# Format: (key, category, value_type, description, constraints)
+# Format: (key, category, value_type, description, constraints, env_var_override)
+# env_var_override is optional - if None, the env var is derived from the key
 KNOWN_SETTINGS = [
     # Transcoding settings
-    ("transcoding.hls_segment_duration", "transcoding", "integer", "HLS segment duration in seconds", {"min": 2, "max": 30}),
-    ("transcoding.hls_playlist_type", "transcoding", "enum", "HLS playlist type", {"enum_values": ["vod", "event"]}),
-    ("transcoding.video_codec", "transcoding", "enum", "Video codec", {"enum_values": ["h264", "h265", "av1"]}),
-    ("transcoding.audio_codec", "transcoding", "enum", "Audio codec", {"enum_values": ["aac", "opus"]}),
-    ("transcoding.max_retries", "transcoding", "integer", "Maximum retry attempts for failed jobs", {"min": 0, "max": 10}),
-    # Watermark settings
-    ("watermark.enabled", "watermark", "boolean", "Enable watermarking on videos", None),
-    ("watermark.position", "watermark", "enum", "Watermark position", {"enum_values": ["top-left", "top-right", "bottom-left", "bottom-right"]}),
+    (
+        "transcoding.hls_segment_duration",
+        "transcoding",
+        "integer",
+        "HLS segment duration in seconds",
+        {"min": 2, "max": 30},
+    ),
+    (
+        "transcoding.checkpoint_interval",
+        "transcoding",
+        "integer",
+        "Checkpoint interval in seconds",
+        {"min": 1, "max": 300},
+    ),
+    (
+        "transcoding.max_retries",
+        "transcoding",
+        "integer",
+        "Maximum retry attempts for failed jobs",
+        {"min": 0, "max": 10},
+    ),
+    (
+        "transcoding.retry_backoff_base",
+        "transcoding",
+        "integer",
+        "Base retry backoff in seconds",
+        {"min": 0, "max": 600},
+    ),
+    (
+        "transcoding.job_stale_timeout",
+        "transcoding",
+        "integer",
+        "Job stale timeout in seconds",
+        {"min": 60, "max": 7200},
+    ),
+    ("transcoding.cleanup_partial_on_failure", "transcoding", "boolean", "Clean up partial files on failure", None),
+    ("transcoding.keep_completed_qualities", "transcoding", "boolean", "Keep completed qualities on resume", None),
+    (
+        "transcoding.ffmpeg_timeout_multiplier",
+        "transcoding",
+        "float",
+        "FFmpeg timeout base multiplier",
+        {"min": 0.1, "max": 10.0},
+    ),
+    (
+        "transcoding.ffmpeg_timeout_minimum",
+        "transcoding",
+        "integer",
+        "Minimum FFmpeg timeout in seconds",
+        {"min": 60, "max": 3600},
+    ),
+    (
+        "transcoding.ffmpeg_timeout_maximum",
+        "transcoding",
+        "integer",
+        "Maximum FFmpeg timeout in seconds",
+        {"min": 300, "max": 86400},
+    ),
+    # Watermark settings (client-side overlay)
+    ("watermark.enabled", "watermark", "boolean", "Enable watermark overlay on video player", None),
+    ("watermark.type", "watermark", "enum", "Watermark type", {"enum_values": ["image", "text"]}),
+    ("watermark.image", "watermark", "string", "Path to watermark image (relative to storage)", None),
+    ("watermark.text", "watermark", "string", "Text to display as watermark", None),
+    ("watermark.text_size", "watermark", "integer", "Text watermark font size in pixels", {"min": 8, "max": 72}),
+    ("watermark.text_color", "watermark", "string", "Text watermark color (CSS color)", None),
+    (
+        "watermark.position",
+        "watermark",
+        "enum",
+        "Watermark position",
+        {"enum_values": ["top-left", "top-right", "bottom-left", "bottom-right", "center"]},
+    ),
     ("watermark.opacity", "watermark", "float", "Watermark opacity (0.0-1.0)", {"min": 0.0, "max": 1.0}),
+    ("watermark.padding", "watermark", "integer", "Padding from edge in pixels", {"min": 0, "max": 200}),
+    (
+        "watermark.max_width_percent",
+        "watermark",
+        "integer",
+        "Max width as percentage of video player",
+        {"min": 1, "max": 50},
+    ),
     # Worker settings
-    ("workers.heartbeat_interval", "workers", "integer", "Worker heartbeat interval in seconds", {"min": 5, "max": 300}),
-    ("workers.job_timeout", "workers", "integer", "Job timeout in seconds", {"min": 60, "max": 86400}),
-    ("workers.max_concurrent_jobs", "workers", "integer", "Max concurrent jobs per worker", {"min": 1, "max": 10}),
+    (
+        "workers.heartbeat_interval",
+        "workers",
+        "integer",
+        "Worker heartbeat interval in seconds",
+        {"min": 5, "max": 300},
+    ),
+    ("workers.claim_duration_minutes", "workers", "integer", "Job claim duration in minutes", {"min": 1, "max": 120}),
+    ("workers.poll_interval", "workers", "integer", "Job polling interval in seconds", {"min": 1, "max": 120}),
+    (
+        "workers.offline_threshold_minutes",
+        "workers",
+        "integer",
+        "Minutes before worker is considered offline",
+        {"min": 1, "max": 60},
+    ),
+    (
+        "workers.stale_job_check_interval",
+        "workers",
+        "integer",
+        "Stale job check interval in seconds",
+        {"min": 10, "max": 600},
+    ),
+    (
+        "workers.progress_update_interval",
+        "workers",
+        "float",
+        "Progress update interval in seconds",
+        {"min": 0.1, "max": 60.0},
+    ),
+    # Analytics settings
+    ("analytics.cache_enabled", "analytics", "boolean", "Enable analytics caching", None),
+    ("analytics.cache_ttl", "analytics", "integer", "Analytics cache TTL in seconds", {"min": 1, "max": 3600}),
+    (
+        "analytics.client_cache_max_age",
+        "analytics",
+        "integer",
+        "Client-side cache max-age in seconds",
+        {"min": 0, "max": 3600},
+    ),
+    # Alert settings
+    ("alerts.webhook_url", "alerts", "string", "Webhook URL for alerts", None),
+    ("alerts.webhook_timeout", "alerts", "integer", "Webhook request timeout in seconds", {"min": 1, "max": 60}),
+    (
+        "alerts.rate_limit_seconds",
+        "alerts",
+        "integer",
+        "Minimum seconds between alerts of same type",
+        {"min": 0, "max": 3600},
+    ),
+    # Transcription settings
+    ("transcription.enabled", "transcription", "boolean", "Enable automatic transcription", None),
+    (
+        "transcription.whisper_model",
+        "transcription",
+        "enum",
+        "Whisper model size",
+        {"enum_values": ["tiny", "base", "small", "medium", "large"]},
+    ),
+    ("transcription.language", "transcription", "string", "Transcription language (or null for auto)", None),
+    ("transcription.on_upload", "transcription", "boolean", "Transcribe automatically on upload", None),
+    (
+        "transcription.compute_type",
+        "transcription",
+        "enum",
+        "Compute type for transcription",
+        {"enum_values": ["int8", "float16", "float32"]},
+    ),
+    (
+        "transcription.timeout",
+        "transcription",
+        "integer",
+        "Transcription timeout in seconds",
+        {"min": 60, "max": 14400},
+    ),
     # Storage settings
-    ("storage.max_upload_size_mb", "storage", "integer", "Maximum upload size in MB", {"min": 1, "max": 10240}),
-    ("storage.thumbnail_quality", "storage", "integer", "Thumbnail JPEG quality (1-100)", {"min": 1, "max": 100}),
+    ("storage.archive_retention_days", "storage", "integer", "Days to retain archived videos", {"min": 0, "max": 365}),
+    ("storage.max_upload_size_mb", "storage", "integer", "Maximum upload size in MB", {"min": 1, "max": 102400}),
+    (
+        "storage.max_thumbnail_size_mb",
+        "storage",
+        "integer",
+        "Maximum thumbnail upload size in MB",
+        {"min": 1, "max": 100},
+    ),
+    ("storage.thumbnail_width", "storage", "integer", "Thumbnail width in pixels", {"min": 100, "max": 1920}),
 ]
+
+# Mapping from setting key to environment variable name (for non-standard mappings)
+SETTING_TO_ENV_MAP = {
+    "transcoding.max_retries": "VLOG_MAX_RETRY_ATTEMPTS",
+    "transcoding.ffmpeg_timeout_multiplier": "VLOG_FFMPEG_TIMEOUT_BASE_MULTIPLIER",
+    "workers.claim_duration_minutes": "VLOG_WORKER_CLAIM_DURATION",
+    "workers.offline_threshold_minutes": "VLOG_WORKER_OFFLINE_THRESHOLD",
+    "analytics.cache_enabled": "VLOG_ANALYTICS_CACHE_ENABLED",
+    "analytics.cache_ttl": "VLOG_ANALYTICS_CACHE_TTL",
+    "analytics.client_cache_max_age": "VLOG_ANALYTICS_CLIENT_CACHE_MAX_AGE",
+    "alerts.webhook_url": "VLOG_ALERT_WEBHOOK_URL",
+    "alerts.webhook_timeout": "VLOG_ALERT_WEBHOOK_TIMEOUT",
+    "alerts.rate_limit_seconds": "VLOG_ALERT_RATE_LIMIT_SECONDS",
+    "transcription.enabled": "VLOG_TRANSCRIPTION_ENABLED",
+    "transcription.whisper_model": "VLOG_WHISPER_MODEL",
+    "transcription.language": "VLOG_TRANSCRIPTION_LANGUAGE",
+    "transcription.on_upload": "VLOG_TRANSCRIPTION_ON_UPLOAD",
+    "transcription.compute_type": "VLOG_TRANSCRIPTION_COMPUTE_TYPE",
+    "transcription.timeout": "VLOG_TRANSCRIPTION_TIMEOUT",
+    "storage.archive_retention_days": "VLOG_ARCHIVE_RETENTION_DAYS",
+    "storage.max_upload_size_mb": "VLOG_MAX_UPLOAD_SIZE",
+    "storage.max_thumbnail_size_mb": "VLOG_MAX_THUMBNAIL_SIZE",
+    "storage.thumbnail_width": "VLOG_THUMBNAIL_WIDTH",
+}
 
 
 async def seed_settings_from_env(updated_by: str = "migration") -> Dict[str, Any]:

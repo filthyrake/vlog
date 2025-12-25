@@ -171,6 +171,7 @@ from config import (
     WATERMARK_TEXT_SIZE,
     WATERMARK_TYPE,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
+    check_deprecated_env_vars,
 )
 from worker.transcoder import generate_thumbnail, get_video_info
 
@@ -184,11 +185,22 @@ limiter = Limiter(
 )
 
 # Initialize analytics cache (uses Redis if ANALYTICS_CACHE_STORAGE_URL is set to redis://)
+# Note: Cache initialization uses env vars. Runtime settings (like client cache max-age) use settings service.
 analytics_cache = create_analytics_cache(
     storage_url=ANALYTICS_CACHE_STORAGE_URL,
     ttl_seconds=ANALYTICS_CACHE_TTL,
     enabled=ANALYTICS_CACHE_ENABLED,
 )
+
+
+async def get_analytics_client_cache_max_age() -> int:
+    """Get analytics client cache max-age from settings service with fallback to env var."""
+    try:
+        service = get_settings_service()
+        return await service.get("analytics.client_cache_max_age", ANALYTICS_CLIENT_CACHE_MAX_AGE)
+    except Exception:
+        return ANALYTICS_CLIENT_CACHE_MAX_AGE
+
 
 # Use centralized video extensions from config
 ALLOWED_VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
@@ -225,9 +237,7 @@ async def validate_session_token(session_token: str) -> bool:
 
     # Update last_used_at
     update_query = (
-        admin_sessions.update()
-        .where(admin_sessions.c.session_token == session_token)
-        .values(last_used_at=now)
+        admin_sessions.update().where(admin_sessions.c.session_token == session_token).values(last_used_at=now)
     )
     await database.execute(update_query)
 
@@ -671,6 +681,9 @@ async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
     global _session_cleanup_task
 
+    # Check for deprecated environment variables and warn about migration
+    check_deprecated_env_vars()
+
     # Warn about in-memory rate limiting limitations
     if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
         logger.warning(
@@ -1078,15 +1091,11 @@ async def update_tag(request: Request, tag_id: int, data: TagUpdate) -> TagRespo
     new_slug = slugify(data.name)
 
     # Check for duplicate slug (exclude current tag)
-    duplicate = await fetch_one_with_retry(
-        tags.select().where(tags.c.slug == new_slug).where(tags.c.id != tag_id)
-    )
+    duplicate = await fetch_one_with_retry(tags.select().where(tags.c.slug == new_slug).where(tags.c.id != tag_id))
     if duplicate:
         raise HTTPException(status_code=400, detail="Tag with this name already exists")
 
-    await db_execute_with_retry(
-        tags.update().where(tags.c.id == tag_id).values(name=data.name, slug=new_slug)
-    )
+    await db_execute_with_retry(tags.update().where(tags.c.id == tag_id).values(name=data.name, slug=new_slug))
 
     # Get video count
     count_query = (
@@ -1669,9 +1678,7 @@ async def remove_video_tag(request: Request, video_id: int, tag_id: int):
 
     # Remove the tag association
     await db_execute_with_retry(
-        video_tags.delete().where(
-            sa.and_(video_tags.c.video_id == video_id, video_tags.c.tag_id == tag_id)
-        )
+        video_tags.delete().where(sa.and_(video_tags.c.video_id == video_id, video_tags.c.tag_id == tag_id))
     )
 
     # Audit log
@@ -1893,9 +1900,7 @@ async def upload_custom_thumbnail(
 
         # Update database
         await db_execute_with_retry(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(thumbnail_source="custom", thumbnail_timestamp=None)
+            videos.update().where(videos.c.id == video_id).values(thumbnail_source="custom", thumbnail_timestamp=None)
         )
 
         # Clean up frames directory if it exists
@@ -1947,9 +1952,7 @@ async def select_thumbnail_frame(
 
     # Validate timestamp
     if timestamp < 0 or timestamp > duration:
-        raise HTTPException(
-            status_code=400, detail=f"Timestamp must be between 0 and {duration:.2f} seconds"
-        )
+        raise HTTPException(status_code=400, detail=f"Timestamp must be between 0 and {duration:.2f} seconds")
 
     # Find source file
     source_path = _get_video_source_path(video_id, video["slug"])
@@ -2037,9 +2040,7 @@ async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse
 
     # Update database
     await db_execute_with_retry(
-        videos.update()
-        .where(videos.c.id == video_id)
-        .values(thumbnail_source="auto", thumbnail_timestamp=None)
+        videos.update().where(videos.c.id == video_id).values(thumbnail_source="auto", thumbnail_timestamp=None)
     )
 
     # Clean up frames directory
@@ -3351,9 +3352,12 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
     cache_key = "analytics_overview"
     cached_data = analytics_cache.get(cache_key)
 
+    # Get cache max-age from settings (with env var fallback)
+    cache_max_age = await get_analytics_client_cache_max_age()
+
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
-        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
         return AnalyticsOverview(**cached_data)
 
     # Cache miss - compute fresh data
@@ -3446,7 +3450,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
     analytics_cache.set(cache_key, result_data)
 
     # Set Cache-Control header for client-side caching
-    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
 
     return AnalyticsOverview(**result_data)
 
@@ -3505,8 +3509,11 @@ async def analytics_videos(
             COUNT(DISTINCT ps.viewer_id) as unique_viewers,
             COALESCE(SUM(ps.duration_watched), 0) as total_watch_time_seconds,
             COALESCE(AVG(ps.duration_watched), 0) as avg_watch_duration_seconds,
-            COALESCE(SUM(CASE WHEN ps.completed THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(ps.id), 0), 0) as completion_rate,
-            (SELECT quality_used FROM playback_sessions WHERE video_id = v.id GROUP BY quality_used ORDER BY COUNT(*) DESC LIMIT 1) as peak_quality
+            COALESCE(
+                SUM(CASE WHEN ps.completed THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(ps.id), 0), 0
+            ) as completion_rate,
+            (SELECT quality_used FROM playback_sessions WHERE video_id = v.id
+                GROUP BY quality_used ORDER BY COUNT(*) DESC LIMIT 1) as peak_quality
         FROM videos v
         LEFT JOIN playback_sessions ps ON v.id = ps.video_id {period_clause}
         WHERE v.status = 'ready'
@@ -3611,7 +3618,10 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
     quality_query = """
         SELECT
             quality_used as quality,
-            COUNT(*) * 1.0 / (SELECT COUNT(*) FROM playback_sessions WHERE video_id = :video_id AND quality_used IS NOT NULL) as percentage
+            COUNT(*) * 1.0 / (
+                SELECT COUNT(*) FROM playback_sessions
+                WHERE video_id = :video_id AND quality_used IS NOT NULL
+            ) as percentage
         FROM playback_sessions
         WHERE video_id = :video_id AND quality_used IS NOT NULL
         GROUP BY quality_used

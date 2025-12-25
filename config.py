@@ -1,10 +1,90 @@
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
 # Configure logger for config module warnings
 logger = logging.getLogger(__name__)
+
+# Track which deprecation warnings have been issued (to avoid repeated warnings)
+_deprecation_warnings_issued: Set[str] = set()
+
+# Environment variables that should be migrated to database settings
+# These will trigger a deprecation warning if set
+DEPRECATED_ENV_VARS = {
+    # Transcoding settings
+    "VLOG_HLS_SEGMENT_DURATION": "transcoding.hls_segment_duration",
+    "VLOG_CHECKPOINT_INTERVAL": "transcoding.checkpoint_interval",
+    "VLOG_MAX_RETRY_ATTEMPTS": "transcoding.max_retries",
+    "VLOG_RETRY_BACKOFF_BASE": "transcoding.retry_backoff_base",
+    "VLOG_JOB_STALE_TIMEOUT": "transcoding.job_stale_timeout",
+    "VLOG_CLEANUP_PARTIAL_ON_FAILURE": "transcoding.cleanup_partial_on_failure",
+    "VLOG_KEEP_COMPLETED_QUALITIES": "transcoding.keep_completed_qualities",
+    "VLOG_FFMPEG_TIMEOUT_BASE_MULTIPLIER": "transcoding.ffmpeg_timeout_multiplier",
+    "VLOG_FFMPEG_TIMEOUT_MINIMUM": "transcoding.ffmpeg_timeout_minimum",
+    "VLOG_FFMPEG_TIMEOUT_MAXIMUM": "transcoding.ffmpeg_timeout_maximum",
+    # Watermark settings
+    "VLOG_WATERMARK_ENABLED": "watermark.enabled",
+    "VLOG_WATERMARK_TYPE": "watermark.type",
+    "VLOG_WATERMARK_IMAGE": "watermark.image",
+    "VLOG_WATERMARK_TEXT": "watermark.text",
+    "VLOG_WATERMARK_TEXT_SIZE": "watermark.text_size",
+    "VLOG_WATERMARK_TEXT_COLOR": "watermark.text_color",
+    "VLOG_WATERMARK_POSITION": "watermark.position",
+    "VLOG_WATERMARK_OPACITY": "watermark.opacity",
+    "VLOG_WATERMARK_PADDING": "watermark.padding",
+    "VLOG_WATERMARK_MAX_WIDTH_PERCENT": "watermark.max_width_percent",
+    # Worker settings
+    "VLOG_WORKER_HEARTBEAT_INTERVAL": "workers.heartbeat_interval",
+    "VLOG_WORKER_CLAIM_DURATION": "workers.claim_duration_minutes",
+    "VLOG_WORKER_POLL_INTERVAL": "workers.poll_interval",
+    "VLOG_WORKER_OFFLINE_THRESHOLD": "workers.offline_threshold_minutes",
+    "VLOG_STALE_JOB_CHECK_INTERVAL": "workers.stale_job_check_interval",
+    "VLOG_PROGRESS_UPDATE_INTERVAL": "workers.progress_update_interval",
+    # Analytics settings
+    "VLOG_ANALYTICS_CACHE_ENABLED": "analytics.cache_enabled",
+    "VLOG_ANALYTICS_CACHE_TTL": "analytics.cache_ttl",
+    "VLOG_ANALYTICS_CLIENT_CACHE_MAX_AGE": "analytics.client_cache_max_age",
+    # Alert settings
+    "VLOG_ALERT_WEBHOOK_URL": "alerts.webhook_url",
+    "VLOG_ALERT_WEBHOOK_TIMEOUT": "alerts.webhook_timeout",
+    "VLOG_ALERT_RATE_LIMIT_SECONDS": "alerts.rate_limit_seconds",
+    # Transcription settings
+    "VLOG_WHISPER_MODEL": "transcription.whisper_model",
+    "VLOG_TRANSCRIPTION_ENABLED": "transcription.enabled",
+    "VLOG_TRANSCRIPTION_LANGUAGE": "transcription.language",
+    "VLOG_TRANSCRIPTION_ON_UPLOAD": "transcription.on_upload",
+    "VLOG_TRANSCRIPTION_COMPUTE_TYPE": "transcription.compute_type",
+    "VLOG_TRANSCRIPTION_TIMEOUT": "transcription.timeout",
+    # Storage settings
+    "VLOG_ARCHIVE_RETENTION_DAYS": "storage.archive_retention_days",
+}
+
+
+def check_deprecated_env_vars() -> None:
+    """
+    Check for deprecated environment variables and log warnings.
+
+    Called at startup to warn users about env vars that should be migrated
+    to the database-backed settings system.
+    """
+    deprecated_found = []
+
+    for env_var, setting_key in DEPRECATED_ENV_VARS.items():
+        if os.getenv(env_var) is not None and env_var not in _deprecation_warnings_issued:
+            deprecated_found.append((env_var, setting_key))
+            _deprecation_warnings_issued.add(env_var)
+
+    if deprecated_found:
+        logger.warning(
+            "The following environment variables are deprecated and should be migrated to database settings:"
+        )
+        for env_var, setting_key in deprecated_found:
+            logger.warning(f"  {env_var} -> {setting_key}")
+        logger.warning(
+            "Run 'vlog settings migrate-from-env' to migrate these settings to the database. "
+            "The env vars will continue to work as fallbacks until removed."
+        )
 
 
 def get_int_env(

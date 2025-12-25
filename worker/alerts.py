@@ -19,11 +19,53 @@ from typing import Any, Awaitable, Dict, Optional
 
 import httpx
 
+# Import config for backwards compatibility (env var fallback)
 from config import (
-    ALERT_RATE_LIMIT_SECONDS,
-    ALERT_WEBHOOK_TIMEOUT,
-    ALERT_WEBHOOK_URL,
+    ALERT_RATE_LIMIT_SECONDS as _CONFIG_ALERT_RATE_LIMIT_SECONDS,
+    ALERT_WEBHOOK_TIMEOUT as _CONFIG_ALERT_WEBHOOK_TIMEOUT,
+    ALERT_WEBHOOK_URL as _CONFIG_ALERT_WEBHOOK_URL,
 )
+
+# Cached settings (refreshed on each alert check)
+_cached_alert_settings: Dict[str, Any] = {}
+_cached_settings_time: float = 0
+_SETTINGS_CACHE_TTL = 60  # Refresh settings every 60 seconds
+
+
+async def _get_alert_settings() -> Dict[str, Any]:
+    """Get alert settings from database with caching and env var fallback."""
+    global _cached_alert_settings, _cached_settings_time
+
+    now = time.time()
+    if _cached_alert_settings and (now - _cached_settings_time) < _SETTINGS_CACHE_TTL:
+        return _cached_alert_settings
+
+    try:
+        from api.settings_service import get_settings_service
+        service = get_settings_service()
+
+        # Fetch settings with fallback to config values
+        webhook_url = await service.get("alerts.webhook_url", _CONFIG_ALERT_WEBHOOK_URL)
+        webhook_timeout = await service.get("alerts.webhook_timeout", _CONFIG_ALERT_WEBHOOK_TIMEOUT)
+        rate_limit = await service.get("alerts.rate_limit_seconds", _CONFIG_ALERT_RATE_LIMIT_SECONDS)
+
+        _cached_alert_settings = {
+            "webhook_url": webhook_url,
+            "webhook_timeout": webhook_timeout,
+            "rate_limit_seconds": rate_limit,
+        }
+        _cached_settings_time = now
+    except Exception as e:
+        # Fall back to config values on error
+        logging.getLogger(__name__).debug(f"Failed to get alert settings from DB, using env vars: {e}")
+        _cached_alert_settings = {
+            "webhook_url": _CONFIG_ALERT_WEBHOOK_URL,
+            "webhook_timeout": _CONFIG_ALERT_WEBHOOK_TIMEOUT,
+            "rate_limit_seconds": _CONFIG_ALERT_RATE_LIMIT_SECONDS,
+        }
+        _cached_settings_time = now
+
+    return _cached_alert_settings
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +119,10 @@ class AlertMetrics:
         """Get failure count for a specific video."""
         return self.video_failure_counts.get(video_id, 0)
 
-    def can_send_alert(self, alert_type: str) -> bool:
+    def can_send_alert(self, alert_type: str, rate_limit_seconds: int = 300) -> bool:
         """Check if enough time has passed since the last alert of this type."""
         last_time = self.last_alert_time.get(alert_type, 0)
-        return (time.time() - last_time) >= ALERT_RATE_LIMIT_SECONDS
+        return (time.time() - last_time) >= rate_limit_seconds
 
     def record_alert_sent(self, alert_type: str):
         """Record that an alert was sent."""
@@ -166,13 +208,19 @@ async def send_webhook_alert(
     Returns:
         True if alert was sent successfully, False otherwise
     """
-    if not ALERT_WEBHOOK_URL:
+    # Get settings from database with fallback to env vars
+    settings = await _get_alert_settings()
+    webhook_url = settings["webhook_url"]
+    webhook_timeout = settings["webhook_timeout"]
+    rate_limit_seconds = settings["rate_limit_seconds"]
+
+    if not webhook_url:
         return False
 
     metrics = get_metrics()
 
     # Check rate limiting
-    if not force and not metrics.can_send_alert(alert_type.value):
+    if not force and not metrics.can_send_alert(alert_type.value, rate_limit_seconds):
         metrics.record_alert_rate_limited()
         logger.debug(f"Alert {alert_type.value} rate limited")
         return False
@@ -185,9 +233,9 @@ async def send_webhook_alert(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=ALERT_WEBHOOK_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=webhook_timeout) as client:
             response = await client.post(
-                ALERT_WEBHOOK_URL,
+                webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
             )
@@ -199,7 +247,7 @@ async def send_webhook_alert(
 
     except httpx.TimeoutException:
         metrics.record_alert_failed()
-        logger.warning(f"Alert webhook timed out after {ALERT_WEBHOOK_TIMEOUT}s")
+        logger.warning(f"Alert webhook timed out after {webhook_timeout}s")
         return False
     except httpx.HTTPStatusError as e:
         metrics.record_alert_failed()

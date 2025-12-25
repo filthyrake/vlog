@@ -40,6 +40,8 @@ from api.database import (
 from api.db_retry import DatabaseRetryableError, execute_with_retry, fetch_one_with_retry
 from api.enums import QualityStatus, TranscodingStep, VideoStatus
 from api.errors import truncate_error
+
+# Import config for backwards compatibility and fallback values
 from config import (
     ARCHIVE_DIR,
     ARCHIVE_RETENTION_DAYS,
@@ -71,10 +73,8 @@ from worker.alerts import (
     alert_stale_job_recovered,
     alert_worker_shutdown,
     alert_worker_startup,
-    send_alert_fire_and_forget,
-)
-from worker.alerts import (
     get_metrics as get_alert_metrics,
+    send_alert_fire_and_forget,
 )
 from worker.hwaccel import get_recommended_parallel_sessions
 
@@ -96,6 +96,73 @@ logger = logging.getLogger(__name__)
 
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
+
+# Cached transcoding settings (refreshed periodically)
+_cached_transcoder_settings: Dict[str, Any] = {}
+_cached_transcoder_settings_time: float = 0
+_TRANSCODER_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+
+async def get_transcoder_settings() -> Dict[str, Any]:
+    """
+    Get transcoding settings from database with caching and env var fallback.
+
+    Returns dict with keys:
+    - hls_segment_duration
+    - progress_update_interval
+    - job_stale_timeout
+    - cleanup_partial_on_failure
+    - keep_completed_qualities
+    - ffmpeg_timeout_multiplier
+    - ffmpeg_timeout_minimum
+    - ffmpeg_timeout_maximum
+    """
+    global _cached_transcoder_settings, _cached_transcoder_settings_time
+
+    now = time.time()
+    if _cached_transcoder_settings and (now - _cached_transcoder_settings_time) < _TRANSCODER_SETTINGS_CACHE_TTL:
+        return _cached_transcoder_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        # Fetch settings with fallback to config values
+        settings = {
+            "hls_segment_duration": await service.get("transcoding.hls_segment_duration", HLS_SEGMENT_DURATION),
+            "progress_update_interval": await service.get("workers.progress_update_interval", PROGRESS_UPDATE_INTERVAL),
+            "job_stale_timeout": await service.get("transcoding.job_stale_timeout", JOB_STALE_TIMEOUT),
+            "cleanup_partial_on_failure": await service.get(
+                "transcoding.cleanup_partial_on_failure", CLEANUP_PARTIAL_ON_FAILURE
+            ),
+            "keep_completed_qualities": await service.get(
+                "transcoding.keep_completed_qualities", KEEP_COMPLETED_QUALITIES
+            ),
+            "ffmpeg_timeout_multiplier": await service.get(
+                "transcoding.ffmpeg_timeout_multiplier", FFMPEG_TIMEOUT_BASE_MULTIPLIER
+            ),
+            "ffmpeg_timeout_minimum": await service.get("transcoding.ffmpeg_timeout_minimum", FFMPEG_TIMEOUT_MINIMUM),
+            "ffmpeg_timeout_maximum": await service.get("transcoding.ffmpeg_timeout_maximum", FFMPEG_TIMEOUT_MAXIMUM),
+        }
+        _cached_transcoder_settings = settings
+        _cached_transcoder_settings_time = now
+    except Exception as e:
+        # Fall back to config values on error
+        logger.debug(f"Failed to get transcoder settings from DB: {e}")
+        _cached_transcoder_settings = {
+            "hls_segment_duration": HLS_SEGMENT_DURATION,
+            "progress_update_interval": PROGRESS_UPDATE_INTERVAL,
+            "job_stale_timeout": JOB_STALE_TIMEOUT,
+            "cleanup_partial_on_failure": CLEANUP_PARTIAL_ON_FAILURE,
+            "keep_completed_qualities": KEEP_COMPLETED_QUALITIES,
+            "ffmpeg_timeout_multiplier": FFMPEG_TIMEOUT_BASE_MULTIPLIER,
+            "ffmpeg_timeout_minimum": FFMPEG_TIMEOUT_MINIMUM,
+            "ffmpeg_timeout_maximum": FFMPEG_TIMEOUT_MAXIMUM,
+        }
+        _cached_transcoder_settings_time = now
+
+    return _cached_transcoder_settings
 
 
 def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) -> List[List[dict]]:
@@ -1488,12 +1555,14 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             if cleanup_source_file(job["video_id"]):
                 print(f"    Cleaned up source file for video {job['video_id']}")
             # Send alert for max retries exceeded (fire-and-forget)
-            send_alert_fire_and_forget(alert_max_retries_exceeded(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                max_attempts=job["max_attempts"],
-                last_error=job.get("last_error"),
-            ))
+            send_alert_fire_and_forget(
+                alert_max_retries_exceeded(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    max_attempts=job["max_attempts"],
+                    last_error=job.get("last_error"),
+                )
+            )
         else:
             # Reset for retry - use transaction to ensure consistency
             print(f"    Resetting for retry (attempt {job['attempt_number'] + 1})")
@@ -1512,12 +1581,14 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
                 )
 
             # Send alert for stale job recovered (fire-and-forget)
-            send_alert_fire_and_forget(alert_stale_job_recovered(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                attempt_number=job["attempt_number"],
-                worker_id=job.get("worker_id"),
-            ))
+            send_alert_fire_and_forget(
+                alert_stale_job_recovered(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    attempt_number=job["attempt_number"],
+                    worker_id=job.get("worker_id"),
+                )
+            )
 
     if stale_jobs:
         print(f"  Recovered {len(stale_jobs)} interrupted job(s)")
@@ -2099,8 +2170,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             raise RuntimeError(error_message)
         elif failed_qualities:
             # Partial success - some qualities failed
+            completed = len(successful_qualities)
             print(
-                f"  WARNING: Partial transcoding success - {len(successful_qualities)}/{total_qualities} quality variants completed"
+                f"  WARNING: Partial transcoding success - {completed}/{total_qualities} quality variants completed"
             )
             print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
@@ -2175,13 +2247,15 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 )
             )
             # Send alert for job failure (fire-and-forget, will retry)
-            send_alert_fire_and_forget(alert_job_failed(
-                video_id=video_id,
-                video_slug=video_slug,
-                attempt_number=job["attempt_number"],
-                error=str(e),
-                will_retry=True,
-            ))
+            send_alert_fire_and_forget(
+                alert_job_failed(
+                    video_id=video_id,
+                    video_slug=video_slug,
+                    attempt_number=job["attempt_number"],
+                    error=str(e),
+                    will_retry=True,
+                )
+            )
         else:
             # Final failure - mark job as completed (finished, even though failed)
             await mark_job_failed(job_id, str(e), final=True)
@@ -2195,12 +2269,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             )
             # Send alert for max retries exceeded (fire-and-forget)
             if job:
-                send_alert_fire_and_forget(alert_max_retries_exceeded(
-                    video_id=video_id,
-                    video_slug=video_slug,
-                    max_attempts=job["max_attempts"],
-                    last_error=str(e),
-                ))
+                send_alert_fire_and_forget(
+                    alert_max_retries_exceeded(
+                        video_id=video_id,
+                        video_slug=video_slug,
+                        max_attempts=job["max_attempts"],
+                        last_error=str(e),
+                    )
+                )
 
         return False
 
@@ -2255,12 +2331,14 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
             if cleanup_source_file(job["video_id"]):
                 print(f"  Cleaned up source file for video {job['video_id']}")
             # Send alert for max retries exceeded (fire-and-forget)
-            send_alert_fire_and_forget(alert_max_retries_exceeded(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                max_attempts=job["max_attempts"],
-                last_error=job.get("last_error"),
-            ))
+            send_alert_fire_and_forget(
+                alert_max_retries_exceeded(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    max_attempts=job["max_attempts"],
+                    last_error=job.get("last_error"),
+                )
+            )
         else:
             print(f"Found stale job for '{video['slug']}', resetting for retry")
             async with database.transaction():
@@ -2269,12 +2347,14 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
                     videos.update().where(videos.c.id == job["video_id"]).values(status=VideoStatus.PENDING)
                 )
             # Send alert for stale job recovered (fire-and-forget)
-            send_alert_fire_and_forget(alert_stale_job_recovered(
-                video_id=job["video_id"],
-                video_slug=video["slug"],
-                attempt_number=job["attempt_number"],
-                worker_id=job.get("worker_id"),
-            ))
+            send_alert_fire_and_forget(
+                alert_stale_job_recovered(
+                    video_id=job["video_id"],
+                    video_slug=video["slug"],
+                    attempt_number=job["attempt_number"],
+                    worker_id=job.get("worker_id"),
+                )
+            )
 
 
 async def cleanup_expired_archives():
@@ -2403,11 +2483,13 @@ async def worker_loop(state: Optional[WorkerState] = None):
 
     # Send worker startup alert (fire-and-forget)
     gpu_info = state.gpu_caps.device_name if state.gpu_caps else None
-    send_alert_fire_and_forget(alert_worker_startup(
-        worker_id=state.worker_id,
-        gpu_info=gpu_info,
-        recovered_jobs=recovered_count,
-    ))
+    send_alert_fire_and_forget(
+        alert_worker_startup(
+            worker_id=state.worker_id,
+            gpu_info=gpu_info,
+            recovered_jobs=recovered_count,
+        )
+    )
 
     last_stale_check = datetime.now(timezone.utc)
     stale_check_interval = 300  # Check every 5 minutes
@@ -2519,10 +2601,12 @@ async def worker_loop(state: Optional[WorkerState] = None):
                 print("No jobs to reset.")
 
             # Send worker shutdown alert (fire-and-forget)
-            send_alert_fire_and_forget(alert_worker_shutdown(
-                worker_id=state.worker_id,
-                jobs_reset=reset_count,
-            ))
+            send_alert_fire_and_forget(
+                alert_worker_shutdown(
+                    worker_id=state.worker_id,
+                    jobs_reset=reset_count,
+                )
+            )
         except Exception as e:
             print(f"Error during cleanup: {e}")
 
