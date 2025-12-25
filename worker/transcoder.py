@@ -73,8 +73,10 @@ from worker.alerts import (
     alert_stale_job_recovered,
     alert_worker_shutdown,
     alert_worker_startup,
-    get_metrics as get_alert_metrics,
     send_alert_fire_and_forget,
+)
+from worker.alerts import (
+    get_metrics as get_alert_metrics,
 )
 from worker.hwaccel import get_recommended_parallel_sessions
 
@@ -107,15 +109,22 @@ async def get_transcoder_settings() -> Dict[str, Any]:
     """
     Get transcoding settings from database with caching and env var fallback.
 
-    Returns dict with keys:
-    - hls_segment_duration
-    - progress_update_interval
-    - job_stale_timeout
-    - cleanup_partial_on_failure
-    - keep_completed_qualities
-    - ffmpeg_timeout_multiplier
-    - ffmpeg_timeout_minimum
-    - ffmpeg_timeout_maximum
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    on every transcoding operation. The cache is separate from the main
+    SettingsService cache to minimize import dependencies in the worker.
+
+    Returns:
+        Dict with keys:
+        - hls_segment_duration: HLS segment duration in seconds
+        - progress_update_interval: How often to update progress (seconds)
+        - job_stale_timeout: Time before a job is considered stale (seconds)
+        - cleanup_partial_on_failure: Whether to clean up partial files on failure
+        - keep_completed_qualities: Whether to keep completed qualities on failure
+        - ffmpeg_timeout_multiplier: Base multiplier for ffmpeg timeout
+        - ffmpeg_timeout_minimum: Minimum ffmpeg timeout (seconds)
+        - ffmpeg_timeout_maximum: Maximum ffmpeg timeout (seconds)
+
+    Falls back to environment variables (via config.py) if database is unavailable.
     """
     global _cached_transcoder_settings, _cached_transcoder_settings_time
 
@@ -163,6 +172,13 @@ async def get_transcoder_settings() -> Dict[str, Any]:
         _cached_transcoder_settings_time = now
 
     return _cached_transcoder_settings
+
+
+def reset_transcoder_settings_cache() -> None:
+    """Reset the cached transcoder settings. Useful for testing."""
+    global _cached_transcoder_settings, _cached_transcoder_settings_time
+    _cached_transcoder_settings = {}
+    _cached_transcoder_settings_time = 0
 
 
 def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) -> List[List[dict]]:
@@ -1514,8 +1530,12 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
         state = get_worker_state()
     print(f"Worker {state.worker_id[:8]} checking for interrupted jobs...")
 
+    # Get stale timeout from settings service
+    settings = await get_transcoder_settings()
+    job_stale_timeout = settings["job_stale_timeout"]
+
     # Find jobs that have a checkpoint but no completion and are stale
-    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
+    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=job_stale_timeout)
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(
@@ -2293,7 +2313,11 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
     if state is None:
         state = get_worker_state()
 
-    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=JOB_STALE_TIMEOUT)
+    # Get stale timeout from settings service
+    settings = await get_transcoder_settings()
+    job_stale_timeout = settings["job_stale_timeout"]
+
+    stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=job_stale_timeout)
 
     stale_jobs = await database.fetch_all(
         transcoding_jobs.select().where(

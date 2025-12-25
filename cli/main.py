@@ -30,6 +30,7 @@ from config import (
     WORKER_API_PORT,
 )
 
+
 # Import for settings migration (lazy to avoid circular imports)
 def _get_settings_module():
     """Lazy import settings module to avoid circular imports."""
@@ -802,7 +803,16 @@ def cmd_settings(args):
             print(f"Error: Request timed out while connecting to {API_BASE}")
             sys.exit(1)
         except CLIError as e:
-            print(f"Error: {e}")
+            error_msg = str(e)
+            # Check for common validation errors and provide helpful messages
+            if "must be" in error_msg.lower() or "invalid" in error_msg.lower():
+                print(f"Validation error for '{key}': {error_msg}")
+                print("\nUse 'vlog settings get <key>' to see valid constraints.")
+            elif "not found" in error_msg.lower():
+                print(f"Setting '{key}' not found in database.")
+                print("Run 'vlog settings migrate-from-env' first, or use 'vlog settings list' to see available settings.")
+            else:
+                print(f"Error: {error_msg}")
             sys.exit(1)
 
 

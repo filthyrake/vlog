@@ -194,7 +194,15 @@ analytics_cache = create_analytics_cache(
 
 
 async def get_analytics_client_cache_max_age() -> int:
-    """Get analytics client cache max-age from settings service with fallback to env var."""
+    """Get analytics client cache max-age from settings service with fallback to env var.
+
+    Uses the main SettingsService which caches all settings for 60 seconds.
+    This avoids a database round-trip on every analytics request while still
+    allowing runtime configuration changes.
+
+    Returns:
+        Cache max-age in seconds for analytics API responses.
+    """
     try:
         service = get_settings_service()
         return await service.get("analytics.client_cache_max_age", ANALYTICS_CLIENT_CACHE_MAX_AGE)
@@ -3466,13 +3474,16 @@ async def analytics_videos(
     period: str = "all",
 ) -> VideoAnalyticsListResponse:
     """Get per-video analytics."""
+    # Get cache max-age from settings (with env var fallback)
+    cache_max_age = await get_analytics_client_cache_max_age()
+
     # Try to get from cache first
     cache_key = f"analytics_videos:{limit}:{offset}:{sort_by}:{period}"
     cached_data = analytics_cache.get(cache_key)
 
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
-        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
         # Reconstruct response models from cached data
         cached_videos = [VideoAnalyticsSummary(**v) for v in cached_data["videos"]]
         return VideoAnalyticsListResponse(videos=cached_videos, total_count=cached_data["total_count"])
@@ -3559,7 +3570,7 @@ async def analytics_videos(
     analytics_cache.set(cache_key, result_data)
 
     # Set Cache-Control header for client-side caching
-    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
 
     return VideoAnalyticsListResponse(**result_data)
 
@@ -3568,13 +3579,16 @@ async def analytics_videos(
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_video_detail(request: Request, response: Response, video_id: int) -> VideoAnalyticsDetail:
     """Get detailed analytics for a specific video."""
+    # Get cache max age from settings service
+    cache_max_age = await get_analytics_client_cache_max_age()
+
     # Try to get from cache first
     cache_key = f"analytics_video_detail:{video_id}"
     cached_data = analytics_cache.get(cache_key)
 
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
-        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
         # Reconstruct response models from cached data
         quality_breakdown = [QualityBreakdown(**q) for q in cached_data["quality_breakdown"]]
         views_over_time = [DailyViews(**v) for v in cached_data["views_over_time"]]
@@ -3668,7 +3682,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
     analytics_cache.set(cache_key, result_data)
 
     # Set Cache-Control header for client-side caching
-    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
 
     return VideoAnalyticsDetail(**result_data)
 
@@ -3682,13 +3696,16 @@ async def analytics_trends(
     video_id: Optional[int] = None,
 ) -> TrendsResponse:
     """Get time-series analytics data."""
+    # Get cache max age from settings service
+    cache_max_age = await get_analytics_client_cache_max_age()
+
     # Try to get from cache first
     cache_key = f"analytics_trends:{period}:{video_id or 'all'}"
     cached_data = analytics_cache.get(cache_key)
 
     if cached_data is not None:
         # Set Cache-Control header for client-side caching
-        response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+        response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
         # Reconstruct response models from cached data
         data = [TrendDataPoint(**d) for d in cached_data["data"]]
         return TrendsResponse(period=cached_data["period"], data=data)
@@ -3739,7 +3756,7 @@ async def analytics_trends(
     analytics_cache.set(cache_key, result_data)
 
     # Set Cache-Control header for client-side caching
-    response.headers["Cache-Control"] = f"private, max-age={ANALYTICS_CLIENT_CACHE_MAX_AGE}"
+    response.headers["Cache-Control"] = f"private, max-age={cache_max_age}"
 
     return TrendsResponse(**result_data)
 

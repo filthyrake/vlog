@@ -58,6 +58,9 @@ DEPRECATED_ENV_VARS = {
     "VLOG_TRANSCRIPTION_TIMEOUT": "transcription.timeout",
     # Storage settings
     "VLOG_ARCHIVE_RETENTION_DAYS": "storage.archive_retention_days",
+    "VLOG_MAX_UPLOAD_SIZE": "storage.max_upload_size_mb",
+    "VLOG_MAX_THUMBNAIL_SIZE": "storage.max_thumbnail_size_mb",
+    "VLOG_THUMBNAIL_WIDTH": "storage.thumbnail_width",
 }
 
 

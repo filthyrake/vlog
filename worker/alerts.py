@@ -22,7 +22,11 @@ import httpx
 # Import config for backwards compatibility (env var fallback)
 from config import (
     ALERT_RATE_LIMIT_SECONDS as _CONFIG_ALERT_RATE_LIMIT_SECONDS,
+)
+from config import (
     ALERT_WEBHOOK_TIMEOUT as _CONFIG_ALERT_WEBHOOK_TIMEOUT,
+)
+from config import (
     ALERT_WEBHOOK_URL as _CONFIG_ALERT_WEBHOOK_URL,
 )
 
@@ -33,7 +37,17 @@ _SETTINGS_CACHE_TTL = 60  # Refresh settings every 60 seconds
 
 
 async def _get_alert_settings() -> Dict[str, Any]:
-    """Get alert settings from database with caching and env var fallback."""
+    """Get alert settings from database with caching and env var fallback.
+
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    on every alert check. The cache is separate from the main SettingsService
+    cache to minimize import dependencies in the worker.
+
+    Returns:
+        Dict with keys: webhook_url, webhook_timeout, rate_limit_seconds
+
+    Falls back to environment variables (via config.py) if database is unavailable.
+    """
     global _cached_alert_settings, _cached_settings_time
 
     now = time.time()
@@ -66,6 +80,14 @@ async def _get_alert_settings() -> Dict[str, Any]:
         _cached_settings_time = now
 
     return _cached_alert_settings
+
+
+def reset_alert_settings_cache() -> None:
+    """Reset the cached alert settings. Useful for testing."""
+    global _cached_alert_settings, _cached_settings_time
+    _cached_alert_settings = {}
+    _cached_settings_time = 0
+
 
 logger = logging.getLogger(__name__)
 
