@@ -84,6 +84,54 @@ CLAIM_EXPIRED_ERROR = "Claim expired - job may have been reassigned to another w
 COMPLETE_JOB_MAX_RETRIES = 3
 COMPLETE_JOB_RETRY_DELAY = 5  # seconds
 
+# Cached remote worker settings
+_cached_remote_settings: Dict = {}
+_cached_remote_settings_time: float = 0
+_REMOTE_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+
+async def get_remote_worker_settings() -> Dict:
+    """
+    Get remote worker settings from database with caching and env var fallback.
+
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    in the worker loop. Falls back to environment variables if database unavailable.
+
+    Returns:
+        Dict with keys:
+        - poll_interval: Job polling interval in seconds
+    """
+    global _cached_remote_settings, _cached_remote_settings_time
+
+    now = time.time()
+    if _cached_remote_settings and (now - _cached_remote_settings_time) < _REMOTE_SETTINGS_CACHE_TTL:
+        return _cached_remote_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        _cached_remote_settings = {
+            "poll_interval": await service.get("workers.poll_interval", WORKER_POLL_INTERVAL),
+        }
+        _cached_remote_settings_time = now
+    except Exception:
+        # Fall back to config values on error
+        _cached_remote_settings = {
+            "poll_interval": WORKER_POLL_INTERVAL,
+        }
+        _cached_remote_settings_time = now
+
+    return _cached_remote_settings
+
+
+def reset_remote_worker_settings_cache() -> None:
+    """Reset the cached remote worker settings. Useful for testing."""
+    global _cached_remote_settings, _cached_remote_settings_time
+    _cached_remote_settings = {}
+    _cached_remote_settings_time = 0
+
 
 class ClaimExpiredError(Exception):
     """Raised when a job claim has expired and the job may have been reassigned."""
@@ -732,11 +780,15 @@ async def worker_loop():
 
     client = WorkerAPIClient(WORKER_API_URL, WORKER_API_KEY)
 
+    # Get worker settings from database with caching
+    worker_settings = await get_remote_worker_settings()
+    poll_interval = worker_settings["poll_interval"]
+
     print("Remote transcoding worker starting...")
     print(f"  API URL: {WORKER_API_URL}")
     print(f"  Work dir: {WORKER_WORK_DIR}")
     print(f"  Heartbeat interval: {WORKER_HEARTBEAT_INTERVAL}s")
-    print(f"  Poll interval: {WORKER_POLL_INTERVAL}s")
+    print(f"  Poll interval: {poll_interval}s")
     print(f"  Job queue mode: {JOB_QUEUE_MODE}")
 
     # Initialize Redis job queue if enabled
@@ -839,18 +891,22 @@ async def worker_loop():
                     # If Redis is enabled, claim_job already blocks for a short time
                     # Only poll interval sleep if database-only mode
                     if JOB_QUEUE_MODE == "database" or not (JOB_QUEUE and JOB_QUEUE.is_redis_enabled):
-                        await asyncio.sleep(WORKER_POLL_INTERVAL)
+                        # Refresh settings periodically (cache has 60s TTL)
+                        worker_settings = await get_remote_worker_settings()
+                        await asyncio.sleep(worker_settings["poll_interval"])
 
             except WorkerAPIError as e:
                 print(f"API error in worker loop: {e.message}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
-                await asyncio.sleep(WORKER_POLL_INTERVAL)
+                worker_settings = await get_remote_worker_settings()
+                await asyncio.sleep(worker_settings["poll_interval"])
             except Exception as e:
                 print(f"Error in worker loop: {e}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
-                await asyncio.sleep(WORKER_POLL_INTERVAL)
+                worker_settings = await get_remote_worker_settings()
+                await asyncio.sleep(worker_settings["poll_interval"])
 
     finally:
         # Cancel heartbeat task

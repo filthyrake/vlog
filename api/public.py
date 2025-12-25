@@ -5,11 +5,12 @@ Runs on port 9000.
 
 import logging
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
 from fastapi import Cookie, FastAPI, HTTPException, Query, Request, Response
@@ -91,6 +92,89 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Cached watermark settings (refreshed every 60 seconds)
+_cached_watermark_settings: Dict[str, Any] = {}
+_cached_watermark_settings_time: float = 0
+_WATERMARK_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+
+async def get_watermark_settings() -> Dict[str, Any]:
+    """
+    Get watermark settings from database with caching and env var fallback.
+
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    on every video page request. The cache is separate from the main
+    SettingsService cache to minimize import overhead.
+
+    Returns:
+        Dict with keys:
+        - enabled: Whether watermark is enabled
+        - type: "image" or "text"
+        - image: Path to watermark image (for image type)
+        - text: Watermark text (for text type)
+        - text_size: Font size for text watermark
+        - text_color: Color for text watermark
+        - position: Watermark position
+        - opacity: Watermark opacity (0.0-1.0)
+        - padding: Padding from edge in pixels
+        - max_width_percent: Max width as percentage of video
+
+    Falls back to environment variables (via config.py) if database is unavailable.
+    """
+    global _cached_watermark_settings, _cached_watermark_settings_time
+
+    now = time.time()
+    if _cached_watermark_settings and (now - _cached_watermark_settings_time) < _WATERMARK_SETTINGS_CACHE_TTL:
+        return _cached_watermark_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        # Fetch settings with fallback to config values
+        settings = {
+            "enabled": await service.get("watermark.enabled", WATERMARK_ENABLED),
+            "type": await service.get("watermark.type", WATERMARK_TYPE),
+            "image": await service.get("watermark.image", WATERMARK_IMAGE),
+            "text": await service.get("watermark.text", WATERMARK_TEXT),
+            "text_size": await service.get("watermark.text_size", WATERMARK_TEXT_SIZE),
+            "text_color": await service.get("watermark.text_color", WATERMARK_TEXT_COLOR),
+            "position": await service.get("watermark.position", WATERMARK_POSITION),
+            "opacity": await service.get("watermark.opacity", WATERMARK_OPACITY),
+            "padding": await service.get("watermark.padding", WATERMARK_PADDING),
+            "max_width_percent": await service.get("watermark.max_width_percent", WATERMARK_MAX_WIDTH_PERCENT),
+        }
+
+        _cached_watermark_settings = settings
+        _cached_watermark_settings_time = now
+    except Exception as e:
+        # Fall back to config values on error
+        logger.debug(f"Failed to get watermark settings from DB, using env vars: {e}")
+        _cached_watermark_settings = {
+            "enabled": WATERMARK_ENABLED,
+            "type": WATERMARK_TYPE,
+            "image": WATERMARK_IMAGE,
+            "text": WATERMARK_TEXT,
+            "text_size": WATERMARK_TEXT_SIZE,
+            "text_color": WATERMARK_TEXT_COLOR,
+            "position": WATERMARK_POSITION,
+            "opacity": WATERMARK_OPACITY,
+            "padding": WATERMARK_PADDING,
+            "max_width_percent": WATERMARK_MAX_WIDTH_PERCENT,
+        }
+        _cached_watermark_settings_time = now
+
+    return _cached_watermark_settings
+
+
+def reset_watermark_settings_cache() -> None:
+    """Reset the cached watermark settings. Useful for testing."""
+    global _cached_watermark_settings, _cached_watermark_settings_time
+    _cached_watermark_settings = {}
+    _cached_watermark_settings_time = 0
+
 
 # Initialize rate limiter
 # Uses in-memory storage by default, can be configured to use Redis
@@ -845,32 +929,35 @@ async def get_watermark_config(request: Request):
     - "image": Logo/image overlay (image_url points to /watermark/image)
     - "text": Text overlay with custom font size and color
     """
-    if not WATERMARK_ENABLED:
+    # Get watermark settings from database with caching
+    settings = await get_watermark_settings()
+
+    if not settings["enabled"]:
         return {"enabled": False}
 
     # Check watermark type
-    if WATERMARK_TYPE == "text":
+    if settings["type"] == "text":
         # Text watermark
-        if not WATERMARK_TEXT:
+        if not settings["text"]:
             return {"enabled": False}
 
         return {
             "enabled": True,
             "type": "text",
-            "text": WATERMARK_TEXT,
-            "text_size": WATERMARK_TEXT_SIZE,
-            "text_color": WATERMARK_TEXT_COLOR,
-            "position": WATERMARK_POSITION,
-            "opacity": WATERMARK_OPACITY,
-            "padding": WATERMARK_PADDING,
+            "text": settings["text"],
+            "text_size": settings["text_size"],
+            "text_color": settings["text_color"],
+            "position": settings["position"],
+            "opacity": settings["opacity"],
+            "padding": settings["padding"],
         }
     else:
         # Image watermark (default)
-        if not WATERMARK_IMAGE:
+        if not settings["image"]:
             return {"enabled": False}
 
         # Verify watermark image exists
-        watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+        watermark_path = NAS_STORAGE / settings["image"]
         if not watermark_path.exists():
             logger.warning(f"Watermark image not found: {watermark_path}")
             return {"enabled": False}
@@ -879,10 +966,10 @@ async def get_watermark_config(request: Request):
             "enabled": True,
             "type": "image",
             "image_url": "/watermark/image",
-            "position": WATERMARK_POSITION,
-            "opacity": WATERMARK_OPACITY,
-            "padding": WATERMARK_PADDING,
-            "max_width_percent": WATERMARK_MAX_WIDTH_PERCENT,
+            "position": settings["position"],
+            "opacity": settings["opacity"],
+            "padding": settings["padding"],
+            "max_width_percent": settings["max_width_percent"],
         }
 
 
@@ -890,10 +977,13 @@ async def get_watermark_config(request: Request):
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_watermark_image(request: Request):
     """Serve the watermark image file."""
-    if not WATERMARK_ENABLED or not WATERMARK_IMAGE:
+    # Get watermark settings from database with caching
+    settings = await get_watermark_settings()
+
+    if not settings["enabled"] or not settings["image"]:
         raise HTTPException(status_code=404, detail="Watermark not configured")
 
-    watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+    watermark_path = NAS_STORAGE / settings["image"]
     if not watermark_path.exists():
         raise HTTPException(status_code=404, detail="Watermark image not found")
 

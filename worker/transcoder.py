@@ -123,6 +123,8 @@ async def get_transcoder_settings() -> Dict[str, Any]:
         - ffmpeg_timeout_multiplier: Base multiplier for ffmpeg timeout
         - ffmpeg_timeout_minimum: Minimum ffmpeg timeout (seconds)
         - ffmpeg_timeout_maximum: Maximum ffmpeg timeout (seconds)
+        - fallback_poll_interval: Polling interval when filesystem watcher unavailable
+        - debounce_delay: Debounce delay for filesystem events (seconds)
 
     Falls back to environment variables (via config.py) if database is unavailable.
     """
@@ -153,6 +155,10 @@ async def get_transcoder_settings() -> Dict[str, Any]:
             ),
             "ffmpeg_timeout_minimum": await service.get("transcoding.ffmpeg_timeout_minimum", FFMPEG_TIMEOUT_MINIMUM),
             "ffmpeg_timeout_maximum": await service.get("transcoding.ffmpeg_timeout_maximum", FFMPEG_TIMEOUT_MAXIMUM),
+            "fallback_poll_interval": await service.get(
+                "workers.fallback_poll_interval", WORKER_FALLBACK_POLL_INTERVAL
+            ),
+            "debounce_delay": await service.get("workers.debounce_delay", WORKER_DEBOUNCE_DELAY),
         }
         _cached_transcoder_settings = settings
         _cached_transcoder_settings_time = now
@@ -168,6 +174,8 @@ async def get_transcoder_settings() -> Dict[str, Any]:
             "ffmpeg_timeout_multiplier": FFMPEG_TIMEOUT_BASE_MULTIPLIER,
             "ffmpeg_timeout_minimum": FFMPEG_TIMEOUT_MINIMUM,
             "ffmpeg_timeout_maximum": FFMPEG_TIMEOUT_MAXIMUM,
+            "fallback_poll_interval": WORKER_FALLBACK_POLL_INTERVAL,
+            "debounce_delay": WORKER_DEBOUNCE_DELAY,
         }
         _cached_transcoder_settings_time = now
 
@@ -544,10 +552,16 @@ class UploadEventHandler(FileSystemEventHandler):
 
     VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, event: asyncio.Event):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        event: asyncio.Event,
+        debounce_delay: float = WORKER_DEBOUNCE_DELAY,
+    ):
         super().__init__()
         self.loop = loop
         self.event = event
+        self.debounce_delay = debounce_delay
         self._debounce_timer = None
         self._lock = threading.Lock()
 
@@ -572,7 +586,7 @@ class UploadEventHandler(FileSystemEventHandler):
         with self._lock:
             if self._debounce_timer is not None:
                 self._debounce_timer.cancel()
-            self._debounce_timer = threading.Timer(WORKER_DEBOUNCE_DELAY, self._trigger_event)
+            self._debounce_timer = threading.Timer(self.debounce_delay, self._trigger_event)
             self._debounce_timer.start()
 
     def on_created(self, event):
@@ -600,16 +614,27 @@ class UploadEventHandler(FileSystemEventHandler):
                 self._debounce_timer = None
 
 
-def start_filesystem_watcher(loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> Optional[Observer]:
+def start_filesystem_watcher(
+    loop: asyncio.AbstractEventLoop,
+    event: asyncio.Event,
+    debounce_delay: float = WORKER_DEBOUNCE_DELAY,
+) -> Optional[Observer]:
     """
     Start the filesystem watcher for the uploads directory.
-    Returns the Observer instance or None if watchdog is not available.
+
+    Args:
+        loop: The asyncio event loop
+        event: The asyncio event to signal on file detection
+        debounce_delay: Delay to debounce file events (seconds)
+
+    Returns:
+        The Observer instance or None if watchdog is not available.
     """
     if not WATCHDOG_AVAILABLE:
         return None
 
     try:
-        handler = UploadEventHandler(loop, event)
+        handler = UploadEventHandler(loop, event, debounce_delay=debounce_delay)
         observer = Observer()
         observer.schedule(handler, str(UPLOADS_DIR), recursive=False)
         observer.start()
@@ -2483,19 +2508,24 @@ async def worker_loop(state: Optional[WorkerState] = None):
     loop = asyncio.get_running_loop()
     state.new_upload_event = asyncio.Event()
 
+    # Get worker settings from database with caching
+    worker_settings = await get_transcoder_settings()
+    fallback_poll_interval = worker_settings["fallback_poll_interval"]
+    debounce_delay = worker_settings["debounce_delay"]
+
     # Start filesystem watcher if available
     observer = None
     if WORKER_USE_FILESYSTEM_WATCHER and WATCHDOG_AVAILABLE:
-        observer = start_filesystem_watcher(loop, state.new_upload_event)
+        observer = start_filesystem_watcher(loop, state.new_upload_event, debounce_delay=debounce_delay)
         if observer:
-            print(f"  Mode: Event-driven (inotify) with {WORKER_FALLBACK_POLL_INTERVAL}s fallback poll")
+            print(f"  Mode: Event-driven (inotify) with {fallback_poll_interval}s fallback poll")
         else:
-            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watcher failed)")
+            print(f"  Mode: Polling every {fallback_poll_interval}s (watcher failed)")
     else:
         if not WORKER_USE_FILESYSTEM_WATCHER:
-            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watcher disabled)")
+            print(f"  Mode: Polling every {fallback_poll_interval}s (watcher disabled)")
         else:
-            print(f"  Mode: Polling every {WORKER_FALLBACK_POLL_INTERVAL}s (watchdog not available)")
+            print(f"  Mode: Polling every {fallback_poll_interval}s (watchdog not available)")
 
     print("Watching for new videos...")
 
@@ -2560,10 +2590,14 @@ async def worker_loop(state: Optional[WorkerState] = None):
 
             # Wait for new uploads or fallback timeout
             if not state.shutdown_requested:
+                # Refresh settings periodically (cache has 60s TTL)
+                worker_settings = await get_transcoder_settings()
+                poll_interval = worker_settings["fallback_poll_interval"]
+
                 if use_event_driven:
                     # Event-driven: wait for filesystem event OR fallback timeout
                     try:
-                        await asyncio.wait_for(state.new_upload_event.wait(), timeout=WORKER_FALLBACK_POLL_INTERVAL)
+                        await asyncio.wait_for(state.new_upload_event.wait(), timeout=poll_interval)
                         # Event was set - new file detected
                         state.new_upload_event.clear()
                     except asyncio.TimeoutError:
@@ -2571,7 +2605,7 @@ async def worker_loop(state: Optional[WorkerState] = None):
                         pass
                 else:
                     # Polling mode: just wait the fallback interval
-                    await asyncio.sleep(WORKER_FALLBACK_POLL_INTERVAL)
+                    await asyncio.sleep(poll_interval)
 
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt received.")

@@ -66,6 +66,7 @@ from api.db_retry import (
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
+from api.public import get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
 from api.schemas import (
@@ -160,16 +161,6 @@ from config import (
     UPLOAD_CHUNK_SIZE,
     UPLOADS_DIR,
     VIDEOS_DIR,
-    WATERMARK_ENABLED,
-    WATERMARK_IMAGE,
-    WATERMARK_MAX_WIDTH_PERCENT,
-    WATERMARK_OPACITY,
-    WATERMARK_PADDING,
-    WATERMARK_POSITION,
-    WATERMARK_TEXT,
-    WATERMARK_TEXT_COLOR,
-    WATERMARK_TEXT_SIZE,
-    WATERMARK_TYPE,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
     check_deprecated_env_vars,
 )
@@ -702,6 +693,17 @@ async def lifespan(app: FastAPI):
     create_tables()
     await database.connect()
     await configure_database()
+
+    # Auto-seed settings from environment on fresh install
+    try:
+        service = get_settings_service()
+        settings_count = await service.count()
+        if settings_count == 0:
+            logger.info("Fresh install detected - seeding settings from environment variables")
+            results = await seed_settings_from_env(updated_by="auto-seed")
+            logger.info(f"Seeded {results['created']} settings from environment variables")
+    except Exception as e:
+        logger.warning(f"Failed to auto-seed settings: {e}")
 
     # Clean up any orphaned transcoding jobs from previous crashes/bugs
     await cleanup_orphaned_jobs()
@@ -4801,35 +4803,37 @@ async def _get_workers_state() -> dict:
 
 @app.get("/api/settings/watermark")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def get_watermark_settings(request: Request):
+async def get_admin_watermark_settings(request: Request):
     """
     Get current watermark configuration.
 
-    Returns the current watermark settings from environment configuration.
+    Returns the current watermark settings from database (with env var fallback).
     Supports both image and text watermark types.
-    Note: Watermark settings are configured via environment variables.
     """
+    # Get watermark settings from database with caching
+    settings = await get_watermark_settings()
+
     watermark_exists = False
-    if WATERMARK_IMAGE:
-        watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+    if settings["image"]:
+        watermark_path = NAS_STORAGE / settings["image"]
         watermark_exists = watermark_path.exists()
 
     return {
-        "enabled": WATERMARK_ENABLED,
-        "type": WATERMARK_TYPE,
+        "enabled": settings["enabled"],
+        "type": settings["type"],
         # Image settings
-        "image": WATERMARK_IMAGE,
+        "image": settings["image"],
         "image_exists": watermark_exists,
         "image_url": "/api/settings/watermark/image" if watermark_exists else None,
-        "max_width_percent": WATERMARK_MAX_WIDTH_PERCENT,
+        "max_width_percent": settings["max_width_percent"],
         # Text settings
-        "text": WATERMARK_TEXT,
-        "text_size": WATERMARK_TEXT_SIZE,
-        "text_color": WATERMARK_TEXT_COLOR,
+        "text": settings["text"],
+        "text_size": settings["text_size"],
+        "text_color": settings["text_color"],
         # Common settings
-        "position": WATERMARK_POSITION,
-        "opacity": WATERMARK_OPACITY,
-        "padding": WATERMARK_PADDING,
+        "position": settings["position"],
+        "opacity": settings["opacity"],
+        "padding": settings["padding"],
     }
 
 
@@ -4837,10 +4841,13 @@ async def get_watermark_settings(request: Request):
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_admin_watermark_image(request: Request):
     """Serve the watermark image for admin preview."""
-    if not WATERMARK_IMAGE:
+    # Get watermark settings from database with caching
+    settings = await get_watermark_settings()
+
+    if not settings["image"]:
         raise HTTPException(status_code=404, detail="No watermark configured")
 
-    watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+    watermark_path = NAS_STORAGE / settings["image"]
     if not watermark_path.exists():
         raise HTTPException(status_code=404, detail="Watermark image not found")
 
@@ -4897,9 +4904,12 @@ async def upload_watermark_image(
             detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
         )
 
+    # Get watermark settings from database with caching
+    settings = await get_watermark_settings()
+
     # Determine target path
-    if WATERMARK_IMAGE:
-        target_path = NAS_STORAGE / WATERMARK_IMAGE
+    if settings["image"]:
+        target_path = NAS_STORAGE / settings["image"]
     else:
         # Default to watermark.png if not configured
         target_path = NAS_STORAGE / f"watermark{ext}"
@@ -4932,14 +4942,14 @@ async def upload_watermark_image(
             details={"action": "watermark_upload", "original_filename": file.filename, "size": total_size},
         )
 
+        relative_path = str(target_path.relative_to(NAS_STORAGE))
         return {
             "status": "ok",
             "message": "Watermark uploaded successfully",
-            "path": str(target_path.relative_to(NAS_STORAGE)),
+            "path": relative_path,
             "size": total_size,
-            "note": "Set VLOG_WATERMARK_ENABLED=true and VLOG_WATERMARK_IMAGE="
-            + str(target_path.relative_to(NAS_STORAGE))
-            + " in your environment, then restart services.",
+            "note": f"Update 'watermark.image' to '{relative_path}' and 'watermark.enabled' to true "
+            "in Settings to enable the watermark.",
         }
 
     except Exception as e:
@@ -4957,12 +4967,15 @@ async def delete_watermark_image(request: Request):
     Delete the current watermark image.
 
     Removes the watermark file from storage. You should also set
-    VLOG_WATERMARK_ENABLED=false to disable the watermark overlay.
+    'watermark.enabled' to false in Settings to disable the watermark overlay.
     """
-    if not WATERMARK_IMAGE:
+    # Get watermark settings from database with caching
+    settings = await get_watermark_settings()
+
+    if not settings["image"]:
         raise HTTPException(status_code=404, detail="No watermark configured")
 
-    watermark_path = NAS_STORAGE / WATERMARK_IMAGE
+    watermark_path = NAS_STORAGE / settings["image"]
     if not watermark_path.exists():
         raise HTTPException(status_code=404, detail="Watermark image not found")
 
@@ -4976,14 +4989,14 @@ async def delete_watermark_image(request: Request):
             user_agent=request.headers.get("user-agent"),
             resource_type="watermark",
             resource_id=None,
-            resource_name=WATERMARK_IMAGE,
+            resource_name=settings["image"],
             details={"action": "watermark_delete"},
         )
 
         return {
             "status": "ok",
             "message": "Watermark deleted successfully",
-            "note": "Set VLOG_WATERMARK_ENABLED=false in your environment to disable the watermark overlay.",
+            "note": "Set 'watermark.enabled' to false in Settings to disable the watermark overlay.",
         }
     except Exception as e:
         logger.error(f"Failed to delete watermark: {e}")

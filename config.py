@@ -38,6 +38,8 @@ DEPRECATED_ENV_VARS = {
     "VLOG_WORKER_HEARTBEAT_INTERVAL": "workers.heartbeat_interval",
     "VLOG_WORKER_CLAIM_DURATION": "workers.claim_duration_minutes",
     "VLOG_WORKER_POLL_INTERVAL": "workers.poll_interval",
+    "VLOG_WORKER_FALLBACK_POLL_INTERVAL": "workers.fallback_poll_interval",
+    "VLOG_WORKER_DEBOUNCE_DELAY": "workers.debounce_delay",
     "VLOG_WORKER_OFFLINE_THRESHOLD": "workers.offline_threshold_minutes",
     "VLOG_STALE_JOB_CHECK_INTERVAL": "workers.stale_job_check_interval",
     "VLOG_PROGRESS_UPDATE_INTERVAL": "workers.progress_update_interval",

@@ -817,6 +817,89 @@ Video files on NAS should be backed up according to your NAS backup strategy.
 
 ---
 
+## Upgrading
+
+### Standard Upgrade
+
+```bash
+# Stop services
+sudo systemctl stop vlog.target
+
+# Backup database
+pg_dump -U vlog vlog > /backup/vlog-pre-upgrade-$(date +%Y%m%d).sql
+
+# Pull latest code
+cd /home/damen/vlog
+git pull origin main
+
+# Update dependencies
+source venv/bin/activate
+pip install -e .
+
+# Run database migrations
+alembic upgrade head
+
+# Start services
+sudo systemctl start vlog.target
+```
+
+### Migrating to Database-Backed Settings
+
+If upgrading from a version before the database-backed settings system:
+
+1. **First startup will auto-seed**: On first startup after the upgrade, VLog automatically detects a fresh settings table and seeds it from your current environment variables.
+
+2. **Or migrate manually**:
+
+```bash
+# After upgrade, migrate settings from environment to database
+vlog settings migrate-from-env
+
+# Verify settings were migrated
+vlog settings list
+
+# The command outputs which env vars are now "safe to remove"
+# You can keep them as fallbacks or remove them from your environment
+```
+
+3. **Update configuration approach**:
+
+**Before (environment variables):**
+```bash
+export VLOG_HLS_SEGMENT_DURATION=6
+export VLOG_WATERMARK_ENABLED=true
+```
+
+**After (database via CLI):**
+```bash
+vlog settings set transcoding.hls_segment_duration 6
+vlog settings set watermark.enabled true
+```
+
+**Or via Admin UI**: Navigate to Settings tab in the admin interface.
+
+4. **Environment variables still work**: For backwards compatibility, environment variables continue to work as fallbacks if a setting isn't found in the database.
+
+### What Changes After Migration
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Configuration changes | Edit env vars, restart service | Update via UI/CLI, no restart |
+| Settings visibility | Check `.env` files | View in admin UI |
+| Audit trail | None | All changes logged |
+| Per-setting control | All or nothing | Individual settings |
+| Cache behavior | Immediate | Up to 60 seconds delay |
+
+### Bootstrap Settings (Still Require Restart)
+
+These settings cannot be changed at runtime and still require environment variables:
+- `VLOG_DATABASE_URL`
+- `VLOG_STORAGE_PATH`
+- `VLOG_PUBLIC_PORT`, `VLOG_ADMIN_PORT`, `VLOG_WORKER_API_PORT`
+- `VLOG_ADMIN_API_SECRET`, `VLOG_WORKER_ADMIN_SECRET`
+
+---
+
 ## Troubleshooting
 
 ### Service Won't Start

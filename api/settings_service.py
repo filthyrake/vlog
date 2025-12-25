@@ -25,6 +25,7 @@ from api.db_retry import (
     db_execute_with_retry,
     fetch_all_with_retry,
     fetch_one_with_retry,
+    fetch_val_with_retry,
 )
 from api.errors import is_unique_violation
 
@@ -478,6 +479,21 @@ class SettingsService:
 
         return result
 
+    async def count(self) -> int:
+        """
+        Get the count of settings in the database.
+
+        Returns:
+            Number of settings stored in the database
+        """
+        import sqlalchemy as sa
+
+        from api.database import settings as settings_table
+
+        query = sa.select(sa.func.count()).select_from(settings_table)
+        result = await fetch_val_with_retry(query)
+        return result or 0
+
     async def get_all(self) -> Dict[str, List[Dict[str, Any]]]:
         """
         Get all settings grouped by category.
@@ -800,6 +816,20 @@ KNOWN_SETTINGS = [
         "float",
         "Progress update interval in seconds",
         {"min": 0.1, "max": 60.0},
+    ),
+    (
+        "workers.fallback_poll_interval",
+        "workers",
+        "integer",
+        "Fallback polling interval when filesystem watcher unavailable (seconds)",
+        {"min": 1, "max": 600},
+    ),
+    (
+        "workers.debounce_delay",
+        "workers",
+        "float",
+        "Debounce delay for filesystem events (seconds)",
+        {"min": 0.0, "max": 60.0},
     ),
     # Analytics settings
     ("analytics.cache_enabled", "analytics", "boolean", "Enable analytics caching", None),
