@@ -22,6 +22,7 @@ from rich.progress import (
 
 from api.errors import truncate_error
 from config import (
+    ADMIN_API_SECRET,
     ADMIN_PORT,
     ERROR_DETAIL_MAX_LENGTH,
     ERROR_SUMMARY_MAX_LENGTH,
@@ -221,6 +222,31 @@ def validate_url(url):
     return url
 
 
+def get_admin_headers() -> dict:
+    """Get headers for admin API requests."""
+    headers = {}
+    if ADMIN_API_SECRET:
+        headers["X-Admin-Secret"] = ADMIN_API_SECRET
+    return headers
+
+
+def handle_auth_error(response) -> bool:
+    """
+    Check for auth errors and provide helpful message.
+
+    Returns True if an auth error was handled (and program should exit).
+    """
+    if response.status_code == 401:
+        print("Error: Authentication required.")
+        print("The admin API requires authentication. Set VLOG_ADMIN_API_SECRET environment variable.")
+        sys.exit(1)
+    elif response.status_code == 403:
+        print("Error: Authentication failed - invalid secret.")
+        print("Check that VLOG_ADMIN_API_SECRET matches the server configuration.")
+        sys.exit(1)
+    return False
+
+
 def cmd_upload(args):
     """Upload a video."""
     try:
@@ -240,7 +266,8 @@ def cmd_upload(args):
         if args.category:
             # Look up category ID by name/slug
             try:
-                response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+                response = httpx.get(f"{API_BASE}/categories", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+                handle_auth_error(response)
                 cats = safe_json_response(response)
                 cat_match = None
                 for cat in cats:
@@ -273,8 +300,9 @@ def cmd_upload(args):
                 files = {"file": (file_path.name, wrapped_file)}
 
                 with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT)) as client:
-                    response = client.post(f"{API_BASE}/videos", files=files, data=data)
+                    response = client.post(f"{API_BASE}/videos", files=files, data=data, headers=get_admin_headers())
 
+        handle_auth_error(response)
         result = safe_json_response(response)
         print("Success! Video queued for processing.")
         print(f"  ID: {result['video_id']}")
@@ -304,7 +332,8 @@ def cmd_list(args):
             if args.status:
                 print("Warning: --status is ignored when listing archived videos")
 
-            response = httpx.get(f"{API_BASE}/videos/archived", timeout=DEFAULT_API_TIMEOUT)
+            response = httpx.get(f"{API_BASE}/videos/archived", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+            handle_auth_error(response)
             result = safe_json_response(response)
             videos_list = result.get("videos", [])
             total = result.get("total", len(videos_list))
@@ -327,7 +356,8 @@ def cmd_list(args):
             if args.status:
                 params["status"] = args.status
 
-            response = httpx.get(f"{API_BASE}/videos", params=params, timeout=DEFAULT_API_TIMEOUT)
+            response = httpx.get(f"{API_BASE}/videos", params=params, headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+            handle_auth_error(response)
             videos_list = safe_json_response(response)
 
             if not videos_list:
@@ -362,12 +392,15 @@ def cmd_categories(args):
             response = httpx.post(
                 f"{API_BASE}/categories",
                 json={"name": args.create, "description": args.description or ""},
+                headers=get_admin_headers(),
                 timeout=DEFAULT_API_TIMEOUT,
             )
+            handle_auth_error(response)
             cat = safe_json_response(response)
             print(f"Created category: {cat['name']} (slug: {cat['slug']})")
         else:
-            response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+            response = httpx.get(f"{API_BASE}/categories", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+            handle_auth_error(response)
             categories = safe_json_response(response)
 
             if not categories:
@@ -396,7 +429,8 @@ def cmd_categories(args):
 def cmd_delete(args):
     """Delete a video."""
     try:
-        response = httpx.delete(f"{API_BASE}/videos/{args.video_id}", timeout=DEFAULT_API_TIMEOUT)
+        response = httpx.delete(f"{API_BASE}/videos/{args.video_id}", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+        handle_auth_error(response)
         safe_json_response(response)  # Will raise CLIError if not successful
         print(f"Video {args.video_id} deleted.")
     except httpx.ConnectError:
@@ -490,7 +524,8 @@ def cmd_download(args):
             }
             if args.category:
                 try:
-                    response = httpx.get(f"{API_BASE}/categories", timeout=DEFAULT_API_TIMEOUT)
+                    response = httpx.get(f"{API_BASE}/categories", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+                    handle_auth_error(response)
                     cats = safe_json_response(response)
                     for cat in cats:
                         if cat["name"].lower() == args.category.lower() or cat["slug"] == args.category:
@@ -518,8 +553,9 @@ def cmd_download(args):
                     files = {"file": (video_file.name, wrapped_file)}
 
                     with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT)) as client:
-                        response = client.post(f"{API_BASE}/videos", files=files, data=data)
+                        response = client.post(f"{API_BASE}/videos", files=files, data=data, headers=get_admin_headers())
 
+            handle_auth_error(response)
             result = safe_json_response(response)
             print("Success! Video queued for processing.")
             print(f"  ID: {result['video_id']}")
@@ -544,18 +580,20 @@ def cmd_download(args):
 def cmd_worker(args):
     """Worker management commands."""
     # Check for admin secret - required for worker management
-    if not WORKER_ADMIN_SECRET:
-        print("Error: VLOG_WORKER_ADMIN_SECRET environment variable is required for worker management.")
+    # Prefer ADMIN_API_SECRET, fall back to WORKER_ADMIN_SECRET for backwards compatibility
+    worker_admin_secret = ADMIN_API_SECRET or WORKER_ADMIN_SECRET
+    if not worker_admin_secret:
+        print("Error: VLOG_ADMIN_API_SECRET environment variable is required for worker management.")
         print()
         print("Generate a secret with:")
         print('  python -c "import secrets; print(secrets.token_urlsafe(32))"')
         print()
         print("Then set it in your environment:")
-        print("  export VLOG_WORKER_ADMIN_SECRET=<your-secret>")
+        print("  export VLOG_ADMIN_API_SECRET=<your-secret>")
         sys.exit(1)
 
     # Headers for admin authentication
-    admin_headers = {"X-Admin-Secret": WORKER_ADMIN_SECRET}
+    admin_headers = {"X-Admin-Secret": worker_admin_secret}
 
     try:
         if args.worker_command == "register":
@@ -730,7 +768,8 @@ def cmd_settings(args):
     elif args.settings_command == "list":
         # List settings from database
         try:
-            response = httpx.get(f"{API_BASE}/settings", timeout=DEFAULT_API_TIMEOUT)
+            response = httpx.get(f"{API_BASE}/settings", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+            handle_auth_error(response)
             result = safe_json_response(response)
 
             # API returns {"categories": {...}}
@@ -763,7 +802,8 @@ def cmd_settings(args):
         # Get a single setting
         key = args.key
         try:
-            response = httpx.get(f"{API_BASE}/settings/key/{key}", timeout=DEFAULT_API_TIMEOUT)
+            response = httpx.get(f"{API_BASE}/settings/key/{key}", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+            handle_auth_error(response)
             result = safe_json_response(response)
 
             print(f"Key: {result['key']}")
@@ -802,8 +842,10 @@ def cmd_settings(args):
             response = httpx.post(
                 f"{API_BASE}/settings",
                 json={"key": key, "value": parsed_value},
+                headers=get_admin_headers(),
                 timeout=DEFAULT_API_TIMEOUT,
             )
+            handle_auth_error(response)
             safe_json_response(response)
             print(f"Setting updated: {key} = {parsed_value}")
 
