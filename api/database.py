@@ -478,6 +478,59 @@ admin_sessions = sa.Table(
     sa.Index("ix_admin_sessions_expires_at", "expires_at"),
 )
 
+# Runtime configuration settings (database-backed, manageable via Admin UI)
+# Replaces 100+ environment variables with a single database table.
+# Settings are cached in memory with TTL and fall back to env vars for migration.
+#
+# FIELD SEMANTICS:
+# ----------------
+# - key: Unique identifier in dot notation (e.g., "transcoding.hls_segment_duration")
+# - value: JSON-encoded value (supports all types: string, number, boolean, array, object)
+# - category: For UI grouping (e.g., "transcoding", "watermark", "workers")
+# - description: Help text shown in Admin UI
+# - value_type: One of: string, integer, float, boolean, enum, json
+# - constraints: JSON object with validation rules (min, max, enum_values, pattern)
+# - updated_at: Last modification timestamp
+# - updated_by: Who made the change (for audit trail)
+#
+# CATEGORIES:
+# -----------
+# - transcoding: Quality presets, HLS settings, FFmpeg timeouts, hardware acceleration
+# - watermark: Client-side watermark overlay settings
+# - workers: Heartbeat intervals, claim duration, retry settings
+# - storage: Cleanup policies, archive settings
+# - rate_limiting: Request limits per endpoint type
+# - analytics: Cache TTL, session timeout, tracking settings
+# - alerts: Webhook URL, rate limiting, enabled events
+# - transcription: Model, language, compute type settings
+# - security: Cookie settings, CORS (non-secret)
+# - ui: Theme, branding settings
+#
+# See: https://github.com/filthyrake/vlog/issues/400
+settings = sa.Table(
+    "settings",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("key", sa.String(255), unique=True, nullable=False),
+    sa.Column("value", sa.Text, nullable=False),  # JSON-encoded
+    sa.Column("category", sa.String(100), nullable=False),
+    sa.Column("description", sa.Text, nullable=True),
+    sa.Column(
+        "value_type",
+        sa.String(50),
+        sa.CheckConstraint(
+            "value_type IN ('string', 'integer', 'float', 'boolean', 'enum', 'json')",
+            name="ck_settings_value_type"
+        ),
+        default="string"
+    ),
+    sa.Column("constraints", sa.Text, nullable=True),  # JSON-encoded
+    sa.Column("updated_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("updated_by", sa.String(255), nullable=True),
+    sa.Index("ix_settings_key", "key"),
+    sa.Index("ix_settings_category", "category"),
+)
+
 
 def create_tables():
     """

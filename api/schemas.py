@@ -1,6 +1,6 @@
 import math
 from datetime import datetime
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -705,3 +705,75 @@ class ThumbnailInfoResponse(BaseModel):
     thumbnail_url: Optional[str]
     thumbnail_source: str  # auto, selected, custom
     thumbnail_timestamp: Optional[float] = None
+
+
+# ============ Settings Models ============
+
+
+class SettingConstraints(BaseModel):
+    """Validation constraints for a setting value."""
+
+    min: Optional[float] = None
+    max: Optional[float] = None
+    min_length: Optional[int] = None
+    max_length: Optional[int] = None
+    pattern: Optional[str] = None
+    enum_values: Optional[List[str]] = None
+
+
+class SettingResponse(BaseModel):
+    """Response for a single setting."""
+
+    key: str
+    value: Any
+    category: str
+    value_type: str  # string, integer, float, boolean, enum, json
+    description: Optional[str] = None
+    constraints: Optional[SettingConstraints] = None
+    updated_at: datetime
+    updated_by: Optional[str] = None
+
+
+class SettingUpdate(BaseModel):
+    """Request to update a setting value."""
+
+    value: Any = Field(..., description="New value for the setting")
+
+
+class SettingCreate(BaseModel):
+    """Request to create a new setting."""
+
+    key: str = Field(..., min_length=1, max_length=255, pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+    value: Any = Field(..., description="Initial value")
+    category: str = Field(..., min_length=1, max_length=100)
+    value_type: str = Field(default="string", pattern="^(string|integer|float|boolean|enum|json)$")
+    description: Optional[str] = Field(default=None, max_length=1000)
+    constraints: Optional[SettingConstraints] = None
+
+
+class SettingsByCategoryResponse(BaseModel):
+    """Response containing settings grouped by category."""
+
+    categories: dict[str, List[SettingResponse]]
+
+
+class SettingsCategoryResponse(BaseModel):
+    """Response containing settings in a single category."""
+
+    category: str
+    settings: List[SettingResponse]
+
+
+class SettingsExport(BaseModel):
+    """Export format for settings (for import/export functionality)."""
+
+    version: str = "1.0"
+    exported_at: datetime
+    settings: List[SettingResponse]
+
+
+class SettingsImport(BaseModel):
+    """Request to import settings from export format."""
+
+    settings: List[SettingCreate]
+    overwrite: bool = Field(default=False, description="Overwrite existing settings")
