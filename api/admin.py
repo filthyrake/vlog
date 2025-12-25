@@ -1399,10 +1399,21 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
         error_message=sanitize_error_message(row["error_message"], context=f"video_id={video_id}"),
         created_at=row["created_at"],
         published_at=row["published_at"],
-        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
+        thumbnail_url=(
+            f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None
+        ),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
+        # DASH URL only available for CMAF format videos
+        dash_url=(
+            f"/videos/{row['slug']}/manifest.mpd"
+            if row["status"] == VideoStatus.READY
+            and row._mapping.get("streaming_format") == "cmaf"
+            else None
+        ),
+        streaming_format=row._mapping.get("streaming_format", "hls_ts"),
+        primary_codec=row._mapping.get("primary_codec", "h264"),
         qualities=qualities,
     )
 

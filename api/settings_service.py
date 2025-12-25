@@ -887,6 +887,64 @@ KNOWN_SETTINGS = [
         {"min": 1, "max": 100},
     ),
     ("storage.thumbnail_width", "storage", "integer", "Thumbnail width in pixels", {"min": 100, "max": 1920}),
+    # Streaming format settings (Issue #212)
+    (
+        "streaming.default_format",
+        "streaming",
+        "enum",
+        "Default streaming format for new encodes (hls_ts=legacy, cmaf=modern fMP4)",
+        {"enum_values": ["hls_ts", "cmaf"]},
+    ),
+    (
+        "streaming.default_codec",
+        "streaming",
+        "enum",
+        "Default video codec for new encodes",
+        {"enum_values": ["h264", "hevc", "av1"]},
+    ),
+    (
+        "streaming.enable_dash",
+        "streaming",
+        "boolean",
+        "Generate DASH manifest alongside HLS (requires CMAF format)",
+        None,
+    ),
+    (
+        "streaming.segment_duration",
+        "streaming",
+        "integer",
+        "Segment duration in seconds (applies to both HLS and DASH)",
+        {"min": 2, "max": 10},
+    ),
+    (
+        "streaming.h264_fallback",
+        "streaming",
+        "boolean",
+        "Also generate H.264 version for older device compatibility",
+        None,
+    ),
+    # Re-encoding settings (Issue #212)
+    (
+        "reencode.batch_size",
+        "reencode",
+        "integer",
+        "Number of videos to process concurrently in re-encode queue",
+        {"min": 1, "max": 10},
+    ),
+    (
+        "reencode.enabled",
+        "reencode",
+        "boolean",
+        "Enable background re-encoding worker",
+        None,
+    ),
+    (
+        "reencode.priority_threshold_views",
+        "reencode",
+        "integer",
+        "Videos with more views than this get high priority re-encoding",
+        {"min": 0, "max": 100000},
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -929,6 +987,16 @@ SETTING_TO_ENV_MAP = {
     "storage.max_upload_size_mb": "VLOG_MAX_UPLOAD_SIZE",
     "storage.max_thumbnail_size_mb": "VLOG_MAX_THUMBNAIL_SIZE",
     "storage.thumbnail_width": "VLOG_THUMBNAIL_WIDTH",
+    # Streaming settings (Issue #212)
+    "streaming.default_format": "VLOG_STREAMING_FORMAT",
+    "streaming.default_codec": "VLOG_STREAMING_CODEC",
+    "streaming.enable_dash": "VLOG_STREAMING_ENABLE_DASH",
+    "streaming.segment_duration": "VLOG_STREAMING_SEGMENT_DURATION",
+    "streaming.h264_fallback": "VLOG_STREAMING_H264_FALLBACK",
+    # Re-encoding settings (Issue #212)
+    "reencode.batch_size": "VLOG_REENCODE_BATCH_SIZE",
+    "reencode.enabled": "VLOG_REENCODE_ENABLED",
+    "reencode.priority_threshold_views": "VLOG_REENCODE_PRIORITY_THRESHOLD",
 }
 
 

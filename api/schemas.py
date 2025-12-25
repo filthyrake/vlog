@@ -167,6 +167,9 @@ class VideoResponse(BaseModel):
     thumbnail_source: str = "auto"  # auto, selected, custom
     thumbnail_timestamp: Optional[float] = None  # timestamp for selected thumbnails
     stream_url: Optional[str] = None
+    dash_url: Optional[str] = None  # DASH manifest URL (CMAF format only)
+    streaming_format: str = "hls_ts"  # hls_ts (legacy) or cmaf (modern fMP4)
+    primary_codec: str = "h264"  # h264, hevc, or av1
     captions_url: Optional[str] = None  # WebVTT captions URL
     transcription_status: Optional[str] = None  # pending, processing, completed, failed
     qualities: List[VideoQualityResponse] = []

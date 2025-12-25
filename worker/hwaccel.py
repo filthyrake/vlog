@@ -46,6 +46,13 @@ class VideoCodec(Enum):
     AV1 = "av1"
 
 
+class StreamingFormat(Enum):
+    """Supported streaming output formats."""
+
+    HLS_TS = "hls_ts"  # Legacy: HLS with MPEG-TS segments
+    CMAF = "cmaf"  # Modern: CMAF with fMP4 segments (HLS + DASH compatible)
+
+
 @dataclass
 class EncoderInfo:
     """Information about an available encoder."""
@@ -720,6 +727,134 @@ def build_transcode_command(
     )
 
     return cmd
+
+
+def build_cmaf_transcode_command(
+    input_path: Path,
+    output_dir: Path,
+    quality: dict,
+    selection: EncoderSelection,
+    segment_duration: int = 6,
+) -> List[str]:
+    """
+    Build FFmpeg command for CMAF transcoding (fMP4 segments).
+
+    CMAF (Common Media Application Format) uses fragmented MP4 segments
+    that are compatible with both HLS and DASH streaming protocols.
+
+    Output structure:
+        {output_dir}/{quality_name}/
+            ├── stream.m3u8    # HLS variant playlist
+            ├── init.mp4       # CMAF initialization segment
+            └── seg_*.m4s      # CMAF media segments
+
+    Args:
+        input_path: Source video file
+        output_dir: Output directory (quality subdir created automatically)
+        quality: Quality preset dict with name, height, bitrate, audio_bitrate
+        selection: EncoderSelection from select_encoder()
+        segment_duration: Segment length in seconds
+
+    Returns:
+        Complete FFmpeg command as list of arguments.
+    """
+    name = quality["name"]
+    bitrate = quality["bitrate"]
+    audio_bitrate = quality["audio_bitrate"]
+
+    # Create quality subdirectory for CMAF output
+    quality_dir = output_dir / name
+    playlist_name = "stream.m3u8"
+    init_segment = "init.mp4"
+    segment_pattern = str(quality_dir / "seg_%04d.m4s")
+
+    cmd = ["ffmpeg", "-y"]
+
+    # Hardware decoding input arguments (before -i)
+    cmd.extend(selection.input_args)
+
+    # Input file
+    cmd.extend(["-i", str(input_path)])
+
+    # Video encoding arguments
+    cmd.extend(selection.output_args)
+
+    # Bitrate control
+    cmd.extend(
+        [
+            "-b:v",
+            bitrate,
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            f"{int(bitrate.replace('k', '')) * 2}k",
+        ]
+    )
+
+    # Video filter (scaling)
+    cmd.extend(["-vf", selection.scale_filter])
+
+    # Audio encoding
+    cmd.extend(
+        [
+            "-c:a",
+            "aac",
+            "-b:a",
+            audio_bitrate,
+            "-ac",
+            "2",
+        ]
+    )
+
+    # CMAF/fMP4 HLS output
+    # -hls_segment_type fmp4: Use fragmented MP4 instead of MPEG-TS
+    # -hls_fmp4_init_filename: Name of the initialization segment
+    # -movflags +cmaf: Enable CMAF compatibility flags
+    cmd.extend(
+        [
+            "-hls_time",
+            str(segment_duration),
+            "-hls_list_size",
+            "0",
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            init_segment,
+            "-hls_segment_filename",
+            segment_pattern,
+            "-movflags",
+            "+cmaf+faststart",
+            "-progress",
+            "pipe:1",
+            "-f",
+            "hls",
+            str(quality_dir / playlist_name),
+        ]
+    )
+
+    return cmd
+
+
+def get_codec_string(codec: VideoCodec, level: str = "L120") -> str:
+    """
+    Get codec string for HLS/DASH manifest.
+
+    Args:
+        codec: Video codec
+        level: Codec level (default L120 for HD)
+
+    Returns:
+        Codec string for EXT-X-STREAM-INF CODECS attribute.
+    """
+    if codec == VideoCodec.HEVC:
+        # hvc1.1.6.L120.90 - Main profile, level 4.0 (1080p)
+        return f"hvc1.1.6.{level}.90,mp4a.40.2"
+    elif codec == VideoCodec.AV1:
+        # av01.0.08M.08 - Main profile, level 4.0, 8-bit
+        return "av01.0.08M.08,mp4a.40.2"
+    else:
+        # avc1.640028 - H.264 High profile, level 4.0
+        return "avc1.640028,mp4a.40.2"
 
 
 async def get_worker_capabilities(gpu_caps: Optional[GPUCapabilities] = None) -> dict:

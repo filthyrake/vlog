@@ -235,31 +235,72 @@ app.add_middleware(
 )
 
 
-# Custom static files handler with proper headers for HLS
-class HLSStaticFiles(StaticFiles):
+# Custom static files handler with proper headers for HLS/DASH/CMAF streaming
+class StreamingStaticFiles(StaticFiles):
+    """
+    Static files handler for video streaming content.
+
+    Supports:
+    - Legacy HLS with MPEG-TS segments (.ts)
+    - Modern CMAF with fMP4 segments (.m4s, init.mp4)
+    - HLS playlists (.m3u8)
+    - DASH manifests (.mpd)
+
+    Provides appropriate MIME types and cache headers for each file type.
+    """
+
     async def get_response(self, path: str, scope) -> Response:
         try:
             response = await super().get_response(path, scope)
-            # Fix MIME types and cache headers for HLS
+
+            # CORS headers for cross-origin playback (needed for some players)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Expose-Headers"] = "Content-Length,Content-Range"
+
+            # MIME types and cache headers based on file type
             if path.endswith(".ts"):
-                # CRITICAL: .ts files are MPEG Transport Stream, not TypeScript/Qt Linguist
+                # Legacy MPEG-TS segments - cache aggressively (immutable)
                 response.headers["Content-Type"] = "video/mp2t"
                 response.headers["Cache-Control"] = "public, max-age=31536000"
+
+            elif path.endswith(".m4s"):
+                # CMAF media segments - cache aggressively (immutable)
+                response.headers["Content-Type"] = "video/iso.segment"
+                response.headers["Cache-Control"] = "public, max-age=31536000"
+
+            elif path.endswith("init.mp4"):
+                # CMAF initialization segments - cache aggressively
+                response.headers["Content-Type"] = "video/mp4"
+                response.headers["Cache-Control"] = "public, max-age=31536000"
+
             elif path.endswith(".m3u8"):
+                # HLS playlists - no cache to allow live updates
                 response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
                 response.headers["Cache-Control"] = "no-cache"
+
+            elif path.endswith(".mpd"):
+                # DASH manifests - no cache to allow live updates
+                response.headers["Content-Type"] = "application/dash+xml"
+                response.headers["Cache-Control"] = "no-cache"
+
             elif path.endswith("thumbnail.jpg") or "/frames/" in path:
-                # Short cache for thumbnails and frame images - allow updates to propagate quickly
+                # Short cache for thumbnails and frame images
                 response.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
+
             return response
+
         except (OSError, PermissionError) as e:
             # Storage unavailable - return 503 with helpful message
-            logger.warning(f"Storage unavailable for HLS file {path}: {e}")
+            logger.warning(f"Storage unavailable for streaming file {path}: {e}")
             return JSONResponse(
                 status_code=503,
                 content={"detail": "Video storage temporarily unavailable. Please try again later."},
                 headers={"Retry-After": "30"},
             )
+
+
+# Backwards compatibility alias
+HLSStaticFiles = StreamingStaticFiles
 
 
 # Serve video files (HLS segments, playlists, thumbnails)
@@ -363,8 +404,12 @@ async def list_videos(
     quality: Optional[str] = Query(
         default=None, description="Filter by available quality: 2160p, 1440p, 1080p, 720p, 480p, 360p. Comma-separated."
     ),
-    date_from: Optional[datetime] = Query(default=None, description="Filter videos published from this date (ISO 8601)"),
-    date_to: Optional[datetime] = Query(default=None, description="Filter videos published until this date (ISO 8601)"),
+    date_from: Optional[datetime] = Query(
+        default=None, description="Filter videos published from this date (ISO 8601)"
+    ),
+    date_to: Optional[datetime] = Query(
+        default=None, description="Filter videos published until this date (ISO 8601)"
+    ),
     has_transcription: Optional[bool] = Query(
         default=None, description="Filter by transcription availability (true/false)"
     ),
@@ -538,16 +583,21 @@ async def list_videos(
     sort_order = SortOrder.DESC if order_lower == "desc" else SortOrder.ASC
 
     if sort_by == SortBy.DATE:
-        query = query.order_by(videos.c.published_at.desc() if sort_order == SortOrder.DESC else videos.c.published_at.asc())
+        order_col = videos.c.published_at.desc() if sort_order == SortOrder.DESC else videos.c.published_at.asc()
+        query = query.order_by(order_col)
     elif sort_by == SortBy.DURATION:
-        query = query.order_by(videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc())
+        order_col = videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc()
+        query = query.order_by(order_col)
     elif sort_by == SortBy.VIEWS:
         # Use column label with desc()/asc() for type safety
         view_count_col = sa.literal_column("view_count")
-        query = query.order_by(view_count_col.desc() if sort_order == SortOrder.DESC else view_count_col.asc())
+        order_col = view_count_col.desc() if sort_order == SortOrder.DESC else view_count_col.asc()
+        query = query.order_by(order_col)
     elif sort_by == SortBy.TITLE:
         # Case-insensitive sorting for better alphabetical ordering
-        query = query.order_by(sa.func.lower(videos.c.title).asc() if sort_order == SortOrder.ASC else sa.func.lower(videos.c.title).desc())
+        title_lower = sa.func.lower(videos.c.title)
+        order_col = title_lower.asc() if sort_order == SortOrder.ASC else title_lower.desc()
+        query = query.order_by(order_col)
     elif sort_by == SortBy.RELEVANCE:
         # For relevance, use published date as fallback (most recent first)
         query = query.order_by(videos.c.published_at.desc())
@@ -671,10 +721,23 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         error_message=sanitize_error_message(row["error_message"], context=f"video_slug={slug}"),
         created_at=row["created_at"],
         published_at=row["published_at"],
-        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}" if row["status"] == VideoStatus.READY else None,
+        thumbnail_url=(
+            f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}"
+            if row["status"] == VideoStatus.READY
+            else None
+        ),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
+        # DASH URL only available for CMAF format videos
+        dash_url=(
+            f"/videos/{row['slug']}/manifest.mpd"
+            if row["status"] == VideoStatus.READY
+            and row._mapping.get("streaming_format") == "cmaf"
+            else None
+        ),
+        streaming_format=row._mapping.get("streaming_format", "hls_ts"),
+        primary_codec=row._mapping.get("primary_codec", "h264"),
         captions_url=captions_url,
         transcription_status=transcription_status,
         qualities=qualities,
@@ -795,7 +858,10 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
     query = sa.text("""
         SELECT c.*, COUNT(v.id) as video_count
         FROM categories c
-        LEFT JOIN videos v ON v.category_id = c.id AND v.status = 'ready' AND v.deleted_at IS NULL AND v.published_at IS NOT NULL
+        LEFT JOIN videos v ON v.category_id = c.id
+            AND v.status = 'ready'
+            AND v.deleted_at IS NULL
+            AND v.published_at IS NOT NULL
         GROUP BY c.id
         ORDER BY c.name
     """)
@@ -861,7 +927,10 @@ async def list_tags(request: Request) -> List[TagResponse]:
         SELECT t.*, COUNT(vt.video_id) as video_count
         FROM tags t
         LEFT JOIN video_tags vt ON vt.tag_id = t.id
-        LEFT JOIN videos v ON v.id = vt.video_id AND v.status = 'ready' AND v.deleted_at IS NULL AND v.published_at IS NOT NULL
+        LEFT JOIN videos v ON v.id = vt.video_id
+            AND v.status = 'ready'
+            AND v.deleted_at IS NULL
+            AND v.published_at IS NOT NULL
         GROUP BY t.id
         ORDER BY t.name
     """)
