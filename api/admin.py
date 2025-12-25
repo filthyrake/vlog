@@ -214,6 +214,37 @@ security_logger = logging.getLogger("security.admin_auth")
 # Session cookie name
 ADMIN_SESSION_COOKIE = "vlog_admin_session"
 
+# CSRF protection constants
+CSRF_TOKEN_HEADER = "X-CSRF-Token"
+# Derive HMAC key from ADMIN_API_SECRET for additional security
+# Falls back to static key if ADMIN_API_SECRET not configured (though CSRF is skipped in that case)
+CSRF_HMAC_KEY = (ADMIN_API_SECRET or "vlog-csrf-fallback").encode()
+
+
+def generate_csrf_token(session_token: str) -> str:
+    """
+    Generate a CSRF token from a session token using HMAC.
+
+    The CSRF token is cryptographically derived from the session token,
+    ensuring it's tied to the session and can be validated without database storage.
+    The HMAC key is derived from ADMIN_API_SECRET for additional security.
+    """
+    if not session_token:
+        return ""
+    return hmac.new(CSRF_HMAC_KEY, session_token.encode(), "sha256").hexdigest()
+
+
+def validate_csrf_token(session_token: str, csrf_token: str) -> bool:
+    """
+    Validate a CSRF token against the expected token for a session.
+
+    Uses constant-time comparison to prevent timing attacks.
+    """
+    if not session_token or not csrf_token:
+        return False
+    expected_token = generate_csrf_token(session_token)
+    return hmac.compare_digest(csrf_token, expected_token)
+
 
 async def validate_session_token(session_token: str) -> bool:
     """
@@ -292,16 +323,17 @@ async def cleanup_expired_sessions() -> int:
 
 class AdminAuthMiddleware:
     """
-    Middleware to protect Admin API endpoints with authentication.
+    Middleware to protect Admin API endpoints with authentication and CSRF protection.
 
     Supports two authentication methods:
-    1. X-Admin-Secret header - for API clients and CLI tools
-    2. Session cookie - for browser-based UI (HTTP-only, secure)
+    1. X-Admin-Secret header - for API clients and CLI tools (no CSRF required)
+    2. Session cookie - for browser-based UI (HTTP-only, secure, requires CSRF token)
 
     When ADMIN_API_SECRET is configured:
     - All /api/* paths (except /api/auth/*) require authentication
     - Authentication can be via X-Admin-Secret header OR valid session cookie
-    - Returns 401 if neither is provided or valid
+    - Cookie-based auth requires CSRF token for state-changing methods (POST/PUT/DELETE/PATCH)
+    - Returns 401 if not authenticated, 403 if CSRF validation fails
 
     When ADMIN_API_SECRET is not configured (empty):
     - All requests are allowed (backwards compatible)
@@ -311,8 +343,11 @@ class AdminAuthMiddleware:
     - /health (monitoring)
     - /static/* (static files)
     - /videos/* (video file serving for preview)
-    - /api/auth/* (login, logout, check endpoints)
+    - /api/auth/* (login, logout, check, csrf-token endpoints)
     """
+
+    # HTTP methods that require CSRF protection (state-changing operations)
+    CSRF_PROTECTED_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
     def __init__(self, app):
         self.app = app
@@ -328,6 +363,10 @@ class AdminAuthMiddleware:
                     key, value = item.split("=", 1)
                     cookies[key.strip()] = value.strip()
         return cookies
+
+    def _requires_csrf(self, method: str) -> bool:
+        """Check if the HTTP method requires CSRF protection."""
+        return method in self.CSRF_PROTECTED_METHODS
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -347,7 +386,7 @@ class AdminAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Skip auth for auth endpoints (login, logout, check)
+        # Skip auth for auth endpoints (login, logout, check, csrf-token)
         if path.startswith("/api/auth/"):
             await self.app(scope, receive, send)
             return
@@ -365,10 +404,11 @@ class AdminAuthMiddleware:
         headers = dict(scope.get("headers", []))
 
         # Method 1: Check X-Admin-Secret header (for API clients/CLI)
+        # API clients using the secret header don't need CSRF protection
         admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
         if admin_secret:
             if hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
-                # Header auth successful
+                # Header auth successful - no CSRF needed for API clients
                 security_logger.info(
                     "Admin API auth successful via header",
                     extra={"event": "auth_success", "method": "header", "path": path, "client_ip": client_ip},
@@ -396,7 +436,28 @@ class AdminAuthMiddleware:
             # Validate session against database
             is_valid = await validate_session_token(session_token)
             if is_valid:
-                # Cookie auth successful
+                # Session is valid - now check CSRF for state-changing requests
+                if self._requires_csrf(method):
+                    csrf_header_key = CSRF_TOKEN_HEADER.lower().encode()
+                    csrf_token = headers.get(csrf_header_key, b"").decode("utf-8", errors="ignore")
+                    if not validate_csrf_token(session_token, csrf_token):
+                        security_logger.warning(
+                            "Admin API CSRF validation failed",
+                            extra={
+                                "event": "csrf_failure",
+                                "path": path,
+                                "method": method,
+                                "client_ip": client_ip,
+                            },
+                        )
+                        response = JSONResponse(
+                            status_code=403,
+                            content={"detail": "CSRF token invalid or missing"},
+                        )
+                        await response(scope, receive, send)
+                        return
+
+                # Cookie auth successful (and CSRF valid if required)
                 security_logger.info(
                     "Admin API auth successful via session cookie",
                     extra={"event": "auth_success", "method": "cookie", "path": path, "client_ip": client_ip},
@@ -922,6 +983,36 @@ async def auth_check(request: Request):
             return {"authenticated": True, "auth_required": True}
 
     return {"authenticated": False, "auth_required": True}
+
+
+@app.get("/api/auth/csrf-token")
+async def get_csrf_token(request: Request):
+    """
+    Get a CSRF token for the current session.
+
+    The CSRF token must be included in all state-changing requests (POST, PUT, DELETE, PATCH)
+    via the X-CSRF-Token header. This provides defense-in-depth against CSRF attacks.
+
+    Returns 401 if not authenticated.
+    """
+    # If auth is not configured, CSRF is not needed
+    if not ADMIN_API_SECRET:
+        return {"csrf_token": "", "required": False}
+
+    # Check for X-Admin-Secret header (API clients don't need CSRF - they use header auth)
+    admin_secret = request.headers.get("x-admin-secret", "")
+    if admin_secret and hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+        return {"csrf_token": "", "required": False}
+
+    # Check session cookie and generate CSRF token
+    session_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+    if session_token:
+        is_valid = await validate_session_token(session_token)
+        if is_valid:
+            csrf_token = generate_csrf_token(session_token)
+            return {"csrf_token": csrf_token, "required": True}
+
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 
 # ============ Categories ============
