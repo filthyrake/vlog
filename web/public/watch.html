@@ -8,7 +8,9 @@
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <script src="/static/js/utils.js"></script>
     <script defer src="/static/vendor/alpine.min.js"></script>
-    <!-- hls.js for HLS playback -->
+    <!-- Shaka Player for DASH/HLS playback (preferred for CMAF) -->
+    <script src="/static/vendor/shaka-player.compiled.min.js"></script>
+    <!-- hls.js for legacy HLS playback (fallback) -->
     <script src="/static/vendor/hls.min.js"></script>
     <script src="/static/js/player-controls.js"></script>
     <style>
@@ -877,9 +879,17 @@
             }
 
             getCurrentQuality() {
-                // Try to get quality from Video.js quality levels
+                // Get quality from current player
                 const qualityLevels = this.player.qualityLevels?.();
                 if (qualityLevels) {
+                    // Shaka Player: tracks have .active property
+                    const activeTrack = Array.isArray(qualityLevels)
+                        ? qualityLevels.find(t => t.active)
+                        : null;
+                    if (activeTrack) {
+                        return activeTrack.height + 'p';
+                    }
+                    // HLS.js: check enabled property
                     for (let i = 0; i < qualityLevels.length; i++) {
                         if (qualityLevels[i].enabled) {
                             return qualityLevels[i].height + 'p';
@@ -929,6 +939,7 @@
                 playerControls: null,
                 analytics: null,
                 hls: null,
+                shakaPlayer: null,
                 hlsLevels: [],
                 captionsEnabled: false,
                 captionsTrack: null,
@@ -988,83 +999,26 @@
                     const video = document.getElementById('player');
                     const container = document.getElementById('player-container');
                     const streamUrl = this.video.stream_url;
+                    const dashUrl = this.video.dash_url;
+                    const streamingFormat = this.video.streaming_format || 'hls_ts';
 
-                    debugLog('Initializing hls.js with source:', streamUrl);
+                    debugLog('Initializing player, format:', streamingFormat);
+                    debugLog('Stream URL:', streamUrl);
+                    debugLog('DASH URL:', dashUrl);
 
-                    if (Hls.isSupported()) {
-                        debugLog('hls.js is supported');
-                        this.hls = new Hls({
-                            debug: false,
-                            enableWorker: false,  // Disable worker to avoid DataCloneError on quality switch
-                            lowLatencyMode: false,
-                        });
-
-                        this.hls.loadSource(streamUrl);
-                        this.hls.attachMedia(video);
-
-                        this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-                            debugLog('HLS manifest parsed, levels:', data.levels);
-                            // Populate quality levels for selector (sorted by height descending)
-                            this.hlsLevels = data.levels.slice().sort((a, b) => b.height - a.height);
-
-                            // Mark the original quality: highest bitrate at max resolution
-                            // The "original" is a remux of the source, so it has the highest bitrate
-                            // at the source resolution (which is the max height in the list)
-                            if (this.hlsLevels.length > 0) {
-                                const maxHeight = this.hlsLevels[0].height;
-                                const levelsAtMaxHeight = this.hlsLevels.filter(l => l.height === maxHeight);
-                                if (levelsAtMaxHeight.length > 1) {
-                                    // Multiple levels at max resolution - highest bitrate is original
-                                    const original = levelsAtMaxHeight.reduce((a, b) =>
-                                        (a.bitrate || 0) > (b.bitrate || 0) ? a : b
-                                    );
-                                    original.isOriginal = true;
-                                }
-                            }
-
-                            // Update custom player controls with quality levels
-                            if (this.playerControls) {
-                                this.playerControls.setQualities(this.hlsLevels, -1);
-                            }
-                        });
-
-                        this.hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
-                            debugLog('Level loaded:', data.level);
-                        });
-
-                        this.hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
-                            debugLog('Fragment loaded:', data.frag.sn);
-                        });
-
-                        this.hls.on(Hls.Events.ERROR, (event, data) => {
-                            console.error('HLS error:', data.type, data.details, data);
-                            if (data.fatal) {
-                                switch (data.type) {
-                                    case Hls.ErrorTypes.NETWORK_ERROR:
-                                        console.error('Fatal network error, trying to recover...');
-                                        this.hls.startLoad();
-                                        break;
-                                    case Hls.ErrorTypes.MEDIA_ERROR:
-                                        console.error('Fatal media error, trying to recover...');
-                                        this.hls.recoverMediaError();
-                                        break;
-                                    default:
-                                        console.error('Fatal error, cannot recover');
-                                        this.hls.destroy();
-                                        this.error = `Playback error: ${data.details}`;
-                                        break;
-                                }
-                            }
-                        });
-
-                        this.player = video;
+                    // Use Shaka Player for CMAF/DASH content (preferred)
+                    if (typeof shaka !== 'undefined' && dashUrl && streamingFormat === 'cmaf') {
+                        this.initShakaPlayer(video, dashUrl, streamUrl);
+                    } else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                        // Fallback to HLS.js for legacy HLS/TS content
+                        this.initHlsPlayer(video, streamUrl);
                     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                         // Safari has native HLS support
                         debugLog('Using native HLS support');
                         video.src = streamUrl;
                         this.player = video;
                     } else {
-                        this.error = 'HLS playback not supported in this browser';
+                        this.error = 'Video playback not supported in this browser';
                         return;
                     }
 
@@ -1095,16 +1049,29 @@
                     }
 
                     // Initialize analytics
+                    const self = this;
                     this.analytics = new PlaybackAnalytics(this.video.id, {
                         currentTime: () => video.currentTime,
                         paused: () => video.paused,
-                        qualityLevels: () => this.hls ? this.hls.levels : null
+                        qualityLevels: () => {
+                            if (self.shakaPlayer) {
+                                return self.shakaPlayer.getVariantTracks();
+                            }
+                            return self.hls ? self.hls.levels : null;
+                        }
                     });
 
                     // Start session on first play (use once: true for one-time listener)
                     video.addEventListener('play', () => {
-                        const quality = this.hls?.levels?.[this.hls.currentLevel]?.height + 'p' || 'auto';
-                        this.analytics.startSession(quality);
+                        let quality = 'auto';
+                        if (self.shakaPlayer) {
+                            const tracks = self.shakaPlayer.getVariantTracks();
+                            const active = tracks.find(t => t.active);
+                            if (active) quality = active.height + 'p';
+                        } else if (self.hls?.levels?.[self.hls.currentLevel]) {
+                            quality = self.hls.levels[self.hls.currentLevel].height + 'p';
+                        }
+                        self.analytics.startSession(quality);
                     }, { once: true });
 
                     // End session on video complete
@@ -1117,6 +1084,12 @@
                         this.analytics.endSession(false);
                         if (this.playerControls) {
                             this.playerControls.destroy();
+                        }
+                        if (this.shakaPlayer) {
+                            this.shakaPlayer.destroy();
+                        }
+                        if (this.hls) {
+                            this.hls.destroy();
                         }
                     });
 
@@ -1131,6 +1104,159 @@
                     if (this.video.captions_url) {
                         this.addCaptionsTrack(video, this.video.captions_url);
                     }
+                },
+
+                initShakaPlayer(videoElement, dashUrl, hlsFallbackUrl) {
+                    const self = this;
+                    debugLog('Initializing Shaka Player for DASH/CMAF');
+
+                    // Install polyfills
+                    shaka.polyfill.installAll();
+
+                    // Check if browser supports Shaka
+                    if (!shaka.Player.isBrowserSupported()) {
+                        console.warn('Shaka not supported, falling back to HLS.js');
+                        this.initHlsPlayer(videoElement, hlsFallbackUrl);
+                        return;
+                    }
+
+                    const player = new shaka.Player();
+                    player.attach(videoElement);
+                    this.shakaPlayer = player;
+                    this.player = videoElement;
+
+                    // Configure player with codec preferences
+                    player.configure({
+                        preferredVideoCodecs: ['hvc1', 'hev1', 'av01', 'avc1'],
+                        preferredAudioCodecs: ['mp4a', 'ac-3', 'ec-3'],
+                        abr: {
+                            enabled: true,
+                            defaultBandwidthEstimate: 5000000
+                        },
+                        streaming: {
+                            bufferingGoal: 30,
+                            rebufferingGoal: 2,
+                            bufferBehind: 30
+                        }
+                    });
+
+                    // Error handling
+                    player.addEventListener('error', (event) => {
+                        const error = event.detail;
+                        console.error('Shaka Player error:', error);
+
+                        // Try fallback to HLS if DASH fails
+                        if (hlsFallbackUrl && !self.hls) {
+                            console.warn('DASH failed, falling back to HLS');
+                            player.destroy();
+                            self.shakaPlayer = null;
+                            self.initHlsPlayer(videoElement, hlsFallbackUrl);
+                        }
+                    });
+
+                    // Track quality levels when manifest is parsed
+                    player.addEventListener('trackschanged', () => {
+                        const tracks = player.getVariantTracks();
+                        debugLog('Shaka tracks available:', tracks.length);
+
+                        // Build quality levels from tracks (deduplicate by height)
+                        const heightMap = new Map();
+                        tracks.forEach(track => {
+                            if (!heightMap.has(track.height) ||
+                                track.videoBandwidth > heightMap.get(track.height).videoBandwidth) {
+                                heightMap.set(track.height, track);
+                            }
+                        });
+
+                        // Sort by height descending
+                        const qualities = Array.from(heightMap.values())
+                            .sort((a, b) => b.height - a.height);
+
+                        self.hlsLevels = qualities.map(t => ({
+                            height: t.height,
+                            width: t.width,
+                            bitrate: t.videoBandwidth,
+                            id: t.id
+                        }));
+
+                        debugLog('Quality levels:', self.hlsLevels);
+
+                        // Update quality options in player controls
+                        if (self.playerControls && self.hlsLevels.length > 0) {
+                            self.playerControls.setQualities(self.hlsLevels);
+                        }
+                    });
+
+                    // Load the manifest
+                    player.load(dashUrl).then(() => {
+                        debugLog('Shaka loaded DASH manifest successfully');
+                    }).catch((error) => {
+                        console.error('Shaka load error:', error);
+                        // Fallback to HLS
+                        if (hlsFallbackUrl) {
+                            console.warn('DASH load failed, falling back to HLS');
+                            player.destroy();
+                            self.shakaPlayer = null;
+                            self.initHlsPlayer(videoElement, hlsFallbackUrl);
+                        }
+                    });
+                },
+
+                initHlsPlayer(videoElement, streamUrl) {
+                    const self = this;
+                    debugLog('Initializing HLS.js player');
+
+                    const hlsConfig = {
+                        debug: DEBUG_MODE,
+                        enableWorker: true,
+                        lowLatencyMode: false,
+                        backBufferLength: 90
+                    };
+
+                    const hls = new Hls(hlsConfig);
+                    this.hls = hls;
+                    this.player = videoElement;
+
+                    hls.loadSource(streamUrl);
+                    hls.attachMedia(videoElement);
+
+                    // Store quality levels when manifest is parsed
+                    hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+                        debugLog('HLS manifest parsed, levels:', data.levels.length);
+                        // Sort levels by height descending for quality selector
+                        self.hlsLevels = data.levels
+                            .map((level, index) => ({
+                                height: level.height,
+                                width: level.width,
+                                bitrate: level.bitrate,
+                                index: index
+                            }))
+                            .sort((a, b) => b.height - a.height);
+
+                        // Update quality options in player controls
+                        if (self.playerControls && self.hlsLevels.length > 0) {
+                            self.playerControls.setQualities(self.hlsLevels);
+                        }
+                    });
+
+                    // Handle HLS errors
+                    hls.on(Hls.Events.ERROR, (event, data) => {
+                        if (data.fatal) {
+                            console.error('HLS fatal error:', data.type, data.details);
+                            switch (data.type) {
+                                case Hls.ErrorTypes.NETWORK_ERROR:
+                                    hls.startLoad();
+                                    break;
+                                case Hls.ErrorTypes.MEDIA_ERROR:
+                                    hls.recoverMediaError();
+                                    break;
+                                default:
+                                    self.error = 'Video playback error';
+                                    hls.destroy();
+                                    break;
+                            }
+                        }
+                    });
                 },
 
                 addCaptionsTrack(videoElement, captionsUrl) {
@@ -1177,23 +1303,48 @@
                 },
 
                 changeQuality(levelIndex) {
-                    if (!this.hls) return;
                     const idx = parseInt(levelIndex, 10);
-                    if (idx === -1) {
-                        // Auto quality - let hls.js decide
-                        this.hls.nextLevel = -1;
-                        debugLog('Quality set to auto');
-                    } else {
-                        // Find the actual hls.js level index for this height
-                        const targetLevel = this.hlsLevels[idx];
-                        const hlsIndex = this.hls.levels.findIndex(l => l.height === targetLevel.height);
-                        if (hlsIndex !== -1) {
-                            // Use nextLevel for smooth switching (waits for current segment to finish)
-                            this.hls.nextLevel = hlsIndex;
-                            debugLog('Quality set to', targetLevel.height + 'p');
+
+                    // Handle Shaka Player (DASH/CMAF)
+                    if (this.shakaPlayer) {
+                        if (idx === -1) {
+                            // Auto quality - enable ABR
+                            this.shakaPlayer.configure({ abr: { enabled: true } });
+                            debugLog('Quality set to auto (ABR enabled)');
+                        } else {
+                            // Manual quality selection - disable ABR and select track
+                            const targetLevel = this.hlsLevels[idx];
+                            const tracks = this.shakaPlayer.getVariantTracks();
+                            const targetTrack = tracks.find(t => t.height === targetLevel.height);
+
+                            if (targetTrack) {
+                                this.shakaPlayer.configure({ abr: { enabled: false } });
+                                this.shakaPlayer.selectVariantTrack(targetTrack, true);
+                                debugLog('Quality set to', targetLevel.height + 'p');
+                            }
+                        }
+                        return;
+                    }
+
+                    // Handle HLS.js (legacy HLS/TS)
+                    if (this.hls) {
+                        if (idx === -1) {
+                            // Auto quality - let hls.js decide
+                            this.hls.nextLevel = -1;
+                            debugLog('Quality set to auto');
+                        } else {
+                            // Find the actual hls.js level index for this height
+                            const targetLevel = this.hlsLevels[idx];
+                            const hlsIndex = this.hls.levels.findIndex(
+                                l => l.height === targetLevel.height
+                            );
+                            if (hlsIndex !== -1) {
+                                // Use nextLevel for smooth switching
+                                this.hls.nextLevel = hlsIndex;
+                                debugLog('Quality set to', targetLevel.height + 'p');
+                            }
                         }
                     }
-                    // Note: selectedQuality state removed - player controls maintain their own quality state
                 }
             };
         }
