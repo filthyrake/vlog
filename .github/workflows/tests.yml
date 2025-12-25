@@ -19,7 +19,7 @@ jobs:
           POSTGRES_PASSWORD: vlog_password
           POSTGRES_DB: postgres
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -44,7 +44,7 @@ jobs:
       - name: Wait for PostgreSQL
         run: |
           for i in {1..30}; do
-            pg_isready -h localhost -p 5432 -U vlog && break
+            pg_isready -h localhost -p 5433 -U vlog && break
             sleep 1
           done
 
@@ -52,7 +52,7 @@ jobs:
         env:
           VLOG_TEST_MODE: "1"
           VLOG_TEST_PG_HOST: localhost
-          VLOG_TEST_PG_PORT: "5432"
+          VLOG_TEST_PG_PORT: "5433"
           VLOG_TEST_PG_USER: vlog
           VLOG_TEST_PG_PASSWORD: vlog_password
           VLOG_TEST_PG_ADMIN_DB: postgres
