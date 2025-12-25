@@ -701,7 +701,7 @@ async def lifespan(app: FastAPI):
         if settings_count == 0:
             logger.info("Fresh install detected - seeding settings from environment variables")
             results = await seed_settings_from_env(updated_by="auto-seed")
-            logger.info(f"Seeded {results['created']} settings from environment variables")
+            logger.info(f"Seeded {results['seeded']} settings from environment variables")
     except Exception as e:
         logger.warning(f"Failed to auto-seed settings: {e}")
 

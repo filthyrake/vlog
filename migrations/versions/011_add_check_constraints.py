@@ -13,6 +13,7 @@ Implements GitHub issue: Enhancement: Add CHECK constraints on enum columns in d
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -22,8 +23,26 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+# Valid enum values for data cleanup
+VALID_QUALITIES = ("2160p", "1440p", "1080p", "720p", "480p", "360p", "original")
+
+
 def upgrade() -> None:
     """Add CHECK constraints to enum columns."""
+
+    # Clean up any invalid data before adding constraints
+    # This handles cases where frontend bugs may have inserted bad values
+    conn = op.get_bind()
+
+    # Clean up playback_sessions.quality_used - set invalid values to NULL
+    conn.execute(
+        sa.text(
+            "UPDATE playback_sessions SET quality_used = NULL "
+            "WHERE quality_used IS NOT NULL "
+            "AND quality_used NOT IN :valid_qualities"
+        ),
+        {"valid_qualities": VALID_QUALITIES},
+    )
 
     # videos.status - VideoStatus enum values
     op.create_check_constraint(
