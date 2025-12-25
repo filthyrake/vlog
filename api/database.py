@@ -130,6 +130,56 @@ playback_sessions = sa.Table(
 )
 
 # Transcoding jobs with checkpoint support
+#
+# STATE SEMANTICS:
+# ----------------
+# Job States (derived from fields):
+# - Unclaimed: claimed_at = NULL AND completed_at = NULL
+#   → Job is available for any worker to claim
+# - Claimed: claimed_at != NULL AND claim_expires_at > NOW() AND completed_at = NULL
+#   → Worker actively processing, claim is valid
+# - Expired: claimed_at != NULL AND claim_expires_at <= NOW() AND completed_at = NULL
+#   → Worker failed to update, job ready for reclaim by stale checker
+# - Completed: completed_at != NULL
+#   → Transcoding finished successfully
+# - Failed: last_error != NULL AND attempt_number >= max_attempts
+#   → Permanently failed after all retry attempts
+# - Retrying: last_error != NULL AND attempt_number < max_attempts AND claimed_at = NULL
+#   → Failed but available for retry
+#
+# FIELD SEMANTICS:
+# ----------------
+# - video_id: Foreign key to videos table, unique (one job per video)
+# - worker_id: UUID of worker processing this job (NULL = unclaimed)
+# - claimed_at: Timestamp when worker claimed job (NULL = unclaimed)
+# - claim_expires_at: When claim expires (NULL = no active claim)
+#   → Extended by WORKER_CLAIM_DURATION_MINUTES on each progress update
+#   → Typically 30 minutes from last update
+# - started_at: First claim timestamp (persists across retries)
+# - last_checkpoint: Last progress update timestamp
+# - completed_at: Job completion timestamp (NULL = not complete)
+# - attempt_number: Current retry attempt (1-based, default 1)
+# - max_attempts: Maximum allowed attempts (default 3)
+# - last_error: Error message from most recent failure (NULL = no error)
+# - processed_by_worker_id/name: Permanent audit record of worker that processed job
+#   → Set on first claim, persists even if job is reclaimed
+#
+# STATE TRANSITIONS:
+# -----------------
+# 1. Creation: Upload → unclaimed (all claim fields NULL)
+# 2. Claim: Worker claims → set claimed_at, claim_expires_at, worker_id, started_at
+# 3. Progress: Worker updates → extend claim_expires_at, update last_checkpoint
+# 4. Complete: Worker finishes → set completed_at
+# 5. Fail (retriable): Worker fails → clear claim fields, increment attempt_number
+# 6. Fail (permanent): attempt_number >= max_attempts → keep claim data for audit
+# 7. Expire: claim_expires_at passes → stale checker clears claim fields
+#
+# CONSTRAINTS & INDEXES:
+# ---------------------
+# - video_id: UNIQUE (one job per video)
+# - claim_expires_at: INDEXED (for stale job detection)
+#
+# See docs/TRANSCODING_ARCHITECTURE.md for complete state machine documentation.
 transcoding_jobs = sa.Table(
     "transcoding_jobs",
     metadata,
@@ -241,6 +291,65 @@ transcriptions = sa.Table(
 )
 
 # Worker registration for distributed transcoding
+#
+# WORKER STATES:
+# --------------
+# - active: Recently heartbeated, available for work
+# - idle: Active but not currently processing (used for GPU priority)
+# - busy: Currently processing a job
+# - offline: No recent heartbeat (threshold: WORKER_OFFLINE_THRESHOLD_MINUTES, default 5)
+# - disabled: Manually disabled by admin (permanent)
+#
+# FIELD SEMANTICS:
+# ----------------
+# - worker_id: UUID for this worker (unique across all workers)
+# - worker_name: Human-readable name (optional, auto-generated if not provided)
+# - worker_type: "local" (inotify-based) or "remote" (containerized)
+# - registered_at: When worker was first registered
+# - last_heartbeat: Last heartbeat timestamp (NULL = never heartbeated)
+#   → Workers send heartbeats every WORKER_HEARTBEAT_INTERVAL seconds (default 30)
+#   → NULL indicates worker registered but never became active
+# - status: Current worker state (see states above)
+#   → Set by worker via heartbeat endpoint
+#   → Set to "offline" by stale job checker when last_heartbeat is stale
+# - current_job_id: Job currently being processed (NULL = idle/offline)
+#   → Set when worker claims a job
+#   → Cleared when job completes/fails or worker goes offline
+# - capabilities: JSON metadata about worker capabilities
+#   → hwaccel_enabled: Whether GPU acceleration is available
+#   → hwaccel_type: "nvidia", "intel", etc.
+#   → encoders: List of available encoders (h264_nvenc, etc.)
+#   → Max size: 10KB
+# - metadata: JSON metadata (Kubernetes pod info, etc.)
+#   → pod_name, namespace, node_name, etc.
+#   → Max size: 10KB
+#
+# STATE TRANSITIONS:
+# -----------------
+# 1. Registration: POST /api/worker/register → active (with initial heartbeat)
+# 2. Heartbeat: POST /api/worker/heartbeat → idle or busy (based on request)
+# 3. Claim Job: Worker claims → status = busy, current_job_id set
+# 4. Complete Job: Worker completes → status = idle, current_job_id cleared
+# 5. Fail Job: Worker fails → status = idle, current_job_id cleared
+# 6. Go Offline: No heartbeat for threshold → status = offline, current_job_id cleared
+# 7. Recover: Heartbeat after offline → status = idle or busy (based on request)
+# 8. Disable: Admin disables → status = disabled (permanent)
+#
+# OFFLINE DETECTION:
+# -----------------
+# Background task check_stale_jobs() runs every STALE_JOB_CHECK_INTERVAL seconds (default 60).
+# Workers marked offline if:
+# - last_heartbeat < NOW() - WORKER_OFFLINE_THRESHOLD_MINUTES, OR
+# - last_heartbeat IS NULL AND registered_at < NOW() - WORKER_OFFLINE_THRESHOLD_MINUTES
+# Atomic conditional update prevents race with concurrent heartbeat.
+#
+# CONSTRAINTS & INDEXES:
+# ---------------------
+# - worker_id: UNIQUE, INDEXED (for lookups)
+# - last_heartbeat: INDEXED (for stale detection queries)
+# - status: INDEXED (for finding available workers)
+#
+# See docs/TRANSCODING_ARCHITECTURE.md for complete state machine documentation.
 workers = sa.Table(
     "workers",
     metadata,
@@ -281,6 +390,39 @@ workers = sa.Table(
 )
 
 # Worker API keys for authentication
+#
+# KEY LIFECYCLE:
+# -------------
+# 1. Generation: POST /api/worker/register → generates 256-bit API key
+#    → Key shown once at registration, never retrievable again
+#    → Stored as SHA-256 hash for security
+# 2. Usage: Worker includes key in X-API-Key header
+#    → Fast lookup via key_prefix (first 8 chars)
+#    → Full hash verification for security
+# 3. Expiration: Optional expires_at timestamp (NULL = never expires)
+# 4. Revocation: Admin can revoke key via POST /api/workers/{id}/revoke
+#    → Sets revoked_at timestamp
+#    → Key immediately invalid for authentication
+# 5. Tracking: last_used_at updated on each successful authentication
+#
+# FIELD SEMANTICS:
+# ----------------
+# - worker_id: Foreign key to workers table (CASCADE on delete)
+# - key_hash: SHA-256 hash of the API key (64 hex chars)
+#   → Never store plaintext keys
+# - key_prefix: First 8 chars of API key (for fast lookup)
+#   → Used to quickly find candidate keys before full hash verification
+# - created_at: When key was generated
+# - expires_at: Optional expiration timestamp (NULL = never expires)
+# - revoked_at: When key was revoked (NULL = active)
+# - last_used_at: Last successful authentication (NULL = never used)
+#
+# CONSTRAINTS & INDEXES:
+# ---------------------
+# - key_prefix: INDEXED (for fast lookup during authentication)
+# - worker_id: INDEXED (for listing keys per worker)
+#
+# See api/worker_auth.py for authentication implementation.
 worker_api_keys = sa.Table(
     "worker_api_keys",
     metadata,

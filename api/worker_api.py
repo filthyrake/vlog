@@ -8,6 +8,53 @@ Provides endpoints for:
 - Progress reporting and job completion
 
 Run with: uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
+
+STATE MACHINE OVERVIEW
+======================
+
+Video Status States:
+- pending: Uploaded, waiting for transcoding
+- processing: Being transcoded by a worker
+- ready: Transcoding complete, ready to stream
+- failed: Transcoding failed permanently (max retries exceeded)
+
+Job States (derived from fields):
+- Unclaimed: claimed_at = NULL, available for workers
+- Claimed: claimed_at != NULL, claim_expires_at > NOW(), actively processing
+- Expired: claimed_at != NULL, claim_expires_at <= NOW(), ready for reclaim
+- Completed: completed_at != NULL, transcoding finished
+- Failed: last_error != NULL AND attempt_number >= max_attempts, permanent failure
+
+Worker States:
+- active: Recently heartbeated, available for work
+- idle: Active but not currently processing (used for GPU priority)
+- busy: Currently processing a job
+- offline: No recent heartbeat (threshold: WORKER_OFFLINE_THRESHOLD_MINUTES)
+- disabled: Manually disabled by admin
+
+Key State Transitions:
+1. Job Creation: Upload → pending video + unclaimed job
+2. Job Claiming: Atomic claim with FOR UPDATE SKIP LOCKED (PostgreSQL)
+   - Updates: video.status = processing, job.claimed_at/claim_expires_at/worker_id
+   - GPU workers have priority over CPU workers
+3. Progress Updates: Extend claim by WORKER_CLAIM_DURATION_MINUTES on each update
+4. Job Completion: Set completed_at, video.status = ready
+5. Job Failure: Increment attempt_number, retry if < max_attempts, else failed
+6. Claim Expiration: Stale job checker releases claims from offline workers
+   - Runs every VLOG_STALE_JOB_CHECK_INTERVAL seconds
+   - Only releases jobs with expired claims (claim_expires_at < NOW())
+7. Worker Offline: No heartbeat for WORKER_OFFLINE_THRESHOLD_MINUTES
+   - Atomic conditional update prevents race with concurrent heartbeat
+
+Distributed Safety:
+- PostgreSQL: FOR UPDATE SKIP LOCKED prevents double-claiming
+- SQLite: Database-level transaction locking (single-instance only)
+- Claim expiration: Automatic timeout after 30 minutes without progress
+- Stale detection: Background task releases expired claims from offline workers
+- Grace period: 2-minute delay after API startup allows workers to reconnect
+
+For detailed documentation including edge cases and race condition handling,
+see: docs/TRANSCODING_ARCHITECTURE.md
 """
 
 import asyncio
