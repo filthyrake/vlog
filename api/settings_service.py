@@ -13,6 +13,7 @@ Key features:
 See: https://github.com/filthyrake/vlog/issues/400
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -25,8 +26,15 @@ from api.db_retry import (
     fetch_all_with_retry,
     fetch_one_with_retry,
 )
+from api.errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
+
+
+class UniqueConstraintError(Exception):
+    """Raised when attempting to create a setting with a duplicate key."""
+
+    pass
 
 
 class SettingsValidationError(Exception):
@@ -68,6 +76,7 @@ class SettingsService:
         self._cache_ttl = cache_ttl
         self._cache_updated: float = 0
         self._cache_loaded: bool = False
+        self._refresh_lock: Optional[asyncio.Lock] = None  # Lazy init for async context
 
     def _is_cache_valid(self) -> bool:
         """Check if the cache is still valid (not expired)."""
@@ -125,8 +134,19 @@ class SettingsService:
                 self._cache_metadata = {}
 
     async def _refresh_cache_if_needed(self) -> None:
-        """Refresh cache if expired or not loaded."""
-        if not self._is_cache_valid():
+        """Refresh cache if expired or not loaded, with lock to prevent concurrent refreshes."""
+        if self._is_cache_valid():
+            return
+
+        # Lazy-init the lock (can't create in __init__ outside async context)
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        # Use lock to prevent multiple concurrent refreshes
+        async with self._refresh_lock:
+            # Double-check after acquiring lock (another coroutine may have refreshed)
+            if self._is_cache_valid():
+                return
             await self._refresh_cache()
 
     def _coerce_value(self, value: Any, value_type: str) -> Any:
@@ -377,7 +397,12 @@ class SettingsService:
             updated_by=updated_by,
         )
 
-        await db_execute_with_retry(query)
+        try:
+            await db_execute_with_retry(query)
+        except Exception as e:
+            if is_unique_violation(e, column="key"):
+                raise UniqueConstraintError(f"Setting already exists: {key}")
+            raise
 
         # Update cache
         self._cache[key] = value
@@ -653,3 +678,86 @@ async def get_setting(key: str, default: Any = None) -> Any:
 async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) -> None:
     """Set a setting value (convenience wrapper)."""
     await get_settings_service().set(key, value, updated_by)
+
+
+# Known settings that can be seeded from environment variables
+# Format: (key, category, value_type, description, constraints)
+KNOWN_SETTINGS = [
+    # Transcoding settings
+    ("transcoding.hls_segment_duration", "transcoding", "integer", "HLS segment duration in seconds", {"min": 2, "max": 30}),
+    ("transcoding.hls_playlist_type", "transcoding", "enum", "HLS playlist type", {"enum_values": ["vod", "event"]}),
+    ("transcoding.video_codec", "transcoding", "enum", "Video codec", {"enum_values": ["h264", "h265", "av1"]}),
+    ("transcoding.audio_codec", "transcoding", "enum", "Audio codec", {"enum_values": ["aac", "opus"]}),
+    ("transcoding.max_retries", "transcoding", "integer", "Maximum retry attempts for failed jobs", {"min": 0, "max": 10}),
+    # Watermark settings
+    ("watermark.enabled", "watermark", "boolean", "Enable watermarking on videos", None),
+    ("watermark.position", "watermark", "enum", "Watermark position", {"enum_values": ["top-left", "top-right", "bottom-left", "bottom-right"]}),
+    ("watermark.opacity", "watermark", "float", "Watermark opacity (0.0-1.0)", {"min": 0.0, "max": 1.0}),
+    # Worker settings
+    ("workers.heartbeat_interval", "workers", "integer", "Worker heartbeat interval in seconds", {"min": 5, "max": 300}),
+    ("workers.job_timeout", "workers", "integer", "Job timeout in seconds", {"min": 60, "max": 86400}),
+    ("workers.max_concurrent_jobs", "workers", "integer", "Max concurrent jobs per worker", {"min": 1, "max": 10}),
+    # Storage settings
+    ("storage.max_upload_size_mb", "storage", "integer", "Maximum upload size in MB", {"min": 1, "max": 10240}),
+    ("storage.thumbnail_quality", "storage", "integer", "Thumbnail JPEG quality (1-100)", {"min": 1, "max": 100}),
+]
+
+
+async def seed_settings_from_env(updated_by: str = "migration") -> Dict[str, Any]:
+    """
+    Seed database settings from environment variables.
+
+    This function checks for known settings in environment variables and
+    creates them in the database if they don't already exist. Useful for
+    initial migration from env var based config to database-backed settings.
+
+    Args:
+        updated_by: Attribution for the seeded settings
+
+    Returns:
+        Dict with 'seeded' (count), 'skipped' (count), and 'details' (list)
+    """
+    service = get_settings_service()
+    seeded = 0
+    skipped = 0
+    details = []
+
+    for key, category, value_type, description, constraints in KNOWN_SETTINGS:
+        # Check if already exists in DB
+        existing = await service.get_single(key)
+        if existing:
+            skipped += 1
+            details.append({"key": key, "status": "skipped", "reason": "already exists"})
+            continue
+
+        # Check for env var value
+        env_key = service._get_env_key(key)
+        env_value = os.getenv(env_key)
+
+        if env_value is not None:
+            # Parse env value to correct type
+            parsed = service._parse_env_value(env_value, value_type)
+            if parsed is not None:
+                try:
+                    await service.create(
+                        key=key,
+                        value=parsed,
+                        category=category,
+                        value_type=value_type,
+                        description=description,
+                        constraints=constraints,
+                        updated_by=updated_by,
+                    )
+                    seeded += 1
+                    details.append({"key": key, "status": "seeded", "from_env": env_key, "value": parsed})
+                    logger.info(f"Seeded setting {key} from {env_key}")
+                except Exception as e:
+                    details.append({"key": key, "status": "error", "error": str(e)})
+            else:
+                details.append({"key": key, "status": "skipped", "reason": f"failed to parse {env_key}"})
+                skipped += 1
+        else:
+            details.append({"key": key, "status": "skipped", "reason": f"no env var {env_key}"})
+            skipped += 1
+
+    return {"seeded": seeded, "skipped": skipped, "details": details}

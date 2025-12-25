@@ -125,7 +125,12 @@ from api.schemas import (
     WorkerDetailResponse,
     WorkerJobHistory,
 )
-from api.settings_service import SettingsValidationError, get_settings_service
+from api.settings_service import (
+    SettingsValidationError,
+    UniqueConstraintError,
+    get_settings_service,
+    seed_settings_from_env,
+)
 from config import (
     ADMIN_API_SECRET,
     ADMIN_CORS_ALLOWED_ORIGINS,
@@ -5145,6 +5150,9 @@ async def create_setting(request: Request, data: SettingCreate) -> SettingRespon
         )
     except SettingsValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except UniqueConstraintError as e:
+        # Race condition: another request created the setting between our check and insert
+        raise HTTPException(status_code=409, detail=str(e))
 
     # Audit log
     log_audit(
@@ -5325,6 +5333,30 @@ async def get_settings_cache_stats(request: Request):
     """
     service = get_settings_service()
     return service.get_cache_stats()
+
+
+@app.post("/api/settings/seed-from-env")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def seed_settings_from_environment(request: Request):
+    """
+    Seed database settings from environment variables.
+
+    This endpoint reads known settings from environment variables and
+    creates them in the database if they don't already exist. Useful for
+    initial migration from env-var-based configuration.
+
+    Settings that already exist in the database are skipped.
+    Environment variables that are not set are also skipped.
+
+    Returns a summary of seeded, skipped, and any errors.
+    """
+    results = await seed_settings_from_env(updated_by="admin")
+    return {
+        "status": "ok",
+        "seeded": results["seeded"],
+        "skipped": results["skipped"],
+        "details": results["details"],
+    }
 
 
 if __name__ == "__main__":

@@ -50,7 +50,7 @@ def upgrade() -> None:
         # Constraints as JSON (min, max, enum_values, pattern, etc.)
         sa.Column("constraints", sa.Text, nullable=True),
         # Audit fields
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_by", sa.String(255), nullable=True),
     )
     # Index on key for fast lookups
