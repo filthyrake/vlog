@@ -2,6 +2,7 @@
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.1.0
+pytest-xdist>=3.5.0  # Parallel test execution
 httpx>=0.25.0  # Already in requirements.txt, needed for TestClient
 
 # Code quality
