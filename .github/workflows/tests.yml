@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     name: Tests (PostgreSQL)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     services:
       postgres:
@@ -68,7 +68,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v6
@@ -89,7 +89,7 @@ jobs:
   # Summary job for branch protection
   tests-passed:
     name: All Tests Passed
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [test, lint]
     if: always()
     steps:
