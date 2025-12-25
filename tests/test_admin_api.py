@@ -2541,3 +2541,189 @@ class TestCSRFProtection:
                 headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
             )
             assert response.status_code == 200
+
+    def test_delete_without_csrf_fails(self, test_storage, test_db_url, monkeypatch):
+        """DELETE request with session cookie but no CSRF token should return 403."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # DELETE without CSRF token should fail
+            response = client.delete(
+                "/api/categories/999",
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert response.status_code == 403
+            assert "CSRF" in response.json()["detail"]
+
+    def test_put_without_csrf_fails(self, test_storage, test_db_url, monkeypatch):
+        """PUT request with session cookie but no CSRF token should return 403."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # PUT without CSRF token should fail
+            response = client.put(
+                "/api/videos/999",
+                json={"title": "Test"},
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert response.status_code == 403
+            assert "CSRF" in response.json()["detail"]
+
+    def test_csrf_token_is_consistent_for_session(self, test_storage, test_db_url, monkeypatch):
+        """Same session should always generate the same CSRF token."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # Get CSRF token multiple times
+            csrf_response1 = client.get(
+                "/api/auth/csrf-token",
+                cookies={"vlog_admin_session": session_token},
+            )
+            csrf_token1 = csrf_response1.json()["csrf_token"]
+
+            csrf_response2 = client.get(
+                "/api/auth/csrf-token",
+                cookies={"vlog_admin_session": session_token},
+            )
+            csrf_token2 = csrf_response2.json()["csrf_token"]
+
+            # Tokens should be identical for the same session
+            assert csrf_token1 == csrf_token2
+            assert len(csrf_token1) == 64
+
+    def test_csrf_token_differs_between_sessions(self, test_storage, test_db_url, monkeypatch):
+        """Different sessions should have different CSRF tokens."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # First login
+            login_response1 = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            session_token1 = login_response1.cookies.get("vlog_admin_session")
+
+            csrf_response1 = client.get(
+                "/api/auth/csrf-token",
+                cookies={"vlog_admin_session": session_token1},
+            )
+            csrf_token1 = csrf_response1.json()["csrf_token"]
+
+            # Logout
+            client.post(
+                "/api/auth/logout",
+                cookies={"vlog_admin_session": session_token1},
+            )
+
+            # Second login (new session)
+            login_response2 = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            session_token2 = login_response2.cookies.get("vlog_admin_session")
+
+            csrf_response2 = client.get(
+                "/api/auth/csrf-token",
+                cookies={"vlog_admin_session": session_token2},
+            )
+            csrf_token2 = csrf_response2.json()["csrf_token"]
+
+            # Session tokens should be different
+            assert session_token1 != session_token2
+            # CSRF tokens should also be different
+            assert csrf_token1 != csrf_token2

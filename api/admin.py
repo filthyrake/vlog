@@ -216,7 +216,9 @@ ADMIN_SESSION_COOKIE = "vlog_admin_session"
 
 # CSRF protection constants
 CSRF_TOKEN_HEADER = "X-CSRF-Token"
-CSRF_HMAC_KEY = b"vlog-csrf-protection"  # Used with session token to derive CSRF token
+# Derive HMAC key from ADMIN_API_SECRET for additional security
+# Falls back to static key if ADMIN_API_SECRET not configured (though CSRF is skipped in that case)
+CSRF_HMAC_KEY = (ADMIN_API_SECRET or "vlog-csrf-fallback").encode()
 
 
 def generate_csrf_token(session_token: str) -> str:
@@ -225,6 +227,7 @@ def generate_csrf_token(session_token: str) -> str:
 
     The CSRF token is cryptographically derived from the session token,
     ensuring it's tied to the session and can be validated without database storage.
+    The HMAC key is derived from ADMIN_API_SECRET for additional security.
     """
     if not session_token:
         return ""
@@ -435,7 +438,8 @@ class AdminAuthMiddleware:
             if is_valid:
                 # Session is valid - now check CSRF for state-changing requests
                 if self._requires_csrf(method):
-                    csrf_token = headers.get(b"x-csrf-token", b"").decode("utf-8", errors="ignore")
+                    csrf_header_key = CSRF_TOKEN_HEADER.lower().encode()
+                    csrf_token = headers.get(csrf_header_key, b"").decode("utf-8", errors="ignore")
                     if not validate_csrf_token(session_token, csrf_token):
                         security_logger.warning(
                             "Admin API CSRF validation failed",
