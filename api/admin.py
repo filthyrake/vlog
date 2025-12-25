@@ -88,6 +88,13 @@ from api.schemas import (
     QualityProgressResponse,
     RetranscodeRequest,
     RetranscodeResponse,
+    SettingCreate,
+    SettingResponse,
+    SettingsByCategoryResponse,
+    SettingsCategoryResponse,
+    SettingsExport,
+    SettingsImport,
+    SettingUpdate,
     TagCreate,
     TagResponse,
     TagUpdate,
@@ -117,6 +124,12 @@ from api.schemas import (
     WorkerDashboardStatus,
     WorkerDetailResponse,
     WorkerJobHistory,
+)
+from api.settings_service import (
+    SettingsValidationError,
+    UniqueConstraintError,
+    get_settings_service,
+    seed_settings_from_env,
 )
 from config import (
     ADMIN_API_SECRET,
@@ -4948,6 +4961,402 @@ async def delete_watermark_image(request: Request):
     except Exception as e:
         logger.error(f"Failed to delete watermark: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete watermark image")
+
+
+# =============================================================================
+# Runtime Settings API (Database-backed configuration)
+# See: https://github.com/filthyrake/vlog/issues/400
+# =============================================================================
+
+
+@app.get("/api/settings")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_settings(request: Request) -> SettingsByCategoryResponse:
+    """
+    List all settings grouped by category.
+
+    Returns settings from the database, grouped by their category
+    for easy display in the admin UI.
+    """
+    service = get_settings_service()
+    all_settings = await service.get_all()
+
+    # Convert to response format
+    categories_dict = {}
+    for category, settings_list in all_settings.items():
+        categories_dict[category] = [
+            SettingResponse(
+                key=s["key"],
+                value=s["value"],
+                category=category,
+                value_type=s["value_type"],
+                description=s["description"],
+                constraints=s.get("constraints"),
+                updated_at=s["updated_at"],
+                updated_by=s.get("updated_by"),
+            )
+            for s in settings_list
+        ]
+
+    return SettingsByCategoryResponse(categories=categories_dict)
+
+
+@app.get("/api/settings/categories")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_settings_categories(request: Request) -> List[str]:
+    """
+    List all setting categories.
+
+    Returns a list of unique category names for building
+    navigation in the admin UI.
+    """
+    service = get_settings_service()
+    return await service.get_categories()
+
+
+@app.get("/api/settings/category/{category}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_settings_by_category(request: Request, category: str) -> SettingsCategoryResponse:
+    """
+    Get all settings in a specific category.
+
+    Returns settings filtered by the specified category,
+    useful for displaying a single tab in the settings UI.
+    """
+    service = get_settings_service()
+    settings_list = await service.get_category(category)
+
+    if not settings_list:
+        # Return empty category rather than 404 for consistent UI behavior
+        return SettingsCategoryResponse(category=category, settings=[])
+
+    return SettingsCategoryResponse(
+        category=category,
+        settings=[
+            SettingResponse(
+                key=s["key"],
+                value=s["value"],
+                category=category,
+                value_type=s["value_type"],
+                description=s["description"],
+                constraints=s.get("constraints"),
+                updated_at=s["updated_at"],
+                updated_by=s.get("updated_by"),
+            )
+            for s in settings_list
+        ],
+    )
+
+
+@app.get("/api/settings/key/{key:path}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_setting(request: Request, key: str) -> SettingResponse:
+    """
+    Get a single setting by key.
+
+    The key uses dot notation (e.g., "transcoding.hls_segment_duration").
+    """
+    service = get_settings_service()
+    setting = await service.get_single(key)
+
+    if setting is None:
+        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+    return SettingResponse(
+        key=setting["key"],
+        value=setting["value"],
+        category=setting["category"],
+        value_type=setting["value_type"],
+        description=setting["description"],
+        constraints=setting.get("constraints"),
+        updated_at=setting["updated_at"],
+        updated_by=setting.get("updated_by"),
+    )
+
+
+@app.put("/api/settings/key/{key:path}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_setting(request: Request, key: str, data: SettingUpdate) -> SettingResponse:
+    """
+    Update a setting value.
+
+    Validates the value against the setting's type and constraints
+    before saving. The change is reflected immediately in the cache.
+    """
+    service = get_settings_service()
+
+    # Verify setting exists
+    existing = await service.get_single(key)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+    try:
+        await service.set(key, data.value, updated_by="admin")
+    except SettingsValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+    # Audit log
+    log_audit(
+        AuditAction.SETTINGS_CHANGE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="setting",
+        resource_id=None,
+        resource_name=key,
+        details={"action": "update", "new_value": data.value, "old_value": existing["value"]},
+    )
+
+    # Return updated setting
+    updated = await service.get_single(key)
+    return SettingResponse(
+        key=updated["key"],
+        value=updated["value"],
+        category=updated["category"],
+        value_type=updated["value_type"],
+        description=updated["description"],
+        constraints=updated.get("constraints"),
+        updated_at=updated["updated_at"],
+        updated_by=updated.get("updated_by"),
+    )
+
+
+@app.post("/api/settings")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_setting(request: Request, data: SettingCreate) -> SettingResponse:
+    """
+    Create a new setting.
+
+    Settings are created with a unique key in dot notation
+    (e.g., "transcoding.hls_segment_duration").
+    """
+    service = get_settings_service()
+
+    # Check if already exists
+    existing = await service.get_single(data.key)
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=f"Setting already exists: {data.key}")
+
+    try:
+        await service.create(
+            key=data.key,
+            value=data.value,
+            category=data.category,
+            value_type=data.value_type,
+            description=data.description,
+            constraints=data.constraints.model_dump() if data.constraints else None,
+            updated_by="admin",
+        )
+    except SettingsValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except UniqueConstraintError as e:
+        # Race condition: another request created the setting between our check and insert
+        raise HTTPException(status_code=409, detail=str(e))
+
+    # Audit log
+    log_audit(
+        AuditAction.SETTINGS_CHANGE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="setting",
+        resource_id=None,
+        resource_name=data.key,
+        details={"action": "create", "value": data.value, "category": data.category},
+    )
+
+    # Return created setting
+    created = await service.get_single(data.key)
+    return SettingResponse(
+        key=created["key"],
+        value=created["value"],
+        category=created["category"],
+        value_type=created["value_type"],
+        description=created["description"],
+        constraints=created.get("constraints"),
+        updated_at=created["updated_at"],
+        updated_by=created.get("updated_by"),
+    )
+
+
+@app.delete("/api/settings/key/{key:path}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_setting(request: Request, key: str):
+    """
+    Delete a setting.
+
+    Removes the setting from the database. This should be used
+    with caution as it may affect application behavior.
+    """
+    service = get_settings_service()
+
+    # Verify setting exists
+    existing = await service.get_single(key)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+    await service.delete(key)
+
+    # Audit log
+    log_audit(
+        AuditAction.SETTINGS_CHANGE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="setting",
+        resource_id=None,
+        resource_name=key,
+        details={"action": "delete", "old_value": existing["value"]},
+    )
+
+    return {"status": "ok", "message": f"Setting deleted: {key}"}
+
+
+@app.post("/api/settings/export")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def export_settings(request: Request) -> SettingsExport:
+    """
+    Export all settings as JSON.
+
+    Returns all settings in a format suitable for backup
+    or transferring between environments.
+    """
+    service = get_settings_service()
+    all_settings = await service.get_all()
+
+    settings_list = []
+    for category, cat_settings in all_settings.items():
+        for s in cat_settings:
+            settings_list.append(
+                SettingResponse(
+                    key=s["key"],
+                    value=s["value"],
+                    category=category,
+                    value_type=s["value_type"],
+                    description=s["description"],
+                    constraints=s.get("constraints"),
+                    updated_at=s["updated_at"],
+                    updated_by=s.get("updated_by"),
+                )
+            )
+
+    return SettingsExport(
+        version="1.0",
+        exported_at=datetime.now(timezone.utc),
+        settings=settings_list,
+    )
+
+
+@app.post("/api/settings/import")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def import_settings(request: Request, data: SettingsImport):
+    """
+    Import settings from JSON.
+
+    Imports settings from an export file. By default, existing
+    settings are skipped. Use overwrite=true to replace existing values.
+    """
+    service = get_settings_service()
+    results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+
+    for setting in data.settings:
+        try:
+            existing = await service.get_single(setting.key)
+
+            if existing is not None:
+                if data.overwrite:
+                    await service.set(setting.key, setting.value, updated_by="import")
+                    results["updated"] += 1
+                else:
+                    results["skipped"] += 1
+            else:
+                await service.create(
+                    key=setting.key,
+                    value=setting.value,
+                    category=setting.category,
+                    value_type=setting.value_type,
+                    description=setting.description,
+                    constraints=setting.constraints.model_dump() if setting.constraints else None,
+                    updated_by="import",
+                )
+                results["created"] += 1
+        except Exception as e:
+            results["errors"].append({"key": setting.key, "error": str(e)})
+
+    # Audit log
+    log_audit(
+        AuditAction.SETTINGS_CHANGE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="settings",
+        resource_id=None,
+        resource_name="bulk_import",
+        details={
+            "action": "import",
+            "created": results["created"],
+            "updated": results["updated"],
+            "skipped": results["skipped"],
+            "errors": len(results["errors"]),
+        },
+    )
+
+    return {
+        "status": "ok",
+        "created": results["created"],
+        "updated": results["updated"],
+        "skipped": results["skipped"],
+        "errors": results["errors"],
+    }
+
+
+@app.post("/api/settings/invalidate-cache")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def invalidate_settings_cache(request: Request):
+    """
+    Invalidate the settings cache.
+
+    Forces the next settings read to fetch fresh data from the database.
+    Useful when settings have been modified directly in the database.
+    """
+    service = get_settings_service()
+    service.invalidate_cache()
+
+    return {"status": "ok", "message": "Settings cache invalidated"}
+
+
+@app.get("/api/settings/cache-stats")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_settings_cache_stats(request: Request):
+    """
+    Get settings cache statistics.
+
+    Returns information about the current state of the settings cache.
+    """
+    service = get_settings_service()
+    return service.get_cache_stats()
+
+
+@app.post("/api/settings/seed-from-env")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def seed_settings_from_environment(request: Request):
+    """
+    Seed database settings from environment variables.
+
+    This endpoint reads known settings from environment variables and
+    creates them in the database if they don't already exist. Useful for
+    initial migration from env-var-based configuration.
+
+    Settings that already exist in the database are skipped.
+    Environment variables that are not set are also skipped.
+
+    Returns a summary of seeded, skipped, and any errors.
+    """
+    results = await seed_settings_from_env(updated_by="admin")
+    return {
+        "status": "ok",
+        "seeded": results["seeded"],
+        "skipped": results["skipped"],
+        "details": results["details"],
+    }
 
 
 if __name__ == "__main__":

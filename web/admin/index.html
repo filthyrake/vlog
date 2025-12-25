@@ -45,7 +45,7 @@
                         class="font-medium"
                     >Analytics</button>
                     <button
-                        @click="tab = 'settings'; loadWatermarkSettings()"
+                        @click="tab = 'settings'; loadWatermarkSettings(); loadAllSettings()"
                         :class="tab === 'settings' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
                         class="font-medium"
                     >Settings</button>
@@ -710,11 +710,57 @@
 
         <!-- Settings Tab -->
         <div x-show="tab === 'settings'" x-cloak>
-            <div class="max-w-4xl">
-                <h2 class="text-xl font-semibold mb-6">Settings</h2>
+            <div class="max-w-5xl">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-semibold">Settings</h2>
+                    <!-- Import/Export buttons -->
+                    <div class="flex gap-2">
+                        <button
+                            @click="exportSettings()"
+                            class="px-3 py-1.5 text-sm bg-dark-800 hover:bg-dark-700 border border-dark-700 rounded-lg transition flex items-center gap-2"
+                        >
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                            </svg>
+                            Export
+                        </button>
+                        <label class="px-3 py-1.5 text-sm bg-dark-800 hover:bg-dark-700 border border-dark-700 rounded-lg transition flex items-center gap-2 cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                            Import
+                            <input type="file" accept=".json" @change="importSettings($event)" class="hidden">
+                        </label>
+                    </div>
+                </div>
 
-                <!-- Watermark Settings -->
-                <div class="bg-dark-900 rounded-xl p-6 mb-6">
+                <!-- Settings sub-tabs -->
+                <div class="flex gap-2 mb-6 flex-wrap">
+                    <button
+                        @click="settingsTab = 'watermark'"
+                        :class="settingsTab === 'watermark' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        class="px-4 py-2 rounded-lg font-medium transition text-sm"
+                    >Watermark</button>
+                    <template x-for="category in settingsCategories" :key="category">
+                        <button
+                            @click="settingsTab = category"
+                            :class="settingsTab === category ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                            class="px-4 py-2 rounded-lg font-medium transition text-sm capitalize"
+                            x-text="category.replace(/_/g, ' ')"
+                        ></button>
+                    </template>
+                </div>
+
+                <!-- Global settings message -->
+                <div x-show="settingsMessage" class="mb-4">
+                    <div :class="settingsError ? 'bg-red-900/20 border-red-800 text-red-400' : 'bg-green-900/20 border-green-800 text-green-400'" class="border rounded-lg px-4 py-3 text-sm flex items-center justify-between">
+                        <span x-text="settingsMessage"></span>
+                        <button @click="settingsMessage = ''" class="text-dark-400 hover:text-white">&times;</button>
+                    </div>
+                </div>
+
+                <!-- Watermark Settings (special case with file upload) -->
+                <div x-show="settingsTab === 'watermark'" class="bg-dark-900 rounded-xl p-6">
                     <h3 class="text-lg font-semibold mb-4">Watermark</h3>
                     <p class="text-dark-400 text-sm mb-6">
                         Add a logo or text overlay to videos. The watermark is displayed client-side and does not modify the original video files.
@@ -840,6 +886,149 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <div x-show="!watermarkLoading && !watermarkSettings" class="text-center py-8 text-dark-400">
                         Failed to load watermark settings. <button @click="loadWatermarkSettings()" class="text-blue-400 hover:underline">Retry</button>
                     </div>
+                </div>
+
+                <!-- Dynamic Category Settings Panels -->
+                <template x-for="category in settingsCategories" :key="category">
+                    <div x-show="settingsTab === category" class="bg-dark-900 rounded-xl p-6">
+                        <div class="flex items-center justify-between mb-6">
+                            <h3 class="text-lg font-semibold capitalize" x-text="category.replace(/_/g, ' ') + ' Settings'"></h3>
+                            <div class="flex gap-2">
+                                <button
+                                    @click="resetCategorySettings(category)"
+                                    :disabled="!hasModifiedSettings(category)"
+                                    class="px-3 py-1.5 text-sm bg-dark-800 hover:bg-dark-700 disabled:opacity-50 disabled:cursor-not-allowed border border-dark-700 rounded-lg transition"
+                                >Reset</button>
+                                <button
+                                    @click="saveAllCategorySettings(category)"
+                                    :disabled="!hasModifiedSettings(category) || settingsSaving"
+                                    class="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium transition"
+                                >
+                                    <span x-show="!settingsSaving">Save Changes</span>
+                                    <span x-show="settingsSaving">Saving...</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Loading state -->
+                        <div x-show="settingsLoading || settingsLoadingCategory === category" class="text-center py-8">
+                            <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                        </div>
+
+                        <!-- Settings list -->
+                        <div x-show="!settingsLoading && settingsByCategory[category]" class="space-y-4">
+                            <!-- Empty state -->
+                            <div x-show="!settingsByCategory[category] || settingsByCategory[category].length === 0" class="text-center py-8 text-dark-400">
+                                No settings configured for this category yet.
+                            </div>
+
+                            <!-- Settings form -->
+                            <template x-for="(setting, index) in settingsByCategory[category] || []" :key="setting.key">
+                                <div class="p-4 bg-dark-800 rounded-lg">
+                                    <div class="flex items-start justify-between gap-4">
+                                        <div class="flex-1 min-w-0">
+                                            <label class="block font-medium mb-1" x-text="setting.key.split('.').pop().replace(/_/g, ' ')"></label>
+                                            <div class="text-sm text-dark-400 mb-3" x-text="setting.description || 'No description'"></div>
+
+                                            <!-- Boolean toggle -->
+                                            <template x-if="setting.value_type === 'boolean'">
+                                                <label class="relative inline-flex items-center cursor-pointer">
+                                                    <input
+                                                        type="checkbox"
+                                                        :checked="setting.value"
+                                                        @change="setting.value = $event.target.checked; markSettingModified(category, setting.key, setting.value)"
+                                                        class="sr-only peer"
+                                                    >
+                                                    <div class="w-11 h-6 bg-dark-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                                    <span class="ml-3 text-sm" x-text="setting.value ? 'Enabled' : 'Disabled'"></span>
+                                                </label>
+                                            </template>
+
+                                            <!-- Integer input -->
+                                            <template x-if="setting.value_type === 'integer'">
+                                                <input
+                                                    type="number"
+                                                    :value="setting.value"
+                                                    @input="setting.value = parseInt($event.target.value, 10); markSettingModified(category, setting.key, setting.value)"
+                                                    :min="setting.constraints?.min"
+                                                    :max="setting.constraints?.max"
+                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                >
+                                            </template>
+
+                                            <!-- Float input -->
+                                            <template x-if="setting.value_type === 'float'">
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    :value="setting.value"
+                                                    @input="setting.value = parseFloat($event.target.value); markSettingModified(category, setting.key, setting.value)"
+                                                    :min="setting.constraints?.min"
+                                                    :max="setting.constraints?.max"
+                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                >
+                                            </template>
+
+                                            <!-- Enum select -->
+                                            <template x-if="setting.value_type === 'enum'">
+                                                <select
+                                                    :value="setting.value"
+                                                    @change="setting.value = $event.target.value; markSettingModified(category, setting.key, setting.value)"
+                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                >
+                                                    <template x-for="opt in setting.constraints?.enum_values || []" :key="opt">
+                                                        <option :value="opt" :selected="setting.value === opt" x-text="opt"></option>
+                                                    </template>
+                                                </select>
+                                            </template>
+
+                                            <!-- String input -->
+                                            <template x-if="setting.value_type === 'string'">
+                                                <input
+                                                    type="text"
+                                                    :value="setting.value"
+                                                    @input="setting.value = $event.target.value; markSettingModified(category, setting.key, setting.value)"
+                                                    :minlength="setting.constraints?.min_length"
+                                                    :maxlength="setting.constraints?.max_length"
+                                                    :pattern="setting.constraints?.pattern"
+                                                    class="w-full max-w-md px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                >
+                                            </template>
+
+                                            <!-- JSON textarea -->
+                                            <template x-if="setting.value_type === 'json'">
+                                                <textarea
+                                                    :value="JSON.stringify(setting.value, null, 2)"
+                                                    @input="try { setting.value = JSON.parse($event.target.value); markSettingModified(category, setting.key, setting.value); } catch(e) {}"
+                                                    rows="4"
+                                                    class="w-full px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-sm"
+                                                ></textarea>
+                                            </template>
+
+                                            <!-- Constraints info -->
+                                            <div x-show="setting.constraints" class="mt-2 text-xs text-dark-500">
+                                                <span x-show="setting.constraints?.min !== undefined" x-text="'Min: ' + setting.constraints?.min + ' '"></span>
+                                                <span x-show="setting.constraints?.max !== undefined" x-text="'Max: ' + setting.constraints?.max"></span>
+                                            </div>
+                                        </div>
+
+                                        <!-- Modified indicator -->
+                                        <div x-show="settingsModified[category]?.[setting.key] !== undefined" class="text-yellow-500" title="Modified">
+                                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                                <circle cx="10" cy="10" r="5"></circle>
+                                            </svg>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- No settings loaded state -->
+                <div x-show="!settingsLoading && settingsCategories.length === 0 && settingsTab !== 'watermark'" class="bg-dark-900 rounded-xl p-6 text-center text-dark-400">
+                    <p class="mb-4">No database settings configured yet.</p>
+                    <p class="text-sm">Settings will appear here after running the migration and seeding default values.</p>
                 </div>
             </div>
         </div>
@@ -1435,6 +1624,18 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 watermarkUploadProgress: 0,
                 watermarkMessage: '',
                 watermarkError: false,
+
+                // Database-backed settings (Phase 2)
+                settingsTab: 'watermark',  // Active settings sub-tab
+                settingsCategories: [],     // List of category names
+                settingsByCategory: {},     // Settings grouped by category
+                settingsLoading: false,
+                settingsLoadingCategory: null,
+                settingsSaving: false,
+                settingsMessage: '',
+                settingsError: false,
+                settingsModified: {},       // Track modified values per category
+                settingsOriginal: {},       // Original values for reset
 
                 // Bulk operations
                 selectedVideos: [],
@@ -2703,6 +2904,282 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     } catch (e) {
                         alert('Export failed: ' + e.message);
                     }
+                },
+
+                // Database-backed settings methods
+                async loadSettingsCategories() {
+                    this.settingsLoading = true;
+                    try {
+                        const res = await this.apiFetch('/api/settings/categories');
+                        if (res.ok) {
+                            this.settingsCategories = await res.json();
+                        }
+                    } catch (e) {
+                        console.error('Failed to load settings categories:', e);
+                    } finally {
+                        this.settingsLoading = false;
+                    }
+                },
+
+                async loadSettingsCategory(category) {
+                    this.settingsLoadingCategory = category;
+                    this.settingsMessage = '';
+                    this.settingsError = false;
+
+                    try {
+                        const res = await this.apiFetch(`/api/settings/category/${category}`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.settingsByCategory[category] = data.settings;
+                            // Store original values for reset
+                            this.settingsOriginal[category] = JSON.parse(JSON.stringify(data.settings));
+                            // Clear modified tracking
+                            if (!this.settingsModified[category]) {
+                                this.settingsModified[category] = {};
+                            }
+                        }
+                    } catch (e) {
+                        console.error(`Failed to load settings for ${category}:`, e);
+                    } finally {
+                        this.settingsLoadingCategory = null;
+                    }
+                },
+
+                async loadAllSettings() {
+                    this.settingsLoading = true;
+                    this.settingsMessage = '';
+                    this.settingsError = false;
+
+                    try {
+                        const res = await this.apiFetch('/api/settings');
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.settingsByCategory = data.categories || {};
+                            this.settingsCategories = Object.keys(this.settingsByCategory);
+                            // Store original values for reset
+                            this.settingsOriginal = JSON.parse(JSON.stringify(this.settingsByCategory));
+                            // Initialize modified tracking
+                            this.settingsModified = {};
+                            for (const cat of this.settingsCategories) {
+                                this.settingsModified[cat] = {};
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to load settings:', e);
+                    } finally {
+                        this.settingsLoading = false;
+                    }
+                },
+
+                markSettingModified(category, key, value) {
+                    if (!this.settingsModified[category]) {
+                        this.settingsModified[category] = {};
+                    }
+                    this.settingsModified[category][key] = value;
+                },
+
+                hasModifiedSettings(category) {
+                    return this.settingsModified[category] &&
+                           Object.keys(this.settingsModified[category]).length > 0;
+                },
+
+                async saveSetting(category, key) {
+                    this.settingsSaving = true;
+                    this.settingsMessage = '';
+                    this.settingsError = false;
+
+                    try {
+                        const setting = this.settingsByCategory[category]?.find(s => s.key === key);
+                        if (!setting) return;
+
+                        const res = await this.apiFetch(`/api/settings/key/${key}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ value: setting.value })
+                        });
+
+                        if (res.ok) {
+                            this.settingsMessage = `Setting "${key}" saved successfully`;
+                            this.settingsError = false;
+                            // Remove from modified tracking
+                            if (this.settingsModified[category]) {
+                                delete this.settingsModified[category][key];
+                            }
+                            // Update original value
+                            const origSetting = this.settingsOriginal[category]?.find(s => s.key === key);
+                            if (origSetting) {
+                                origSetting.value = setting.value;
+                            }
+                        } else {
+                            const data = await res.json();
+                            this.settingsMessage = data.detail || 'Failed to save setting';
+                            this.settingsError = true;
+                        }
+                    } catch (e) {
+                        this.settingsMessage = 'Failed to save: ' + e.message;
+                        this.settingsError = true;
+                    } finally {
+                        this.settingsSaving = false;
+                    }
+                },
+
+                async saveAllCategorySettings(category) {
+                    if (!this.hasModifiedSettings(category)) return;
+
+                    this.settingsSaving = true;
+                    this.settingsMessage = '';
+                    this.settingsError = false;
+
+                    const modifiedKeys = Object.keys(this.settingsModified[category] || {});
+                    let savedCount = 0;
+                    let errors = [];
+
+                    for (const key of modifiedKeys) {
+                        try {
+                            const setting = this.settingsByCategory[category]?.find(s => s.key === key);
+                            if (!setting) continue;
+
+                            const res = await this.apiFetch(`/api/settings/key/${key}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ value: setting.value })
+                            });
+
+                            if (res.ok) {
+                                savedCount++;
+                                delete this.settingsModified[category][key];
+                                // Update original value
+                                const origSetting = this.settingsOriginal[category]?.find(s => s.key === key);
+                                if (origSetting) {
+                                    origSetting.value = setting.value;
+                                }
+                            } else {
+                                const data = await res.json();
+                                errors.push(`${key}: ${data.detail || 'Failed'}`);
+                            }
+                        } catch (e) {
+                            errors.push(`${key}: ${e.message}`);
+                        }
+                    }
+
+                    this.settingsSaving = false;
+
+                    if (errors.length === 0) {
+                        this.settingsMessage = `Saved ${savedCount} setting(s) successfully`;
+                        this.settingsError = false;
+                    } else {
+                        this.settingsMessage = `Saved ${savedCount}, failed ${errors.length}: ${errors.join(', ')}`;
+                        this.settingsError = true;
+                    }
+                },
+
+                resetCategorySettings(category) {
+                    if (!this.settingsOriginal[category]) return;
+
+                    // Restore original values
+                    this.settingsByCategory[category] = JSON.parse(JSON.stringify(this.settingsOriginal[category]));
+                    // Clear modified tracking
+                    this.settingsModified[category] = {};
+                    this.settingsMessage = 'Settings reset to last saved values';
+                    this.settingsError = false;
+                },
+
+                getSettingInputType(valueType) {
+                    switch (valueType) {
+                        case 'boolean': return 'checkbox';
+                        case 'integer': return 'number';
+                        case 'float': return 'number';
+                        case 'enum': return 'select';
+                        case 'json': return 'textarea';
+                        default: return 'text';
+                    }
+                },
+
+                formatSettingValue(value, valueType) {
+                    if (valueType === 'json') {
+                        try {
+                            return JSON.stringify(value, null, 2);
+                        } catch {
+                            return String(value);
+                        }
+                    }
+                    return value;
+                },
+
+                parseSettingValue(value, valueType) {
+                    switch (valueType) {
+                        case 'integer':
+                            return parseInt(value, 10);
+                        case 'float':
+                            return parseFloat(value);
+                        case 'boolean':
+                            return value === true || value === 'true';
+                        case 'json':
+                            try {
+                                return JSON.parse(value);
+                            } catch {
+                                return value;
+                            }
+                        default:
+                            return value;
+                    }
+                },
+
+                async exportSettings() {
+                    try {
+                        const res = await this.apiFetch('/api/settings/export', {
+                            method: 'POST'
+                        });
+                        if (res.ok) {
+                            const data = await res.json();
+                            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `vlog-settings-${new Date().toISOString().split('T')[0]}.json`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                            this.settingsMessage = 'Settings exported successfully';
+                            this.settingsError = false;
+                        }
+                    } catch (e) {
+                        this.settingsMessage = 'Export failed: ' + e.message;
+                        this.settingsError = true;
+                    }
+                },
+
+                async importSettings(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+
+                    try {
+                        const text = await file.text();
+                        const data = JSON.parse(text);
+
+                        const res = await this.apiFetch('/api/settings/import', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ settings: data.settings, overwrite: true })
+                        });
+
+                        if (res.ok) {
+                            const result = await res.json();
+                            this.settingsMessage = `Import complete: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`;
+                            this.settingsError = result.errors?.length > 0;
+                            // Reload settings
+                            await this.loadAllSettings();
+                        } else {
+                            const err = await res.json();
+                            this.settingsMessage = err.detail || 'Import failed';
+                            this.settingsError = true;
+                        }
+                    } catch (e) {
+                        this.settingsMessage = 'Import failed: ' + e.message;
+                        this.settingsError = true;
+                    }
+
+                    // Clear file input
+                    event.target.value = '';
                 },
 
                 // Watermark settings methods
