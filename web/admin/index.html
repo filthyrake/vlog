@@ -1533,6 +1533,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 authError: '',
                 authLoading: false,
                 authRequired: false,
+                csrfToken: '',  // CSRF token for state-changing requests
 
                 tab: 'videos',
                 videos: [],
@@ -1651,17 +1652,57 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 bulkOpMessage: '',
                 bulkOpError: false,
 
+                // Fetch CSRF token from server (call after authentication)
+                async fetchCsrfToken() {
+                    try {
+                        const response = await VLogUtils.fetchWithTimeout('/api/auth/csrf-token', {
+                            credentials: 'same-origin'
+                        });
+                        if (response.ok) {
+                            const data = await response.json();
+                            this.csrfToken = data.csrf_token || '';
+                        }
+                    } catch (e) {
+                        console.error('Failed to fetch CSRF token:', e);
+                    }
+                },
+
                 // Helper function to make authenticated API requests
                 // Note: Authentication is now via HTTP-only cookies (set by /api/auth/login)
                 // Cookies are sent automatically with same-origin requests
+                // CSRF token is included for state-changing requests (POST, PUT, DELETE, PATCH)
                 async apiFetch(url, options = {}, timeoutMs = 30000) {
+                    // Add CSRF token header for state-changing requests
+                    const method = (options.method || 'GET').toUpperCase();
+                    const csrfMethods = ['POST', 'PUT', 'DELETE', 'PATCH'];
+                    if (csrfMethods.includes(method) && this.csrfToken) {
+                        options.headers = {
+                            ...options.headers,
+                            'X-CSRF-Token': this.csrfToken
+                        };
+                    }
+
                     const response = await VLogUtils.fetchWithTimeout(url, {
                         ...options,
                         credentials: 'same-origin',  // Ensure cookies are sent
                     }, timeoutMs);
 
-                    // Handle auth errors
-                    if (response.status === 401 || response.status === 403) {
+                    // Handle auth errors (including CSRF failures which return 403)
+                    if (response.status === 401) {
+                        this.authRequired = true;
+                        this.isAuthenticated = false;
+                        this.showAuthModal = true;
+                        throw new Error('Authentication required');
+                    }
+
+                    // Handle CSRF errors specifically
+                    if (response.status === 403) {
+                        const data = await response.clone().json().catch(() => ({}));
+                        if (data.detail && data.detail.includes('CSRF')) {
+                            // CSRF token might be stale, try to refresh it
+                            await this.fetchCsrfToken();
+                            throw new Error('CSRF validation failed. Please try again.');
+                        }
                         this.authRequired = true;
                         this.isAuthenticated = false;
                         this.showAuthModal = true;
@@ -1702,6 +1743,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         this.showAuthModal = false;
                         this.authSecretInput = '';
 
+                        // Fetch CSRF token for state-changing requests
+                        await this.fetchCsrfToken();
+
                         // Reload data now that we're authenticated
                         await Promise.all([
                             this.loadVideos(),
@@ -1727,6 +1771,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     this.isAuthenticated = false;
                     this.authRequired = true;
                     this.showAuthModal = true;
+                    this.csrfToken = '';  // Clear CSRF token on logout
                 },
 
                 // Check if authentication is required
@@ -1769,6 +1814,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         });
                         return;
                     }
+
+                    // Fetch CSRF token for state-changing requests
+                    await this.fetchCsrfToken();
 
                     await Promise.all([
                         this.loadVideos(),
@@ -2056,6 +2104,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         const xhr = new XMLHttpRequest();
                         xhr.open('POST', '/api/videos', true);
                         xhr.withCredentials = true;  // Send cookies for authentication
+                        if (this.csrfToken) {
+                            xhr.setRequestHeader('X-CSRF-Token', this.csrfToken);
+                        }
 
                         xhr.upload.onprogress = (e) => {
                             if (e.lengthComputable) {
@@ -2197,6 +2248,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         const xhr = new XMLHttpRequest();
                         xhr.open('POST', `/api/videos/${this.reuploadVideoId}/re-upload`, true);
                         xhr.withCredentials = true;  // Send cookies for authentication
+                        if (this.csrfToken) {
+                            xhr.setRequestHeader('X-CSRF-Token', this.csrfToken);
+                        }
 
                         xhr.upload.onprogress = (e) => {
                             if (e.lengthComputable) {
@@ -3219,9 +3273,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         const xhr = new XMLHttpRequest();
                         xhr.open('POST', '/api/settings/watermark/upload', true);
                         xhr.withCredentials = true;
-
-                        // Add auth header if we have a session cookie
-                        // (apiFetch handles this, but XHR needs manual handling)
+                        if (this.csrfToken) {
+                            xhr.setRequestHeader('X-CSRF-Token', this.csrfToken);
+                        }
 
                         xhr.upload.onprogress = (e) => {
                             if (e.lengthComputable) {

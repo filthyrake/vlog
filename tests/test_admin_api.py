@@ -2271,3 +2271,273 @@ class TestAdminAPIAuth:
                 cookies={"vlog_admin_session": session_token},
             )
             assert check_after.json()["authenticated"] is False
+
+
+class TestCSRFProtection:
+    """Tests for CSRF protection in Admin API."""
+
+    def test_csrf_token_endpoint(self, test_storage, test_db_url, monkeypatch):
+        """CSRF token endpoint should return token for authenticated sessions."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # Get CSRF token
+            csrf_response = client.get(
+                "/api/auth/csrf-token",
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert csrf_response.status_code == 200
+            data = csrf_response.json()
+            assert "csrf_token" in data
+            assert len(data["csrf_token"]) == 64  # SHA256 hex is 64 chars
+            assert data["required"] is True
+
+    def test_csrf_token_requires_auth(self, test_storage, test_db_url, monkeypatch):
+        """CSRF token endpoint should return 401 without authentication."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Without auth, should get 401
+            response = client.get("/api/auth/csrf-token")
+            assert response.status_code == 401
+
+    def test_post_without_csrf_fails(self, test_storage, test_db_url, monkeypatch):
+        """POST request with session cookie but no CSRF token should return 403."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # POST without CSRF token should fail
+            response = client.post(
+                "/api/categories",
+                json={"name": "Test Category"},
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert response.status_code == 403
+            assert "CSRF" in response.json()["detail"]
+
+    def test_post_with_valid_csrf_succeeds(self, test_storage, test_db_url, monkeypatch):
+        """POST request with session cookie and valid CSRF token should succeed."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # Get CSRF token
+            csrf_response = client.get(
+                "/api/auth/csrf-token",
+                cookies={"vlog_admin_session": session_token},
+            )
+            csrf_token = csrf_response.json()["csrf_token"]
+
+            # POST with CSRF token should succeed
+            response = client.post(
+                "/api/categories",
+                json={"name": "Test Category"},
+                cookies={"vlog_admin_session": session_token},
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            assert response.status_code == 200
+
+    def test_post_with_wrong_csrf_fails(self, test_storage, test_db_url, monkeypatch):
+        """POST request with wrong CSRF token should return 403."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # POST with wrong CSRF token should fail
+            response = client.post(
+                "/api/categories",
+                json={"name": "Test Category"},
+                cookies={"vlog_admin_session": session_token},
+                headers={"X-CSRF-Token": "wrong-csrf-token"},
+            )
+            assert response.status_code == 403
+            assert "CSRF" in response.json()["detail"]
+
+    def test_get_without_csrf_succeeds(self, test_storage, test_db_url, monkeypatch):
+        """GET request with session cookie should succeed without CSRF token."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # Login first
+            login_response = client.post(
+                "/api/auth/login",
+                json={"secret": TEST_ADMIN_API_SECRET},
+            )
+            assert login_response.status_code == 200
+            session_token = login_response.cookies.get("vlog_admin_session")
+
+            # GET without CSRF should succeed (CSRF not required for GET)
+            response = client.get(
+                "/api/categories",
+                cookies={"vlog_admin_session": session_token},
+            )
+            assert response.status_code == 200
+
+    def test_header_auth_bypasses_csrf(self, test_storage, test_db_url, monkeypatch):
+        """POST with X-Admin-Secret header should not require CSRF token."""
+        import importlib
+        import sys
+
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            importlib.reload(sys.modules["api.database"])
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            # POST with X-Admin-Secret header should succeed without CSRF
+            response = client.post(
+                "/api/categories",
+                json={"name": "Test Category"},
+                headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
+            )
+            assert response.status_code == 200
