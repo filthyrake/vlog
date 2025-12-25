@@ -672,11 +672,19 @@ def cmd_settings(args):
         print("Migrating settings from environment variables to database...")
         print()
 
+        from api.database import configure_database, database
+
         try:
             settings_module = _get_settings_module()
 
             async def do_migration():
-                return await settings_module.seed_settings_from_env(updated_by="cli-migration")
+                # Connect to database for CLI migration
+                await database.connect()
+                await configure_database()
+                try:
+                    return await settings_module.seed_settings_from_env(updated_by="cli-migration")
+                finally:
+                    await database.disconnect()
 
             result = asyncio.run(do_migration())
 
@@ -725,12 +733,15 @@ def cmd_settings(args):
             response = httpx.get(f"{API_BASE}/settings", timeout=DEFAULT_API_TIMEOUT)
             result = safe_json_response(response)
 
-            if not result:
+            # API returns {"categories": {...}}
+            categories_data = result.get("categories", result) if isinstance(result, dict) else {}
+
+            if not categories_data:
                 print("No settings found in database.")
                 print("Run 'vlog settings migrate-from-env' to migrate from environment variables.")
                 return
 
-            for category, settings_list in result.items():
+            for category, settings_list in categories_data.items():
                 print(f"\n[{category}]")
                 for s in settings_list:
                     value_display = s["value"]

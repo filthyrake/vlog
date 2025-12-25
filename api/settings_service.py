@@ -892,21 +892,39 @@ KNOWN_SETTINGS = [
 # Mapping from setting key to environment variable name (for non-standard mappings)
 SETTING_TO_ENV_MAP = {
     "transcoding.max_retries": "VLOG_MAX_RETRY_ATTEMPTS",
-    "transcoding.ffmpeg_timeout_multiplier": "VLOG_FFMPEG_TIMEOUT_BASE_MULTIPLIER",
+    "transcoding.ffmpeg_timeout_multiplier": "VLOG_FFMPEG_TIMEOUT_MULTIPLIER",
+    # Watermark settings - need explicit mapping since category is part of env var name
+    "watermark.enabled": "VLOG_WATERMARK_ENABLED",
+    "watermark.type": "VLOG_WATERMARK_TYPE",
+    "watermark.image": "VLOG_WATERMARK_IMAGE",
+    "watermark.text": "VLOG_WATERMARK_TEXT",
+    "watermark.text_size": "VLOG_WATERMARK_TEXT_SIZE",
+    "watermark.text_color": "VLOG_WATERMARK_TEXT_COLOR",
+    "watermark.position": "VLOG_WATERMARK_POSITION",
+    "watermark.opacity": "VLOG_WATERMARK_OPACITY",
+    "watermark.padding": "VLOG_WATERMARK_PADDING",
+    "watermark.max_width_percent": "VLOG_WATERMARK_MAX_WIDTH_PERCENT",
+    # Worker settings
     "workers.claim_duration_minutes": "VLOG_WORKER_CLAIM_DURATION",
     "workers.offline_threshold_minutes": "VLOG_WORKER_OFFLINE_THRESHOLD",
+    "workers.fallback_poll_interval": "VLOG_WORKER_FALLBACK_POLL_INTERVAL",
+    "workers.debounce_delay": "VLOG_WORKER_DEBOUNCE_DELAY",
+    # Analytics settings
     "analytics.cache_enabled": "VLOG_ANALYTICS_CACHE_ENABLED",
     "analytics.cache_ttl": "VLOG_ANALYTICS_CACHE_TTL",
     "analytics.client_cache_max_age": "VLOG_ANALYTICS_CLIENT_CACHE_MAX_AGE",
+    # Alert settings
     "alerts.webhook_url": "VLOG_ALERT_WEBHOOK_URL",
     "alerts.webhook_timeout": "VLOG_ALERT_WEBHOOK_TIMEOUT",
     "alerts.rate_limit_seconds": "VLOG_ALERT_RATE_LIMIT_SECONDS",
+    # Transcription settings
     "transcription.enabled": "VLOG_TRANSCRIPTION_ENABLED",
     "transcription.whisper_model": "VLOG_WHISPER_MODEL",
     "transcription.language": "VLOG_TRANSCRIPTION_LANGUAGE",
     "transcription.on_upload": "VLOG_TRANSCRIPTION_ON_UPLOAD",
     "transcription.compute_type": "VLOG_TRANSCRIPTION_COMPUTE_TYPE",
     "transcription.timeout": "VLOG_TRANSCRIPTION_TIMEOUT",
+    # Storage settings
     "storage.archive_retention_days": "VLOG_ARCHIVE_RETENTION_DAYS",
     "storage.max_upload_size_mb": "VLOG_MAX_UPLOAD_SIZE",
     "storage.max_thumbnail_size_mb": "VLOG_MAX_THUMBNAIL_SIZE",
