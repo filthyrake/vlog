@@ -38,6 +38,24 @@ All settings support environment variable configuration. Set these in your shell
 | `VLOG_PUBLIC_PORT` | `9000` | Public API port (video browsing/playback) |
 | `VLOG_ADMIN_PORT` | `9001` | Admin API port (uploads/management) |
 | `VLOG_WORKER_API_PORT` | `9002` | Worker API port (remote worker coordination) |
+| `VLOG_WORKER_HEALTH_PORT` | `8080` | HTTP health server port for K8s liveness/readiness probes |
+
+### Admin Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_ADMIN_API_SECRET` | (none) | Secret for API key authentication (X-Admin-Secret header) |
+| `VLOG_ADMIN_SESSION_EXPIRY_HOURS` | `24` | Browser session expiry in hours |
+
+**Admin Authentication:**
+- When `VLOG_ADMIN_API_SECRET` is set, all admin API endpoints require authentication
+- CLI commands automatically use this secret when set
+- Browser sessions use HTTP-only cookies for security
+
+Generate a secret:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
 
 ### Soft-Delete Settings
 
@@ -76,6 +94,39 @@ QUALITY_PRESETS = [
 - Longer segments = fewer requests, slower seeking
 - 6 seconds is a good balance for most use cases
 
+### Thumbnail Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_MAX_THUMBNAIL_SIZE` | `10485760` | Maximum custom thumbnail upload size in bytes (10MB) |
+| `VLOG_THUMBNAIL_WIDTH` | `640` | Thumbnail width in pixels (height auto-calculated) |
+
+**Custom Thumbnails:**
+- Users can upload custom thumbnails (JPEG, PNG, WebP)
+- Images are converted to JPEG at the configured width
+- Alternatively, users can select a frame from the video at any timestamp
+
+### Hardware Acceleration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_HWACCEL_TYPE` | `auto` | Hardware acceleration type: auto, nvidia, intel, none |
+| `VLOG_HWACCEL_PREFERRED_CODEC` | `h264` | Preferred codec: h264, hevc, av1 |
+| `VLOG_HWACCEL_FALLBACK_TO_CPU` | `true` | Fall back to CPU if GPU encoding fails |
+| `VLOG_HWACCEL_MAX_SESSIONS` | `3` | Maximum concurrent GPU encoding sessions |
+| `VLOG_HWACCEL_VAAPI_DEVICE` | (auto) | VAAPI device path (Intel GPU, auto-detected if empty) |
+
+**GPU Encoding:**
+- **NVIDIA NVENC:** Requires nvidia-container-toolkit in Kubernetes
+- **Intel VAAPI:** Requires Intel GPU device plugin, works with Arc/QuickSync
+- Consumer NVIDIA GPUs have session limits (RTX 3090: 3 sessions, RTX 4090: 5 sessions)
+
+**Auto-detection:**
+When `VLOG_HWACCEL_TYPE=auto`, the worker probes for available GPUs in order:
+1. NVIDIA (checks for nvidia-smi)
+2. Intel VAAPI (checks for /dev/dri/renderD*)
+3. Falls back to CPU encoding
+
 ### Checkpoint/Resumable Transcoding
 
 | Variable | Default | Description |
@@ -85,6 +136,7 @@ QUALITY_PRESETS = [
 | `VLOG_MAX_RETRY_ATTEMPTS` | `3` | Maximum retry attempts for failed jobs |
 | `VLOG_RETRY_BACKOFF_BASE` | `60` | Base delay between retries (doubles each attempt) |
 | `VLOG_CLEANUP_PARTIAL_ON_FAILURE` | `true` | Whether to clean up partial files on failure |
+| `VLOG_CLEANUP_SOURCE_ON_PERMANENT_FAILURE` | `true` | Delete source file after max retries exceeded |
 | `VLOG_KEEP_COMPLETED_QUALITIES` | `true` | Preserve completed qualities when retrying |
 
 **Crash Recovery:**
@@ -152,6 +204,44 @@ Timeout calculation includes per-resolution multipliers that adjust based on qua
 - Immediately detects new uploads without polling
 - Falls back to polling if watchdog unavailable
 - Debouncing prevents multiple triggers during large file uploads
+
+### Watermark Settings
+
+Client-side watermark overlay on the video player.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_WATERMARK_ENABLED` | `false` | Enable/disable watermark overlay |
+| `VLOG_WATERMARK_TYPE` | `image` | Watermark type: image or text |
+| `VLOG_WATERMARK_IMAGE` | (none) | Path to watermark image file (PNG, JPEG, WebP, SVG, GIF) |
+| `VLOG_WATERMARK_TEXT` | (none) | Text to display as watermark (when type=text) |
+| `VLOG_WATERMARK_TEXT_SIZE` | `16` | Text watermark font size in pixels (8-72) |
+| `VLOG_WATERMARK_TEXT_COLOR` | `white` | Text watermark color (CSS color value) |
+| `VLOG_WATERMARK_POSITION` | `bottom-right` | Position: top-left, top-right, bottom-left, bottom-right, center |
+| `VLOG_WATERMARK_OPACITY` | `0.5` | Watermark opacity (0.0-1.0) |
+| `VLOG_WATERMARK_PADDING` | `16` | Padding from edge in pixels |
+| `VLOG_WATERMARK_MAX_WIDTH_PERCENT` | `15` | Max width as percentage of video (1-50, images only) |
+
+**Watermark Types:**
+- **Image:** PNG, JPEG, WebP, SVG, or GIF file. Scales to max width while preserving aspect ratio.
+- **Text:** Rendered with configured font size and color. Good for copyright notices.
+
+**Example Configuration:**
+```bash
+# Image watermark
+VLOG_WATERMARK_ENABLED=true
+VLOG_WATERMARK_TYPE=image
+VLOG_WATERMARK_IMAGE=watermark.png
+VLOG_WATERMARK_POSITION=bottom-right
+VLOG_WATERMARK_OPACITY=0.7
+
+# Text watermark
+VLOG_WATERMARK_ENABLED=true
+VLOG_WATERMARK_TYPE=text
+VLOG_WATERMARK_TEXT=© 2025 MyBrand
+VLOG_WATERMARK_TEXT_SIZE=14
+VLOG_WATERMARK_TEXT_COLOR=rgba(255,255,255,0.8)
+```
 
 ### Remote Worker / Worker API Settings
 

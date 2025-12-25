@@ -290,6 +290,69 @@ Auto-scaling (requires metrics-server):
 kubectl apply -f k8s/worker-hpa.yaml
 ```
 
+## Health Probes
+
+Workers include an HTTP health server for Kubernetes liveness and readiness probes.
+
+### Endpoints
+
+| Endpoint | Purpose | Success Criteria |
+|----------|---------|------------------|
+| `GET /health` | Liveness probe | Process is running |
+| `GET /ready` | Readiness probe | FFmpeg available AND API connected |
+| `GET /` | Info endpoint | Returns service info and API URL |
+
+### Configuration
+
+The health server runs on port 8080 by default, configurable via `VLOG_WORKER_HEALTH_PORT`:
+
+```yaml
+# In configmap.yaml
+data:
+  VLOG_WORKER_HEALTH_PORT: "8080"
+```
+
+### Probe Configuration in Deployments
+
+All worker deployment manifests include configured probes:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+```
+
+### Readiness Checks
+
+The `/ready` endpoint verifies:
+- **FFmpeg Available**: Checks `ffmpeg` is in PATH
+- **API Connected**: Worker has connected to Worker API and sent a heartbeat
+
+Response example:
+```json
+{
+  "status": "ready",
+  "checks": {
+    "ffmpeg": true,
+    "api_connected": true
+  }
+}
+```
+
+If any check fails, returns HTTP 503 (Service Unavailable).
+
 ## Monitoring
 
 ```bash
@@ -301,6 +364,9 @@ kubectl logs -n vlog -l app.kubernetes.io/component=worker -f
 
 # View worker status
 curl http://your-vlog-server:9002/api/workers
+
+# Check individual pod health
+kubectl exec -n vlog <pod-name> -- curl -s localhost:8080/ready
 ```
 
 ## Resource Tuning

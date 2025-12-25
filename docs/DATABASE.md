@@ -41,6 +41,8 @@ Core video metadata and processing status.
 | source_height | INTEGER | DEFAULT 0 | Original height |
 | status | VARCHAR(20) | DEFAULT 'pending' | Processing status |
 | error_message | TEXT | NULLABLE | Error details if failed |
+| thumbnail_source | VARCHAR(20) | DEFAULT 'auto' | Thumbnail source: 'auto', 'selected', 'custom' |
+| thumbnail_timestamp | FLOAT | NULLABLE | Timestamp for 'selected' thumbnails |
 | created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Upload timestamp |
 | published_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Publication timestamp |
 | deleted_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Soft-delete timestamp (NULL = not deleted) |
@@ -250,6 +252,62 @@ API keys for worker authentication (SHA-256 hashed).
 - Revoked keys remain in table for audit trail
 - `last_used_at` tracks recent activity
 
+### admin_sessions
+
+Server-side session management for browser-based admin authentication.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| session_token | VARCHAR(128) | UNIQUE, NOT NULL | Session token (64 chars from secrets.token_urlsafe) |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL | Session creation time |
+| expires_at | TIMESTAMP WITH TIME ZONE | NOT NULL | Session expiration time |
+| last_used_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Last activity timestamp |
+| ip_address | VARCHAR(45) | NULLABLE | Client IP address (IPv6 max length) |
+| user_agent | VARCHAR(512) | NULLABLE | Browser user agent |
+
+**Indexes:**
+- `ix_admin_sessions_session_token` - Fast session lookup
+- `ix_admin_sessions_expires_at` - Expired session cleanup
+
+**Security Design:**
+- Sessions use HTTP-only cookies (not accessible to JavaScript)
+- Session expiry configurable via `VLOG_ADMIN_SESSION_EXPIRY_HOURS`
+- Expired sessions are automatically cleaned up
+
+### settings
+
+Runtime configuration stored in database for dynamic updates without restart.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| key | VARCHAR(255) | UNIQUE, NOT NULL | Setting key (e.g., "transcoding.hls_segment_duration") |
+| value | TEXT | NOT NULL | JSON-encoded value |
+| category | VARCHAR(100) | NOT NULL | Category for UI grouping |
+| description | TEXT | NULLABLE | Human-readable help text |
+| value_type | VARCHAR(50) | NOT NULL | Type: string, integer, float, boolean, enum, json |
+| constraints | TEXT | NULLABLE | JSON validation constraints (min, max, enum_values, etc.) |
+| updated_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Last update timestamp |
+| updated_by | VARCHAR(255) | NULLABLE | User/system that made the update |
+
+**Indexes:**
+- `ix_settings_key` - Fast key lookup
+- `ix_settings_category` - Category grouping queries
+
+**Value Types:**
+- `string` - Plain text
+- `integer` - Whole numbers
+- `float` - Decimal numbers
+- `boolean` - true/false
+- `enum` - One of predefined values (see constraints.enum_values)
+- `json` - Complex JSON objects/arrays
+
+**Setting Precedence:**
+1. Database value (if exists and not empty)
+2. Environment variable fallback
+3. Config default value
+
 ### tags
 
 Tag definitions for granular content organization.
@@ -298,6 +356,9 @@ transcoding_jobs (N) ───────────────────�
 workers (1) ───────────────────────────── (N) worker_api_keys
                                                 │
 viewers (1) ────────────────────────────── (N) playback_sessions
+
+admin_sessions ────────────────────────── (standalone, no FKs)
+settings ──────────────────────────────── (standalone, no FKs)
 ```
 
 ---

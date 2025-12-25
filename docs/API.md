@@ -278,6 +278,28 @@ Response:
 
 **Warning:** This API should only be accessible from internal networks.
 
+### Authentication
+
+The Admin API supports optional authentication via `VLOG_ADMIN_API_SECRET`:
+
+**API Key Authentication (for CLI/scripts):**
+```
+X-Admin-Secret: your-secret-here
+```
+
+When `VLOG_ADMIN_API_SECRET` is set, all `/api/*` endpoints require this header.
+
+**Browser Session Authentication:**
+
+The Admin API also supports HTTP-only cookie sessions for browser-based access:
+- Sessions are created via the admin UI login
+- Session expiry configurable via `VLOG_ADMIN_SESSION_EXPIRY_HOURS` (default: 24)
+- Sessions use secure cookies when `VLOG_SECURE_COOKIES=true` (requires HTTPS)
+
+**Error Responses:**
+- `401 Unauthorized` - No authentication provided
+- `403 Forbidden` - Invalid secret or expired session
+
 ### Health Check
 
 ```
@@ -444,6 +466,112 @@ Response:
 #### Get Transcoding Progress
 ```
 GET /api/videos/{video_id}/progress
+```
+
+### Thumbnails
+
+#### Get Thumbnail Info
+```
+GET /api/videos/{video_id}/thumbnail
+```
+
+Response: `ThumbnailInfoResponse`
+```json
+{
+  "video_id": 1,
+  "thumbnail_url": "/videos/my-video/thumbnail.jpg",
+  "thumbnail_source": "auto",
+  "thumbnail_timestamp": null
+}
+```
+
+**Thumbnail Source Values:**
+- `auto` - Auto-generated at default timestamp (5s or 25% of duration)
+- `selected` - Selected from generated frame options
+- `custom` - Uploaded custom image
+
+#### Generate Thumbnail Frames
+```
+POST /api/videos/{video_id}/thumbnail/frames
+```
+
+Generates multiple frame options at different timestamps for thumbnail selection.
+Returns URLs to temporary frame images at 10%, 25%, 50%, 75%, 90% of video duration.
+
+Response: `ThumbnailFramesResponse`
+```json
+{
+  "video_id": 1,
+  "duration": 300.5,
+  "frames": [
+    {"index": 0, "timestamp": 30.05, "url": "/videos/my-video/frames/frame_0.jpg"},
+    {"index": 1, "timestamp": 75.12, "url": "/videos/my-video/frames/frame_1.jpg"},
+    {"index": 2, "timestamp": 150.25, "url": "/videos/my-video/frames/frame_2.jpg"},
+    {"index": 3, "timestamp": 225.37, "url": "/videos/my-video/frames/frame_3.jpg"},
+    {"index": 4, "timestamp": 270.45, "url": "/videos/my-video/frames/frame_4.jpg"}
+  ]
+}
+```
+
+#### Upload Custom Thumbnail
+```
+POST /api/videos/{video_id}/thumbnail/upload
+Content-Type: multipart/form-data
+```
+
+Form fields:
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| file | file | yes | Image file (JPEG, PNG, WebP, max 10MB) |
+
+Converts to JPEG at 640px width, preserving aspect ratio.
+
+Response: `ThumbnailResponse`
+```json
+{
+  "status": "ok",
+  "thumbnail_url": "/videos/my-video/thumbnail.jpg",
+  "thumbnail_source": "custom",
+  "thumbnail_timestamp": null
+}
+```
+
+#### Select Thumbnail Frame
+```
+POST /api/videos/{video_id}/thumbnail/select
+Content-Type: application/x-www-form-urlencoded
+```
+
+Form fields:
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| timestamp | float | yes | Timestamp in seconds |
+
+Response: `ThumbnailResponse`
+```json
+{
+  "status": "ok",
+  "thumbnail_url": "/videos/my-video/thumbnail.jpg",
+  "thumbnail_source": "selected",
+  "thumbnail_timestamp": 75.12
+}
+```
+
+#### Revert to Auto-Generated Thumbnail
+```
+POST /api/videos/{video_id}/thumbnail/revert
+```
+
+Regenerates thumbnail at the default position (5 seconds or 25% of duration).
+
+Response: `ThumbnailResponse`
+```json
+{
+  "status": "ok",
+  "thumbnail_url": "/videos/my-video/thumbnail.jpg",
+  "thumbnail_source": "auto",
+  "thumbnail_timestamp": null
+}
 ```
 
 ### Transcription
@@ -707,6 +835,90 @@ DELETE /api/workers/{worker_id}
 ```
 
 Removes worker registration (does not revoke API key).
+
+### Settings
+
+Runtime settings management. Settings can be changed without restarting services.
+
+#### List All Settings
+```
+GET /api/settings
+```
+
+Response:
+```json
+{
+  "categories": {
+    "transcoding": [
+      {"key": "transcoding.hls_segment_duration", "value": 6, "value_type": "integer", "category": "transcoding"},
+      {"key": "transcoding.ffmpeg_timeout_base_multiplier", "value": 2.0, "value_type": "float", "category": "transcoding"}
+    ],
+    "watermark": [
+      {"key": "watermark.enabled", "value": false, "value_type": "boolean", "category": "watermark"}
+    ]
+  }
+}
+```
+
+#### Get Setting
+```
+GET /api/settings/key/{key}
+```
+
+Response:
+```json
+{
+  "key": "transcoding.hls_segment_duration",
+  "value": 6,
+  "value_type": "integer",
+  "category": "transcoding",
+  "description": "HLS segment duration in seconds",
+  "constraints": {"min": 2, "max": 30}
+}
+```
+
+#### Update Setting
+```
+POST /api/settings
+Content-Type: application/json
+```
+
+Request body:
+```json
+{
+  "key": "transcoding.hls_segment_duration",
+  "value": 10
+}
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "key": "transcoding.hls_segment_duration",
+  "value": 10
+}
+```
+
+**Note:** Settings are cached for 60 seconds. Changes may take up to a minute to take effect.
+
+#### Seed Settings from Environment
+```
+POST /api/settings/seed
+```
+
+Migrates settings from environment variables to the database.
+
+Response:
+```json
+{
+  "seeded": 5,
+  "skipped": 3,
+  "details": [
+    {"key": "transcoding.hls_segment_duration", "status": "seeded", "value": 6, "from_env": "VLOG_HLS_SEGMENT_DURATION"}
+  ]
+}
+```
 
 ### Server-Sent Events (SSE)
 

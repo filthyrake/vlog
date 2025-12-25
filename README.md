@@ -16,8 +16,12 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 - **Rate Limiting** - Configurable per-endpoint rate limits (memory or Redis storage)
 - **Modern UI** - Clean, responsive Alpine.js + Tailwind CSS frontend
 - **Playback Analytics** - Track views, watch time, completion rates
+- **Custom Thumbnails** - Select from video frames or upload custom images
+- **Client-Side Watermarks** - Configurable image or text overlays on playback
 - **CLI + Web Upload** - Upload via command line or web interface
 - **YouTube Migration** - Download and import videos directly from YouTube
+- **Admin Authentication** - Secure admin API with API keys and HTTP-only cookie sessions
+- **Database-Backed Settings** - Runtime configuration via Admin UI or CLI
 
 ## Requirements
 
@@ -89,6 +93,12 @@ vlog delete 123
 vlog worker register --name "k8s-worker-1"  # Get API key for new worker
 vlog worker status                           # Show all workers and current jobs
 vlog worker list                             # List registered workers
+
+# Settings management (runtime configuration)
+vlog settings list                                        # List all settings
+vlog settings get transcoding.hls_segment_duration        # Get a setting
+vlog settings set transcoding.hls_segment_duration 10     # Update a setting
+vlog settings migrate-from-env                            # Migrate env vars to database
 ```
 
 ## Directory Structure
@@ -203,6 +213,8 @@ See [k8s/README.md](k8s/README.md) for detailed Kubernetes deployment instructio
 | [DATABASE.md](docs/DATABASE.md) | Database schema documentation |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Configuration options |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment guide |
+| [TRANSCODING_ARCHITECTURE.md](docs/TRANSCODING_ARCHITECTURE.md) | Job lifecycle and state machine |
+| [EXCEPTION_HANDLING.md](docs/EXCEPTION_HANDLING.md) | Error handling patterns |
 
 ## Configuration
 
@@ -238,6 +250,23 @@ VLOG_WORKER_API_KEY=your-api-key
 ```
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all options.
+
+### Admin API Authentication
+
+The admin API can require authentication via `VLOG_ADMIN_API_SECRET`:
+
+```bash
+# Generate a secret
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Set in environment
+export VLOG_ADMIN_API_SECRET=your-generated-secret
+
+# CLI commands will use this automatically
+vlog upload video.mp4 -t "My Video"
+```
+
+When set, all admin API endpoints require the `X-Admin-Secret` header. The CLI automatically includes this header when `VLOG_ADMIN_API_SECRET` is set.
 
 ## Troubleshooting
 
@@ -316,14 +345,15 @@ See [TESTING.md](TESTING.md) for detailed testing guide.
 ## Tech Stack
 
 - **Backend:** FastAPI + Uvicorn
-- **Database:** SQLite + SQLAlchemy
-- **Video Processing:** ffmpeg, ffprobe
+- **Database:** PostgreSQL + SQLAlchemy (async via asyncpg)
+- **Video Processing:** FFmpeg 7.1.2 (NVENC, VAAPI, QSV hardware encoding)
 - **Transcription:** faster-whisper
 - **File Monitoring:** watchdog (inotify)
 - **Rate Limiting:** slowapi (memory or Redis)
 - **Frontend:** Alpine.js + Tailwind CSS v4
 - **Video Player:** hls.js
 - **Process Management:** systemd
+- **Container Orchestration:** Kubernetes (k3s)
 
 ## License
 
