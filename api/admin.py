@@ -5670,6 +5670,7 @@ async def queue_all_legacy_videos(
                 target_codec=target_codec,
                 priority=priority,
                 status="pending",
+                created_at=datetime.now(timezone.utc),
             )
         )
         queued_count += 1
@@ -5694,10 +5695,10 @@ async def list_reencode_jobs(
     """
     # Build WHERE clause
     where_clause = ""
-    params = {"limit": limit, "offset": offset}
+    count_params = {}
     if status:
         where_clause = " WHERE rq.status = :status"
-        params["status"] = status
+        count_params["status"] = status
 
     # Get total count for pagination
     count_query_str = f"""
@@ -5705,7 +5706,10 @@ async def list_reencode_jobs(
         FROM reencode_queue rq
         {where_clause}
     """
-    count_query = sa.text(count_query_str).bindparams(**params)
+    if count_params:
+        count_query = sa.text(count_query_str).bindparams(**count_params)
+    else:
+        count_query = sa.text(count_query_str)
     count_result = await fetch_one_with_retry(count_query)
     total = count_result["total"] if count_result else 0
 
@@ -5731,7 +5735,8 @@ async def list_reencode_jobs(
         ORDER BY rq.created_at DESC
         LIMIT :limit OFFSET :offset
     """
-    data_query = sa.text(data_query_str).bindparams(**params)
+    data_params = {"limit": limit, "offset": offset, **count_params}
+    data_query = sa.text(data_query_str).bindparams(**data_params)
     rows = await fetch_all_with_retry(data_query)
 
     # Convert to list of dicts
