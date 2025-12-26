@@ -1466,7 +1466,7 @@ async def upload_quality(
         await extract_tar_async(
             tmp_path,
             output_dir,
-            allowed_extensions=(".m3u8", ".ts", ".jpg", ".vtt"),
+            allowed_extensions=(".m3u8", ".ts", ".m4s", ".mp4", ".jpg", ".vtt"),
             max_files=MAX_HLS_ARCHIVE_FILES,
             max_size=MAX_HLS_ARCHIVE_SIZE,
             max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
@@ -1626,7 +1626,7 @@ async def upload_hls(
         await extract_tar_async(
             tmp_path,
             output_dir,
-            allowed_extensions=(".m3u8", ".ts", ".jpg", ".vtt"),
+            allowed_extensions=(".m3u8", ".ts", ".m4s", ".mp4", ".jpg", ".vtt"),
             max_files=MAX_HLS_ARCHIVE_FILES,
             max_size=MAX_HLS_ARCHIVE_SIZE,
             max_single_file=MAX_HLS_SINGLE_FILE_SIZE,

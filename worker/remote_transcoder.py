@@ -570,11 +570,18 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 print(f"    {quality_name}: Uploaded")
 
                 # Delete local files to free disk space
-                playlist_file = output_dir / f"{quality_name}.m3u8"
-                if playlist_file.exists():
-                    playlist_file.unlink()
-                for segment in output_dir.glob(f"{quality_name}_*.ts"):
-                    segment.unlink()
+                # Check for CMAF subdirectory structure first
+                cmaf_dir = output_dir / quality_name
+                if cmaf_dir.is_dir():
+                    # CMAF format: delete the entire quality subdirectory
+                    shutil.rmtree(cmaf_dir)
+                else:
+                    # HLS/TS format: delete individual files
+                    playlist_file = output_dir / f"{quality_name}.m3u8"
+                    if playlist_file.exists():
+                        playlist_file.unlink()
+                    for segment in output_dir.glob(f"{quality_name}_*.ts"):
+                        segment.unlink()
                 print(f"    {quality_name}: Local files cleaned up")
 
             except WorkerAPIError as e:

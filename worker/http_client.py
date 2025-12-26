@@ -301,14 +301,25 @@ class WorkerAPIClient:
         file_size_mb = 0.0  # Default value in case of early exception
         try:
             with tarfile.open(tmp_path, "w:gz") as tar:
-                # Add playlist file
-                playlist = output_dir / f"{quality_name}.m3u8"
-                if playlist.exists():
-                    tar.add(playlist, arcname=playlist.name)
+                # Check for CMAF subdirectory structure (output_dir/{quality_name}/)
+                cmaf_dir = output_dir / quality_name
+                if cmaf_dir.is_dir():
+                    # CMAF format: files are in subdirectory
+                    # Add all files from the quality subdirectory
+                    for f in cmaf_dir.iterdir():
+                        if f.is_file():
+                            # Preserve subdirectory structure: {quality_name}/filename
+                            tar.add(f, arcname=f"{quality_name}/{f.name}")
+                else:
+                    # HLS/TS format: files are in root with quality prefix
+                    # Add playlist file
+                    playlist = output_dir / f"{quality_name}.m3u8"
+                    if playlist.exists():
+                        tar.add(playlist, arcname=playlist.name)
 
-                # Add segment files
-                for segment in output_dir.glob(f"{quality_name}_*.ts"):
-                    tar.add(segment, arcname=segment.name)
+                    # Add segment files
+                    for segment in output_dir.glob(f"{quality_name}_*.ts"):
+                        tar.add(segment, arcname=segment.name)
 
             file_size = tmp_path.stat().st_size
             file_size_mb = file_size / (1024 * 1024)
