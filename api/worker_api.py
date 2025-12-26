@@ -1023,41 +1023,55 @@ async def claim_job(
                     if vtt_path.exists():
                         vtt_path.unlink()
 
-            # Delete video_qualities records
-            if retranscode_all:
-                await database.execute(
-                    video_qualities.delete().where(video_qualities.c.video_id == video_id)
-                )
-            else:
-                await database.execute(
-                    video_qualities.delete().where(
-                        (video_qualities.c.video_id == video_id)
-                        & (video_qualities.c.quality.in_(qualities_to_delete))
+            # Database cleanup in a transaction for consistency
+            async with database.transaction():
+                # Delete video_qualities records
+                if retranscode_all:
+                    await database.execute(
+                        video_qualities.delete().where(video_qualities.c.video_id == video_id)
                     )
-                )
+                else:
+                    await database.execute(
+                        video_qualities.delete().where(
+                            (video_qualities.c.video_id == video_id)
+                            & (video_qualities.c.quality.in_(qualities_to_delete))
+                        )
+                    )
 
-            # Delete transcription records if needed
-            if delete_transcription:
+                # Delete transcription records if needed
+                if delete_transcription:
+                    await database.execute(
+                        transcriptions.delete().where(transcriptions.c.video_id == video_id)
+                    )
+
+                # Clear the retranscode_metadata now that cleanup is done
                 await database.execute(
-                    transcriptions.delete().where(transcriptions.c.video_id == video_id)
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job["id"])
+                    .values(retranscode_metadata=None)
                 )
-
-            # Clear the retranscode_metadata now that cleanup is done
-            await database.execute(
-                transcoding_jobs.update()
-                .where(transcoding_jobs.c.id == job["id"])
-                .values(retranscode_metadata=None)
-            )
 
             logger.info(
-                "Retranscode cleanup completed for video %d: deleted %d qualities, all=%s",
+                "Retranscode cleanup completed for job %d, video %d: "
+                "deleted %d qualities (%s), retranscode_all=%s, delete_transcription=%s",
+                job["id"],
                 video_id,
                 len(qualities_to_delete),
+                ", ".join(qualities_to_delete),
                 retranscode_all,
+                delete_transcription,
             )
         except Exception as e:
             # Log but don't fail the claim - worker can still proceed
-            logger.error("Failed to perform retranscode cleanup for job %d: %s", job["id"], e)
+            logger.error(
+                "Failed to perform retranscode cleanup for job %d, video %d: %s. "
+                "Metadata: retranscode_all=%s, qualities=%s",
+                job["id"],
+                video_id,
+                e,
+                retranscode_all,
+                qualities_to_delete,
+            )
 
     # Find source filename
     source_filename = None

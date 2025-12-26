@@ -625,6 +625,33 @@ async def cleanup_orphaned_jobs() -> int:
     return len(orphaned)
 
 
+def build_retranscode_metadata(
+    video_dir: Path,
+    qualities_to_delete: List[str],
+    retranscode_all: bool,
+) -> str:
+    """
+    Build JSON metadata for deferred retranscode cleanup (Issue #408).
+
+    This metadata is stored in the transcoding_jobs.retranscode_metadata field
+    and is read by claim_job() to perform cleanup when the worker claims the job.
+
+    Args:
+        video_dir: Path to the video's output directory
+        qualities_to_delete: List of quality names to delete (e.g., ["1080p", "720p"])
+        retranscode_all: Whether this is a full retranscode (deletes all files including thumbnail)
+
+    Returns:
+        JSON string with cleanup instructions
+    """
+    return json.dumps({
+        "retranscode_all": retranscode_all,
+        "qualities_to_delete": qualities_to_delete,
+        "delete_transcription": retranscode_all,
+        "video_dir": str(video_dir),
+    })
+
+
 async def create_or_reset_transcoding_job(
     video_id: int, priority: str = "normal", retranscode_metadata: Optional[str] = None
 ) -> None:
@@ -2613,12 +2640,7 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
                 qualities_to_delete = [q for q in data.qualities if q != "all"]
 
             # Build retranscode metadata for deferred cleanup (Issue #408)
-            retranscode_metadata = json.dumps({
-                "retranscode_all": retranscode_all,
-                "qualities_to_delete": qualities_to_delete,
-                "delete_transcription": retranscode_all,
-                "video_dir": str(video_dir),
-            })
+            retranscode_metadata = build_retranscode_metadata(video_dir, qualities_to_delete, retranscode_all)
 
             async with database.transaction():
                 # Cancel existing transcoding job (job-related cleanup only)
@@ -3191,13 +3213,7 @@ async def retranscode_video(
         qualities_to_delete = list(requested_qualities)
 
     # Build retranscode metadata for deferred cleanup (Issue #408)
-    # This info is used by claim_job() to clean up when processing actually starts
-    retranscode_metadata = json.dumps({
-        "retranscode_all": retranscode_all,
-        "qualities_to_delete": qualities_to_delete,
-        "delete_transcription": retranscode_all,
-        "video_dir": str(video_dir),
-    })
+    retranscode_metadata = build_retranscode_metadata(video_dir, qualities_to_delete, retranscode_all)
 
     # === DATABASE CLEANUP (job-related only) ===
     async with database.transaction():

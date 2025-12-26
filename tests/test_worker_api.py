@@ -938,6 +938,297 @@ class TestJobClaiming:
         assert claim_response.json()["message"] != "Waiting for GPU workers"
 
 
+class TestRetranscodeClaimCleanup:
+    """Tests for claim_job with retranscode cleanup (Issue #408)."""
+
+    @pytest.mark.asyncio
+    async def test_claim_retranscode_job_for_ready_video(
+        self, worker_client, registered_worker, test_database, sample_category, test_storage
+    ):
+        """Test claiming a job for a READY video with retranscode_metadata."""
+        now = datetime.now(timezone.utc)
+
+        # Create a video in READY state (simulating existing video)
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Ready Video for Retranscode",
+                slug="ready-video-retranscode",
+                category_id=sample_category["id"],
+                status="ready",
+                source_height=1080,
+                created_at=now,
+                published_at=now,
+            )
+        )
+
+        # Create retranscode metadata (as the retranscode endpoint would)
+        import json
+        retranscode_metadata = json.dumps({
+            "retranscode_all": True,
+            "qualities_to_delete": ["1080p", "720p"],
+            "delete_transcription": True,
+            "video_dir": str(test_storage["videos"] / "ready-video-retranscode"),
+        })
+
+        # Create a transcoding job with retranscode_metadata
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                attempt_number=1,
+                max_attempts=3,
+                current_step="pending",
+                retranscode_metadata=retranscode_metadata,
+            )
+        )
+
+        # Claim the job - should work even though video is READY
+        response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] is not None
+        assert data["video_id"] == video_id
+        assert "claimed successfully" in data["message"].lower()
+
+        # Verify video status changed to processing
+        video = await test_database.fetch_one(
+            videos.select().where(videos.c.id == video_id)
+        )
+        assert video["status"] == "processing"
+
+    @pytest.mark.asyncio
+    async def test_claim_clears_retranscode_metadata(
+        self, worker_client, registered_worker, test_database, sample_category, test_storage
+    ):
+        """Test that retranscode_metadata is cleared after successful claim."""
+        now = datetime.now(timezone.utc)
+
+        # Create a video in READY state
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Ready Video Metadata Clear",
+                slug="ready-video-metadata-clear",
+                category_id=sample_category["id"],
+                status="ready",
+                source_height=1080,
+                created_at=now,
+                published_at=now,
+            )
+        )
+
+        # Create retranscode metadata
+        import json
+        retranscode_metadata = json.dumps({
+            "retranscode_all": True,
+            "qualities_to_delete": ["1080p"],
+            "delete_transcription": False,
+            "video_dir": str(test_storage["videos"] / "ready-video-metadata-clear"),
+        })
+
+        # Create a transcoding job with retranscode_metadata
+        job_id = await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                attempt_number=1,
+                max_attempts=3,
+                current_step="pending",
+                retranscode_metadata=retranscode_metadata,
+            )
+        )
+
+        # Claim the job
+        response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+
+        # Verify retranscode_metadata was cleared
+        job = await test_database.fetch_one(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+        assert job["retranscode_metadata"] is None
+
+    @pytest.mark.asyncio
+    async def test_claim_deletes_video_qualities_for_retranscode(
+        self, worker_client, registered_worker, test_database, sample_category, test_storage
+    ):
+        """Test that video_qualities are deleted during retranscode claim."""
+        from api.database import video_qualities
+
+        now = datetime.now(timezone.utc)
+
+        # Create a video in READY state
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Ready Video Qualities Delete",
+                slug="ready-video-qualities-delete",
+                category_id=sample_category["id"],
+                status="ready",
+                source_height=1080,
+                created_at=now,
+                published_at=now,
+            )
+        )
+
+        # Create existing video_qualities records
+        await test_database.execute(
+            video_qualities.insert().values(video_id=video_id, quality="1080p", width=1920, height=1080, bitrate=5000)
+        )
+        await test_database.execute(
+            video_qualities.insert().values(video_id=video_id, quality="720p", width=1280, height=720, bitrate=2500)
+        )
+
+        # Create retranscode metadata for selective delete (only 720p)
+        import json
+        retranscode_metadata = json.dumps({
+            "retranscode_all": False,
+            "qualities_to_delete": ["720p"],
+            "delete_transcription": False,
+            "video_dir": str(test_storage["videos"] / "ready-video-qualities-delete"),
+        })
+
+        # Create a transcoding job with retranscode_metadata
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                attempt_number=1,
+                max_attempts=3,
+                current_step="pending",
+                retranscode_metadata=retranscode_metadata,
+            )
+        )
+
+        # Claim the job
+        response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+
+        # Verify only 720p was deleted, 1080p remains
+        qualities = await test_database.fetch_all(
+            video_qualities.select().where(video_qualities.c.video_id == video_id)
+        )
+        quality_names = [q["quality"] for q in qualities]
+        assert "1080p" in quality_names
+        assert "720p" not in quality_names
+
+    @pytest.mark.asyncio
+    async def test_claim_deletes_files_for_retranscode(
+        self, worker_client, registered_worker, test_database, sample_category, test_storage
+    ):
+        """Test that quality files are deleted during retranscode claim."""
+        now = datetime.now(timezone.utc)
+
+        # Create video directory with mock files
+        video_dir = test_storage["videos"] / "ready-video-files-delete"
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create mock quality files
+        (video_dir / "720p.m3u8").write_text("mock playlist")
+        (video_dir / "720p_0001.ts").write_bytes(b"mock segment")
+        (video_dir / "720p_0002.ts").write_bytes(b"mock segment")
+        (video_dir / "1080p.m3u8").write_text("mock playlist")
+        (video_dir / "master.m3u8").write_text("mock master")
+        (video_dir / "thumbnail.jpg").write_bytes(b"mock thumbnail")
+
+        # Create a video in READY state
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Ready Video Files Delete",
+                slug="ready-video-files-delete",
+                category_id=sample_category["id"],
+                status="ready",
+                source_height=1080,
+                created_at=now,
+                published_at=now,
+            )
+        )
+
+        # Create retranscode metadata for full retranscode
+        import json
+        retranscode_metadata = json.dumps({
+            "retranscode_all": True,
+            "qualities_to_delete": ["1080p", "720p"],
+            "delete_transcription": True,
+            "video_dir": str(video_dir),
+        })
+
+        # Create a transcoding job with retranscode_metadata
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=video_id,
+                attempt_number=1,
+                max_attempts=3,
+                current_step="pending",
+                retranscode_metadata=retranscode_metadata,
+            )
+        )
+
+        # Claim the job
+        response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+
+        # Verify files were deleted
+        assert not (video_dir / "720p.m3u8").exists()
+        assert not (video_dir / "720p_0001.ts").exists()
+        assert not (video_dir / "720p_0002.ts").exists()
+        assert not (video_dir / "1080p.m3u8").exists()
+        assert not (video_dir / "master.m3u8").exists()
+        assert not (video_dir / "thumbnail.jpg").exists()
+        # Directory should still exist
+        assert video_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_claim_without_retranscode_metadata_does_no_cleanup(
+        self, worker_client, registered_worker, test_database, sample_pending_video
+    ):
+        """Test that normal claims (no retranscode_metadata) don't perform cleanup."""
+        from api.database import video_qualities
+
+        # Create video_qualities for the pending video
+        await test_database.execute(
+            video_qualities.insert().values(
+                video_id=sample_pending_video["id"],
+                quality="1080p",
+                width=1920,
+                height=1080,
+                bitrate=5000,
+            )
+        )
+
+        # Create a transcoding job WITHOUT retranscode_metadata
+        await test_database.execute(
+            transcoding_jobs.insert().values(
+                video_id=sample_pending_video["id"],
+                attempt_number=1,
+                max_attempts=3,
+                current_step="pending",
+                retranscode_metadata=None,  # No metadata
+            )
+        )
+
+        # Claim the job
+        response = worker_client.post(
+            "/api/worker/claim",
+            headers={"X-Worker-API-Key": registered_worker["api_key"]},
+        )
+        assert response.status_code == 200
+
+        # Verify video_qualities were NOT deleted
+        qualities = await test_database.fetch_all(
+            video_qualities.select().where(video_qualities.c.video_id == sample_pending_video["id"])
+        )
+        assert len(qualities) == 1
+        assert qualities[0]["quality"] == "1080p"
+
+
 class TestProgressUpdates:
     """Tests for progress update endpoint."""
 
