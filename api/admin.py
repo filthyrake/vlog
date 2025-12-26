@@ -68,7 +68,7 @@ from api.db_retry import (
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
-from api.public import get_watermark_settings
+from api.public import get_video_url_prefix, get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
 from api.schemas import (
@@ -1388,6 +1388,9 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
         for q in quality_rows
     ]
 
+    # Get CDN URL prefix for video streaming content (Issue #222)
+    video_url_prefix = await get_video_url_prefix()
+
     return VideoResponse(
         id=row["id"],
         title=row["title"],
@@ -1407,10 +1410,15 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
         ),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
-        stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
+        # Stream URLs use CDN if configured (Issue #222)
+        stream_url=(
+            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8"
+            if row["status"] == VideoStatus.READY
+            else None
+        ),
         # DASH URL only available for CMAF format videos
         dash_url=(
-            f"/videos/{row['slug']}/manifest.mpd"
+            f"{video_url_prefix}/videos/{row['slug']}/manifest.mpd"
             if row["status"] == VideoStatus.READY
             and row._mapping.get("streaming_format") == "cmaf"
             else None
