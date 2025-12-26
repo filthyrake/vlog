@@ -36,7 +36,6 @@ from api.job_queue import JobDispatch, JobQueue
 from config import (
     JOB_QUEUE_MODE,
     QUALITY_PRESETS,
-    VIDEOS_DIR,
     WORKER_API_KEY,
     WORKER_API_URL,
     WORKER_HEALTH_PORT,
@@ -773,9 +772,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
     Returns:
         True if a job was processed, False if no jobs available
     """
-    # Check if videos directory is accessible (local worker only)
-    if not VIDEOS_DIR.exists():
-        return False
+    import tarfile
 
     try:
         result = await client.claim_reencode_job()
@@ -785,58 +782,51 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
         job = result["job"]
         job_id = job["id"]
         video_id = job["video_id"]
+        slug = job.get("slug", f"video_{video_id}")
         target_codec_str = job.get("target_codec", "hevc")
         target_codec = REENCODE_CODEC_MAP.get(target_codec_str, VideoCodec.HEVC)
 
-        print(f"Re-encode job {job_id}: video {video_id} -> {target_codec_str}")
+        print(f"Re-encode job {job_id}: {slug} -> {target_codec_str}")
 
-        # Get video info to find the slug
-        try:
-            video_info = await client.get_video_info(video_id)
-            slug = video_info.get("slug")
-            if not slug:
-                raise ValueError(f"Video {video_id} has no slug")
-        except Exception as e:
-            print(f"  Failed to get video info: {e}")
-            await client.update_reencode_job(job_id, "failed", error_message=str(e))
-            return True  # Job was processed (failed)
-
-        video_dir = VIDEOS_DIR / slug
-        if not video_dir.exists():
-            error_msg = f"Video directory not found: {video_dir}"
-            print(f"  {error_msg}")
-            await client.update_reencode_job(job_id, "failed", error_message=error_msg)
-            return True
-
-        # Find source to re-encode from
-        source_path = await find_reencode_source(video_dir)
-        if not source_path:
-            error_msg = "No source found for re-encoding"
-            print(f"  {error_msg}")
-            await client.update_reencode_job(job_id, "failed", error_message=error_msg)
-            return True
-
-        print(f"  Source: {source_path}")
-
-        # Get video info for quality selection
-        probe_info = await get_video_info(source_path)
-        source_height = probe_info.get("height", 1080)
-        duration = probe_info.get("duration", 0)
-
-        # Determine qualities to encode
-        qualities = get_applicable_qualities(source_height)
-
-        # Create work directory for new encoding
+        # Create work directory
         work_dir = WORKER_WORK_DIR / f"reencode_{job_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
+        source_dir = work_dir / "source"
+        source_dir.mkdir(parents=True, exist_ok=True)
         output_dir = work_dir / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
+            # Download existing video files
+            print("  Downloading source files...")
+            download_path = work_dir / "source.tar.gz"
+            await client.download_reencode_source(job_id, download_path)
+
+            # Extract source files
+            with tarfile.open(download_path, "r:gz") as tar:
+                tar.extractall(source_dir)
+            download_path.unlink(missing_ok=True)
+
+            # Find source to re-encode from
+            source_path = await find_reencode_source(source_dir)
+            if not source_path:
+                raise ValueError("No source found in downloaded files")
+
+            print(f"  Source: {source_path.name}")
+
+            # Get video info for quality selection
+            probe_info = await get_video_info(source_path)
+            source_height = probe_info.get("height", 1080)
+            duration = probe_info.get("duration", 0)
+
+            # Determine qualities to encode
+            qualities = get_applicable_qualities(source_height)
+
             # Re-encode each quality
             completed_qualities = []
             for quality in qualities:
                 try:
+                    print(f"    Encoding {quality['name']}...")
                     await reencode_quality(
                         source_path=source_path,
                         output_dir=output_dir,
@@ -846,9 +836,9 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
                         gpu_caps=gpu_caps,
                     )
                     completed_qualities.append(quality)
-                    print(f"    Completed quality: {quality['name']}")
+                    print(f"    Completed: {quality['name']}")
                 except Exception as e:
-                    print(f"    Failed quality {quality['name']}: {e}")
+                    print(f"    Failed {quality['name']}: {e}")
                     # Continue with other qualities
 
             if not completed_qualities:
@@ -858,27 +848,43 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
             await generate_master_playlist_cmaf(output_dir, completed_qualities, target_codec)
             await generate_dash_manifest(output_dir, completed_qualities, segment_duration=6, codec=target_codec)
 
-            # Copy thumbnail if it exists
-            old_thumbnail = video_dir / "thumbnail.jpg"
-            if old_thumbnail.exists():
-                shutil.copy2(old_thumbnail, output_dir / "thumbnail.jpg")
+            # Copy thumbnail if it exists in source
+            for thumb_name in ["thumbnail.jpg", "thumbnail.png"]:
+                old_thumbnail = source_dir / thumb_name
+                if old_thumbnail.exists():
+                    shutil.copy2(old_thumbnail, output_dir / thumb_name)
+                    break
 
-            # Atomic swap: backup old, move new, cleanup
-            backup_dir = video_dir.parent / f"{slug}_backup_{job_id}"
-            try:
-                shutil.move(str(video_dir), str(backup_dir))
-                shutil.move(str(output_dir), str(video_dir))
-                shutil.rmtree(backup_dir, ignore_errors=True)
-                print(f"  Atomic swap completed for {slug}")
-            except Exception as e:
-                # Try to restore backup if swap failed
-                if backup_dir.exists() and not video_dir.exists():
-                    shutil.move(str(backup_dir), str(video_dir))
-                raise ValueError(f"Failed to swap directories: {e}")
+            # Package output as tar.gz
+            print("  Uploading re-encoded files...")
+            upload_path = work_dir / "output.tar.gz"
+            with tarfile.open(upload_path, "w:gz") as tar:
+                for f in output_dir.iterdir():
+                    if f.is_file():
+                        tar.add(f, arcname=f.name)
+                    elif f.is_dir():
+                        # Add quality directories
+                        for sub_f in f.iterdir():
+                            tar.add(sub_f, arcname=f"{f.name}/{sub_f.name}")
 
-            # Mark job as completed
-            await client.update_reencode_job(job_id, "completed")
+            # Upload result
+            await client.upload_reencode_result(job_id, upload_path)
             print(f"  Re-encode job {job_id} completed successfully")
+
+        except Exception as e:
+            print(f"  Re-encode job {job_id} failed: {e}")
+            retry_count = job.get("retry_count", 0) + 1
+            max_retries = 3
+
+            if retry_count >= max_retries:
+                await client.update_reencode_job(job_id, "failed", error_message=str(e))
+            else:
+                await client.update_reencode_job(
+                    job_id,
+                    "pending",
+                    error_message=f"Attempt {retry_count} failed: {e}",
+                    retry_count=retry_count,
+                )
 
         finally:
             # Clean up work directory

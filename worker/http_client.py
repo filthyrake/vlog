@@ -687,6 +687,71 @@ class WorkerAPIClient:
             timeout=TIMEOUT_DEFAULT,
         )
 
+    async def download_reencode_source(self, job_id: int, dest_path: Path) -> None:
+        """
+        Download existing video files for re-encoding.
+
+        Args:
+            job_id: The re-encode job ID
+            dest_path: Local path to save the tar.gz file
+        """
+        client = await self._get_client()
+        url = f"{self.base_url}/api/reencode/{job_id}/download"
+
+        try:
+            async with client.stream("GET", url, headers=self.headers) as resp:
+                resp.raise_for_status()
+                with open(dest_path, "wb") as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
+        except httpx.HTTPStatusError as e:
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            raise WorkerAPIError(e.response.status_code, detail)
+
+    async def upload_reencode_result(
+        self,
+        job_id: int,
+        tar_path: Path,
+    ) -> dict:
+        """
+        Upload re-encoded video files.
+
+        Args:
+            job_id: The re-encode job ID
+            tar_path: Path to the tar.gz file to upload
+
+        Returns:
+            Server response
+        """
+        client = await self._get_client()
+        url = f"{self.base_url}/api/reencode/{job_id}/upload"
+
+        file_size = tar_path.stat().st_size
+        # Calculate timeout based on file size (5 min base + 1 min per 100MB)
+        upload_timeout = max(300, 300 + (file_size // (100 * 1024 * 1024)) * 60)
+        upload_timeout = min(upload_timeout, 3600)  # Cap at 1 hour
+
+        try:
+            with open(tar_path, "rb") as f:
+                files = {"file": ("reencode.tar.gz", f, "application/gzip")}
+                resp = await client.post(
+                    url,
+                    files=files,
+                    headers=self.headers,
+                    timeout=upload_timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as e:
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            raise WorkerAPIError(e.response.status_code, detail)
+
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:

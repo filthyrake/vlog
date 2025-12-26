@@ -63,6 +63,7 @@ import hmac
 import json
 import logging
 import secrets
+import shutil
 import tarfile
 import tempfile
 import uuid
@@ -78,6 +79,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
+from starlette.background import BackgroundTask
 
 from api.common import (
     RequestIDMiddleware,
@@ -91,6 +93,7 @@ from api.database import (
     configure_database,
     database,
     quality_progress,
+    reencode_queue,
     transcoding_jobs,
     video_qualities,
     videos,
@@ -1770,6 +1773,270 @@ async def health_check(request: Request):
             },
         },
     )
+
+
+# =============================================================================
+# Re-encode Job Endpoints
+# =============================================================================
+
+
+@app.post("/api/reencode/claim")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def claim_reencode_job(
+    request: Request,
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Claim the next available re-encode job.
+
+    Re-encode jobs convert existing HLS/TS videos to CMAF format.
+    Only available when no regular transcoding jobs are pending.
+    """
+    # Find next pending re-encode job (priority order: high > normal > low)
+    query = sa.text("""
+        SELECT rq.*, v.slug
+        FROM reencode_queue rq
+        JOIN videos v ON v.id = rq.video_id
+        WHERE rq.status = 'pending'
+        ORDER BY
+            CASE rq.priority
+                WHEN 'high' THEN 1
+                WHEN 'normal' THEN 2
+                WHEN 'low' THEN 3
+            END,
+            rq.created_at
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+    """)
+
+    job = await database.fetch_one(query)
+    if not job:
+        return {"job": None, "message": "No re-encode jobs available"}
+
+    # Claim the job
+    await database.execute(
+        reencode_queue.update()
+        .where(reencode_queue.c.id == job["id"])
+        .values(
+            status="in_progress",
+            started_at=datetime.now(timezone.utc),
+            worker_id=worker["worker_id"],
+        )
+    )
+
+    return {
+        "job": {
+            "id": job["id"],
+            "video_id": job["video_id"],
+            "slug": job["slug"],
+            "target_format": job["target_format"],
+            "target_codec": job["target_codec"],
+            "priority": job["priority"],
+            "retry_count": job["retry_count"],
+        }
+    }
+
+
+@app.get("/api/reencode/{job_id}/download")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def download_reencode_source(
+    request: Request,
+    job_id: int,
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Download existing video files for re-encoding as tar.gz.
+
+    Streams the highest quality available (source file or HLS segments).
+    """
+    import tarfile
+    import tempfile
+
+    # Verify worker owns this job
+    job = await database.fetch_one(
+        reencode_queue.select()
+        .where(reencode_queue.c.id == job_id)
+        .where(reencode_queue.c.worker_id == worker["worker_id"])
+        .where(reencode_queue.c.status == "in_progress")
+    )
+    if not job:
+        raise HTTPException(status_code=403, detail="Not your job or job not found")
+
+    # Get video info
+    video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_dir = VIDEOS_DIR / video["slug"]
+    if not video_dir.exists():
+        raise HTTPException(status_code=404, detail="Video directory not found")
+
+    # Find source to package - prefer source file, fall back to highest quality
+    source_file = None
+    for ext in [".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"]:
+        candidate = video_dir / f"source{ext}"
+        if candidate.exists():
+            source_file = candidate
+            break
+
+    # Create tar.gz of source or segments
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        with tarfile.open(tmp_path, "w:gz") as tar:
+            if source_file:
+                # Package source file
+                tar.add(source_file, arcname=source_file.name)
+            else:
+                # Package highest quality segments
+                quality_dirs = ["2160p", "1440p", "1080p", "720p", "480p", "360p"]
+                for quality in quality_dirs:
+                    quality_dir = video_dir / quality
+                    if quality_dir.exists():
+                        # Add all files from this quality directory
+                        for f in quality_dir.iterdir():
+                            tar.add(f, arcname=f"{quality}/{f.name}")
+                        break  # Only include highest quality
+
+        return FileResponse(
+            tmp_path,
+            media_type="application/gzip",
+            filename=f"reencode_{job_id}.tar.gz",
+            background=BackgroundTask(lambda: tmp_path.unlink(missing_ok=True)),
+        )
+    except Exception as e:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to package files: {e}")
+
+
+@app.post("/api/reencode/{job_id}/upload")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def upload_reencode_result(
+    request: Request,
+    job_id: int,
+    file: UploadFile = File(...),
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Upload re-encoded video files as tar.gz.
+
+    Performs atomic swap of old files with new ones.
+    """
+    import tarfile
+    import tempfile
+
+    # Verify worker owns this job
+    job = await database.fetch_one(
+        reencode_queue.select()
+        .where(reencode_queue.c.id == job_id)
+        .where(reencode_queue.c.worker_id == worker["worker_id"])
+        .where(reencode_queue.c.status == "in_progress")
+    )
+    if not job:
+        raise HTTPException(status_code=403, detail="Not your job or job not found")
+
+    # Get video info
+    video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_dir = VIDEOS_DIR / video["slug"]
+    backup_dir = VIDEOS_DIR / f"{video['slug']}_backup_{job_id}"
+    temp_dir = VIDEOS_DIR / f"{video['slug']}_new_{job_id}"
+
+    try:
+        # Save uploaded file
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            content = await file.read()
+            tmp.write(content)
+
+        # Extract to temp directory
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tmp_path, "r:gz") as tar:
+            tar.extractall(temp_dir)
+        tmp_path.unlink(missing_ok=True)
+
+        # Atomic swap
+        if video_dir.exists():
+            shutil.move(str(video_dir), str(backup_dir))
+        shutil.move(str(temp_dir), str(video_dir))
+
+        # Update video record
+        await database.execute(
+            videos.update()
+            .where(videos.c.id == job["video_id"])
+            .values(
+                streaming_format=job["target_format"],
+                primary_codec=job["target_codec"],
+            )
+        )
+
+        # Mark job complete
+        await database.execute(
+            reencode_queue.update()
+            .where(reencode_queue.c.id == job_id)
+            .values(
+                status="completed",
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+
+        # Clean up backup
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+        return {"status": "success", "message": "Re-encode upload complete"}
+
+    except Exception as e:
+        # Restore backup on failure
+        if backup_dir.exists() and not video_dir.exists():
+            shutil.move(str(backup_dir), str(video_dir))
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
+@app.patch("/api/reencode/{job_id}")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def update_reencode_job(
+    request: Request,
+    job_id: int,
+    worker: dict = Depends(verify_worker_key),
+):
+    """Update re-encode job status."""
+    data = await request.json()
+    status = data.get("status")
+    error_message = data.get("error_message")
+    retry_count = data.get("retry_count")
+
+    # Verify worker owns this job (or job is being set back to pending for retry)
+    job = await database.fetch_one(reencode_queue.select().where(reencode_queue.c.id == job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job["worker_id"] != worker["worker_id"] and status != "pending":
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    update_values = {}
+    if status:
+        update_values["status"] = status
+    if error_message:
+        update_values["error_message"] = error_message
+    if retry_count is not None:
+        update_values["retry_count"] = retry_count
+    if status == "completed":
+        update_values["completed_at"] = datetime.now(timezone.utc)
+    if status == "pending":
+        # Reset for retry
+        update_values["worker_id"] = None
+        update_values["started_at"] = None
+
+    await database.execute(reencode_queue.update().where(reencode_queue.c.id == job_id).values(**update_values))
+
+    return {"status": "success"}
 
 
 if __name__ == "__main__":
