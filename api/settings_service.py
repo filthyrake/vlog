@@ -942,7 +942,7 @@ KNOWN_SETTINGS = [
         "cdn",
         "string",
         "CDN base URL (e.g., https://cdn.example.com) - video paths appended to this",
-        {"pattern": r"^https?://[a-zA-Z0-9][\w\-\.]*[a-zA-Z0-9](:[0-9]+)?$"},
+        {"pattern": r"^https?://[a-zA-Z0-9][\w\-\.]*\w(:[0-9]+)?/?$"},
     ),
     # Re-encoding settings (Issue #212)
     (

@@ -229,10 +229,13 @@ async def get_video_url_prefix() -> str:
 
     Only video streaming content (manifests, segments) should use this.
     Thumbnails, captions, and other assets use direct origin URLs.
+
+    Note: Trailing slashes are stripped to avoid double-slash URLs.
     """
     cdn_settings = await get_cdn_settings()
     if cdn_settings["enabled"] and cdn_settings["base_url"]:
-        return cdn_settings["base_url"]
+        # Strip trailing slash to avoid double-slash in URLs
+        return cdn_settings["base_url"].rstrip("/")
     return ""
 
 
