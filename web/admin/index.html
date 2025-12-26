@@ -35,7 +35,7 @@
                         class="font-medium"
                     >Upload</button>
                     <button
-                        @click="tab = 'workers'; loadWorkers()"
+                        @click="tab = 'workers'; loadWorkers(); loadDeploymentHistory()"
                         :class="tab === 'workers' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
                         class="font-medium"
                     >Workers</button>
@@ -531,7 +531,15 @@
             <div class="bg-dark-900 rounded-xl overflow-hidden mb-6">
                 <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
                     <h3 class="font-semibold">Workers</h3>
-                    <button @click="loadWorkers" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
+                    <div class="flex gap-3">
+                        <button
+                            @click="restartAllWorkers"
+                            x-show="workersList.filter(w => w.status !== 'offline' && w.status !== 'disabled').length > 0"
+                            class="text-purple-400 hover:text-purple-300 text-sm"
+                            title="Restart all online workers (useful for deploying updates)"
+                        >Restart All</button>
+                        <button @click="loadWorkers" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
+                    </div>
                 </div>
 
                 <div class="divide-y divide-dark-800">
@@ -560,6 +568,26 @@
                                             }" x-text="worker.status.charAt(0).toUpperCase() + worker.status.slice(1)"></span>
                                             <span class="text-dark-600">•</span>
                                             <span x-text="worker.hwaccel_type ? (worker.gpu_name || worker.hwaccel_type.toUpperCase()) : 'CPU'"></span>
+                                            <!-- Version and deployment info -->
+                                            <template x-if="worker.code_version">
+                                                <span class="text-dark-600">•</span>
+                                            </template>
+                                            <template x-if="worker.code_version">
+                                                <span
+                                                    :class="{
+                                                        'text-yellow-400': isVersionOutdated(worker.code_version),
+                                                        'text-dark-400': !isVersionOutdated(worker.code_version)
+                                                    }"
+                                                    :title="isVersionOutdated(worker.code_version) ? 'Outdated version' : 'Current version'"
+                                                    x-text="worker.code_version"
+                                                ></span>
+                                            </template>
+                                            <template x-if="worker.deployment_type">
+                                                <span class="text-dark-600">•</span>
+                                            </template>
+                                            <template x-if="worker.deployment_type">
+                                                <span class="text-dark-500" x-text="worker.deployment_type === 'kubernetes' ? 'k8s' : worker.deployment_type"></span>
+                                            </template>
                                             <template x-if="worker.seconds_since_heartbeat !== null">
                                                 <span class="text-dark-600">•</span>
                                             </template>
@@ -588,6 +616,37 @@
                                     </div>
                                     <!-- Actions -->
                                     <div class="flex gap-2">
+                                        <!-- Monitoring buttons (require online worker) -->
+                                        <button
+                                            x-show="worker.status !== 'disabled' && worker.status !== 'offline'"
+                                            @click="viewWorkerLogs(worker.worker_id, worker.worker_name)"
+                                            class="text-cyan-400 hover:text-cyan-300 text-sm"
+                                            title="View worker logs"
+                                        >Logs</button>
+                                        <button
+                                            x-show="worker.status !== 'disabled' && worker.status !== 'offline'"
+                                            @click="viewWorkerMetrics(worker.worker_id, worker.worker_name)"
+                                            class="text-green-400 hover:text-green-300 text-sm"
+                                            title="View worker metrics"
+                                        >Metrics</button>
+                                        <span x-show="worker.status !== 'disabled' && worker.status !== 'offline'" class="text-dark-600">|</span>
+                                        <!-- Remote control buttons (require online worker) -->
+                                        <button
+                                            x-show="worker.status !== 'disabled' && worker.status !== 'offline'"
+                                            @click="restartWorker(worker.worker_id, worker.worker_name)"
+                                            :disabled="workerCommandPending[worker.worker_id]"
+                                            class="text-blue-400 hover:text-blue-300 text-sm disabled:opacity-50"
+                                            :title="workerCommandPending[worker.worker_id] ? 'Command pending...' : 'Restart worker (after current job)'"
+                                        >Restart</button>
+                                        <button
+                                            x-show="worker.status !== 'disabled' && worker.status !== 'offline'"
+                                            @click="updateWorker(worker.worker_id, worker.worker_name)"
+                                            :disabled="workerCommandPending[worker.worker_id]"
+                                            class="text-purple-400 hover:text-purple-300 text-sm disabled:opacity-50"
+                                            title="Pull latest code and restart"
+                                        >Update</button>
+                                        <span x-show="worker.status !== 'disabled' && worker.status !== 'offline'" class="text-dark-600">|</span>
+                                        <!-- Status control buttons -->
                                         <button
                                             x-show="worker.status !== 'disabled'"
                                             @click="disableWorker(worker.worker_id)"
@@ -709,6 +768,88 @@
 
                 <div x-show="!activeJobs.jobs || activeJobs.jobs.length === 0" class="text-center py-8 text-dark-400">
                     No active transcoding jobs.
+                </div>
+            </div>
+
+            <!-- Deployment History -->
+            <div class="bg-dark-900 rounded-xl overflow-hidden mt-6">
+                <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                    <h3 class="font-semibold">
+                        Deployment History
+                        <span class="text-dark-500 font-normal" x-text="'(' + deploymentEvents.length + ' events)'"></span>
+                    </h3>
+                    <button @click="loadDeploymentHistory" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
+                </div>
+
+                <!-- Loading state -->
+                <div x-show="deploymentEventsLoading" class="text-center py-8">
+                    <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                </div>
+
+                <!-- Events list -->
+                <div x-show="!deploymentEventsLoading && deploymentEvents.length > 0" class="divide-y divide-dark-800">
+                    <template x-for="event in deploymentEvents" :key="event.id">
+                        <div class="p-4 hover:bg-dark-800/50">
+                            <div class="flex items-center gap-4">
+                                <!-- Event type indicator -->
+                                <div
+                                    :class="getEventColor(event.event_type, event.status)"
+                                    class="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold"
+                                    x-text="getEventIcon(event.event_type)"
+                                ></div>
+                                <!-- Event details -->
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-medium capitalize" x-text="event.event_type.replace('_', ' ')"></span>
+                                        <span class="text-dark-500">-</span>
+                                        <span class="text-dark-300" x-text="event.worker_name || event.worker_id.slice(0, 8)"></span>
+                                        <template x-if="event.status !== 'completed'">
+                                            <span
+                                                :class="{
+                                                    'text-yellow-400': event.status === 'pending' || event.status === 'in_progress',
+                                                    'text-red-400': event.status === 'failed'
+                                                }"
+                                                class="text-sm"
+                                                x-text="'(' + event.status + ')'"
+                                            ></span>
+                                        </template>
+                                    </div>
+                                    <div class="text-dark-500 text-sm flex items-center gap-2 mt-1">
+                                        <span x-text="formatDeploymentTime(event.created_at)"></span>
+                                        <template x-if="event.old_version || event.new_version">
+                                            <span class="text-dark-600">|</span>
+                                        </template>
+                                        <template x-if="event.old_version || event.new_version">
+                                            <span>
+                                                <template x-if="event.old_version">
+                                                    <span class="text-dark-400" x-text="event.old_version"></span>
+                                                </template>
+                                                <template x-if="event.old_version && event.new_version">
+                                                    <span class="text-dark-600 mx-1">→</span>
+                                                </template>
+                                                <template x-if="event.new_version">
+                                                    <span class="text-green-400" x-text="event.new_version"></span>
+                                                </template>
+                                            </span>
+                                        </template>
+                                        <template x-if="event.triggered_by">
+                                            <span class="text-dark-600">|</span>
+                                        </template>
+                                        <template x-if="event.triggered_by">
+                                            <span class="text-dark-400" x-text="'by ' + event.triggered_by"></span>
+                                        </template>
+                                    </div>
+                                    <template x-if="event.details">
+                                        <div class="text-dark-400 text-sm mt-1" x-text="event.details"></div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <div x-show="!deploymentEventsLoading && deploymentEvents.length === 0" class="text-center py-8 text-dark-400">
+                    No deployment events recorded yet.
                 </div>
             </div>
         </div>
@@ -3210,12 +3351,227 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     }
                 },
 
+                // Worker remote control methods (Issue #410)
+                workerCommandPending: {},
+
+                async restartWorker(workerId, workerName) {
+                    const name = workerName || workerId.slice(0, 8);
+                    if (!confirm(`Restart worker "${name}"?\n\nThe worker will finish its current job before restarting.`)) return;
+
+                    this.workerCommandPending[workerId] = true;
+                    try {
+                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/restart`, { method: 'POST' });
+                        if (res.ok) {
+                            const data = await res.json();
+                            // Show success feedback briefly
+                            setTimeout(() => {
+                                delete this.workerCommandPending[workerId];
+                                this.loadWorkers();
+                            }, 3000);
+                        } else {
+                            const data = await res.json();
+                            delete this.workerCommandPending[workerId];
+                            alert(data.detail || 'Failed to send restart command');
+                        }
+                    } catch (e) {
+                        delete this.workerCommandPending[workerId];
+                        alert('Failed to send restart command: ' + e.message);
+                    }
+                },
+
+                async updateWorker(workerId, workerName) {
+                    const name = workerName || workerId.slice(0, 8);
+                    if (!confirm(`Update worker "${name}"?\n\nThe worker will:\n1. Finish its current job\n2. Pull latest code via git\n3. Restart to apply updates`)) return;
+
+                    this.workerCommandPending[workerId] = true;
+                    try {
+                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/update`, { method: 'POST' });
+                        if (res.ok) {
+                            const data = await res.json();
+                            setTimeout(() => {
+                                delete this.workerCommandPending[workerId];
+                                this.loadWorkers();
+                            }, 3000);
+                        } else {
+                            const data = await res.json();
+                            delete this.workerCommandPending[workerId];
+                            alert(data.detail || 'Failed to send update command');
+                        }
+                    } catch (e) {
+                        delete this.workerCommandPending[workerId];
+                        alert('Failed to send update command: ' + e.message);
+                    }
+                },
+
+                async restartAllWorkers() {
+                    if (!confirm('Restart ALL workers?\n\nEach worker will finish its current job before restarting.\nThis is useful for deploying updates across all workers.')) return;
+
+                    try {
+                        const res = await this.apiFetch('/api/admin/workers/restart-all', { method: 'POST' });
+                        if (res.ok) {
+                            // Mark all workers as pending
+                            this.workersList.forEach(w => {
+                                if (w.status !== 'offline' && w.status !== 'disabled') {
+                                    this.workerCommandPending[w.worker_id] = true;
+                                }
+                            });
+                            setTimeout(() => {
+                                this.workerCommandPending = {};
+                                this.loadWorkers();
+                            }, 5000);
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Failed to broadcast restart command');
+                        }
+                    } catch (e) {
+                        alert('Failed to broadcast restart command: ' + e.message);
+                    }
+                },
+
+                // Worker logs and metrics viewer (Phase 3)
+                showLogsModal: false,
+                showMetricsModal: false,
+                logsWorkerName: '',
+                logsContent: '',
+                logsLoading: false,
+                metricsWorkerName: '',
+                metricsData: null,
+                metricsLoading: false,
+
+                // Deployment history (Phase 4)
+                deploymentEvents: [],
+                deploymentEventsLoading: false,
+
+                async loadDeploymentHistory() {
+                    this.deploymentEventsLoading = true;
+                    try {
+                        const res = await this.apiFetch('/api/admin/deployments?limit=50');
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.deploymentEvents = data.events || [];
+                        }
+                    } catch (e) {
+                        console.error('Failed to load deployment history:', e);
+                    } finally {
+                        this.deploymentEventsLoading = false;
+                    }
+                },
+
+                formatDeploymentTime(isoStr) {
+                    if (!isoStr) return '';
+                    const date = new Date(isoStr);
+                    const now = new Date();
+                    const diffMs = now - date;
+                    const diffMins = Math.floor(diffMs / 60000);
+                    const diffHours = Math.floor(diffMs / 3600000);
+                    const diffDays = Math.floor(diffMs / 86400000);
+
+                    if (diffMins < 1) return 'just now';
+                    if (diffMins < 60) return `${diffMins}m ago`;
+                    if (diffHours < 24) return `${diffHours}h ago`;
+                    if (diffDays < 7) return `${diffDays}d ago`;
+                    return date.toLocaleDateString();
+                },
+
+                getEventIcon(eventType) {
+                    switch(eventType) {
+                        case 'restart': return 'R';
+                        case 'stop': return 'S';
+                        case 'update': return 'U';
+                        case 'version_change': return 'V';
+                        default: return eventType[0].toUpperCase();
+                    }
+                },
+
+                getEventColor(eventType, status) {
+                    if (status === 'failed') return 'bg-red-500';
+                    if (status === 'in_progress' || status === 'pending') return 'bg-yellow-500';
+                    switch(eventType) {
+                        case 'restart': return 'bg-blue-500';
+                        case 'update': return 'bg-purple-500';
+                        case 'stop': return 'bg-red-500';
+                        case 'version_change': return 'bg-green-500';
+                        default: return 'bg-dark-500';
+                    }
+                },
+
+                async viewWorkerLogs(workerId, workerName) {
+                    this.logsWorkerName = workerName || workerId.slice(0, 8);
+                    this.logsContent = '';
+                    this.logsLoading = true;
+                    this.showLogsModal = true;
+
+                    try {
+                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/logs?lines=200`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.logsContent = data.logs || 'No logs available';
+                        } else {
+                            const data = await res.json();
+                            this.logsContent = `Error: ${data.detail || 'Failed to fetch logs'}`;
+                        }
+                    } catch (e) {
+                        this.logsContent = `Error: ${e.message}`;
+                    } finally {
+                        this.logsLoading = false;
+                    }
+                },
+
+                async viewWorkerMetrics(workerId, workerName) {
+                    this.metricsWorkerName = workerName || workerId.slice(0, 8);
+                    this.metricsData = null;
+                    this.metricsLoading = true;
+                    this.showMetricsModal = true;
+
+                    try {
+                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/metrics`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.metricsData = data.metrics;
+                        } else {
+                            const data = await res.json();
+                            this.metricsData = { error: data.detail || 'Failed to fetch metrics' };
+                        }
+                    } catch (e) {
+                        this.metricsData = { error: e.message };
+                    } finally {
+                        this.metricsLoading = false;
+                    }
+                },
+
+                formatBytes(gb) {
+                    if (gb >= 1) return gb.toFixed(1) + ' GB';
+                    return (gb * 1024).toFixed(0) + ' MB';
+                },
+
                 formatTimeSince(seconds) {
                     if (seconds === null || seconds === undefined) return '';
                     if (seconds < 60) return seconds + 's ago';
                     if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
                     if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
                     return Math.floor(seconds / 86400) + 'd ago';
+                },
+
+                isVersionOutdated(version) {
+                    // Compare against the most common version among online workers
+                    if (!version || !this.workersList || this.workersList.length === 0) return false;
+
+                    // Get versions from online workers only
+                    const onlineWorkers = this.workersList.filter(w =>
+                        w.status !== 'offline' && w.status !== 'disabled' && w.code_version
+                    );
+                    if (onlineWorkers.length === 0) return false;
+
+                    // Find the most common version (likely the "current" version)
+                    const versionCounts = {};
+                    onlineWorkers.forEach(w => {
+                        versionCounts[w.code_version] = (versionCounts[w.code_version] || 0) + 1;
+                    });
+
+                    const latestVersion = Object.entries(versionCounts)
+                        .sort((a, b) => b[1] - a[1])[0][0];
+
+                    return version !== latestVersion;
                 },
 
                 formatDate(dateStr) {
@@ -4080,5 +4436,152 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
             };
         }
     </script>
+
+    <!-- Worker Logs Modal -->
+    <div x-show="showLogsModal" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center p-4"
+         @keydown.escape.window="showLogsModal = false">
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-black/70" @click="showLogsModal = false"></div>
+        <!-- Modal -->
+        <div class="relative bg-dark-900 rounded-xl w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl border border-dark-700">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-dark-700">
+                <h3 class="text-lg font-semibold" x-text="'Logs: ' + logsWorkerName"></h3>
+                <button @click="showLogsModal = false" class="text-dark-400 hover:text-white">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="flex-1 overflow-auto p-4">
+                <template x-if="logsLoading">
+                    <div class="flex items-center justify-center py-12">
+                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                        <span class="ml-3 text-dark-400">Fetching logs from worker...</span>
+                    </div>
+                </template>
+                <template x-if="!logsLoading">
+                    <pre class="text-sm text-dark-300 font-mono whitespace-pre-wrap bg-dark-950 p-4 rounded-lg overflow-auto max-h-[60vh]"
+                         x-text="logsContent || 'No logs available'"></pre>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- Worker Metrics Modal -->
+    <div x-show="showMetricsModal" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center p-4"
+         @keydown.escape.window="showMetricsModal = false">
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-black/70" @click="showMetricsModal = false"></div>
+        <!-- Modal -->
+        <div class="relative bg-dark-900 rounded-xl w-full max-w-2xl shadow-2xl border border-dark-700">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-dark-700">
+                <h3 class="text-lg font-semibold" x-text="'Metrics: ' + metricsWorkerName"></h3>
+                <button @click="showMetricsModal = false" class="text-dark-400 hover:text-white">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-6">
+                <template x-if="metricsLoading">
+                    <div class="flex items-center justify-center py-8">
+                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                        <span class="ml-3 text-dark-400">Fetching metrics from worker...</span>
+                    </div>
+                </template>
+                <template x-if="!metricsLoading && metricsData?.error">
+                    <div class="text-red-400 text-center py-4" x-text="metricsData.error"></div>
+                </template>
+                <template x-if="!metricsLoading && metricsData && !metricsData?.error">
+                    <div class="space-y-6">
+                        <!-- Process Metrics -->
+                        <div>
+                            <h4 class="text-sm font-medium text-dark-400 mb-3">Process</h4>
+                            <div class="grid grid-cols-3 gap-4">
+                                <div class="bg-dark-800 rounded-lg p-3 text-center">
+                                    <div class="text-2xl font-bold text-blue-400" x-text="(metricsData?.process?.cpu_percent || 0).toFixed(1) + '%'"></div>
+                                    <div class="text-xs text-dark-500">CPU</div>
+                                </div>
+                                <div class="bg-dark-800 rounded-lg p-3 text-center">
+                                    <div class="text-2xl font-bold text-purple-400" x-text="(metricsData?.process?.memory_rss_mb || 0).toFixed(0) + ' MB'"></div>
+                                    <div class="text-xs text-dark-500">Memory</div>
+                                </div>
+                                <div class="bg-dark-800 rounded-lg p-3 text-center">
+                                    <div class="text-2xl font-bold text-green-400" x-text="metricsData?.process?.threads || 0"></div>
+                                    <div class="text-xs text-dark-500">Threads</div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- System Metrics -->
+                        <div>
+                            <h4 class="text-sm font-medium text-dark-400 mb-3">System</h4>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="bg-dark-800 rounded-lg p-3">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <span class="text-dark-400">CPU</span>
+                                        <span class="text-white" x-text="(metricsData?.system?.cpu_percent || 0).toFixed(1) + '%'"></span>
+                                    </div>
+                                    <div class="bg-dark-700 rounded-full h-2">
+                                        <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.system?.cpu_percent || 0) + '%'"></div>
+                                    </div>
+                                </div>
+                                <div class="bg-dark-800 rounded-lg p-3">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <span class="text-dark-400">Memory</span>
+                                        <span class="text-white" x-text="(metricsData?.system?.memory_percent || 0).toFixed(1) + '%'"></span>
+                                    </div>
+                                    <div class="bg-dark-700 rounded-full h-2">
+                                        <div class="bg-purple-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.system?.memory_percent || 0) + '%'"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Disk Metrics -->
+                        <div>
+                            <h4 class="text-sm font-medium text-dark-400 mb-3">Disk (Work Directory)</h4>
+                            <div class="bg-dark-800 rounded-lg p-3">
+                                <div class="flex justify-between items-center mb-2">
+                                    <span class="text-dark-400">Used</span>
+                                    <span class="text-white" x-text="(metricsData?.disk?.used_gb || 0).toFixed(1) + ' / ' + (metricsData?.disk?.total_gb || 0).toFixed(1) + ' GB'"></span>
+                                </div>
+                                <div class="bg-dark-700 rounded-full h-2">
+                                    <div class="bg-yellow-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.disk?.percent || 0) + '%'"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- GPU Metrics (if available) -->
+                        <template x-if="metricsData?.gpu">
+                            <div>
+                                <h4 class="text-sm font-medium text-dark-400 mb-3">GPU</h4>
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div class="bg-dark-800 rounded-lg p-3">
+                                        <div class="flex justify-between items-center mb-2">
+                                            <span class="text-dark-400">GPU Utilization</span>
+                                            <span class="text-white" x-text="(metricsData?.gpu?.utilization_percent || 0).toFixed(0) + '%'"></span>
+                                        </div>
+                                        <div class="bg-dark-700 rounded-full h-2">
+                                            <div class="bg-green-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.gpu?.utilization_percent || 0) + '%'"></div>
+                                        </div>
+                                    </div>
+                                    <div class="bg-dark-800 rounded-lg p-3">
+                                        <div class="flex justify-between items-center mb-2">
+                                            <span class="text-dark-400">VRAM</span>
+                                            <span class="text-white" x-text="(metricsData?.gpu?.memory_used_mb || 0).toFixed(0) + ' / ' + (metricsData?.gpu?.memory_total_mb || 0).toFixed(0) + ' MB'"></span>
+                                        </div>
+                                        <div class="bg-dark-700 rounded-full h-2">
+                                            <div class="bg-cyan-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.gpu?.memory_utilization_percent || 0) + '%'"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="mt-2 text-sm text-dark-500 text-center" x-text="'Temperature: ' + (metricsData?.gpu?.temperature_c || 0) + '\u00B0C'"></div>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

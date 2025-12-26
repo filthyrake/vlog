@@ -857,6 +857,73 @@ def get_codec_string(codec: VideoCodec, level: str = "L120") -> str:
         return "avc1.640028,mp4a.40.2"
 
 
+def get_code_version() -> Optional[str]:
+    """
+    Get worker code version from git commit hash or VERSION file.
+
+    Tries in order:
+    1. Git commit hash (short form, 8 chars)
+    2. VERSION file in project root
+    3. None if neither available
+
+    Returns:
+        Version string (e.g., "abc123de") or None
+    """
+    import subprocess
+
+    # Try git commit hash first
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=8", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=Path(__file__).parent.parent,  # Project root
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    # Try VERSION file
+    version_file = Path(__file__).parent.parent / "VERSION"
+    if version_file.exists():
+        try:
+            return version_file.read_text().strip()[:64]
+        except Exception:
+            pass
+
+    return None
+
+
+def detect_deployment_type() -> str:
+    """
+    Detect how this worker is deployed.
+
+    Detection logic:
+    - kubernetes: KUBERNETES_SERVICE_HOST env var is set
+    - docker: /.dockerenv file exists or /run/.containerenv exists
+    - systemd: INVOCATION_ID env var is set (systemd sets this)
+    - manual: None of the above
+
+    Returns:
+        Deployment type string: "kubernetes", "docker", "systemd", or "manual"
+    """
+    # Check for Kubernetes
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return "kubernetes"
+
+    # Check for Docker/container
+    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
+        return "docker"
+
+    # Check for systemd
+    if os.environ.get("INVOCATION_ID"):
+        return "systemd"
+
+    return "manual"
+
+
 async def get_worker_capabilities(gpu_caps: Optional[GPUCapabilities] = None) -> dict:
     """
     Get worker capabilities for registration/heartbeat.
@@ -876,6 +943,7 @@ async def get_worker_capabilities(gpu_caps: Optional[GPUCapabilities] = None) ->
             "h264": ["libx264"],
         },
         "max_concurrent_encode_sessions": 1,  # CPU default
+        "code_version": get_code_version(),
     }
 
     # Get FFmpeg version
