@@ -230,17 +230,39 @@ def test_error_handling(admin_client):
 
 ### GitHub Actions
 
-Tests run automatically on:
-- Push to main branch
-- Pull requests to main branch
+Tests run automatically on pushes and PRs to both `dev` and `main` branches.
+
+#### Quick Tests (dev branch)
+
+PRs and pushes to `dev` run a faster test suite for quick feedback:
+
+```bash
+# Skipped tests (slow integration/e2e):
+--ignore=tests/test_workflows.py
+--ignore=tests/test_worker_integration.py
+--ignore=tests/test_transcoder_integration.py
+--ignore=tests/test_e2e_upload.py
+--ignore=tests/test_transcoder.py
+```
+
+This runs ~1029 of 1140 tests, skipping the slowest integration tests.
+
+#### Full Tests (main branch)
+
+PRs and pushes to `main` run the complete test suite with coverage reporting:
+- All 1140+ tests
+- Coverage reports uploaded to Codecov
+- Full integration and e2e test coverage
+
+#### CI Workflow
 
 CI workflow (`.github/workflows/tests.yml`):
-1. Set up Python 3.12
-2. Start PostgreSQL service
+1. Set up Python virtual environment
+2. Start PostgreSQL service container
 3. Install dependencies
-4. Run tests with coverage
-5. Upload coverage report
-6. Check coverage thresholds
+4. Run tests (quick for dev, full for main)
+5. Run ruff linting
+6. Upload coverage report (main only)
 
 ### Local CI Simulation
 
