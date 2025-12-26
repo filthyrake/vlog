@@ -821,8 +821,8 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
             if not line or line.startswith("#"):
                 continue
 
-            # This should be a segment filename
-            if line.endswith(".ts"):
+            # This should be a segment filename (.ts for HLS/MPEG-TS, .m4s for CMAF/fMP4)
+            if line.endswith(".ts") or line.endswith(".m4s"):
                 segment_path = playlist_path.parent / line
                 if not segment_path.exists():
                     return False, f"Missing segment file: {line}"
@@ -2198,9 +2198,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             if status and status["status"] == QualityStatus.COMPLETED:
                 print(f"    {quality_name}: Already completed, skipping...")
                 # Get actual dimensions from existing segment
-                # CMAF uses subdirectory structure with .m4s segments
+                # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                 if streaming_format == "cmaf":
-                    first_segment = output_dir / quality_name / "seg_0000.m4s"
+                    first_segment = output_dir / quality_name / "init.mp4"
                 else:
                     first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
@@ -2229,8 +2229,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 print(f"    {quality_name}: Found complete playlist, marking complete...")
                 await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                 # Get actual dimensions from existing segment
+                # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                 if streaming_format == "cmaf":
-                    first_segment = output_dir / quality_name / "seg_0000.m4s"
+                    first_segment = output_dir / quality_name / "init.mp4"
                 else:
                     first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
@@ -2282,9 +2283,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 if success:
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                     # Get actual dimensions from transcoded segment
-                    # CMAF uses subdirectory structure with .m4s segments
+                    # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                     if streaming_format == "cmaf":
-                        first_segment = output_dir / quality_name / "seg_0000.m4s"
+                        first_segment = output_dir / quality_name / "init.mp4"
                     else:
                         first_segment = output_dir / f"{quality_name}_0000.ts"
                     if first_segment.exists():
@@ -2460,9 +2461,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         )
                         if success:
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
-                            # CMAF uses subdirectory structure with .m4s segments
+                            # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                             if streaming_format == "cmaf":
-                                first_segment = output_dir / quality_name / "seg_0000.m4s"
+                                first_segment = output_dir / quality_name / "init.mp4"
                             else:
                                 first_segment = output_dir / f"{quality_name}_0000.ts"
                             if first_segment.exists():

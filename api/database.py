@@ -65,11 +65,31 @@ videos = sa.Table(
         default="auto"
     ),  # auto, selected, custom
     sa.Column("thumbnail_timestamp", sa.Float, nullable=True),  # timestamp for selected thumbnails
+    # Streaming format columns (added in migration 013)
+    sa.Column(
+        "streaming_format",
+        sa.String(10),
+        sa.CheckConstraint(
+            "streaming_format IN ('hls_ts', 'cmaf')",
+            name="ck_videos_streaming_format"
+        ),
+        default="hls_ts"
+    ),  # hls_ts (legacy MPEG-TS) or cmaf (modern fMP4)
+    sa.Column(
+        "primary_codec",
+        sa.String(10),
+        sa.CheckConstraint(
+            "primary_codec IN ('h264', 'hevc', 'av1')",
+            name="ck_videos_primary_codec"
+        ),
+        default="h264"
+    ),  # Video codec used
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
     sa.Index("ix_videos_published_at", "published_at"),
     sa.Index("ix_videos_deleted_at", "deleted_at"),
+    sa.Index("ix_videos_streaming_format", "streaming_format"),
 )
 
 # Available quality variants for each video
@@ -235,12 +255,12 @@ quality_progress = sa.Table(
         "status",
         sa.String(20),
         sa.CheckConstraint(
-            "status IN ('pending', 'in_progress', 'completed', 'failed', 'skipped', 'uploaded')",
+            "status IN ('pending', 'in_progress', 'uploading', 'completed', 'failed', 'skipped', 'uploaded')",
             name="ck_quality_progress_status"
         ),
         nullable=False,
         default="pending"
-    ),  # pending, in_progress, completed, failed, skipped, uploaded
+    ),  # pending, in_progress, uploading, completed, failed, skipped, uploaded
     sa.Column("segments_total", sa.Integer, nullable=True),
     sa.Column("segments_completed", sa.Integer, default=0),
     sa.Column(
@@ -458,6 +478,96 @@ video_tags = sa.Table(
     sa.PrimaryKeyConstraint("video_id", "tag_id"),
     sa.Index("ix_video_tags_video_id", "video_id"),
     sa.Index("ix_video_tags_tag_id", "tag_id"),
+)
+
+# Custom field definitions for flexible video metadata
+# Fields can be defined globally (category_id=NULL) or per-category
+#
+# FIELD TYPES:
+# -----------
+# - text: Free-form text input
+# - number: Numeric value (integer or float)
+# - date: Date value (stored as ISO 8601 string)
+# - select: Single choice from options list
+# - multi_select: Multiple choices from options list (stored as JSON array)
+# - url: URL value with validation
+#
+# FIELD SEMANTICS:
+# ----------------
+# - name: Display name shown in UI
+# - slug: URL-safe identifier for API queries (unique within category scope)
+# - field_type: One of the types above (immutable after creation)
+# - options: JSON array of strings for select/multi_select fields
+# - required: Whether field must have a value when editing videos
+# - category_id: NULL for global fields, category ID for category-specific
+# - position: Display order (lower = first)
+# - constraints: JSON object with validation rules (min, max, pattern, etc.)
+# - description: Help text shown in UI
+#
+# See: https://github.com/filthyrake/vlog/issues/224
+custom_field_definitions = sa.Table(
+    "custom_field_definitions",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String(100), nullable=False),
+    sa.Column("slug", sa.String(100), nullable=False),
+    sa.Column(
+        "field_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "field_type IN ('text', 'number', 'date', 'select', 'multi_select', 'url')",
+            name="ck_custom_field_definitions_field_type"
+        ),
+        nullable=False
+    ),
+    sa.Column("options", sa.Text, nullable=True),  # JSON array for select/multi_select
+    sa.Column("required", sa.Boolean, default=False, nullable=False),
+    sa.Column(
+        "category_id",
+        sa.Integer,
+        sa.ForeignKey("categories.id", ondelete="CASCADE"),
+        nullable=True
+    ),  # NULL = global field
+    sa.Column("position", sa.Integer, default=0, nullable=False),
+    sa.Column("constraints", sa.Text, nullable=True),  # JSON validation rules
+    sa.Column("description", sa.Text, nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("slug", "category_id", name="uq_custom_field_slug_category"),
+    sa.Index("ix_custom_field_definitions_category_id", "category_id"),
+    sa.Index("ix_custom_field_definitions_position", "position"),
+)
+
+# Custom field values for each video
+# Stores the actual values that users enter for each custom field on a video
+#
+# FIELD SEMANTICS:
+# ----------------
+# - video_id: The video this value belongs to
+# - field_id: The custom field definition this value is for
+# - value: JSON-encoded value (supports all types including arrays for multi_select)
+#
+# CASCADE DELETE:
+# - When a video is deleted, all its custom field values are deleted
+# - When a field definition is deleted, all values for that field are deleted
+video_custom_fields = sa.Table(
+    "video_custom_fields",
+    metadata,
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False
+    ),
+    sa.Column(
+        "field_id",
+        sa.Integer,
+        sa.ForeignKey("custom_field_definitions.id", ondelete="CASCADE"),
+        nullable=False
+    ),
+    sa.Column("value", sa.Text, nullable=True),  # JSON-encoded value
+    sa.PrimaryKeyConstraint("video_id", "field_id"),
+    sa.Index("ix_video_custom_fields_video_id", "video_id"),
+    sa.Index("ix_video_custom_fields_field_id", "field_id"),
 )
 
 # Admin sessions for secure HTTP-only cookie-based authentication

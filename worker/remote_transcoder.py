@@ -36,8 +36,6 @@ from api.job_queue import JobDispatch, JobQueue
 from config import (
     JOB_QUEUE_MODE,
     QUALITY_PRESETS,
-    STREAMING_CODEC,
-    STREAMING_ENABLE_DASH,
     STREAMING_FORMAT,
     WORKER_API_KEY,
     WORKER_API_URL,
@@ -492,9 +490,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 return (None, quality_name)
 
             # Get actual dimensions from transcoded segment
-            # CMAF uses subdirectory structure with .m4s segments
+            # CMAF uses init.mp4 for track info (m4s segments are fragmented)
             if STREAMING_FORMAT == "cmaf":
-                first_segment = output_dir / quality_name / "seg_0000.m4s"
+                first_segment = output_dir / quality_name / "init.mp4"
             else:
                 first_segment = output_dir / f"{quality_name}_0000.ts"
             if first_segment.exists():

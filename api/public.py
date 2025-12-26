@@ -3,6 +3,7 @@ Public API - serves the video browsing interface.
 Runs on port 9000.
 """
 
+import json
 import logging
 import os
 import time
@@ -32,12 +33,14 @@ from api.common import (
 from api.database import (
     categories,
     configure_database,
+    custom_field_definitions,
     database,
     playback_sessions,
     quality_progress,
     tags,
     transcoding_jobs,
     transcriptions,
+    video_custom_fields,
     video_qualities,
     video_tags,
     videos,
@@ -629,6 +632,63 @@ async def list_videos(
                 .distinct()
             )
             query = query.where(videos.c.id.notin_(transcription_subquery))
+
+    # Custom field filter (query params like "custom.difficulty=beginner")
+    # Parse all query params starting with "custom."
+    custom_filters = {}
+    for key, value in request.query_params.items():
+        if key.startswith("custom."):
+            field_slug = key[7:]  # Remove "custom." prefix
+            if field_slug:
+                custom_filters[field_slug] = value
+
+    if custom_filters:
+        # Look up field definitions for these slugs
+        field_slugs = list(custom_filters.keys())
+        field_query = (
+            sa.select(
+                custom_field_definitions.c.id,
+                custom_field_definitions.c.slug,
+                custom_field_definitions.c.field_type,
+            )
+            .where(custom_field_definitions.c.slug.in_(field_slugs))
+        )
+        field_rows = await fetch_all_with_retry(field_query)
+        fields_by_slug = {row["slug"]: row for row in field_rows}
+
+        for field_slug, filter_value in custom_filters.items():
+            field_def = fields_by_slug.get(field_slug)
+            if not field_def:
+                # Unknown field slug - skip silently
+                continue
+
+            field_id = field_def["id"]
+            field_type = field_def["field_type"]
+
+            # Build the filter subquery
+            # For multi_select, check if the JSON array contains the value
+            # For other types, check for exact match
+            if field_type == "multi_select":
+                # JSON array contains check - the value is stored as JSON array like ["a", "b"]
+                # We need to check if the filter value is in the array
+                custom_subquery = (
+                    sa.select(video_custom_fields.c.video_id)
+                    .where(video_custom_fields.c.field_id == field_id)
+                    .where(
+                        video_custom_fields.c.value.contains(f'"{filter_value}"')
+                    )
+                )
+            else:
+                # For other types, check exact JSON match
+                # Values are stored as JSON (e.g., "beginner" for text, 5 for number)
+                json_value = json.dumps(filter_value)
+                custom_subquery = (
+                    sa.select(video_custom_fields.c.video_id)
+                    .where(video_custom_fields.c.field_id == field_id)
+                    .where(video_custom_fields.c.value == json_value)
+                )
+
+            query = query.where(videos.c.id.in_(custom_subquery))
 
     # Sorting
     # Validate and convert sort parameter to enum
