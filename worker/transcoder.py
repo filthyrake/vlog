@@ -839,6 +839,14 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
         # Validate first segment actually contains a video stream
         # This catches cases where encoding failed but audio-only output was produced
         if first_segment_path:
+            # For CMAF/fMP4, probe init.mp4 instead of segment (m4s segments are fragmented)
+            if first_segment_path.suffix == ".m4s":
+                probe_path = first_segment_path.parent / "init.mp4"
+                if not probe_path.exists():
+                    return False, "Missing init.mp4 for CMAF segments"
+            else:
+                probe_path = first_segment_path
+
             try:
                 proc = await asyncio.wait_for(
                     asyncio.create_subprocess_exec(
@@ -851,7 +859,7 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
                         "stream=codec_type",
                         "-of",
                         "csv=p=0",
-                        str(first_segment_path),
+                        str(probe_path),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     ),
@@ -859,7 +867,7 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
                 )
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
                 if proc.returncode != 0 or b"video" not in stdout:
-                    return False, f"Segment {first_segment_path.name} has no video stream (encoding may have failed)"
+                    return False, f"Segment {probe_path.name} has no video stream (encoding may have failed)"
             except asyncio.TimeoutError:
                 return False, f"Timeout probing segment {first_segment_path.name}"
             except OSError as e:
