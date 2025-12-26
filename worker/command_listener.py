@@ -9,17 +9,38 @@ Supported commands:
 - restart: Finish current job, then restart worker process
 - stop: Finish current job, then stop worker process
 - update: Pull latest code and restart (for git-based deployments)
+- get_logs: Fetch recent logs and publish to response channel (immediate)
+- get_metrics: Fetch worker metrics and publish to response channel (immediate)
 """
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+async def _publish_response(channel: str, data: Dict) -> bool:
+    """Publish a response to a Redis channel."""
+    try:
+        from api.redis_client import get_redis
+
+        redis = await get_redis()
+        if not redis:
+            return False
+
+        await redis.publish(channel, json.dumps(data))
+        return True
+    except Exception as e:
+        logger.error(f"Failed to publish response: {e}")
+        return False
 
 
 class CommandListener:
@@ -99,6 +120,7 @@ class CommandListener:
 
                 command = message.get("command")
                 params = message.get("params", {})
+                request_id = message.get("request_id")
 
                 if not command:
                     continue
@@ -109,6 +131,12 @@ class CommandListener:
                     # Queue the command for execution after current job
                     self._pending_command = (command, params)
                     logger.info(f"Command '{command}' queued for execution after current job")
+                elif command == "get_logs":
+                    # Immediate response command - fetch logs and respond
+                    asyncio.create_task(self._handle_get_logs(params, request_id))
+                elif command == "get_metrics":
+                    # Immediate response command - fetch metrics and respond
+                    asyncio.create_task(self._handle_get_metrics(params, request_id))
                 else:
                     logger.warning(f"Unknown command: {command}")
 
@@ -212,3 +240,210 @@ class CommandListener:
             logger.error("Git command not found - update not available")
         except Exception as e:
             logger.error(f"Update failed: {e}")
+
+    async def _handle_get_logs(self, params: Dict, request_id: Optional[str]):
+        """Handle get_logs command - fetch logs and publish response."""
+        from worker.hwaccel import detect_deployment_type
+
+        lines = params.get("lines", 100)
+        response_channel = f"vlog:worker:{self.worker_id}:response:{request_id or 'default'}"
+
+        try:
+            deployment_type = detect_deployment_type()
+            logs = await self._fetch_logs(deployment_type, lines)
+
+            response = {
+                "type": "logs_response",
+                "worker_id": self.worker_id,
+                "request_id": request_id,
+                "success": True,
+                "logs": logs,
+                "deployment_type": deployment_type,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch logs: {e}")
+            response = {
+                "type": "logs_response",
+                "worker_id": self.worker_id,
+                "request_id": request_id,
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        await _publish_response(response_channel, response)
+
+    async def _fetch_logs(self, deployment_type: str, lines: int) -> str:
+        """Fetch logs based on deployment type."""
+        try:
+            if deployment_type == "systemd":
+                # Fetch from journalctl
+                result = subprocess.run(
+                    ["journalctl", "-u", "vlog-worker", "-n", str(lines), "--no-pager"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    return result.stdout
+                # Fallback: try without unit specification
+                result = subprocess.run(
+                    ["journalctl", "-n", str(lines), "--no-pager", f"_PID={os.getpid()}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                return result.stdout if result.returncode == 0 else f"journalctl error: {result.stderr}"
+
+            elif deployment_type == "kubernetes":
+                # In K8s, logs are typically managed by the container runtime
+                # Return what we can from stdout (if captured) or point to kubectl
+                return self._get_python_logs(lines)
+
+            elif deployment_type == "docker":
+                # Docker logs are managed by the Docker daemon
+                # Return Python logs from memory
+                return self._get_python_logs(lines)
+
+            else:
+                # Manual deployment - try to get Python logs
+                return self._get_python_logs(lines)
+
+        except subprocess.TimeoutExpired:
+            return "Log fetch timed out"
+        except FileNotFoundError as e:
+            return f"Log command not found: {e}"
+        except Exception as e:
+            return f"Failed to fetch logs: {e}"
+
+    def _get_python_logs(self, lines: int) -> str:
+        """Get recent Python log entries from the logging system."""
+        # Check for log files in common locations
+        log_locations = [
+            Path("/var/log/vlog-worker.log"),
+            Path.home() / ".vlog" / "worker.log",
+            Path("/tmp/vlog-worker.log"),
+        ]
+
+        for log_path in log_locations:
+            if log_path.exists():
+                try:
+                    with open(log_path, "r") as f:
+                        all_lines = f.readlines()
+                        return "".join(all_lines[-lines:])
+                except Exception:
+                    continue
+
+        # If no log file found, return process info
+        return f"""Worker Process Info:
+PID: {os.getpid()}
+Python: {sys.executable}
+Working Dir: {os.getcwd()}
+
+Note: Logs are written to stdout/stderr.
+For containerized workers, use: kubectl logs <pod-name>
+For systemd workers, use: journalctl -u vlog-worker
+"""
+
+    async def _handle_get_metrics(self, params: Dict, request_id: Optional[str]):
+        """Handle get_metrics command - fetch metrics and publish response."""
+        import psutil
+
+        response_channel = f"vlog:worker:{self.worker_id}:response:{request_id or 'default'}"
+
+        try:
+            process = psutil.Process(os.getpid())
+
+            # Get CPU and memory info
+            cpu_percent = process.cpu_percent(interval=0.1)
+            memory_info = process.memory_info()
+            memory_percent = process.memory_percent()
+
+            # Get system-wide info
+            system_cpu = psutil.cpu_percent(interval=0.1)
+            system_memory = psutil.virtual_memory()
+
+            # Get disk usage for work directory
+            from config import WORKER_WORK_DIR
+
+            disk_usage = psutil.disk_usage(str(WORKER_WORK_DIR))
+
+            # Try to get GPU info if available
+            gpu_info = await self._get_gpu_metrics()
+
+            response = {
+                "type": "metrics_response",
+                "worker_id": self.worker_id,
+                "request_id": request_id,
+                "success": True,
+                "metrics": {
+                    "process": {
+                        "pid": os.getpid(),
+                        "cpu_percent": cpu_percent,
+                        "memory_rss_mb": memory_info.rss / (1024 * 1024),
+                        "memory_percent": memory_percent,
+                        "threads": process.num_threads(),
+                        "open_files": len(process.open_files()),
+                    },
+                    "system": {
+                        "cpu_percent": system_cpu,
+                        "memory_total_gb": system_memory.total / (1024**3),
+                        "memory_available_gb": system_memory.available / (1024**3),
+                        "memory_percent": system_memory.percent,
+                    },
+                    "disk": {
+                        "total_gb": disk_usage.total / (1024**3),
+                        "used_gb": disk_usage.used / (1024**3),
+                        "free_gb": disk_usage.free / (1024**3),
+                        "percent": disk_usage.percent,
+                    },
+                    "gpu": gpu_info,
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch metrics: {e}")
+            response = {
+                "type": "metrics_response",
+                "worker_id": self.worker_id,
+                "request_id": request_id,
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        await _publish_response(response_channel, response)
+
+    async def _get_gpu_metrics(self) -> Optional[Dict]:
+        """Get GPU metrics if available."""
+        try:
+            # Try nvidia-smi for NVIDIA GPUs
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            if result.returncode == 0:
+                values = result.stdout.strip().split(", ")
+                if len(values) >= 5:
+                    return {
+                        "type": "nvidia",
+                        "utilization_percent": float(values[0]),
+                        "memory_utilization_percent": float(values[1]),
+                        "memory_used_mb": float(values[2]),
+                        "memory_total_mb": float(values[3]),
+                        "temperature_c": float(values[4]),
+                    }
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        except Exception as e:
+            logger.debug(f"GPU metrics unavailable: {e}")
+
+        return None

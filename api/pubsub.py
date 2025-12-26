@@ -438,14 +438,16 @@ async def publish_worker_command(
     worker_id: str,
     command: str,
     params: Optional[Dict] = None,
+    request_id: Optional[str] = None,
 ) -> bool:
     """
     Publish a management command to a worker.
 
     Args:
         worker_id: Target worker UUID or "all" for broadcast
-        command: Command type (restart, stop, update)
+        command: Command type (restart, stop, update, get_logs, get_metrics)
         params: Optional command parameters
+        request_id: Optional request ID for response correlation
 
     Returns:
         True if published successfully
@@ -458,6 +460,7 @@ async def publish_worker_command(
         "type": "command",
         "command": command,
         "params": params or {},
+        "request_id": request_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -474,3 +477,76 @@ async def publish_worker_command(
     except Exception as e:
         logger.warning(f"Failed to publish worker command: {e}")
         return False
+
+
+async def request_worker_response(
+    worker_id: str,
+    command: str,
+    params: Optional[Dict] = None,
+    timeout_seconds: float = 10.0,
+) -> Optional[Dict]:
+    """
+    Send a command to a worker and wait for a response.
+
+    This is used for commands that return data (get_logs, get_metrics).
+
+    Args:
+        worker_id: Target worker UUID
+        command: Command type (get_logs, get_metrics)
+        params: Optional command parameters
+        timeout_seconds: How long to wait for response
+
+    Returns:
+        Response dict from worker, or None if timeout/error
+    """
+    import uuid
+
+    redis = await get_redis()
+    if not redis:
+        return None
+
+    # Generate unique request ID
+    request_id = str(uuid.uuid4())[:8]
+
+    # Subscribe to response channel before sending command
+    response_channel = f"{REDIS_PUBSUB_PREFIX}:worker:{worker_id}:response:{request_id}"
+
+    try:
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(response_channel)
+
+        # Send the command
+        success = await publish_worker_command(worker_id, command, params, request_id)
+        if not success:
+            await pubsub.close()
+            return None
+
+        # Wait for response with timeout
+        start_time = datetime.now(timezone.utc)
+        timeout_delta = timeout_seconds
+
+        async for message in pubsub.listen():
+            # Check timeout
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            if elapsed > timeout_delta:
+                logger.warning(f"Timeout waiting for worker {worker_id} response")
+                break
+
+            msg_type = message.get("type", "")
+            if msg_type in ("subscribe", "unsubscribe"):
+                continue
+
+            if msg_type == "message":
+                try:
+                    data = json.loads(message.get("data", "{}"))
+                    await pubsub.close()
+                    return data
+                except json.JSONDecodeError:
+                    continue
+
+        await pubsub.close()
+        return None
+
+    except Exception as e:
+        logger.warning(f"Error in request_worker_response: {e}")
+        return None

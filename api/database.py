@@ -461,6 +461,41 @@ worker_api_keys = sa.Table(
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
 )
 
+# Deployment events for worker management (Issue #410)
+deployment_events = sa.Table(
+    "deployment_events",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("worker_id", sa.String(36), nullable=False),  # UUID of worker
+    sa.Column("worker_name", sa.String(100), nullable=True),
+    sa.Column(
+        "event_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "event_type IN ('restart', 'stop', 'update', 'deploy', 'rollback', 'version_change')",
+            name="ck_deployment_events_type"
+        ),
+        nullable=False,
+    ),  # Type of deployment event
+    sa.Column("old_version", sa.String(64), nullable=True),  # Previous version
+    sa.Column("new_version", sa.String(64), nullable=True),  # New version after event
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'in_progress', 'completed', 'failed')",
+            name="ck_deployment_events_status"
+        ),
+        default="pending",
+    ),  # Status of the deployment
+    sa.Column("triggered_by", sa.String(100), nullable=True),  # Who triggered (user, system)
+    sa.Column("details", sa.Text, nullable=True),  # JSON details (error message, etc.)
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_deployment_events_worker_id", "worker_id"),
+    sa.Index("ix_deployment_events_created_at", "created_at"),
+)
+
 # Tags for granular content organization
 tags = sa.Table(
     "tags",
