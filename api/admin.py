@@ -4,6 +4,7 @@ Runs on port 9001 (not exposed externally).
 """
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -47,6 +48,7 @@ from api.database import (
     database,
     playback_sessions,
     quality_progress,
+    reencode_queue,
     tags,
     transcoding_jobs,
     transcriptions,
@@ -151,6 +153,7 @@ from config import (
     RATE_LIMIT_ADMIN_UPLOAD,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
+    RATE_LIMIT_WORKER_DEFAULT,
     SECURE_COOKIES,
     SSE_HEARTBEAT_INTERVAL,
     SSE_RECONNECT_TIMEOUT_MS,
@@ -1399,10 +1402,21 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
         error_message=sanitize_error_message(row["error_message"], context=f"video_id={video_id}"),
         created_at=row["created_at"],
         published_at=row["published_at"],
-        thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
+        thumbnail_url=(
+            f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None
+        ),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
         stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
+        # DASH URL only available for CMAF format videos
+        dash_url=(
+            f"/videos/{row['slug']}/manifest.mpd"
+            if row["status"] == VideoStatus.READY
+            and row._mapping.get("streaming_format") == "cmaf"
+            else None
+        ),
+        streaming_format=row._mapping.get("streaming_format", "hls_ts"),
+        primary_codec=row._mapping.get("primary_codec", "h264"),
         qualities=qualities,
     )
 
@@ -5488,6 +5502,432 @@ async def seed_settings_from_environment(request: Request):
         "skipped": results["skipped"],
         "details": results["details"],
     }
+
+
+# =============================================================================
+# Re-encode Queue Endpoints (DASH/CMAF migration)
+# =============================================================================
+
+
+@app.get("/api/reencode/status")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_reencode_status(request: Request):
+    """
+    Get the status of the re-encode queue.
+
+    Returns statistics about pending, in-progress, completed, and failed jobs.
+    """
+    query = """
+        SELECT
+            status,
+            COUNT(*) as count
+        FROM reencode_queue
+        GROUP BY status
+    """
+    rows = await fetch_all_with_retry(database, query, {})
+
+    stats = {
+        "pending": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+    for row in rows:
+        stats[row["status"]] = row["count"]
+
+    # Get legacy video count (videos still on hls_ts format)
+    legacy_query = """
+        SELECT COUNT(*) as count FROM videos
+        WHERE status = 'ready'
+        AND deleted_at IS NULL
+        AND (streaming_format = 'hls_ts' OR streaming_format IS NULL)
+    """
+    legacy_result = await fetch_one_with_retry(database, legacy_query, {})
+    legacy_count = legacy_result["count"] if legacy_result else 0
+
+    return {
+        "queue_stats": stats,
+        "legacy_videos_remaining": legacy_count,
+        "total_in_queue": sum(stats.values()),
+    }
+
+
+@app.post("/api/reencode/queue")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def queue_videos_for_reencode(
+    request: Request,
+    video_ids: List[int] = Query(..., description="Video IDs to queue"),
+    priority: str = Query("normal", regex="^(high|normal|low)$"),
+    target_format: str = Query("cmaf", regex="^(hls_ts|cmaf)$"),
+    target_codec: str = Query("hevc", regex="^(h264|hevc|av1)$"),
+):
+    """
+    Queue specific videos for re-encoding.
+
+    Args:
+        video_ids: List of video IDs to queue
+        priority: Queue priority (high, normal, low)
+        target_format: Target streaming format
+        target_codec: Target video codec
+    """
+    queued = []
+    skipped = []
+    errors = []
+
+    for video_id in video_ids:
+        # Check if video exists and is ready
+        video = await fetch_one_with_retry(
+            database,
+            "SELECT id, status, streaming_format FROM videos WHERE id = :id",
+            {"id": video_id},
+        )
+
+        if not video:
+            errors.append({"video_id": video_id, "error": "Video not found"})
+            continue
+
+        if video["status"] != "ready":
+            errors.append(
+                {"video_id": video_id, "error": f"Video status is {video['status']}"}
+            )
+            continue
+
+        # Check if already queued and pending
+        existing = await fetch_one_with_retry(
+            database,
+            """SELECT id FROM reencode_queue
+               WHERE video_id = :video_id AND status = 'pending'""",
+            {"video_id": video_id},
+        )
+
+        if existing:
+            skipped.append(video_id)
+            continue
+
+        # Queue the video
+        await db_execute_with_retry(
+            database,
+            reencode_queue.insert().values(
+                video_id=video_id,
+                target_format=target_format,
+                target_codec=target_codec,
+                priority=priority,
+                status="pending",
+            ),
+        )
+        queued.append(video_id)
+
+    return {
+        "queued": queued,
+        "skipped": skipped,
+        "errors": errors,
+        "total_queued": len(queued),
+    }
+
+
+@app.post("/api/reencode/queue-all")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def queue_all_legacy_videos(
+    request: Request,
+    priority: str = Query("low", regex="^(high|normal|low)$"),
+    target_format: str = Query("cmaf", regex="^(hls_ts|cmaf)$"),
+    target_codec: str = Query("hevc", regex="^(h264|hevc|av1)$"),
+    batch_size: int = Query(100, ge=1, le=1000),
+):
+    """
+    Queue all legacy (HLS/TS) videos for re-encoding to CMAF.
+
+    This will queue videos that are:
+    - Status is 'ready'
+    - Not deleted
+    - Using hls_ts format (or NULL for legacy videos)
+    - Not already pending in the queue
+
+    Uses batch insert for efficiency with large numbers of videos.
+    """
+    # Find legacy videos not already queued
+    query = """
+        SELECT v.id
+        FROM videos v
+        LEFT JOIN reencode_queue rq ON v.id = rq.video_id AND rq.status = 'pending'
+        WHERE v.status = 'ready'
+        AND v.deleted_at IS NULL
+        AND (v.streaming_format = 'hls_ts' OR v.streaming_format IS NULL)
+        AND rq.id IS NULL
+        LIMIT :limit
+    """
+    rows = await fetch_all_with_retry(database, query, {"limit": batch_size})
+
+    if not rows:
+        return {
+            "queued_count": 0,
+            "message": "No eligible videos found to queue",
+        }
+
+    # Batch insert for efficiency
+    values_list = [
+        {
+            "video_id": row["id"],
+            "target_format": target_format,
+            "target_codec": target_codec,
+            "priority": priority,
+            "status": "pending",
+        }
+        for row in rows
+    ]
+
+    # Use executemany for batch insert
+    await db_execute_with_retry(
+        database,
+        reencode_queue.insert(),
+        values_list,
+    )
+
+    queued_count = len(values_list)
+    return {
+        "queued_count": queued_count,
+        "message": f"Queued {queued_count} videos for re-encoding",
+    }
+
+
+@app.get("/api/reencode/jobs")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_reencode_jobs(
+    request: Request,
+    status: Optional[str] = Query(None, regex="^(pending|in_progress|completed|failed|cancelled)$"),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """
+    List re-encode queue jobs with optional status filter.
+
+    Returns paginated results with total count for UI pagination.
+    """
+    # Build WHERE clause
+    where_clause = ""
+    params = {"limit": limit, "offset": offset}
+    if status:
+        where_clause = " WHERE rq.status = :status"
+        params["status"] = status
+
+    # Get total count for pagination
+    count_query = f"""
+        SELECT COUNT(*) as total
+        FROM reencode_queue rq
+        {where_clause}
+    """
+    count_result = await fetch_one_with_retry(database, count_query, params)
+    total = count_result["total"] if count_result else 0
+
+    # Get paginated results
+    data_query = f"""
+        SELECT
+            rq.id,
+            rq.video_id,
+            v.title as video_title,
+            v.slug as video_slug,
+            rq.target_format,
+            rq.target_codec,
+            rq.priority,
+            rq.status,
+            rq.created_at,
+            rq.started_at,
+            rq.completed_at,
+            rq.error_message,
+            rq.retry_count
+        FROM reencode_queue rq
+        JOIN videos v ON rq.video_id = v.id
+        {where_clause}
+        ORDER BY rq.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """
+    rows = await fetch_all_with_retry(database, data_query, params)
+
+    # Convert to list of dicts
+    jobs = []
+    for row in rows:
+        job = dict(row._mapping)
+        # Convert datetime objects to ISO strings
+        for key in ["created_at", "started_at", "completed_at"]:
+            if job.get(key):
+                job[key] = job[key].isoformat()
+        jobs.append(job)
+
+    return {"jobs": jobs, "count": len(jobs), "total": total}
+
+
+@app.delete("/api/reencode/jobs/{job_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def cancel_reencode_job(request: Request, job_id: int):
+    """
+    Cancel a pending re-encode job.
+
+    Only pending jobs can be cancelled. In-progress jobs will complete.
+    """
+    # Check current status
+    job = await fetch_one_with_retry(
+        database,
+        "SELECT id, status FROM reencode_queue WHERE id = :id",
+        {"id": job_id},
+    )
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job["status"] != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel job with status '{job['status']}'"
+        )
+
+    await db_execute_with_retry(
+        database,
+        reencode_queue.update()
+        .where(reencode_queue.c.id == job_id)
+        .values(status="cancelled"),
+    )
+
+    return {"status": "ok", "message": f"Job {job_id} cancelled"}
+
+
+@app.post("/api/reencode/claim")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def claim_reencode_job(request: Request):
+    """
+    Claim the next available re-encode job.
+
+    This is called by re-encode workers to get work.
+    Returns the job details if one is available, or null if queue is empty.
+
+    Uses atomic UPDATE with RETURNING to prevent race conditions when
+    multiple workers try to claim jobs simultaneously.
+    """
+    # Verify worker API key
+    api_key = request.headers.get("X-Worker-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Worker API key required")
+
+    # Verify the API key exists and is active
+    key_record = await fetch_one_with_retry(
+        database,
+        "SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL",
+        {"key_hash": hashlib.sha256(api_key.encode()).hexdigest()},
+    )
+    if not key_record:
+        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+
+    # Atomic claim using UPDATE with subquery and RETURNING
+    # This prevents race conditions when multiple workers claim simultaneously
+    claim_query = """
+        UPDATE reencode_queue
+        SET status = 'in_progress',
+            started_at = :started_at
+        WHERE id = (
+            SELECT id FROM reencode_queue
+            WHERE status = 'pending'
+            ORDER BY
+                CASE priority
+                    WHEN 'high' THEN 1
+                    WHEN 'normal' THEN 2
+                    WHEN 'low' THEN 3
+                END,
+                created_at ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, video_id, target_format, target_codec, priority, retry_count
+    """
+    job = await fetch_one_with_retry(
+        database,
+        claim_query,
+        {"started_at": datetime.now(timezone.utc)},
+    )
+
+    if not job:
+        return {"job": None, "message": "No pending jobs"}
+
+    return {
+        "job": {
+            "id": job["id"],
+            "video_id": job["video_id"],
+            "target_format": job["target_format"],
+            "target_codec": job["target_codec"],
+            "priority": job["priority"],
+            "retry_count": job["retry_count"],
+        }
+    }
+
+
+@app.patch("/api/reencode/{job_id}")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def update_reencode_job(
+    request: Request,
+    job_id: int,
+):
+    """
+    Update a re-encode job status.
+
+    Used by workers to mark jobs as completed/failed.
+    Requires worker API key authentication.
+    """
+    # Verify worker API key
+    api_key = request.headers.get("X-Worker-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Worker API key required")
+
+    key_record = await fetch_one_with_retry(
+        database,
+        "SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL",
+        {"key_hash": hashlib.sha256(api_key.encode()).hexdigest()},
+    )
+    if not key_record:
+        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+
+    # Validate job exists
+    job = await fetch_one_with_retry(
+        database,
+        "SELECT id, status FROM reencode_queue WHERE id = :id",
+        {"id": job_id},
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    body = await request.json()
+    status = body.get("status")
+    error_message = body.get("error_message")
+    retry_count = body.get("retry_count")
+
+    # Validate status value if provided
+    valid_statuses = {"pending", "in_progress", "completed", "failed", "cancelled"}
+    if status and status not in valid_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+        )
+
+    # Build update values
+    values = {}
+    if status:
+        values["status"] = status
+        if status == "completed":
+            values["completed_at"] = datetime.now(timezone.utc)
+    if error_message is not None:
+        values["error_message"] = error_message
+    if retry_count is not None:
+        values["retry_count"] = retry_count
+
+    if not values:
+        raise HTTPException(status_code=400, detail="No update values provided")
+
+    await db_execute_with_retry(
+        database,
+        reencode_queue.update()
+        .where(reencode_queue.c.id == job_id)
+        .values(**values),
+    )
+
+    return {"status": "ok", "job_id": job_id}
 
 
 if __name__ == "__main__":

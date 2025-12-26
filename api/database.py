@@ -531,6 +531,68 @@ settings = sa.Table(
     sa.Index("ix_settings_category", "category"),
 )
 
+# Re-encode queue for background conversion to CMAF format
+reencode_queue = sa.Table(
+    "reencode_queue",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "target_format",
+        sa.String(20),
+        sa.CheckConstraint(
+            "target_format IN ('hls_ts', 'cmaf')",
+            name="ck_reencode_queue_target_format"
+        ),
+        default="cmaf",
+    ),
+    sa.Column(
+        "target_codec",
+        sa.String(10),
+        sa.CheckConstraint(
+            "target_codec IN ('h264', 'hevc', 'av1')",
+            name="ck_reencode_queue_target_codec"
+        ),
+        default="hevc",
+    ),
+    sa.Column(
+        "priority",
+        sa.String(10),
+        sa.CheckConstraint(
+            "priority IN ('high', 'normal', 'low')",
+            name="ck_reencode_queue_priority"
+        ),
+        default="normal",
+    ),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'in_progress', 'completed', 'failed', 'cancelled')",
+            name="ck_reencode_queue_status"
+        ),
+        default="pending",
+    ),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    ),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("error_message", sa.Text, nullable=True),
+    sa.Column("retry_count", sa.Integer, default=0),
+    sa.Column("processed_by_worker_id", sa.Integer, nullable=True),
+    sa.Index("ix_reencode_queue_status", "status"),
+    sa.Index("ix_reencode_queue_video_id", "video_id"),
+    sa.Index("ix_reencode_queue_priority_created", "priority", "created_at"),
+)
+
 
 def create_tables():
     """

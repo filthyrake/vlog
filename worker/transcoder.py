@@ -78,7 +78,12 @@ from worker.alerts import (
 from worker.alerts import (
     get_metrics as get_alert_metrics,
 )
-from worker.hwaccel import get_recommended_parallel_sessions
+from worker.hwaccel import (
+    StreamingFormat,  # noqa: F401 - Used in future CMAF transcoding integration
+    VideoCodec,
+    get_codec_string,
+    get_recommended_parallel_sessions,
+)
 
 # Conditional import for filesystem watching
 if WORKER_USE_FILESYSTEM_WATCHER:
@@ -159,6 +164,11 @@ async def get_transcoder_settings() -> Dict[str, Any]:
                 "workers.fallback_poll_interval", WORKER_FALLBACK_POLL_INTERVAL
             ),
             "debounce_delay": await service.get("workers.debounce_delay", WORKER_DEBOUNCE_DELAY),
+            # Streaming format settings (Issue #212)
+            "streaming_format": await service.get("streaming.default_format", "hls_ts"),
+            "streaming_codec": await service.get("streaming.default_codec", "h264"),
+            "streaming_enable_dash": await service.get("streaming.enable_dash", True),
+            "streaming_segment_duration": await service.get("streaming.segment_duration", 6),
         }
         _cached_transcoder_settings = settings
         _cached_transcoder_settings_time = now
@@ -176,6 +186,11 @@ async def get_transcoder_settings() -> Dict[str, Any]:
             "ffmpeg_timeout_maximum": FFMPEG_TIMEOUT_MAXIMUM,
             "fallback_poll_interval": WORKER_FALLBACK_POLL_INTERVAL,
             "debounce_delay": WORKER_DEBOUNCE_DELAY,
+            # Streaming format defaults
+            "streaming_format": "hls_ts",
+            "streaming_codec": "h264",
+            "streaming_enable_dash": True,
+            "streaming_segment_duration": 6,
         }
         _cached_transcoder_settings_time = now
 
@@ -1150,6 +1165,184 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
         master_content += f"{quality['name']}.m3u8\n"
 
     (output_dir / "master.m3u8").write_text(master_content)
+
+
+async def generate_master_playlist_cmaf(
+    output_dir: Path,
+    completed_qualities: List[dict],
+    codec: VideoCodec = VideoCodec.H264,
+):
+    """
+    Generate master HLS playlist for CMAF output structure.
+
+    CMAF uses subdirectories per quality with stream.m3u8 playlists.
+    Also includes CODECS attribute for proper codec signaling.
+
+    Output structure expected:
+        output_dir/
+            master.m3u8
+            1080p/
+                stream.m3u8
+                init.mp4
+                seg_*.m4s
+            720p/
+                stream.m3u8
+                ...
+
+    Args:
+        output_dir: Directory containing the CMAF quality subdirectories
+        completed_qualities: List of quality dicts with name, width, height, bitrate fields
+        codec: Video codec used for encoding (affects CODECS attribute)
+    """
+    # Verify actual dimensions from init segment of each quality
+    for quality in completed_qualities:
+        quality_dir = output_dir / quality["name"]
+        init_segment = quality_dir / "init.mp4"
+        if init_segment.exists():
+            actual_width, actual_height = await get_output_dimensions(init_segment)
+            if actual_width > 0 and actual_height > 0:
+                quality["width"] = actual_width
+                quality["height"] = actual_height
+
+    # HLS version 7 required for fMP4 segments
+    master_content = "#EXTM3U\n#EXT-X-VERSION:7\n\n"
+
+    # Calculate bandwidth for each quality and sort by bandwidth (highest first)
+    qualities_with_bandwidth = []
+    for quality in completed_qualities:
+        name = quality["name"]
+        width = quality["width"]
+        height = quality["height"]
+
+        # Handle original quality (has bitrate_bps) vs transcoded (has bitrate string)
+        if quality.get("is_original") and quality.get("bitrate_bps"):
+            bandwidth = quality["bitrate_bps"]
+        elif quality.get("bitrate_bps"):
+            bandwidth = quality["bitrate_bps"]
+        else:
+            bandwidth = int(quality["bitrate"].replace("k", "")) * 1000
+
+        qualities_with_bandwidth.append(
+            {
+                "name": name,
+                "width": width,
+                "height": height,
+                "bandwidth": bandwidth,
+            }
+        )
+
+    # Sort by bandwidth descending (highest quality first)
+    qualities_with_bandwidth.sort(key=lambda q: q["bandwidth"], reverse=True)
+
+    # Get codec string for manifest
+    codec_string = get_codec_string(codec)
+
+    for quality in qualities_with_bandwidth:
+        master_content += (
+            f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},'
+            f'RESOLUTION={quality["width"]}x{quality["height"]},'
+            f'CODECS="{codec_string}"\n'
+        )
+        # Reference subdirectory playlist
+        master_content += f"{quality['name']}/stream.m3u8\n"
+
+    (output_dir / "master.m3u8").write_text(master_content)
+
+
+async def generate_dash_manifest(
+    output_dir: Path,
+    completed_qualities: List[dict],
+    segment_duration: int = 6,
+    codec: VideoCodec = VideoCodec.H264,
+):
+    """
+    Generate DASH MPD manifest for CMAF segments.
+
+    Creates a simple DASH manifest that references the same fMP4 segments
+    used by HLS, enabling dual-protocol streaming from a single encode.
+
+    Args:
+        output_dir: Directory containing the CMAF quality subdirectories
+        completed_qualities: List of quality dicts with name, width, height, bitrate fields
+        segment_duration: Segment duration in seconds
+        codec: Video codec used for encoding
+    """
+    # Calculate total duration from first quality's playlist
+    total_duration = 0
+    segment_count = 0
+    for quality in completed_qualities:
+        quality_dir = output_dir / quality["name"]
+        playlist = quality_dir / "stream.m3u8"
+        if playlist.exists():
+            content = playlist.read_text()
+            # Count segments and calculate duration
+            for line in content.split("\n"):
+                if line.startswith("#EXTINF:"):
+                    try:
+                        duration = float(line.split(":")[1].rstrip(","))
+                        total_duration += duration
+                        segment_count += 1
+                    except (ValueError, IndexError):
+                        pass
+            break  # Only need to check one quality
+
+    if total_duration == 0:
+        total_duration = segment_count * segment_duration
+
+    # Format duration as ISO 8601
+    hours = int(total_duration // 3600)
+    minutes = int((total_duration % 3600) // 60)
+    seconds = total_duration % 60
+    duration_str = f"PT{hours}H{minutes}M{seconds:.3f}S"
+
+    # Determine codec-specific codecs string
+    if codec == VideoCodec.HEVC:
+        video_codecs = "hvc1.1.6.L120.90"
+    elif codec == VideoCodec.AV1:
+        video_codecs = "av01.0.08M.08"
+    else:
+        video_codecs = "avc1.640028"
+
+    # Build adaptation sets for each quality
+    adaptation_sets = []
+    seg_duration_ms = segment_duration * 1000
+
+    # Sort qualities by bandwidth descending
+    sorted_qualities = sorted(
+        completed_qualities,
+        key=lambda q: q.get("bitrate_bps", int(q.get("bitrate", "0").replace("k", "")) * 1000),
+        reverse=True,
+    )
+
+    for i, quality in enumerate(sorted_qualities):
+        name = quality["name"]
+        width = quality["width"]
+        height = quality["height"]
+        bandwidth = quality.get("bitrate_bps", int(quality.get("bitrate", "0").replace("k", "")) * 1000)
+
+        adaptation_sets.append(
+            f'    <AdaptationSet id="{i}" mimeType="video/mp4" codecs="{video_codecs}" '
+            f'startWithSAP="1" segmentAlignment="true">\n'
+            f'      <Representation id="{name}" bandwidth="{bandwidth}" '
+            f'width="{width}" height="{height}">\n'
+            f'        <SegmentTemplate media="{name}/seg_$Number%04d$.m4s" '
+            f'initialization="{name}/init.mp4" startNumber="1" '
+            f'duration="{seg_duration_ms}" timescale="1000"/>\n'
+            f"      </Representation>\n"
+            f"    </AdaptationSet>"
+        )
+
+    mpd_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" \
+mediaPresentationDuration="{duration_str}" minBufferTime="PT2S" \
+profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+  <Period duration="{duration_str}">
+{chr(10).join(adaptation_sets)}
+  </Period>
+</MPD>
+"""
+
+    (output_dir / "manifest.mpd").write_text(mpd_content)
 
 
 async def cleanup_partial_output(
