@@ -695,6 +695,142 @@ Request body (optional):
 
 Triggers retranscoding of specific qualities or all qualities if not specified.
 
+**Deferred Cleanup (Issue #408):**
+- Video remains in `ready` status and playable until a worker claims the job
+- Old quality files are only deleted when the worker starts processing
+- This prevents videos from becoming unavailable while waiting in queue
+
+### Custom Fields (Issue #224)
+
+User-defined metadata fields for videos. Fields can be global or category-specific.
+
+#### List Custom Fields
+```
+GET /api/custom-fields
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| category_id | int | null | Filter by category (use 0 for global fields only) |
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "name": "Release Year",
+    "slug": "release-year",
+    "field_type": "number",
+    "options": null,
+    "required": false,
+    "category_id": null,
+    "category_name": null,
+    "position": 0,
+    "constraints": {"min": 1900, "max": 2100},
+    "description": "Year the content was originally released"
+  }
+]
+```
+
+#### Create Custom Field
+```
+POST /api/custom-fields
+```
+
+Request body:
+```json
+{
+  "name": "Release Year",
+  "slug": "release-year",
+  "field_type": "number",
+  "required": false,
+  "category_id": null,
+  "position": 0,
+  "constraints": {"min": 1900, "max": 2100},
+  "description": "Year the content was originally released"
+}
+```
+
+**Field Types:**
+- `text` - Free-form text
+- `number` - Integer or float
+- `date` - ISO 8601 date string
+- `select` - Single choice (requires `options` array)
+- `multi_select` - Multiple choices (requires `options` array)
+- `url` - URL with validation
+
+#### Get Custom Field
+```
+GET /api/custom-fields/{field_id}
+```
+
+#### Update Custom Field
+```
+PUT /api/custom-fields/{field_id}
+```
+
+Note: `field_type` cannot be changed after creation.
+
+#### Delete Custom Field
+```
+DELETE /api/custom-fields/{field_id}
+```
+
+Deletes the field definition and all associated video values.
+
+#### Get Video Custom Field Values
+```
+GET /api/videos/{video_id}/custom-fields
+```
+
+Response:
+```json
+{
+  "video_id": 1,
+  "fields": [
+    {
+      "field_id": 1,
+      "name": "Release Year",
+      "slug": "release-year",
+      "field_type": "number",
+      "value": 2024,
+      "required": false
+    }
+  ]
+}
+```
+
+#### Update Video Custom Field Values
+```
+PUT /api/videos/{video_id}/custom-fields
+```
+
+Request body:
+```json
+{
+  "fields": [
+    {"field_id": 1, "value": 2024},
+    {"field_id": 2, "value": ["action", "adventure"]}
+  ]
+}
+```
+
+#### Bulk Update Custom Fields
+```
+POST /api/videos/bulk/custom-fields
+```
+
+Request body:
+```json
+{
+  "video_ids": [1, 2, 3],
+  "fields": [
+    {"field_id": 1, "value": 2024}
+  ]
+}
+```
+
 ### Batch Operations
 
 #### Bulk Delete Videos
@@ -750,6 +886,8 @@ Request body:
   "qualities": ["1080p", "720p"]
 }
 ```
+
+Videos remain playable until workers claim the jobs (see Retranscode Video for details).
 
 #### Bulk Restore Videos
 ```

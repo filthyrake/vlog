@@ -225,7 +225,7 @@ stateDiagram-v2
 1. Check GPU priority (CPU workers defer to idle GPU workers)
 2. Lock unclaimed job with `FOR UPDATE SKIP LOCKED` (PostgreSQL)
 3. Verify conditions:
-   - `video.status = 'pending'`
+   - `video.status = 'pending'` OR (`video.status = 'ready'` AND `job.retranscode_metadata IS NOT NULL`)
    - `video.deleted_at IS NULL`
    - `job.claimed_at IS NULL`
    - `job.completed_at IS NULL`
@@ -293,6 +293,39 @@ stateDiagram-v2
 - Worker uploads HLS output as tar.gz (remote workers)
 - Worker API extracts to `VIDEOS_DIR/{slug}/`
 - Validates master.m3u8 and quality playlists exist
+
+### 4a. Retranscode with Deferred Cleanup (Issue #408)
+
+When a video is queued for retranscoding, it remains playable until a worker claims the job.
+
+**Retranscode Request:**
+1. Admin calls `POST /api/videos/{id}/retranscode`
+2. System creates transcoding job with `retranscode_metadata` JSON:
+   ```json
+   {
+     "retranscode_all": true,
+     "qualities_to_delete": ["1080p", "720p", "480p"],
+     "delete_transcription": true,
+     "video_dir": "/mnt/nas/vlog-storage/videos/my-video"
+   }
+   ```
+3. Video status remains `ready` (still playable)
+4. Job is marked as available for claiming
+
+**Claim with Cleanup:**
+1. Worker claims job (see section 2)
+2. If `retranscode_metadata` is present:
+   - Delete specified quality files from disk
+   - Delete `video_qualities` records for those qualities
+   - Delete transcription record if `delete_transcription` is true
+   - Clear `retranscode_metadata` field
+3. Update video status to `processing`
+4. Proceed with normal transcoding
+
+**Benefits:**
+- Videos remain watchable while queued for retranscoding
+- Cleanup happens atomically with job claim
+- No orphaned files if job is never claimed (video stays ready)
 
 ### 5. Job Failure
 
@@ -637,6 +670,7 @@ WHERE (last_heartbeat < ? OR
 - **#264**: GPU worker priority starvation (fixed with idle worker check)
 - **#267**: Non-transactional stale claim cleanup (fixed with single transaction)
 - **#273**: NULL heartbeat detection (fixed with registered_at fallback)
+- **#408**: Keep videos playable until re-transcode begins (fixed with deferred cleanup)
 
 ## See Also
 

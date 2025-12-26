@@ -240,6 +240,8 @@ PostgreSQL provides concurrent read/write support, making it suitable for multi-
 - `video_qualities` - Available HLS variants per video
 - `tags` - Tag definitions for granular content organization
 - `video_tags` - Many-to-many relationship between videos and tags
+- `custom_field_definitions` - User-defined metadata field definitions (Issue #224)
+- `video_custom_fields` - Custom field values per video
 - `viewers` - Cookie-based viewer tracking
 - `playback_sessions` - Watch analytics
 - `transcoding_jobs` - Job tracking with checkpoints and job claiming

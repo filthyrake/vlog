@@ -134,6 +134,7 @@ Tracks transcoding jobs with checkpoint-based recovery and distributed claiming.
 | last_error | TEXT | NULLABLE | Last error message |
 | processed_by_worker_id | VARCHAR(36) | NULLABLE | Worker that completed job (audit) |
 | processed_by_worker_name | VARCHAR(100) | NULLABLE | Worker name (audit) |
+| retranscode_metadata | TEXT | NULLABLE | JSON cleanup info for deferred retranscode (Issue #408) |
 
 **Indexes:**
 - `ix_transcoding_jobs_video_id` - Video lookups
@@ -337,18 +338,68 @@ Many-to-many relationship between videos and tags.
 
 **Cascade Behavior:** Deleting a video or tag removes the association.
 
+### custom_field_definitions
+
+User-defined metadata fields for videos (Issue #224).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| name | VARCHAR(100) | NOT NULL | Display name shown in UI |
+| slug | VARCHAR(100) | NOT NULL | URL-safe identifier for API queries |
+| field_type | VARCHAR(20) | NOT NULL, CHECK | One of: text, number, date, select, multi_select, url |
+| options | TEXT | NULLABLE | JSON array for select/multi_select fields |
+| required | BOOLEAN | DEFAULT FALSE | Whether field must have a value |
+| category_id | INTEGER | FK(categories.id) CASCADE | NULL for global, category ID for category-specific |
+| position | INTEGER | DEFAULT 0 | Display order (lower = first) |
+| constraints | TEXT | NULLABLE | JSON validation rules (min, max, pattern, etc.) |
+| description | TEXT | NULLABLE | Help text shown in UI |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Creation timestamp |
+
+**Field Types:**
+- `text` - Free-form text input
+- `number` - Numeric value (integer or float)
+- `date` - Date value (ISO 8601 string)
+- `select` - Single choice from options list
+- `multi_select` - Multiple choices from options list (JSON array)
+- `url` - URL value with validation
+
+**Unique Constraint:** `uq_custom_field_slug_category` (slug, category_id)
+
+**Indexes:**
+- `ix_custom_field_definitions_category_id` - Category filtering
+- `ix_custom_field_definitions_position` - Display ordering
+
+### video_custom_fields
+
+Custom field values for each video (many-to-many with JSON values).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| video_id | INTEGER | FK(videos.id) CASCADE, PK | Video reference |
+| field_id | INTEGER | FK(custom_field_definitions.id) CASCADE, PK | Field definition reference |
+| value | TEXT | NULLABLE | JSON-encoded value (supports all types) |
+
+**Indexes:**
+- `ix_video_custom_fields_video_id` - Find fields for a video
+- `ix_video_custom_fields_field_id` - Find videos with a field value
+
+**Cascade Behavior:** Deleting a video or field definition removes the value.
+
 ---
 
 ## Entity Relationships
 
 ```
 categories (1) ─────────────────────────── (N) videos
+categories (1) ─────────────────────────── (N) custom_field_definitions
                                                 │
 videos (1) ─────────────────────────────── (N) video_qualities
 videos (1) ─────────────────────────────── (N) playback_sessions
 videos (1) ─────────────────────────────── (1) transcoding_jobs
 videos (1) ─────────────────────────────── (1) transcriptions
 videos (N) ─────────────────────────────── (N) tags (via video_tags)
+videos (N) ─────────────────────────────── (N) custom_field_definitions (via video_custom_fields)
                                                 │
 transcoding_jobs (1) ──────────────────── (N) quality_progress
 transcoding_jobs (N) ──────────────────── (1) workers
@@ -373,6 +424,9 @@ settings ───────────────────────�
 | videos | transcriptions | CASCADE |
 | videos | video_tags | CASCADE |
 | tags | video_tags | CASCADE |
+| videos | video_custom_fields | CASCADE |
+| custom_field_definitions | video_custom_fields | CASCADE |
+| categories | custom_field_definitions | CASCADE |
 | transcoding_jobs | quality_progress | CASCADE |
 | workers | worker_api_keys | CASCADE |
 | workers | transcoding_jobs.worker_id | SET NULL |
