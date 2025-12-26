@@ -5517,14 +5517,14 @@ async def get_reencode_status(request: Request):
 
     Returns statistics about pending, in-progress, completed, and failed jobs.
     """
-    query = """
+    query = sa.text("""
         SELECT
             status,
             COUNT(*) as count
         FROM reencode_queue
         GROUP BY status
-    """
-    rows = await fetch_all_with_retry(database, query, {})
+    """)
+    rows = await fetch_all_with_retry(query)
 
     stats = {
         "pending": 0,
@@ -5537,13 +5537,13 @@ async def get_reencode_status(request: Request):
         stats[row["status"]] = row["count"]
 
     # Get legacy video count (videos still on hls_ts format)
-    legacy_query = """
+    legacy_query = sa.text("""
         SELECT COUNT(*) as count FROM videos
         WHERE status = 'ready'
         AND deleted_at IS NULL
         AND (streaming_format = 'hls_ts' OR streaming_format IS NULL)
-    """
-    legacy_result = await fetch_one_with_retry(database, legacy_query, {})
+    """)
+    legacy_result = await fetch_one_with_retry(legacy_query)
     legacy_count = legacy_result["count"] if legacy_result else 0
 
     return {
@@ -5578,9 +5578,7 @@ async def queue_videos_for_reencode(
     for video_id in video_ids:
         # Check if video exists and is ready
         video = await fetch_one_with_retry(
-            database,
-            "SELECT id, status, streaming_format FROM videos WHERE id = :id",
-            {"id": video_id},
+            sa.text("SELECT id, status, streaming_format FROM videos WHERE id = :id").bindparams(id=video_id)
         )
 
         if not video:
@@ -5595,10 +5593,7 @@ async def queue_videos_for_reencode(
 
         # Check if already queued and pending
         existing = await fetch_one_with_retry(
-            database,
-            """SELECT id FROM reencode_queue
-               WHERE video_id = :video_id AND status = 'pending'""",
-            {"video_id": video_id},
+            sa.text("SELECT id FROM reencode_queue WHERE video_id = :video_id AND status = 'pending'").bindparams(video_id=video_id)
         )
 
         if existing:
@@ -5647,7 +5642,7 @@ async def queue_all_legacy_videos(
     Uses batch insert for efficiency with large numbers of videos.
     """
     # Find legacy videos not already queued
-    query = """
+    query = sa.text("""
         SELECT v.id
         FROM videos v
         LEFT JOIN reencode_queue rq ON v.id = rq.video_id AND rq.status = 'pending'
@@ -5656,8 +5651,8 @@ async def queue_all_legacy_videos(
         AND (v.streaming_format = 'hls_ts' OR v.streaming_format IS NULL)
         AND rq.id IS NULL
         LIMIT :limit
-    """
-    rows = await fetch_all_with_retry(database, query, {"limit": batch_size})
+    """).bindparams(limit=batch_size)
+    rows = await fetch_all_with_retry(query)
 
     if not rows:
         return {
@@ -5712,16 +5707,17 @@ async def list_reencode_jobs(
         params["status"] = status
 
     # Get total count for pagination
-    count_query = f"""
+    count_query_str = f"""
         SELECT COUNT(*) as total
         FROM reencode_queue rq
         {where_clause}
     """
-    count_result = await fetch_one_with_retry(database, count_query, params)
+    count_query = sa.text(count_query_str).bindparams(**params)
+    count_result = await fetch_one_with_retry(count_query)
     total = count_result["total"] if count_result else 0
 
     # Get paginated results
-    data_query = f"""
+    data_query_str = f"""
         SELECT
             rq.id,
             rq.video_id,
@@ -5742,7 +5738,8 @@ async def list_reencode_jobs(
         ORDER BY rq.created_at DESC
         LIMIT :limit OFFSET :offset
     """
-    rows = await fetch_all_with_retry(database, data_query, params)
+    data_query = sa.text(data_query_str).bindparams(**params)
+    rows = await fetch_all_with_retry(data_query)
 
     # Convert to list of dicts
     jobs = []
@@ -5767,9 +5764,7 @@ async def cancel_reencode_job(request: Request, job_id: int):
     """
     # Check current status
     job = await fetch_one_with_retry(
-        database,
-        "SELECT id, status FROM reencode_queue WHERE id = :id",
-        {"id": job_id},
+        sa.text("SELECT id, status FROM reencode_queue WHERE id = :id").bindparams(id=job_id)
     )
 
     if not job:
@@ -5810,16 +5805,16 @@ async def claim_reencode_job(request: Request):
 
     # Verify the API key exists and is active
     key_record = await fetch_one_with_retry(
-        database,
-        "SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL",
-        {"key_hash": hashlib.sha256(api_key.encode()).hexdigest()},
+        sa.text("SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL").bindparams(
+            key_hash=hashlib.sha256(api_key.encode()).hexdigest()
+        )
     )
     if not key_record:
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
 
     # Atomic claim using UPDATE with subquery and RETURNING
     # This prevents race conditions when multiple workers claim simultaneously
-    claim_query = """
+    claim_query = sa.text("""
         UPDATE reencode_queue
         SET status = 'in_progress',
             started_at = :started_at
@@ -5837,12 +5832,8 @@ async def claim_reencode_job(request: Request):
             FOR UPDATE SKIP LOCKED
         )
         RETURNING id, video_id, target_format, target_codec, priority, retry_count
-    """
-    job = await fetch_one_with_retry(
-        database,
-        claim_query,
-        {"started_at": datetime.now(timezone.utc)},
-    )
+    """).bindparams(started_at=datetime.now(timezone.utc))
+    job = await fetch_one_with_retry(claim_query)
 
     if not job:
         return {"job": None, "message": "No pending jobs"}
@@ -5877,18 +5868,16 @@ async def update_reencode_job(
         raise HTTPException(status_code=401, detail="Worker API key required")
 
     key_record = await fetch_one_with_retry(
-        database,
-        "SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL",
-        {"key_hash": hashlib.sha256(api_key.encode()).hexdigest()},
+        sa.text("SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL").bindparams(
+            key_hash=hashlib.sha256(api_key.encode()).hexdigest()
+        )
     )
     if not key_record:
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
 
     # Validate job exists
     job = await fetch_one_with_retry(
-        database,
-        "SELECT id, status FROM reencode_queue WHERE id = :id",
-        {"id": job_id},
+        sa.text("SELECT id, status FROM reencode_queue WHERE id = :id").bindparams(id=job_id)
     )
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
