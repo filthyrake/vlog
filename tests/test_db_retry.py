@@ -323,18 +323,19 @@ class TestDatabaseLockedErrorExceptionHandler:
         """Admin API should return 503 with Retry-After header."""
         from httpx import ASGITransport, AsyncClient
 
-        import config
+        import api.admin
         from api.admin import app
 
         test_secret = "test-admin-secret-12345"
 
         # Mock the database to raise DatabaseLockedError and set admin secret
+        # Patch ADMIN_API_SECRET in api.admin module directly (it's cached at import)
         with (
             patch(
                 "api.admin.fetch_all_with_retry",
                 side_effect=DatabaseLockedError("Database locked"),
             ),
-            patch.object(config, "ADMIN_API_SECRET", test_secret),
+            patch.object(api.admin, "ADMIN_API_SECRET", test_secret),
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
