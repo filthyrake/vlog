@@ -839,9 +839,10 @@ def cmd_settings(args):
             parsed_value = value
 
         try:
-            response = httpx.post(
-                f"{API_BASE}/settings",
-                json={"key": key, "value": parsed_value},
+            # Use PUT to update existing setting by key
+            response = httpx.put(
+                f"{API_BASE}/settings/key/{key}",
+                json={"value": parsed_value},
                 headers=get_admin_headers(),
                 timeout=DEFAULT_API_TIMEOUT,
             )

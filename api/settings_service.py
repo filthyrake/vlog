@@ -630,25 +630,31 @@ class SettingsService:
 
         # Constraint validation
         if constraints:
-            if "min" in constraints and value < constraints["min"]:
-                raise SettingsValidationError(f"Value {value} is below minimum {constraints['min']}")
-            if "max" in constraints and value > constraints["max"]:
-                raise SettingsValidationError(f"Value {value} is above maximum {constraints['max']}")
-            if "enum_values" in constraints and value not in constraints["enum_values"]:
-                raise SettingsValidationError(f"Value '{value}' not in allowed values: {constraints['enum_values']}")
-            if "pattern" in constraints:
+            # min/max only apply to numeric types
+            if "min" in constraints and constraints["min"] is not None and value_type in ("integer", "float"):
+                if value < constraints["min"]:
+                    raise SettingsValidationError(f"Value {value} is below minimum {constraints['min']}")
+            if "max" in constraints and constraints["max"] is not None and value_type in ("integer", "float"):
+                if value > constraints["max"]:
+                    raise SettingsValidationError(f"Value {value} is above maximum {constraints['max']}")
+            if "enum_values" in constraints and constraints["enum_values"] is not None:
+                if value not in constraints["enum_values"]:
+                    raise SettingsValidationError(f"Value '{value}' not in allowed values: {constraints['enum_values']}")
+            if "pattern" in constraints and constraints["pattern"] is not None:
                 import re
 
                 if not re.match(constraints["pattern"], str(value)):
                     raise SettingsValidationError(f"Value '{value}' does not match pattern: {constraints['pattern']}")
-            if "min_length" in constraints and len(str(value)) < constraints["min_length"]:
-                raise SettingsValidationError(
-                    f"Value length {len(str(value))} is below minimum {constraints['min_length']}"
-                )
-            if "max_length" in constraints and len(str(value)) > constraints["max_length"]:
-                raise SettingsValidationError(
-                    f"Value length {len(str(value))} is above maximum {constraints['max_length']}"
-                )
+            if "min_length" in constraints and constraints["min_length"] is not None:
+                if len(str(value)) < constraints["min_length"]:
+                    raise SettingsValidationError(
+                        f"Value length {len(str(value))} is below minimum {constraints['min_length']}"
+                    )
+            if "max_length" in constraints and constraints["max_length"] is not None:
+                if len(str(value)) > constraints["max_length"]:
+                    raise SettingsValidationError(
+                        f"Value length {len(str(value))} is above maximum {constraints['max_length']}"
+                    )
 
     def invalidate_cache(self) -> None:
         """Force cache refresh on next access."""
