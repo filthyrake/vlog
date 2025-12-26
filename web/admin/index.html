@@ -2956,6 +2956,12 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     return Math.floor(seconds / 86400) + 'd ago';
                 },
 
+                formatDate(dateStr) {
+                    if (!dateStr) return 'N/A';
+                    const date = new Date(dateStr);
+                    return date.toLocaleString();
+                },
+
                 // Re-encode queue methods
                 async loadReencodeStatus() {
                     try {
