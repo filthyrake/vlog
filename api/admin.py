@@ -5660,26 +5660,19 @@ async def queue_all_legacy_videos(
             "message": "No eligible videos found to queue",
         }
 
-    # Batch insert for efficiency
-    values_list = [
-        {
-            "video_id": row["id"],
-            "target_format": target_format,
-            "target_codec": target_codec,
-            "priority": priority,
-            "status": "pending",
-        }
-        for row in rows
-    ]
-
-    # Use executemany for batch insert
-    await db_execute_with_retry(
-        database,
-        reencode_queue.insert(),
-        values_list,
-    )
-
-    queued_count = len(values_list)
+    # Insert each video into the queue
+    queued_count = 0
+    for row in rows:
+        await db_execute_with_retry(
+            reencode_queue.insert().values(
+                video_id=row["id"],
+                target_format=target_format,
+                target_codec=target_codec,
+                priority=priority,
+                status="pending",
+            )
+        )
+        queued_count += 1
     return {
         "queued_count": queued_count,
         "message": f"Queued {queued_count} videos for re-encoding",
