@@ -935,17 +935,19 @@ async def transcode_quality_with_progress(
     duration: float,
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     gpu_caps: Optional["GPUCapabilities"] = None,
+    streaming_format: str = "hls_ts",
 ) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking and timeout.
 
     Args:
         input_path: Source video file
-        output_dir: Output directory for HLS files
+        output_dir: Output directory for HLS/CMAF files
         quality: Quality preset dict with name, height, bitrate, audio_bitrate
         duration: Video duration in seconds
         progress_callback: Optional async callback for progress updates (0-100)
         gpu_caps: GPU capabilities from hwaccel module for hardware encoding
+        streaming_format: Output format - "hls_ts" for MPEG-TS or "cmaf" for fMP4
 
     Returns:
         Tuple[bool, Optional[str]]: (success, error_message) where error_message
@@ -956,69 +958,139 @@ async def transcode_quality_with_progress(
     bitrate = quality["bitrate"]
     audio_bitrate = quality["audio_bitrate"]
 
-    playlist_name = f"{name}.m3u8"
-    segment_pattern = f"{name}_%04d.ts"
+    use_cmaf = streaming_format == "cmaf"
 
     # Calculate timeout based on video duration and resolution
     timeout = calculate_ffmpeg_timeout(duration, height)
     print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for {name}")
+    if use_cmaf:
+        print("      Output format: CMAF (fMP4)")
 
     # Use hardware acceleration if GPU capabilities provided
     if gpu_caps is not None:
-        from worker.hwaccel import build_transcode_command, select_encoder
+        from worker.hwaccel import build_cmaf_transcode_command, build_transcode_command, select_encoder
 
         selection = select_encoder(gpu_caps, height)
         encoder_name = selection.encoder.name
         encoder_type = "GPU" if selection.encoder.is_hardware else "CPU"
         print(f"      Using encoder: {encoder_name} ({encoder_type})")
 
-        cmd = build_transcode_command(
-            input_path,
-            output_dir,
-            quality,
-            selection,
-            HLS_SEGMENT_DURATION,
-        )
+        if use_cmaf:
+            # Create quality subdirectory for CMAF output
+            quality_dir = output_dir / name
+            quality_dir.mkdir(parents=True, exist_ok=True)
+            cmd = build_cmaf_transcode_command(
+                input_path,
+                output_dir,
+                quality,
+                selection,
+                HLS_SEGMENT_DURATION,
+            )
+        else:
+            cmd = build_transcode_command(
+                input_path,
+                output_dir,
+                quality,
+                selection,
+                HLS_SEGMENT_DURATION,
+            )
     else:
         # Default CPU encoding (no GPU available)
         scale_filter = f"scale=-2:{height}"
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(input_path),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
-            "-b:v",
-            bitrate,
-            "-maxrate",
-            bitrate,
-            "-bufsize",
-            f"{int(bitrate.replace('k', '')) * 2}k",
-            "-vf",
-            scale_filter,
-            "-c:a",
-            "aac",
-            "-b:a",
-            audio_bitrate,
-            "-ac",
-            "2",
-            "-hls_time",
-            str(HLS_SEGMENT_DURATION),
-            "-hls_list_size",
-            "0",
-            "-hls_segment_filename",
-            str(output_dir / segment_pattern),
-            "-progress",
-            "pipe:1",  # Output progress to stdout
-            "-f",
-            "hls",
-            str(output_dir / playlist_name),
-        ]
+
+        if use_cmaf:
+            # CMAF output structure: {output_dir}/{quality_name}/stream.m3u8 + init.mp4 + seg_*.m4s
+            quality_dir = output_dir / name
+            quality_dir.mkdir(parents=True, exist_ok=True)
+            playlist_name = "stream.m3u8"
+            init_segment = "init.mp4"
+            segment_pattern = str(quality_dir / "seg_%04d.m4s")
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_path),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-b:v",
+                bitrate,
+                "-maxrate",
+                bitrate,
+                "-bufsize",
+                f"{int(bitrate.replace('k', '')) * 2}k",
+                "-vf",
+                scale_filter,
+                "-c:a",
+                "aac",
+                "-b:a",
+                audio_bitrate,
+                "-ac",
+                "2",
+                "-hls_time",
+                str(HLS_SEGMENT_DURATION),
+                "-hls_list_size",
+                "0",
+                "-hls_segment_type",
+                "fmp4",
+                "-hls_fmp4_init_filename",
+                init_segment,
+                "-hls_segment_filename",
+                segment_pattern,
+                "-movflags",
+                "+cmaf+faststart",
+                "-progress",
+                "pipe:1",
+                "-f",
+                "hls",
+                str(quality_dir / playlist_name),
+            ]
+        else:
+            # HLS/TS output structure: {output_dir}/{quality_name}.m3u8 + {quality_name}_*.ts
+            playlist_name = f"{name}.m3u8"
+            segment_pattern = f"{name}_%04d.ts"
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_path),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-b:v",
+                bitrate,
+                "-maxrate",
+                bitrate,
+                "-bufsize",
+                f"{int(bitrate.replace('k', '')) * 2}k",
+                "-vf",
+                scale_filter,
+                "-c:a",
+                "aac",
+                "-b:a",
+                audio_bitrate,
+                "-ac",
+                "2",
+                "-hls_time",
+                str(HLS_SEGMENT_DURATION),
+                "-hls_list_size",
+                "0",
+                "-hls_segment_filename",
+                str(output_dir / segment_pattern),
+                "-progress",
+                "pipe:1",
+                "-f",
+                "hls",
+                str(output_dir / playlist_name),
+            ]
 
     # Use shared helper for running FFmpeg with progress and timeout
     success, error_msg = await run_ffmpeg_with_progress(
@@ -1993,6 +2065,11 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # ----------------------------------------------------------------
         await update_job_step(job_id, TranscodingStep.TRANSCODE)
 
+        # Get streaming format from settings (Issue #222)
+        transcoder_settings = await get_transcoder_settings()
+        streaming_format = transcoder_settings.get("streaming_format", "hls_ts")
+        print(f"  Output format: {streaming_format}")
+
         qualities = get_applicable_qualities(info["height"])
         if not qualities:
             qualities = [QUALITY_PRESETS[-1]]
@@ -2121,7 +2198,11 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             if status and status["status"] == QualityStatus.COMPLETED:
                 print(f"    {quality_name}: Already completed, skipping...")
                 # Get actual dimensions from existing segment
-                first_segment = output_dir / f"{quality_name}_0000.ts"
+                # CMAF uses subdirectory structure with .m4s segments
+                if streaming_format == "cmaf":
+                    first_segment = output_dir / quality_name / "seg_0000.m4s"
+                else:
+                    first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
                     actual_width, actual_height = await get_output_dimensions(first_segment)
                 else:
@@ -2140,12 +2221,18 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 )
 
             # Check if playlist file is complete (from previous attempt)
-            playlist_path = output_dir / f"{quality_name}.m3u8"
+            if streaming_format == "cmaf":
+                playlist_path = output_dir / quality_name / "stream.m3u8"
+            else:
+                playlist_path = output_dir / f"{quality_name}.m3u8"
             if await is_hls_playlist_complete(playlist_path):
                 print(f"    {quality_name}: Found complete playlist, marking complete...")
                 await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                 # Get actual dimensions from existing segment
-                first_segment = output_dir / f"{quality_name}_0000.ts"
+                if streaming_format == "cmaf":
+                    first_segment = output_dir / quality_name / "seg_0000.m4s"
+                else:
+                    first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
                     actual_width, actual_height = await get_output_dimensions(first_segment)
                 else:
@@ -2189,12 +2276,17 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     info["duration"],
                     progress_cb,
                     gpu_caps=state.gpu_caps,
+                    streaming_format=streaming_format,
                 )
 
                 if success:
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                     # Get actual dimensions from transcoded segment
-                    first_segment = output_dir / f"{quality_name}_0000.ts"
+                    # CMAF uses subdirectory structure with .m4s segments
+                    if streaming_format == "cmaf":
+                        first_segment = output_dir / quality_name / "seg_0000.m4s"
+                    else:
+                        first_segment = output_dir / f"{quality_name}_0000.ts"
                     if first_segment.exists():
                         actual_width, actual_height = await get_output_dimensions(first_segment)
                     else:
@@ -2364,10 +2456,15 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             info["duration"],
                             None,
                             gpu_caps=state.gpu_caps,
+                            streaming_format=streaming_format,
                         )
                         if success:
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
-                            first_segment = output_dir / f"{quality_name}_0000.ts"
+                            # CMAF uses subdirectory structure with .m4s segments
+                            if streaming_format == "cmaf":
+                                first_segment = output_dir / quality_name / "seg_0000.m4s"
+                            else:
+                                first_segment = output_dir / f"{quality_name}_0000.ts"
                             if first_segment.exists():
                                 actual_width, actual_height = await get_output_dimensions(first_segment)
                             else:
@@ -2421,7 +2518,19 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # ----------------------------------------------------------------
         await update_job_step(job_id, TranscodingStep.MASTER_PLAYLIST)
         print("  Step 4: Generating master playlist...")
-        await generate_master_playlist(output_dir, successful_qualities)
+
+        if streaming_format == "cmaf":
+            # Use CMAF-specific master playlist generator
+            # Get codec from settings for CMAF manifest
+            primary_codec = transcoder_settings.get("streaming_codec", "h264")
+            await generate_master_playlist_cmaf(output_dir, successful_qualities, primary_codec)
+            # Also generate DASH manifest if enabled
+            enable_dash = transcoder_settings.get("streaming_enable_dash", True)
+            if enable_dash:
+                print("  Generating DASH manifest...")
+                await generate_dash_manifest(output_dir, successful_qualities, primary_codec)
+        else:
+            await generate_master_playlist(output_dir, successful_qualities)
         await checkpoint(job_id)
 
         # ----------------------------------------------------------------
@@ -2453,7 +2562,15 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # Mark video as ready
         # Only set published_at if not already set (preserve date for re-transcoded videos)
         video_row = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
-        video_updates = {"status": VideoStatus.READY}
+        video_updates = {
+            "status": VideoStatus.READY,
+            "streaming_format": streaming_format,
+        }
+        # Set primary_codec for CMAF (from settings)
+        if streaming_format == "cmaf":
+            video_updates["primary_codec"] = transcoder_settings.get("streaming_codec", "h264")
+        else:
+            video_updates["primary_codec"] = "h264"  # HLS/TS always uses H.264
         if video_row and video_row["published_at"] is None:
             video_updates["published_at"] = datetime.now(timezone.utc)
 
