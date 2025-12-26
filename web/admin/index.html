@@ -40,6 +40,11 @@
                         class="font-medium"
                     >Workers</button>
                     <button
+                        @click="tab = 'reencode'; loadReencodeStatus()"
+                        :class="tab === 'reencode' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        class="font-medium"
+                    >Re-encode</button>
+                    <button
                         @click="tab = 'analytics'; loadAnalytics()"
                         :class="tab === 'analytics' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
                         class="font-medium"
@@ -704,6 +709,177 @@
 
                 <div x-show="!activeJobs.jobs || activeJobs.jobs.length === 0" class="text-center py-8 text-dark-400">
                     No active transcoding jobs.
+                </div>
+            </div>
+        </div>
+
+        <!-- Re-encode Tab -->
+        <div x-show="tab === 'reencode'" x-cloak>
+            <!-- Queue Status Summary -->
+            <div class="grid grid-cols-5 gap-4 mb-6">
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-dark-400 text-sm mb-1">Total</div>
+                    <div class="text-2xl font-bold" x-text="reencodeStats.total || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-yellow-400 text-sm mb-1">Pending</div>
+                    <div class="text-2xl font-bold text-yellow-400" x-text="reencodeStats.pending || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-blue-400 text-sm mb-1">In Progress</div>
+                    <div class="text-2xl font-bold text-blue-400" x-text="reencodeStats.in_progress || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-green-400 text-sm mb-1">Completed</div>
+                    <div class="text-2xl font-bold text-green-400" x-text="reencodeStats.completed || 0"></div>
+                </div>
+                <div class="bg-dark-900 rounded-xl p-4 text-center">
+                    <div class="text-red-400 text-sm mb-1">Failed</div>
+                    <div class="text-2xl font-bold text-red-400" x-text="reencodeStats.failed || 0"></div>
+                </div>
+            </div>
+
+            <!-- Queue Actions -->
+            <div class="bg-dark-900 rounded-xl p-4 mb-6">
+                <div class="flex flex-wrap items-center gap-4">
+                    <div class="flex items-center gap-2">
+                        <span class="text-dark-400">Queue all legacy videos:</span>
+                        <select x-model="reencodeTargetCodec" class="bg-dark-800 border border-dark-700 rounded px-3 py-1.5 text-sm">
+                            <option value="hevc">HEVC (H.265)</option>
+                            <option value="av1">AV1</option>
+                            <option value="h264">H.264</option>
+                        </select>
+                        <select x-model="reencodePriority" class="bg-dark-800 border border-dark-700 rounded px-3 py-1.5 text-sm">
+                            <option value="low">Low Priority</option>
+                            <option value="normal">Normal Priority</option>
+                            <option value="high">High Priority</option>
+                        </select>
+                        <button
+                            @click="queueAllLegacyVideos()"
+                            :disabled="reencodeLoading"
+                            class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-dark-700 disabled:cursor-not-allowed rounded text-sm font-medium transition"
+                        >
+                            <span x-show="!reencodeLoading">Queue All Legacy</span>
+                            <span x-show="reencodeLoading">Queuing...</span>
+                        </button>
+                    </div>
+                    <div class="flex-1"></div>
+                    <button
+                        @click="loadReencodeStatus()"
+                        class="text-blue-400 hover:text-blue-300 text-sm"
+                    >Refresh</button>
+                </div>
+                <!-- Message display -->
+                <div x-show="reencodeMessage" class="mt-3">
+                    <div :class="reencodeError ? 'bg-red-900/20 border-red-800 text-red-400' : 'bg-green-900/20 border-green-800 text-green-400'" class="border rounded-lg px-4 py-2 text-sm flex items-center justify-between">
+                        <span x-text="reencodeMessage"></span>
+                        <button @click="reencodeMessage = ''" class="text-dark-400 hover:text-white">&times;</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Jobs List -->
+            <div class="bg-dark-900 rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                    <h3 class="font-semibold">
+                        Re-encode Queue
+                        <span class="text-dark-500 font-normal" x-text="'(' + reencodeJobs.length + ' of ' + reencodeTotalJobs + ' jobs)'"></span>
+                    </h3>
+                    <div class="flex items-center gap-4">
+                        <select x-model="reencodeStatusFilter" @change="loadReencodeJobs()" class="bg-dark-800 border border-dark-700 rounded px-3 py-1.5 text-sm">
+                            <option value="">All Statuses</option>
+                            <option value="pending">Pending</option>
+                            <option value="in_progress">In Progress</option>
+                            <option value="completed">Completed</option>
+                            <option value="failed">Failed</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="divide-y divide-dark-800">
+                    <template x-for="job in reencodeJobs" :key="job.id">
+                        <div class="p-4 hover:bg-dark-800/50">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <!-- Status indicator -->
+                                    <div
+                                        :class="{
+                                            'bg-yellow-500': job.status === 'pending',
+                                            'bg-blue-500': job.status === 'in_progress',
+                                            'bg-green-500': job.status === 'completed',
+                                            'bg-red-500': job.status === 'failed'
+                                        }"
+                                        class="w-3 h-3 rounded-full"
+                                    ></div>
+                                    <div>
+                                        <div class="font-medium" x-text="job.video_title"></div>
+                                        <div class="text-dark-500 text-sm flex items-center gap-2">
+                                            <span :class="{
+                                                'text-yellow-400': job.status === 'pending',
+                                                'text-blue-400': job.status === 'in_progress',
+                                                'text-green-400': job.status === 'completed',
+                                                'text-red-400': job.status === 'failed'
+                                            }" x-text="job.status.replace('_', ' ')"></span>
+                                            <span class="text-dark-600">•</span>
+                                            <span x-text="job.target_codec.toUpperCase()"></span>
+                                            <span class="text-dark-600">•</span>
+                                            <span x-text="job.priority + ' priority'"></span>
+                                            <template x-if="job.retry_count > 0">
+                                                <span class="text-dark-600">•</span>
+                                            </template>
+                                            <template x-if="job.retry_count > 0">
+                                                <span class="text-orange-400" x-text="'Retry ' + job.retry_count"></span>
+                                            </template>
+                                        </div>
+                                        <template x-if="job.error_message">
+                                            <div class="text-red-400 text-sm mt-1" x-text="job.error_message"></div>
+                                        </template>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-4">
+                                    <!-- Timestamps -->
+                                    <div class="text-right text-sm text-dark-400">
+                                        <div x-text="'Created: ' + formatDate(job.created_at)"></div>
+                                        <template x-if="job.completed_at">
+                                            <div x-text="'Completed: ' + formatDate(job.completed_at)"></div>
+                                        </template>
+                                    </div>
+                                    <!-- Actions -->
+                                    <div class="flex gap-2">
+                                        <button
+                                            x-show="job.status === 'pending'"
+                                            @click="cancelReencodeJob(job.id)"
+                                            class="text-red-400 hover:text-red-300 text-sm"
+                                        >Cancel</button>
+                                        <button
+                                            x-show="job.status === 'failed'"
+                                            @click="retryReencodeJob(job.id)"
+                                            class="text-blue-400 hover:text-blue-300 text-sm"
+                                        >Retry</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <div x-show="reencodeJobs.length === 0" class="text-center py-8 text-dark-400">
+                    No re-encode jobs found.
+                </div>
+
+                <!-- Pagination -->
+                <div x-show="reencodeTotalJobs > reencodeLimit" class="px-6 py-4 border-t border-dark-800 flex justify-between items-center">
+                    <button
+                        @click="reencodeOffset = Math.max(0, reencodeOffset - reencodeLimit); loadReencodeJobs()"
+                        :disabled="reencodeOffset === 0"
+                        class="px-3 py-1.5 bg-dark-800 hover:bg-dark-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
+                    >Previous</button>
+                    <span class="text-dark-400 text-sm" x-text="'Page ' + (Math.floor(reencodeOffset / reencodeLimit) + 1) + ' of ' + Math.ceil(reencodeTotalJobs / reencodeLimit)"></span>
+                    <button
+                        @click="reencodeOffset += reencodeLimit; loadReencodeJobs()"
+                        :disabled="reencodeOffset + reencodeLimit >= reencodeTotalJobs"
+                        class="px-3 py-1.5 bg-dark-800 hover:bg-dark-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-sm"
+                    >Next</button>
                 </div>
             </div>
         </div>
@@ -1607,6 +1783,19 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 workersList: [],
                 workerStats: {},
                 activeJobs: { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 },
+
+                // Re-encode queue
+                reencodeStats: {},
+                reencodeJobs: [],
+                reencodeTotalJobs: 0,
+                reencodeStatusFilter: '',
+                reencodeOffset: 0,
+                reencodeLimit: 20,
+                reencodeTargetCodec: 'hevc',
+                reencodePriority: 'normal',
+                reencodeLoading: false,
+                reencodeMessage: '',
+                reencodeError: false,
 
                 // Transcode progress
                 progressData: {},
@@ -2754,6 +2943,127 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
                     if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
                     return Math.floor(seconds / 86400) + 'd ago';
+                },
+
+                // Re-encode queue methods
+                async loadReencodeStatus() {
+                    try {
+                        const [statusRes, jobsRes] = await Promise.all([
+                            this.apiFetch('/api/reencode/status'),
+                            this.loadReencodeJobs()
+                        ]);
+
+                        if (statusRes.ok) {
+                            this.reencodeStats = await statusRes.json();
+                        } else {
+                            console.error('Failed to load re-encode status:', statusRes.status);
+                            this.reencodeStats = {};
+                        }
+                    } catch (e) {
+                        console.error('Failed to load re-encode status:', e);
+                        this.reencodeStats = {};
+                    }
+                },
+
+                async loadReencodeJobs() {
+                    try {
+                        let url = `/api/reencode/jobs?limit=${this.reencodeLimit}&offset=${this.reencodeOffset}`;
+                        if (this.reencodeStatusFilter) {
+                            url += `&status=${this.reencodeStatusFilter}`;
+                        }
+
+                        const res = await this.apiFetch(url);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.reencodeJobs = data.jobs || [];
+                            this.reencodeTotalJobs = data.total || 0;
+                        } else {
+                            console.error('Failed to load re-encode jobs:', res.status);
+                            this.reencodeJobs = [];
+                            this.reencodeTotalJobs = 0;
+                        }
+                    } catch (e) {
+                        console.error('Failed to load re-encode jobs:', e);
+                        this.reencodeJobs = [];
+                        this.reencodeTotalJobs = 0;
+                    }
+                },
+
+                async queueAllLegacyVideos() {
+                    if (!confirm('Queue all legacy videos for re-encoding? This may take a while to process.')) return;
+
+                    this.reencodeLoading = true;
+                    this.reencodeMessage = '';
+                    this.reencodeError = false;
+
+                    try {
+                        const res = await this.apiFetch('/api/reencode/queue-all', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                target_codec: this.reencodeTargetCodec,
+                                priority: this.reencodePriority
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.reencodeMessage = data.message || `Queued ${data.queued_count} videos`;
+                            this.reencodeError = false;
+                            await this.loadReencodeStatus();
+                        } else {
+                            this.reencodeMessage = data.detail || 'Failed to queue videos';
+                            this.reencodeError = true;
+                        }
+                    } catch (e) {
+                        this.reencodeMessage = 'Failed to queue videos: ' + e.message;
+                        this.reencodeError = true;
+                    } finally {
+                        this.reencodeLoading = false;
+                    }
+                },
+
+                async cancelReencodeJob(jobId) {
+                    if (!confirm('Cancel this re-encode job?')) return;
+
+                    try {
+                        const res = await this.apiFetch(`/api/reencode/jobs/${jobId}`, { method: 'DELETE' });
+                        if (res.ok) {
+                            this.reencodeMessage = 'Job cancelled';
+                            this.reencodeError = false;
+                            await this.loadReencodeStatus();
+                        } else {
+                            const data = await res.json();
+                            this.reencodeMessage = data.detail || 'Failed to cancel job';
+                            this.reencodeError = true;
+                        }
+                    } catch (e) {
+                        this.reencodeMessage = 'Failed to cancel job: ' + e.message;
+                        this.reencodeError = true;
+                    }
+                },
+
+                async retryReencodeJob(jobId) {
+                    try {
+                        const res = await this.apiFetch(`/api/reencode/${jobId}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ status: 'pending' })
+                        });
+
+                        if (res.ok) {
+                            this.reencodeMessage = 'Job queued for retry';
+                            this.reencodeError = false;
+                            await this.loadReencodeStatus();
+                        } else {
+                            const data = await res.json();
+                            this.reencodeMessage = data.detail || 'Failed to retry job';
+                            this.reencodeError = true;
+                        }
+                    } catch (e) {
+                        this.reencodeMessage = 'Failed to retry job: ' + e.message;
+                        this.reencodeError = true;
+                    }
                 },
 
                 // Bulk operation methods
