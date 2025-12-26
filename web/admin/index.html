@@ -1807,7 +1807,18 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 maxSseReconnectDelay: 30000,
 
                 // Watermark settings
-                watermarkSettings: null,
+                watermarkSettings: {
+                    enabled: false,
+                    type: 'image',
+                    position: 'bottom-right',
+                    opacity: 0.5,
+                    image: null,
+                    image_exists: false,
+                    image_url: null,
+                    text: '',
+                    text_size: 24,
+                    text_color: '#ffffff'
+                },
                 watermarkLoading: false,
                 watermarkImageFile: null,
                 watermarkUploading: false,
