@@ -3960,23 +3960,44 @@ async def export_videos(
 # ============ Worker Management ============
 
 
-def parse_worker_capabilities(capabilities_json: Optional[str]) -> dict:
-    """Parse worker capabilities JSON and return a dict with hardware info."""
-    if not capabilities_json:
-        return {"hwaccel_enabled": False, "hwaccel_type": None, "gpu_name": None}
+def parse_worker_capabilities(metadata_json: Optional[str]) -> dict:
+    """
+    Parse worker metadata JSON and return a dict with hardware info and version tracking.
+
+    The metadata can contain:
+    - capabilities: GPU/hardware info including code_version
+    - deployment_type: How the worker is deployed (kubernetes, systemd, docker, manual)
+    """
+    result = {
+        "hwaccel_enabled": False,
+        "hwaccel_type": None,
+        "gpu_name": None,
+        "code_version": None,
+        "deployment_type": None,
+    }
+
+    if not metadata_json:
+        return result
 
     try:
-        caps = json.loads(capabilities_json)
+        data = json.loads(metadata_json)
+
+        # Extract deployment_type from top level
+        result["deployment_type"] = data.get("deployment_type")
+
         # Handle nested structure {"capabilities": {...}} or flat structure
-        if "capabilities" in caps and isinstance(caps["capabilities"], dict):
-            caps = caps["capabilities"]
-        return {
-            "hwaccel_enabled": caps.get("hwaccel_enabled", False),
-            "hwaccel_type": caps.get("hwaccel_type"),
-            "gpu_name": caps.get("gpu_name"),
-        }
+        caps = data
+        if "capabilities" in data and isinstance(data["capabilities"], dict):
+            caps = data["capabilities"]
+
+        result["hwaccel_enabled"] = caps.get("hwaccel_enabled", False)
+        result["hwaccel_type"] = caps.get("hwaccel_type")
+        result["gpu_name"] = caps.get("gpu_name")
+        result["code_version"] = caps.get("code_version")
+
+        return result
     except (json.JSONDecodeError, TypeError):
-        return {"hwaccel_enabled": False, "hwaccel_type": None, "gpu_name": None}
+        return result
 
 
 def determine_worker_status(
@@ -4115,6 +4136,8 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
                 hwaccel_enabled=caps["hwaccel_enabled"],
                 hwaccel_type=caps["hwaccel_type"],
                 gpu_name=caps["gpu_name"],
+                code_version=caps["code_version"],
+                deployment_type=caps["deployment_type"],
                 jobs_completed=jobs_completed,
                 jobs_failed=jobs_failed,
                 last_job_completed_at=last_completed,
@@ -4517,6 +4540,180 @@ async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = Tr
     )
 
     return {"status": "ok", "message": "Worker deleted"}
+
+
+# ============ Worker Remote Control (Issue #410) ============
+
+
+@app.post("/api/admin/workers/{worker_id}/restart")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def restart_worker(request: Request, worker_id: str):
+    """
+    Send restart command to a specific worker.
+
+    The worker will finish its current job (if any) before restarting.
+    Requires Redis to be configured for pub/sub.
+    """
+    from api.pubsub import publish_worker_command
+    from api.redis_client import get_redis
+
+    # Verify worker exists
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    # Check if Redis is available
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(
+            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
+        )
+
+    # Publish restart command
+    success = await publish_worker_command(worker_id, "restart")
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to send restart command")
+
+    # Audit log
+    log_audit(
+        AuditAction.ADMIN_ACTION,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="worker",
+        resource_id=worker["id"],
+        resource_name=worker["worker_name"] or worker["worker_id"][:8],
+        details={"action": "restart", "worker_id": worker_id},
+    )
+
+    return {"status": "ok", "message": f"Restart command sent to worker {worker['worker_name'] or worker_id[:8]}"}
+
+
+@app.post("/api/admin/workers/{worker_id}/stop")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def stop_worker(request: Request, worker_id: str):
+    """
+    Send stop command to a specific worker.
+
+    The worker will finish its current job (if any) before stopping.
+    The process manager (systemd, k8s) will NOT restart the worker.
+    """
+    from api.pubsub import publish_worker_command
+    from api.redis_client import get_redis
+
+    # Verify worker exists
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    # Check if Redis is available
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(
+            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
+        )
+
+    # Publish stop command
+    success = await publish_worker_command(worker_id, "stop")
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to send stop command")
+
+    # Audit log
+    log_audit(
+        AuditAction.ADMIN_ACTION,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="worker",
+        resource_id=worker["id"],
+        resource_name=worker["worker_name"] or worker["worker_id"][:8],
+        details={"action": "stop", "worker_id": worker_id},
+    )
+
+    return {"status": "ok", "message": f"Stop command sent to worker {worker['worker_name'] or worker_id[:8]}"}
+
+
+@app.post("/api/admin/workers/restart-all")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def restart_all_workers(request: Request):
+    """
+    Broadcast restart command to all active workers.
+
+    Each worker will finish its current job before restarting.
+    This is useful for deploying updates across all workers.
+    """
+    from api.pubsub import publish_worker_command
+    from api.redis_client import get_redis
+
+    # Check if Redis is available
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(
+            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
+        )
+
+    # Publish broadcast restart command
+    success = await publish_worker_command("all", "restart")
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to broadcast restart command")
+
+    # Audit log
+    log_audit(
+        AuditAction.ADMIN_ACTION,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="worker",
+        resource_id=None,
+        resource_name="all",
+        details={"action": "restart-all", "broadcast": True},
+    )
+
+    return {"status": "ok", "message": "Restart command broadcast to all workers"}
+
+
+@app.post("/api/admin/workers/{worker_id}/update")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_worker(request: Request, worker_id: str):
+    """
+    Send update command to a specific worker.
+
+    The worker will:
+    1. Finish its current job (if any)
+    2. Pull latest code via git
+    3. Restart to apply updates
+
+    This is only available for git-based deployments.
+    """
+    from api.pubsub import publish_worker_command
+    from api.redis_client import get_redis
+
+    # Verify worker exists
+    worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    # Check if Redis is available
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(
+            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
+        )
+
+    # Publish update command
+    success = await publish_worker_command(worker_id, "update")
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to send update command")
+
+    # Audit log
+    log_audit(
+        AuditAction.ADMIN_ACTION,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="worker",
+        resource_id=worker["id"],
+        resource_name=worker["worker_name"] or worker["worker_id"][:8],
+        details={"action": "update", "worker_id": worker_id},
+    )
+
+    return {"status": "ok", "message": f"Update command sent to worker {worker['worker_name'] or worker_id[:8]}"}
 
 
 # ============ Server-Sent Events (SSE) Endpoints ============

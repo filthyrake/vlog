@@ -531,7 +531,15 @@
             <div class="bg-dark-900 rounded-xl overflow-hidden mb-6">
                 <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
                     <h3 class="font-semibold">Workers</h3>
-                    <button @click="loadWorkers" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
+                    <div class="flex gap-3">
+                        <button
+                            @click="restartAllWorkers"
+                            x-show="workersList.filter(w => w.status !== 'offline' && w.status !== 'disabled').length > 0"
+                            class="text-purple-400 hover:text-purple-300 text-sm"
+                            title="Restart all online workers (useful for deploying updates)"
+                        >Restart All</button>
+                        <button @click="loadWorkers" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
+                    </div>
                 </div>
 
                 <div class="divide-y divide-dark-800">
@@ -560,6 +568,26 @@
                                             }" x-text="worker.status.charAt(0).toUpperCase() + worker.status.slice(1)"></span>
                                             <span class="text-dark-600">•</span>
                                             <span x-text="worker.hwaccel_type ? (worker.gpu_name || worker.hwaccel_type.toUpperCase()) : 'CPU'"></span>
+                                            <!-- Version and deployment info -->
+                                            <template x-if="worker.code_version">
+                                                <span class="text-dark-600">•</span>
+                                            </template>
+                                            <template x-if="worker.code_version">
+                                                <span
+                                                    :class="{
+                                                        'text-yellow-400': isVersionOutdated(worker.code_version),
+                                                        'text-dark-400': !isVersionOutdated(worker.code_version)
+                                                    }"
+                                                    :title="isVersionOutdated(worker.code_version) ? 'Outdated version' : 'Current version'"
+                                                    x-text="worker.code_version"
+                                                ></span>
+                                            </template>
+                                            <template x-if="worker.deployment_type">
+                                                <span class="text-dark-600">•</span>
+                                            </template>
+                                            <template x-if="worker.deployment_type">
+                                                <span class="text-dark-500" x-text="worker.deployment_type === 'kubernetes' ? 'k8s' : worker.deployment_type"></span>
+                                            </template>
                                             <template x-if="worker.seconds_since_heartbeat !== null">
                                                 <span class="text-dark-600">•</span>
                                             </template>
@@ -588,6 +616,23 @@
                                     </div>
                                     <!-- Actions -->
                                     <div class="flex gap-2">
+                                        <!-- Remote control buttons (require online worker) -->
+                                        <button
+                                            x-show="worker.status !== 'disabled' && worker.status !== 'offline'"
+                                            @click="restartWorker(worker.worker_id, worker.worker_name)"
+                                            :disabled="workerCommandPending[worker.worker_id]"
+                                            class="text-blue-400 hover:text-blue-300 text-sm disabled:opacity-50"
+                                            :title="workerCommandPending[worker.worker_id] ? 'Command pending...' : 'Restart worker (after current job)'"
+                                        >Restart</button>
+                                        <button
+                                            x-show="worker.status !== 'disabled' && worker.status !== 'offline'"
+                                            @click="updateWorker(worker.worker_id, worker.worker_name)"
+                                            :disabled="workerCommandPending[worker.worker_id]"
+                                            class="text-purple-400 hover:text-purple-300 text-sm disabled:opacity-50"
+                                            title="Pull latest code and restart"
+                                        >Update</button>
+                                        <span x-show="worker.status !== 'disabled' && worker.status !== 'offline'" class="text-dark-600">|</span>
+                                        <!-- Status control buttons -->
                                         <button
                                             x-show="worker.status !== 'disabled'"
                                             @click="disableWorker(worker.worker_id)"
@@ -3210,12 +3255,111 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     }
                 },
 
+                // Worker remote control methods (Issue #410)
+                workerCommandPending: {},
+
+                async restartWorker(workerId, workerName) {
+                    const name = workerName || workerId.slice(0, 8);
+                    if (!confirm(`Restart worker "${name}"?\n\nThe worker will finish its current job before restarting.`)) return;
+
+                    this.workerCommandPending[workerId] = true;
+                    try {
+                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/restart`, { method: 'POST' });
+                        if (res.ok) {
+                            const data = await res.json();
+                            // Show success feedback briefly
+                            setTimeout(() => {
+                                delete this.workerCommandPending[workerId];
+                                this.loadWorkers();
+                            }, 3000);
+                        } else {
+                            const data = await res.json();
+                            delete this.workerCommandPending[workerId];
+                            alert(data.detail || 'Failed to send restart command');
+                        }
+                    } catch (e) {
+                        delete this.workerCommandPending[workerId];
+                        alert('Failed to send restart command: ' + e.message);
+                    }
+                },
+
+                async updateWorker(workerId, workerName) {
+                    const name = workerName || workerId.slice(0, 8);
+                    if (!confirm(`Update worker "${name}"?\n\nThe worker will:\n1. Finish its current job\n2. Pull latest code via git\n3. Restart to apply updates`)) return;
+
+                    this.workerCommandPending[workerId] = true;
+                    try {
+                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/update`, { method: 'POST' });
+                        if (res.ok) {
+                            const data = await res.json();
+                            setTimeout(() => {
+                                delete this.workerCommandPending[workerId];
+                                this.loadWorkers();
+                            }, 3000);
+                        } else {
+                            const data = await res.json();
+                            delete this.workerCommandPending[workerId];
+                            alert(data.detail || 'Failed to send update command');
+                        }
+                    } catch (e) {
+                        delete this.workerCommandPending[workerId];
+                        alert('Failed to send update command: ' + e.message);
+                    }
+                },
+
+                async restartAllWorkers() {
+                    if (!confirm('Restart ALL workers?\n\nEach worker will finish its current job before restarting.\nThis is useful for deploying updates across all workers.')) return;
+
+                    try {
+                        const res = await this.apiFetch('/api/admin/workers/restart-all', { method: 'POST' });
+                        if (res.ok) {
+                            // Mark all workers as pending
+                            this.workersList.forEach(w => {
+                                if (w.status !== 'offline' && w.status !== 'disabled') {
+                                    this.workerCommandPending[w.worker_id] = true;
+                                }
+                            });
+                            setTimeout(() => {
+                                this.workerCommandPending = {};
+                                this.loadWorkers();
+                            }, 5000);
+                        } else {
+                            const data = await res.json();
+                            alert(data.detail || 'Failed to broadcast restart command');
+                        }
+                    } catch (e) {
+                        alert('Failed to broadcast restart command: ' + e.message);
+                    }
+                },
+
                 formatTimeSince(seconds) {
                     if (seconds === null || seconds === undefined) return '';
                     if (seconds < 60) return seconds + 's ago';
                     if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
                     if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
                     return Math.floor(seconds / 86400) + 'd ago';
+                },
+
+                isVersionOutdated(version) {
+                    // Compare against the most common version among online workers
+                    if (!version || !this.workersList || this.workersList.length === 0) return false;
+
+                    // Get versions from online workers only
+                    const onlineWorkers = this.workersList.filter(w =>
+                        w.status !== 'offline' && w.status !== 'disabled' && w.code_version
+                    );
+                    if (onlineWorkers.length === 0) return false;
+
+                    // Find the most common version (likely the "current" version)
+                    const versionCounts = {};
+                    onlineWorkers.forEach(w => {
+                        versionCounts[w.code_version] = (versionCounts[w.code_version] || 0) + 1;
+                    });
+
+                    const latestVersion = Object.entries(versionCounts)
+                        .sort((a, b) => b[1] - a[1])[0][0];
+
+                    return version !== latestVersion;
                 },
 
                 formatDate(dateStr) {

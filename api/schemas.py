@@ -561,6 +561,9 @@ class WorkerDashboardStatus(BaseModel):
     hwaccel_enabled: bool = False
     hwaccel_type: Optional[str] = None
     gpu_name: Optional[str] = None
+    # Version tracking (Issue #410)
+    code_version: Optional[str] = None
+    deployment_type: Optional[str] = None  # kubernetes, systemd, docker, manual
     # Stats
     jobs_completed: int = 0
     jobs_failed: int = 0

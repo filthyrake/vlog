@@ -50,6 +50,7 @@ from worker.hwaccel import (
     GPUCapabilities,
     VideoCodec,
     build_cmaf_transcode_command,
+    detect_deployment_type,
     detect_gpu_capabilities,
     get_recommended_parallel_sessions,
     get_worker_capabilities,
@@ -82,6 +83,9 @@ JOB_QUEUE: Optional[JobQueue] = None
 
 # Global health server (for K8s probes)
 HEALTH_SERVER: Optional[HealthServer] = None
+
+# Global command listener (for remote management)
+COMMAND_LISTENER = None
 
 # Worker ID for Redis consumer name (generated at startup)
 WORKER_UUID: str = ""
@@ -1157,10 +1161,15 @@ async def worker_loop():
 
     # Get worker capabilities for heartbeat
     worker_caps = await get_worker_capabilities(GPU_CAPS)
+    deployment_type = detect_deployment_type()
+    print(f"  Deployment type: {deployment_type}")
 
-    # Verify connection with initial heartbeat (include capabilities)
+    # Verify connection with initial heartbeat (include capabilities and deployment type)
     try:
-        await client.heartbeat(status="idle", metadata={"capabilities": worker_caps})
+        await client.heartbeat(
+            status="idle",
+            metadata={"capabilities": worker_caps, "deployment_type": deployment_type},
+        )
         print("  Connected to Worker API")
         # Mark worker as ready after successful API connection
         HEALTH_SERVER.set_ready(True)
@@ -1174,6 +1183,17 @@ async def worker_loop():
 
     # Start heartbeat background task
     heartbeat_task = asyncio.create_task(heartbeat_loop(client, worker_state))
+
+    # Start command listener for remote management (Issue #410)
+    from worker.command_listener import CommandListener
+
+    global COMMAND_LISTENER
+    COMMAND_LISTENER = CommandListener(WORKER_UUID)
+    command_listener_started = await COMMAND_LISTENER.start()
+    if command_listener_started:
+        print("  Remote management enabled (listening for commands)")
+    else:
+        print("  Remote management unavailable (Redis not configured)")
 
     jobs_processed = 0
     jobs_failed = 0
@@ -1226,6 +1246,14 @@ async def worker_loop():
                         # The job will be re-queued to Redis when the database retry triggers
                         if redis_job:
                             await JOB_QUEUE.acknowledge_job(redis_job)
+
+                    # Check for pending management commands after job completion
+                    if COMMAND_LISTENER and COMMAND_LISTENER.has_pending_command():
+                        cmd = COMMAND_LISTENER.get_pending_command()
+                        print(f"Executing pending management command: {cmd}")
+                        await COMMAND_LISTENER.execute_pending_command()
+                        # Command handler will send SIGTERM, which triggers graceful shutdown
+                        break
                 else:
                     # No regular transcoding jobs available
                     # Try to process a re-encode job at lower priority
@@ -1260,6 +1288,10 @@ async def worker_loop():
             await heartbeat_task
         except asyncio.CancelledError:
             pass
+
+        # Stop command listener
+        if COMMAND_LISTENER:
+            await COMMAND_LISTENER.stop()
 
         # Stop health server
         if HEALTH_SERVER:

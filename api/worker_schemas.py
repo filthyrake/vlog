@@ -45,6 +45,9 @@ class WorkerCapabilities(BaseModel):
         default="none", max_length=20, description="Hardware acceleration type: nvidia, intel, or none"
     )
     gpu_name: Optional[str] = Field(default=None, max_length=200, description="GPU device name")
+    code_version: Optional[str] = Field(
+        default=None, max_length=64, description="Worker code version (git commit hash or semver tag)"
+    )
     supported_codecs: List[str] = Field(
         default=["h264"],
         max_length=10,  # Max 10 codecs in the list
@@ -92,6 +95,14 @@ class WorkerMetadata(BaseModel):
     """Worker metadata for Kubernetes pod info, etc."""
 
     model_config = ConfigDict(extra="forbid")  # Reject unknown fields
+
+    # Deployment type: how this worker is deployed
+    deployment_type: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        pattern="^(kubernetes|systemd|docker|manual)$",
+        description="Deployment method: kubernetes, systemd, docker, or manual",
+    )
 
     # Kubernetes pod information
     pod_name: Optional[str] = Field(default=None, max_length=253)

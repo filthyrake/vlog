@@ -412,3 +412,65 @@ async def subscribe_to_workers() -> Subscriber:
         channel_name("progress", "all"),
     )
     return subscriber
+
+
+async def subscribe_to_worker_commands(worker_id: str) -> Subscriber:
+    """
+    Create a subscriber for worker-specific management commands.
+
+    Subscribes to both worker-specific and broadcast command channels.
+
+    Args:
+        worker_id: The worker's UUID
+
+    Returns:
+        Configured Subscriber instance
+    """
+    subscriber = Subscriber()
+    await subscriber.subscribe(
+        channel_name("worker", f"{worker_id}:commands"),  # Worker-specific commands
+        channel_name("workers", "commands"),  # Broadcast commands to all workers
+    )
+    return subscriber
+
+
+async def publish_worker_command(
+    worker_id: str,
+    command: str,
+    params: Optional[Dict] = None,
+) -> bool:
+    """
+    Publish a management command to a worker.
+
+    Args:
+        worker_id: Target worker UUID or "all" for broadcast
+        command: Command type (restart, stop, update)
+        params: Optional command parameters
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "command",
+        "command": command,
+        "params": params or {},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        payload = json.dumps(message)
+        if worker_id == "all":
+            # Broadcast to all workers
+            await redis.publish(channel_name("workers", "commands"), payload)
+        else:
+            # Target specific worker
+            await redis.publish(channel_name("worker", f"{worker_id}:commands"), payload)
+        logger.info(f"Published {command} command to worker {worker_id}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish worker command: {e}")
+        return False
