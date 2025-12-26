@@ -20,6 +20,8 @@ jobs:
           POSTGRES_USER: vlog
           POSTGRES_PASSWORD: vlog_password
           POSTGRES_DB: postgres
+          # Increase max connections for parallel tests
+          POSTGRES_INITDB_ARGS: "-c max_connections=200"
         ports:
           - 5433:5432
         options: >-
@@ -60,12 +62,17 @@ jobs:
           VLOG_TEST_PG_ADMIN_DB: postgres
         run: |
           source .venv/bin/activate
-          pytest -n 4 -v \
+          # For dev branch: skip slow integration tests (~800-900 tests, ~5-6 min)
+          # Full test suite (~1000+ tests) runs on main branch
+          # Using -x to fail fast, -n 4 for parallelism (avoid too many DB connections)
+          pytest -n 4 -x --tb=short \
             --ignore=tests/test_workflows.py \
             --ignore=tests/test_worker_integration.py \
             --ignore=tests/test_transcoder_integration.py \
             --ignore=tests/test_e2e_upload.py \
-            --ignore=tests/test_transcoder.py
+            --ignore=tests/test_transcoder.py \
+            --ignore=tests/test_remote_transcoder.py \
+            --ignore=tests/test_cli.py
 
   # Full tests for main branch - comprehensive coverage
   test-full:
@@ -80,6 +87,8 @@ jobs:
           POSTGRES_USER: vlog
           POSTGRES_PASSWORD: vlog_password
           POSTGRES_DB: postgres
+          # Increase max connections for parallel tests
+          POSTGRES_INITDB_ARGS: "-c max_connections=200"
         ports:
           - 5433:5432
         options: >-
