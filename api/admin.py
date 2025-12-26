@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import shutil
 import uuid
@@ -45,6 +46,7 @@ from api.database import (
     categories,
     configure_database,
     create_tables,
+    custom_field_definitions,
     database,
     playback_sessions,
     quality_progress,
@@ -52,6 +54,7 @@ from api.database import (
     tags,
     transcoding_jobs,
     transcriptions,
+    video_custom_fields,
     video_qualities,
     video_tags,
     videos,
@@ -75,6 +78,8 @@ from api.schemas import (
     ActiveJobsResponse,
     ActiveJobWithWorker,
     AnalyticsOverview,
+    BulkCustomFieldsResponse,
+    BulkCustomFieldsUpdate,
     BulkDeleteRequest,
     BulkDeleteResponse,
     BulkOperationResult,
@@ -86,6 +91,10 @@ from api.schemas import (
     BulkUpdateResponse,
     CategoryCreate,
     CategoryResponse,
+    CustomFieldCreate,
+    CustomFieldListResponse,
+    CustomFieldResponse,
+    CustomFieldUpdate,
     DailyViews,
     QualityBreakdown,
     QualityProgressResponse,
@@ -114,6 +123,9 @@ from api.schemas import (
     VideoAnalyticsDetail,
     VideoAnalyticsListResponse,
     VideoAnalyticsSummary,
+    VideoCustomFieldsResponse,
+    VideoCustomFieldsUpdate,
+    VideoCustomFieldValue,
     VideoExportItem,
     VideoExportResponse,
     VideoListResponse,
@@ -5924,6 +5936,896 @@ async def update_reencode_job(
     )
 
     return {"status": "ok", "job_id": job_id}
+
+
+# ============ Custom Fields ============
+
+
+@app.get("/api/custom-fields")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_custom_fields(
+    request: Request,
+    category_id: Optional[int] = Query(
+        default=None,
+        description="Filter by category. Use 0 for global fields only, or omit for all fields."
+    ),
+) -> CustomFieldListResponse:
+    """
+    List custom field definitions.
+
+    - No filter: Returns all fields (global + category-specific)
+    - category_id=0: Returns only global fields
+    - category_id=N: Returns global fields + fields for category N
+    """
+    query = (
+        sa.select(
+            custom_field_definitions.c.id,
+            custom_field_definitions.c.name,
+            custom_field_definitions.c.slug,
+            custom_field_definitions.c.field_type,
+            custom_field_definitions.c.options,
+            custom_field_definitions.c.required,
+            custom_field_definitions.c.category_id,
+            custom_field_definitions.c.position,
+            custom_field_definitions.c.constraints,
+            custom_field_definitions.c.description,
+            custom_field_definitions.c.created_at,
+            categories.c.name.label("category_name"),
+        )
+        .select_from(
+            custom_field_definitions.outerjoin(
+                categories,
+                custom_field_definitions.c.category_id == categories.c.id
+            )
+        )
+        .order_by(custom_field_definitions.c.position, custom_field_definitions.c.name)
+    )
+
+    if category_id is not None:
+        if category_id == 0:
+            # Only global fields
+            query = query.where(custom_field_definitions.c.category_id.is_(None))
+        else:
+            # Global fields + fields for specific category
+            query = query.where(
+                sa.or_(
+                    custom_field_definitions.c.category_id.is_(None),
+                    custom_field_definitions.c.category_id == category_id,
+                )
+            )
+
+    rows = await fetch_all_with_retry(query)
+
+    fields = []
+    for row in rows:
+        options = None
+        if row["options"]:
+            try:
+                options = json.loads(row["options"])
+            except json.JSONDecodeError:
+                options = None
+
+        constraints = None
+        if row["constraints"]:
+            try:
+                constraints = json.loads(row["constraints"])
+            except json.JSONDecodeError:
+                constraints = None
+
+        fields.append(
+            CustomFieldResponse(
+                id=row["id"],
+                name=row["name"],
+                slug=row["slug"],
+                field_type=row["field_type"],
+                options=options,
+                required=row["required"],
+                category_id=row["category_id"],
+                category_name=row["category_name"],
+                position=row["position"],
+                constraints=constraints,
+                description=row["description"],
+                created_at=row["created_at"],
+            )
+        )
+
+    return CustomFieldListResponse(fields=fields, total_count=len(fields))
+
+
+@app.post("/api/custom-fields")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_custom_field(
+    request: Request,
+    data: CustomFieldCreate,
+) -> CustomFieldResponse:
+    """Create a new custom field definition."""
+    # Generate slug from name
+    slug = slugify(data.name)
+
+    # Validate category exists if provided
+    category_name = None
+    if data.category_id is not None:
+        category = await fetch_one_with_retry(
+            categories.select().where(categories.c.id == data.category_id)
+        )
+        if not category:
+            raise HTTPException(status_code=400, detail="Category not found")
+        category_name = category["name"]
+
+    # Check for duplicate slug in same scope
+    duplicate_query = custom_field_definitions.select().where(
+        custom_field_definitions.c.slug == slug
+    )
+    if data.category_id is not None:
+        duplicate_query = duplicate_query.where(
+            custom_field_definitions.c.category_id == data.category_id
+        )
+    else:
+        duplicate_query = duplicate_query.where(
+            custom_field_definitions.c.category_id.is_(None)
+        )
+
+    existing = await fetch_one_with_retry(duplicate_query)
+    if existing:
+        scope = f"category '{category_name}'" if data.category_id else "global fields"
+        raise HTTPException(
+            status_code=400,
+            detail=f"A field with this name already exists in {scope}"
+        )
+
+    # Validate and serialize options and constraints to JSON
+    options_json = json.dumps(data.options) if data.options else None
+    constraints_json = None
+    if data.constraints:
+        constraints_dict = data.constraints.model_dump(exclude_none=True)
+
+        # min/max only valid for number fields
+        if (constraints_dict.get("min") is not None or constraints_dict.get("max") is not None):
+            if data.field_type != "number":
+                raise HTTPException(
+                    status_code=400,
+                    detail="min/max constraints are only valid for number fields"
+                )
+
+        # min_length/max_length/pattern only valid for text/url fields
+        if (constraints_dict.get("min_length") is not None or
+            constraints_dict.get("max_length") is not None or
+            constraints_dict.get("pattern") is not None):
+            if data.field_type not in ("text", "url"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="min_length/max_length/pattern constraints are only valid for text/url fields"
+                )
+
+        # Validate pattern is a valid regex
+        if constraints_dict.get("pattern"):
+            try:
+                re.compile(constraints_dict["pattern"])
+            except re.error as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid regex pattern: {e}"
+                )
+
+        constraints_json = json.dumps(constraints_dict)
+
+    # Insert the field
+    query = custom_field_definitions.insert().values(
+        name=data.name,
+        slug=slug,
+        field_type=data.field_type,
+        options=options_json,
+        required=data.required,
+        category_id=data.category_id,
+        position=data.position,
+        constraints=constraints_json,
+        description=data.description,
+        created_at=datetime.now(timezone.utc),
+    )
+    field_id = await db_execute_with_retry(query)
+
+    # Audit log
+    log_audit(
+        AuditAction.CUSTOM_FIELD_CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="custom_field",
+        resource_id=field_id,
+        resource_name=slug,
+        details={
+            "name": data.name,
+            "field_type": data.field_type,
+            "category_id": data.category_id,
+            "required": data.required,
+        },
+    )
+
+    return CustomFieldResponse(
+        id=field_id,
+        name=data.name,
+        slug=slug,
+        field_type=data.field_type,
+        options=data.options,
+        required=data.required,
+        category_id=data.category_id,
+        category_name=category_name,
+        position=data.position,
+        constraints=data.constraints,
+        description=data.description,
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+@app.get("/api/custom-fields/{field_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_custom_field(
+    request: Request,
+    field_id: int,
+) -> CustomFieldResponse:
+    """Get a custom field definition by ID."""
+    query = (
+        sa.select(
+            custom_field_definitions.c.id,
+            custom_field_definitions.c.name,
+            custom_field_definitions.c.slug,
+            custom_field_definitions.c.field_type,
+            custom_field_definitions.c.options,
+            custom_field_definitions.c.required,
+            custom_field_definitions.c.category_id,
+            custom_field_definitions.c.position,
+            custom_field_definitions.c.constraints,
+            custom_field_definitions.c.description,
+            custom_field_definitions.c.created_at,
+            categories.c.name.label("category_name"),
+        )
+        .select_from(
+            custom_field_definitions.outerjoin(
+                categories,
+                custom_field_definitions.c.category_id == categories.c.id
+            )
+        )
+        .where(custom_field_definitions.c.id == field_id)
+    )
+
+    row = await fetch_one_with_retry(query)
+    if not row:
+        raise HTTPException(status_code=404, detail="Custom field not found")
+
+    options = None
+    if row["options"]:
+        try:
+            options = json.loads(row["options"])
+        except json.JSONDecodeError:
+            options = None
+
+    constraints = None
+    if row["constraints"]:
+        try:
+            constraints = json.loads(row["constraints"])
+        except json.JSONDecodeError:
+            constraints = None
+
+    return CustomFieldResponse(
+        id=row["id"],
+        name=row["name"],
+        slug=row["slug"],
+        field_type=row["field_type"],
+        options=options,
+        required=row["required"],
+        category_id=row["category_id"],
+        category_name=row["category_name"],
+        position=row["position"],
+        constraints=constraints,
+        description=row["description"],
+        created_at=row["created_at"],
+    )
+
+
+@app.put("/api/custom-fields/{field_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_custom_field(
+    request: Request,
+    field_id: int,
+    data: CustomFieldUpdate,
+) -> CustomFieldResponse:
+    """
+    Update a custom field definition.
+
+    Note: field_type and category_id cannot be changed after creation.
+    """
+    # Fetch existing field
+    existing = await fetch_one_with_retry(
+        custom_field_definitions.select().where(custom_field_definitions.c.id == field_id)
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Custom field not found")
+
+    # Build update values
+    update_values = {}
+
+    if data.name is not None:
+        # Generate new slug from new name
+        new_slug = slugify(data.name)
+
+        # Check for duplicate slug in same scope (exclude current field)
+        duplicate_query = (
+            custom_field_definitions.select()
+            .where(custom_field_definitions.c.slug == new_slug)
+            .where(custom_field_definitions.c.id != field_id)
+        )
+        if existing["category_id"] is not None:
+            duplicate_query = duplicate_query.where(
+                custom_field_definitions.c.category_id == existing["category_id"]
+            )
+        else:
+            duplicate_query = duplicate_query.where(
+                custom_field_definitions.c.category_id.is_(None)
+            )
+
+        duplicate = await fetch_one_with_retry(duplicate_query)
+        if duplicate:
+            raise HTTPException(
+                status_code=400,
+                detail="A field with this name already exists in the same scope"
+            )
+
+        update_values["name"] = data.name
+        update_values["slug"] = new_slug
+
+    if data.options is not None:
+        # Validate options for select/multi_select fields
+        if existing["field_type"] not in ("select", "multi_select"):
+            raise HTTPException(
+                status_code=400,
+                detail="Options can only be updated for select/multi_select fields"
+            )
+        update_values["options"] = json.dumps(data.options)
+
+    if data.required is not None:
+        update_values["required"] = data.required
+
+    if data.position is not None:
+        update_values["position"] = data.position
+
+    if data.constraints is not None:
+        # Validate constraints match field type
+        field_type = existing["field_type"]
+        constraints_dict = data.constraints.model_dump(exclude_none=True)
+
+        # min/max only valid for number fields
+        if (constraints_dict.get("min") is not None or constraints_dict.get("max") is not None):
+            if field_type != "number":
+                raise HTTPException(
+                    status_code=400,
+                    detail="min/max constraints are only valid for number fields"
+                )
+
+        # min_length/max_length/pattern only valid for text/url fields
+        if (constraints_dict.get("min_length") is not None or
+            constraints_dict.get("max_length") is not None or
+            constraints_dict.get("pattern") is not None):
+            if field_type not in ("text", "url"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="min_length/max_length/pattern constraints are only valid for text/url fields"
+                )
+
+        # Validate pattern is a valid regex
+        if constraints_dict.get("pattern"):
+            try:
+                re.compile(constraints_dict["pattern"])
+            except re.error as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid regex pattern: {e}"
+                )
+
+        update_values["constraints"] = json.dumps(constraints_dict)
+
+    if data.description is not None:
+        update_values["description"] = data.description
+
+    if not update_values:
+        raise HTTPException(status_code=400, detail="No update values provided")
+
+    await db_execute_with_retry(
+        custom_field_definitions.update()
+        .where(custom_field_definitions.c.id == field_id)
+        .values(**update_values)
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.CUSTOM_FIELD_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="custom_field",
+        resource_id=field_id,
+        resource_name=existing["slug"],
+        details={"updates": list(update_values.keys())},
+    )
+
+    # Fetch and return updated field
+    return await get_custom_field(request, field_id)
+
+
+@app.delete("/api/custom-fields/{field_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_custom_field(request: Request, field_id: int):
+    """
+    Delete a custom field definition.
+
+    All values associated with this field will be deleted (CASCADE).
+    """
+    # Verify field exists
+    existing = await fetch_one_with_retry(
+        custom_field_definitions.select().where(custom_field_definitions.c.id == field_id)
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Custom field not found")
+
+    # Count affected videos
+    count_query = sa.select(sa.func.count()).where(
+        video_custom_fields.c.field_id == field_id
+    )
+    affected_count = await fetch_val_with_retry(count_query)
+
+    # Delete field (CASCADE will delete video_custom_fields entries)
+    await db_execute_with_retry(
+        custom_field_definitions.delete().where(custom_field_definitions.c.id == field_id)
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.CUSTOM_FIELD_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="custom_field",
+        resource_id=field_id,
+        resource_name=existing["slug"],
+        details={
+            "name": existing["name"],
+            "field_type": existing["field_type"],
+            "affected_videos": affected_count or 0,
+        },
+    )
+
+    return {"status": "ok", "affected_videos": affected_count or 0}
+
+
+# ============ Video Custom Field Values ============
+
+
+def _validate_custom_field_value(field_type: str, value, options: list = None, constraints: dict = None):
+    """Validate a value against a field type and constraints."""
+    if value is None:
+        return None  # None is always valid (clears the field)
+
+    if field_type == "text":
+        if not isinstance(value, str):
+            raise ValueError("Value must be a string")
+        if constraints:
+            if constraints.get("min_length") and len(value) < constraints["min_length"]:
+                raise ValueError(f"Value must be at least {constraints['min_length']} characters")
+            if constraints.get("max_length") and len(value) > constraints["max_length"]:
+                raise ValueError(f"Value must be at most {constraints['max_length']} characters")
+            if constraints.get("pattern"):
+                try:
+                    if not re.match(constraints["pattern"], value):
+                        raise ValueError("Value does not match required pattern")
+                except re.error:
+                    raise ValueError("Invalid regex pattern in field constraints")
+
+    elif field_type == "number":
+        if not isinstance(value, (int, float)):
+            raise ValueError("Value must be a number")
+        if constraints:
+            if constraints.get("min") is not None and value < constraints["min"]:
+                raise ValueError(f"Value must be at least {constraints['min']}")
+            if constraints.get("max") is not None and value > constraints["max"]:
+                raise ValueError(f"Value must be at most {constraints['max']}")
+
+    elif field_type == "date":
+        if not isinstance(value, str):
+            raise ValueError("Value must be a date string")
+        # Basic ISO date format validation
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("Value must be a valid ISO 8601 date")
+
+    elif field_type == "url":
+        if not isinstance(value, str):
+            raise ValueError("Value must be a string")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("Value must be a valid URL starting with http:// or https://")
+        if constraints:
+            if constraints.get("min_length") and len(value) < constraints["min_length"]:
+                raise ValueError(f"Value must be at least {constraints['min_length']} characters")
+            if constraints.get("max_length") and len(value) > constraints["max_length"]:
+                raise ValueError(f"Value must be at most {constraints['max_length']} characters")
+            if constraints.get("pattern"):
+                try:
+                    if not re.match(constraints["pattern"], value):
+                        raise ValueError("Value does not match required pattern")
+                except re.error:
+                    raise ValueError("Invalid regex pattern in field constraints")
+
+    elif field_type == "select":
+        if not isinstance(value, str):
+            raise ValueError("Value must be a string")
+        if options and value not in options:
+            raise ValueError(f"Value must be one of: {', '.join(options)}")
+
+    elif field_type == "multi_select":
+        if not isinstance(value, list):
+            raise ValueError("Value must be a list")
+        if options:
+            invalid = [v for v in value if v not in options]
+            if invalid:
+                raise ValueError(f"Invalid options: {', '.join(invalid)}")
+
+    return value
+
+
+@app.get("/api/videos/{video_id}/custom-fields")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_video_custom_fields(
+    request: Request,
+    video_id: int,
+) -> VideoCustomFieldsResponse:
+    """
+    Get custom field values for a video.
+
+    Returns all applicable fields (global + category-specific) with their current values.
+    Fields without values return null.
+    """
+    # Verify video exists and get its category
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == video_id)
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Get applicable field definitions (global + video's category)
+    field_query = (
+        sa.select(
+            custom_field_definitions.c.id,
+            custom_field_definitions.c.name,
+            custom_field_definitions.c.slug,
+            custom_field_definitions.c.field_type,
+            custom_field_definitions.c.options,
+            custom_field_definitions.c.required,
+        )
+        .where(
+            sa.or_(
+                custom_field_definitions.c.category_id.is_(None),
+                custom_field_definitions.c.category_id == video["category_id"],
+            )
+        )
+        .order_by(custom_field_definitions.c.position, custom_field_definitions.c.name)
+    )
+
+    field_rows = await fetch_all_with_retry(field_query)
+
+    # Get existing values for this video
+    values_query = (
+        sa.select(
+            video_custom_fields.c.field_id,
+            video_custom_fields.c.value,
+        )
+        .where(video_custom_fields.c.video_id == video_id)
+    )
+    value_rows = await fetch_all_with_retry(values_query)
+    values_map = {row["field_id"]: row["value"] for row in value_rows}
+
+    # Build response
+    fields = []
+    for row in field_rows:
+        raw_value = values_map.get(row["id"])
+        value = None
+        if raw_value:
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value
+
+        options = None
+        if row["options"]:
+            try:
+                options = json.loads(row["options"])
+            except json.JSONDecodeError:
+                options = None
+
+        fields.append(
+            VideoCustomFieldValue(
+                field_id=row["id"],
+                field_slug=row["slug"],
+                field_name=row["name"],
+                field_type=row["field_type"],
+                value=value,
+                required=row["required"],
+                options=options,
+            )
+        )
+
+    return VideoCustomFieldsResponse(video_id=video_id, fields=fields)
+
+
+@app.put("/api/videos/{video_id}/custom-fields")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def set_video_custom_fields(
+    request: Request,
+    video_id: int,
+    data: VideoCustomFieldsUpdate,
+) -> VideoCustomFieldsResponse:
+    """
+    Set custom field values for a video.
+
+    Values are validated against field type and constraints.
+    Use null to clear a field value.
+    """
+    # Verify video exists and get its category
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == video_id)
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Get field definitions for validation
+    field_ids = list(data.values.keys())
+    if not field_ids:
+        return await get_video_custom_fields(request, video_id)
+
+    field_query = (
+        custom_field_definitions.select()
+        .where(custom_field_definitions.c.id.in_(field_ids))
+    )
+    field_rows = await fetch_all_with_retry(field_query)
+    fields_map = {row["id"]: row for row in field_rows}
+
+    # Validate each value
+    errors = []
+    for field_id, value in data.values.items():
+        field = fields_map.get(field_id)
+        if not field:
+            errors.append(f"Field {field_id} not found")
+            continue
+
+        # Check field is applicable to this video
+        if field["category_id"] is not None and field["category_id"] != video["category_id"]:
+            errors.append(f"Field '{field['name']}' is not applicable to this video's category")
+            continue
+
+        try:
+            options = json.loads(field["options"]) if field["options"] else None
+            constraints = json.loads(field["constraints"]) if field["constraints"] else None
+            _validate_custom_field_value(
+                field["field_type"],
+                value,
+                options=options,
+                constraints=constraints,
+            )
+        except ValueError as e:
+            errors.append(f"Field '{field['name']}': {e}")
+
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    # Upsert values
+    async with database.transaction():
+        for field_id, value in data.values.items():
+            if value is None:
+                # Delete the value
+                await database.execute(
+                    video_custom_fields.delete()
+                    .where(video_custom_fields.c.video_id == video_id)
+                    .where(video_custom_fields.c.field_id == field_id)
+                )
+            else:
+                # Check if value exists
+                existing = await database.fetch_one(
+                    video_custom_fields.select()
+                    .where(video_custom_fields.c.video_id == video_id)
+                    .where(video_custom_fields.c.field_id == field_id)
+                )
+                value_json = json.dumps(value)
+                if existing:
+                    await database.execute(
+                        video_custom_fields.update()
+                        .where(video_custom_fields.c.video_id == video_id)
+                        .where(video_custom_fields.c.field_id == field_id)
+                        .values(value=value_json)
+                    )
+                else:
+                    await database.execute(
+                        video_custom_fields.insert().values(
+                            video_id=video_id,
+                            field_id=field_id,
+                            value=value_json,
+                        )
+                    )
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_CUSTOM_FIELDS_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"field_count": len(data.values)},
+    )
+
+    return await get_video_custom_fields(request, video_id)
+
+
+@app.post("/api/videos/bulk/custom-fields")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def bulk_update_custom_fields(
+    request: Request,
+    data: BulkCustomFieldsUpdate,
+) -> BulkCustomFieldsResponse:
+    """
+    Update custom field values for multiple videos.
+
+    The same field values are applied to all specified videos.
+    """
+    # Validate field definitions
+    field_ids = list(data.values.keys())
+    if not field_ids:
+        raise HTTPException(status_code=400, detail="No field values provided")
+
+    field_query = (
+        custom_field_definitions.select()
+        .where(custom_field_definitions.c.id.in_(field_ids))
+    )
+    field_rows = await fetch_all_with_retry(field_query)
+    fields_map = {row["id"]: row for row in field_rows}
+
+    # Validate all fields exist
+    missing = [fid for fid in field_ids if fid not in fields_map]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Fields not found: {missing}")
+
+    # Validate values against field types
+    for field_id, value in data.values.items():
+        field = fields_map[field_id]
+        try:
+            options = json.loads(field["options"]) if field["options"] else None
+            constraints = json.loads(field["constraints"]) if field["constraints"] else None
+            _validate_custom_field_value(
+                field["field_type"],
+                value,
+                options=options,
+                constraints=constraints,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid value for field '{field['name']}': {e}"
+            )
+
+    # Get videos and validate they exist
+    video_query = (
+        sa.select(videos.c.id, videos.c.slug, videos.c.category_id)
+        .where(videos.c.id.in_(data.video_ids))
+        .where(videos.c.deleted_at.is_(None))
+    )
+    video_rows = await fetch_all_with_retry(video_query)
+    videos_map = {row["id"]: row for row in video_rows}
+
+    results = []
+    updated = 0
+    failed = 0
+
+    for video_id in data.video_ids:
+        video = videos_map.get(video_id)
+        if not video:
+            results.append(BulkOperationResult(
+                video_id=video_id,
+                success=False,
+                error="Video not found"
+            ))
+            failed += 1
+            continue
+
+        # Check field applicability
+        skip_fields = []
+        for field_id in field_ids:
+            field = fields_map[field_id]
+            if field["category_id"] is not None and field["category_id"] != video["category_id"]:
+                skip_fields.append(field["name"])
+
+        if skip_fields:
+            results.append(BulkOperationResult(
+                video_id=video_id,
+                success=False,
+                error=f"Fields not applicable: {', '.join(skip_fields)}"
+            ))
+            failed += 1
+            continue
+
+        # Retry logic for transient database errors
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                async with database.transaction():
+                    for field_id, value in data.values.items():
+                        if value is None:
+                            await database.execute(
+                                video_custom_fields.delete()
+                                .where(video_custom_fields.c.video_id == video_id)
+                                .where(video_custom_fields.c.field_id == field_id)
+                            )
+                        else:
+                            existing = await database.fetch_one(
+                                video_custom_fields.select()
+                                .where(video_custom_fields.c.video_id == video_id)
+                                .where(video_custom_fields.c.field_id == field_id)
+                            )
+                            value_json = json.dumps(value)
+                            if existing:
+                                await database.execute(
+                                    video_custom_fields.update()
+                                    .where(video_custom_fields.c.video_id == video_id)
+                                    .where(video_custom_fields.c.field_id == field_id)
+                                    .values(value=value_json)
+                                )
+                            else:
+                                await database.execute(
+                                    video_custom_fields.insert().values(
+                                        video_id=video_id,
+                                        field_id=field_id,
+                                        value=value_json,
+                                    )
+                                )
+
+                results.append(BulkOperationResult(video_id=video_id, success=True))
+                updated += 1
+                break  # Success, exit retry loop
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                # Retry on transient database errors
+                if attempt < max_retries - 1 and (
+                    "database is locked" in error_str or
+                    "deadlock" in error_str or
+                    "lock wait timeout" in error_str
+                ):
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                    continue
+                # Non-retryable error or max retries reached
+                results.append(BulkOperationResult(
+                    video_id=video_id,
+                    success=False,
+                    error=sanitize_error_message(str(last_error))
+                ))
+                failed += 1
+                break
+
+    # Audit log
+    log_audit(
+        AuditAction.VIDEO_CUSTOM_FIELDS_BULK_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        details={
+            "video_count": len(data.video_ids),
+            "field_count": len(data.values),
+            "updated": updated,
+            "failed": failed,
+        },
+    )
+
+    return BulkCustomFieldsResponse(
+        status="ok" if failed == 0 else "partial",
+        updated=updated,
+        failed=failed,
+        results=results,
+    )
 
 
 if __name__ == "__main__":

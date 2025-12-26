@@ -301,14 +301,25 @@ class WorkerAPIClient:
         file_size_mb = 0.0  # Default value in case of early exception
         try:
             with tarfile.open(tmp_path, "w:gz") as tar:
-                # Add playlist file
-                playlist = output_dir / f"{quality_name}.m3u8"
-                if playlist.exists():
-                    tar.add(playlist, arcname=playlist.name)
+                # Check for CMAF subdirectory structure (output_dir/{quality_name}/)
+                cmaf_dir = output_dir / quality_name
+                if cmaf_dir.is_dir():
+                    # CMAF format: files are in subdirectory
+                    # Add all files from the quality subdirectory
+                    for f in cmaf_dir.iterdir():
+                        if f.is_file():
+                            # Preserve subdirectory structure: {quality_name}/filename
+                            tar.add(f, arcname=f"{quality_name}/{f.name}")
+                else:
+                    # HLS/TS format: files are in root with quality prefix
+                    # Add playlist file
+                    playlist = output_dir / f"{quality_name}.m3u8"
+                    if playlist.exists():
+                        tar.add(playlist, arcname=playlist.name)
 
-                # Add segment files
-                for segment in output_dir.glob(f"{quality_name}_*.ts"):
-                    tar.add(segment, arcname=segment.name)
+                    # Add segment files
+                    for segment in output_dir.glob(f"{quality_name}_*.ts"):
+                        tar.add(segment, arcname=segment.name)
 
             file_size = tmp_path.stat().st_size
             file_size_mb = file_size / (1024 * 1024)
@@ -569,6 +580,8 @@ class WorkerAPIClient:
         duration: Optional[float] = None,
         source_width: Optional[int] = None,
         source_height: Optional[int] = None,
+        streaming_format: Optional[str] = None,
+        streaming_codec: Optional[str] = None,
     ) -> dict:
         """
         Mark job as complete.
@@ -579,6 +592,8 @@ class WorkerAPIClient:
             duration: Video duration in seconds
             source_width: Source video width
             source_height: Source video height
+            streaming_format: Streaming format used ("hls_ts" or "cmaf")
+            streaming_codec: Video codec used ("h264", "hevc", "av1")
 
         Returns:
             Server response
@@ -590,6 +605,10 @@ class WorkerAPIClient:
             data["source_width"] = source_width
         if source_height is not None:
             data["source_height"] = source_height
+        if streaming_format is not None:
+            data["streaming_format"] = streaming_format
+        if streaming_codec is not None:
+            data["streaming_codec"] = streaming_codec
         return await self._request(
             "POST",
             f"/api/worker/{job_id}/complete",

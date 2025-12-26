@@ -1181,6 +1181,10 @@ async def complete_job(
                 video_updates["source_width"] = data.source_width
             if data.source_height is not None:
                 video_updates["source_height"] = data.source_height
+            if data.streaming_format is not None:
+                video_updates["streaming_format"] = data.streaming_format
+            if data.streaming_codec is not None:
+                video_updates["primary_codec"] = data.streaming_codec
 
             # Mark job complete
             await database.execute(
@@ -1466,7 +1470,7 @@ async def upload_quality(
         await extract_tar_async(
             tmp_path,
             output_dir,
-            allowed_extensions=(".m3u8", ".ts", ".jpg", ".vtt"),
+            allowed_extensions=(".m3u8", ".ts", ".m4s", ".mp4", ".jpg", ".vtt"),
             max_files=MAX_HLS_ARCHIVE_FILES,
             max_size=MAX_HLS_ARCHIVE_SIZE,
             max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
@@ -1626,7 +1630,7 @@ async def upload_hls(
         await extract_tar_async(
             tmp_path,
             output_dir,
-            allowed_extensions=(".m3u8", ".ts", ".jpg", ".vtt"),
+            allowed_extensions=(".m3u8", ".ts", ".m4s", ".mp4", ".jpg", ".vtt"),
             max_files=MAX_HLS_ARCHIVE_FILES,
             max_size=MAX_HLS_ARCHIVE_SIZE,
             max_single_file=MAX_HLS_SINGLE_FILE_SIZE,

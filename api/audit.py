@@ -54,6 +54,13 @@ class AuditAction(str, Enum):
     TAG_DELETE = "tag_delete"
     VIDEO_TAGS_UPDATE = "video_tags_update"
 
+    # Custom field actions
+    CUSTOM_FIELD_CREATE = "custom_field_create"
+    CUSTOM_FIELD_UPDATE = "custom_field_update"
+    CUSTOM_FIELD_DELETE = "custom_field_delete"
+    VIDEO_CUSTOM_FIELDS_UPDATE = "video_custom_fields_update"
+    VIDEO_CUSTOM_FIELDS_BULK_UPDATE = "video_custom_fields_bulk_update"
+
     # Transcription actions
     TRANSCRIPTION_TRIGGER = "transcription_trigger"
     TRANSCRIPTION_UPDATE = "transcription_update"

@@ -167,6 +167,11 @@
                         class="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 rounded text-sm font-medium transition"
                     >Re-transcode</button>
                     <button
+                        @click="openBulkCustomFieldsModal"
+                        x-show="customFields.length > 0"
+                        class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 rounded text-sm font-medium transition"
+                    >Custom Fields</button>
+                    <button
                         @click="bulkRestoreVideos"
                         x-show="selectedVideos.some(id => videos.find(v => v.id === id)?.deleted_at)"
                         class="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition"
@@ -740,6 +745,11 @@
                         :class="settingsTab === 'watermark' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
                         class="px-4 py-2 rounded-lg font-medium transition text-sm"
                     >Watermark</button>
+                    <button
+                        @click="settingsTab = 'custom_fields'; loadCustomFields()"
+                        :class="settingsTab === 'custom_fields' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        class="px-4 py-2 rounded-lg font-medium transition text-sm"
+                    >Custom Fields</button>
                     <template x-for="category in settingsCategories" :key="category">
                         <button
                             @click="settingsTab = category"
@@ -884,6 +894,193 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <!-- Not loaded state -->
                     <div x-show="!watermarkLoading && !watermarkSettings" class="text-center py-8 text-dark-400">
                         Failed to load watermark settings. <button @click="loadWatermarkSettings()" class="text-blue-400 hover:underline">Retry</button>
+                    </div>
+                </div>
+
+                <!-- Custom Fields Panel -->
+                <div x-show="settingsTab === 'custom_fields'" class="bg-dark-900 rounded-xl p-6">
+                    <div class="flex items-center justify-between mb-6">
+                        <div>
+                            <h3 class="text-lg font-semibold">Custom Fields</h3>
+                            <p class="text-dark-400 text-sm mt-1">Define custom metadata fields for videos. Fields can be global or category-specific.</p>
+                        </div>
+                        <button @click="openCreateFieldModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition text-sm">
+                            Add Field
+                        </button>
+                    </div>
+
+                    <!-- Loading state -->
+                    <div x-show="customFieldsLoading" class="text-center py-8">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                    </div>
+
+                    <!-- Message -->
+                    <div x-show="customFieldMessage" class="mb-4">
+                        <div :class="customFieldError ? 'bg-red-900/20 border-red-800 text-red-400' : 'bg-green-900/20 border-green-800 text-green-400'" class="border rounded-lg px-4 py-3 text-sm flex items-center justify-between">
+                            <span x-text="customFieldMessage"></span>
+                            <button @click="customFieldMessage = ''" class="text-dark-400 hover:text-white">&times;</button>
+                        </div>
+                    </div>
+
+                    <!-- Fields List -->
+                    <div x-show="!customFieldsLoading && customFields.length > 0" class="space-y-6">
+                        <!-- Global Fields -->
+                        <div x-show="customFields.filter(f => !f.category_id).length > 0">
+                            <h4 class="text-sm font-medium text-dark-400 mb-3 uppercase tracking-wider">Global Fields</h4>
+                            <div class="space-y-2">
+                                <template x-for="field in customFields.filter(f => !f.category_id)" :key="field.id">
+                                    <div class="flex items-center justify-between p-4 bg-dark-800 rounded-lg">
+                                        <div class="flex-1">
+                                            <div class="flex items-center gap-2">
+                                                <span class="font-medium" x-text="field.name"></span>
+                                                <span class="px-2 py-0.5 text-xs bg-dark-700 rounded" x-text="field.field_type"></span>
+                                                <span x-show="field.required" class="px-2 py-0.5 text-xs bg-red-900/50 text-red-400 rounded">Required</span>
+                                            </div>
+                                            <div class="text-sm text-dark-400 mt-1" x-show="field.description" x-text="field.description"></div>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="openEditFieldModal(field)" class="p-2 text-dark-400 hover:text-white hover:bg-dark-700 rounded-lg transition">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                            </button>
+                                            <button @click="deleteCustomField(field)" class="p-2 text-dark-400 hover:text-red-400 hover:bg-dark-700 rounded-lg transition">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Category-specific Fields -->
+                        <template x-for="cat in categories" :key="cat.id">
+                            <div x-show="customFields.filter(f => f.category_id === cat.id).length > 0">
+                                <h4 class="text-sm font-medium text-dark-400 mb-3 uppercase tracking-wider" x-text="cat.name + ' Fields'"></h4>
+                                <div class="space-y-2">
+                                    <template x-for="field in customFields.filter(f => f.category_id === cat.id)" :key="field.id">
+                                        <div class="flex items-center justify-between p-4 bg-dark-800 rounded-lg">
+                                            <div class="flex-1">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="font-medium" x-text="field.name"></span>
+                                                    <span class="px-2 py-0.5 text-xs bg-dark-700 rounded" x-text="field.field_type"></span>
+                                                    <span x-show="field.required" class="px-2 py-0.5 text-xs bg-red-900/50 text-red-400 rounded">Required</span>
+                                                </div>
+                                                <div class="text-sm text-dark-400 mt-1" x-show="field.description" x-text="field.description"></div>
+                                            </div>
+                                            <div class="flex gap-2">
+                                                <button @click="openEditFieldModal(field)" class="p-2 text-dark-400 hover:text-white hover:bg-dark-700 rounded-lg transition">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                                </button>
+                                                <button @click="deleteCustomField(field)" class="p-2 text-dark-400 hover:text-red-400 hover:bg-dark-700 rounded-lg transition">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Empty state -->
+                    <div x-show="!customFieldsLoading && customFields.length === 0" class="text-center py-12">
+                        <div class="text-dark-400 mb-4">No custom fields defined yet.</div>
+                        <button @click="openCreateFieldModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition text-sm">
+                            Create Your First Field
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Custom Field Create/Edit Modal -->
+                <div x-show="customFieldModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" @keydown.escape.window="customFieldModal = false">
+                    <div class="bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto" @click.stop>
+                        <h3 class="text-lg font-semibold mb-4" x-text="customFieldEditing ? 'Edit Custom Field' : 'Create Custom Field'"></h3>
+
+                        <form @submit.prevent="saveCustomField" class="space-y-4">
+                            <!-- Name -->
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Name <span class="text-red-400">*</span></label>
+                                <input type="text" x-model="customFieldForm.name" required maxlength="100"
+                                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                                    placeholder="e.g., Difficulty Level">
+                            </div>
+
+                            <!-- Type (disabled when editing) -->
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Field Type <span class="text-red-400">*</span></label>
+                                <select x-model="customFieldForm.field_type" :disabled="customFieldEditing"
+                                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none disabled:opacity-50">
+                                    <option value="text">Text</option>
+                                    <option value="number">Number</option>
+                                    <option value="date">Date</option>
+                                    <option value="url">URL</option>
+                                    <option value="select">Select (Single Choice)</option>
+                                    <option value="multi_select">Multi-Select (Multiple Choices)</option>
+                                </select>
+                                <p x-show="customFieldEditing" class="text-xs text-dark-400 mt-1">Field type cannot be changed after creation.</p>
+                            </div>
+
+                            <!-- Options (for select/multi_select) -->
+                            <div x-show="customFieldForm.field_type === 'select' || customFieldForm.field_type === 'multi_select'">
+                                <label class="block text-sm font-medium mb-2">Options <span class="text-red-400">*</span></label>
+                                <div class="space-y-2">
+                                    <template x-for="(opt, idx) in customFieldForm.options" :key="idx">
+                                        <div class="flex gap-2">
+                                            <input type="text" x-model="customFieldForm.options[idx]"
+                                                class="flex-1 px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 outline-none"
+                                                placeholder="Option value">
+                                            <button type="button" @click="customFieldForm.options.splice(idx, 1)"
+                                                class="p-2 text-dark-400 hover:text-red-400 hover:bg-dark-700 rounded-lg">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                            </button>
+                                        </div>
+                                    </template>
+                                    <button type="button" @click="customFieldForm.options.push('')"
+                                        class="w-full py-2 border border-dashed border-dark-600 text-dark-400 hover:border-dark-500 hover:text-dark-300 rounded-lg text-sm">
+                                        + Add Option
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Category (disabled when editing) -->
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Scope</label>
+                                <select x-model="customFieldForm.category_id" :disabled="customFieldEditing"
+                                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none disabled:opacity-50">
+                                    <option :value="null">Global (applies to all videos)</option>
+                                    <template x-for="cat in categories" :key="cat.id">
+                                        <option :value="cat.id" x-text="cat.name + ' only'"></option>
+                                    </template>
+                                </select>
+                                <p x-show="customFieldEditing" class="text-xs text-dark-400 mt-1">Scope cannot be changed after creation.</p>
+                            </div>
+
+                            <!-- Required -->
+                            <div class="flex items-center gap-3">
+                                <input type="checkbox" x-model="customFieldForm.required" id="field-required"
+                                    class="w-4 h-4 rounded border-dark-600 bg-dark-800 text-blue-600 focus:ring-blue-500">
+                                <label for="field-required" class="text-sm">Required field</label>
+                            </div>
+
+                            <!-- Description -->
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Help Text</label>
+                                <textarea x-model="customFieldForm.description" rows="2" maxlength="500"
+                                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                                    placeholder="Optional description shown to users when editing videos"></textarea>
+                            </div>
+
+                            <!-- Buttons -->
+                            <div class="flex justify-end gap-3 pt-4">
+                                <button type="button" @click="customFieldModal = false" class="px-4 py-2 bg-dark-800 hover:bg-dark-700 rounded-lg transition">
+                                    Cancel
+                                </button>
+                                <button type="submit" :disabled="customFieldSaving"
+                                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg font-medium transition">
+                                    <span x-show="!customFieldSaving" x-text="customFieldEditing ? 'Save Changes' : 'Create Field'"></span>
+                                    <span x-show="customFieldSaving">Saving...</span>
+                                </button>
+                            </div>
+                        </form>
                     </div>
                 </div>
 
@@ -1077,6 +1274,110 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     >
                     <p class="text-xs text-gray-500 mt-1">Leave empty to use current date when video becomes ready</p>
                 </div>
+
+                <!-- Custom Fields Section -->
+                <template x-if="getApplicableCustomFields().length > 0">
+                    <div class="border-t border-dark-700 pt-4 mt-4">
+                        <h4 class="text-sm font-medium text-dark-400 mb-3">Custom Fields</h4>
+                        <div class="space-y-3">
+                            <template x-for="field in getApplicableCustomFields()" :key="field.id">
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">
+                                        <span x-text="field.name"></span>
+                                        <span x-show="field.required" class="text-red-400">*</span>
+                                    </label>
+                                    <p x-show="field.description" class="text-xs text-dark-400 mb-1" x-text="field.description"></p>
+
+                                    <!-- Text field -->
+                                    <template x-if="field.field_type === 'text'">
+                                        <input
+                                            type="text"
+                                            :value="editCustomFieldValues[field.id] || ''"
+                                            @input="editCustomFieldValues[field.id] = $event.target.value"
+                                            :required="field.required"
+                                            :minlength="field.constraints?.min_length"
+                                            :maxlength="field.constraints?.max_length"
+                                            :pattern="field.constraints?.pattern"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                        >
+                                    </template>
+
+                                    <!-- Number field -->
+                                    <template x-if="field.field_type === 'number'">
+                                        <input
+                                            type="number"
+                                            :value="editCustomFieldValues[field.id] ?? ''"
+                                            @input="editCustomFieldValues[field.id] = $event.target.value ? parseFloat($event.target.value) : null"
+                                            :required="field.required"
+                                            :min="field.constraints?.min"
+                                            :max="field.constraints?.max"
+                                            :step="field.constraints?.step || 'any'"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                        >
+                                    </template>
+
+                                    <!-- Date field -->
+                                    <template x-if="field.field_type === 'date'">
+                                        <input
+                                            type="date"
+                                            :value="editCustomFieldValues[field.id] || ''"
+                                            @input="editCustomFieldValues[field.id] = $event.target.value"
+                                            :required="field.required"
+                                            :min="field.constraints?.min_date"
+                                            :max="field.constraints?.max_date"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                        >
+                                    </template>
+
+                                    <!-- URL field -->
+                                    <template x-if="field.field_type === 'url'">
+                                        <input
+                                            type="url"
+                                            :value="editCustomFieldValues[field.id] || ''"
+                                            @input="editCustomFieldValues[field.id] = $event.target.value"
+                                            :required="field.required"
+                                            placeholder="https://..."
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                        >
+                                    </template>
+
+                                    <!-- Select field -->
+                                    <template x-if="field.field_type === 'select'">
+                                        <select
+                                            :value="editCustomFieldValues[field.id] || ''"
+                                            @change="editCustomFieldValues[field.id] = $event.target.value"
+                                            :required="field.required"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                        >
+                                            <option value="">-- Select --</option>
+                                            <template x-for="opt in field.options" :key="opt">
+                                                <option :value="opt" x-text="opt"></option>
+                                            </template>
+                                        </select>
+                                    </template>
+
+                                    <!-- Multi-select field -->
+                                    <template x-if="field.field_type === 'multi_select'">
+                                        <div class="space-y-1">
+                                            <template x-for="opt in field.options" :key="opt">
+                                                <label class="flex items-center gap-2 text-sm cursor-pointer">
+                                                    <input
+                                                        type="checkbox"
+                                                        :checked="(editCustomFieldValues[field.id] || []).includes(opt)"
+                                                        @change="toggleMultiSelectOption(field.id, opt)"
+                                                        class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                                    >
+                                                    <span x-text="opt"></span>
+                                                </label>
+                                            </template>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+
                 <div class="flex gap-3 pt-2">
                     <button
                         type="button"
@@ -1486,6 +1787,130 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
         </div>
     </div>
 
+    <!-- Bulk Custom Fields Modal -->
+    <div x-show="bulkCustomFieldsModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/70" @click="bulkCustomFieldsModal = false"></div>
+        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+            <h3 class="text-xl font-semibold mb-4">Set Custom Fields</h3>
+            <p class="text-dark-300 mb-4">
+                Set custom field values for <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
+                Only global fields are available for bulk updates.
+            </p>
+            <div class="space-y-4 mb-4">
+                <template x-for="field in customFields.filter(f => f.category_id === null)" :key="field.id">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">
+                            <span x-text="field.name"></span>
+                        </label>
+                        <p x-show="field.description" class="text-xs text-dark-400 mb-1" x-text="field.description"></p>
+
+                        <!-- Text field -->
+                        <template x-if="field.field_type === 'text'">
+                            <input
+                                type="text"
+                                :value="bulkCustomFieldValues[field.id] || ''"
+                                @input="bulkCustomFieldValues[field.id] = $event.target.value"
+                                :minlength="field.constraints?.min_length"
+                                :maxlength="field.constraints?.max_length"
+                                :pattern="field.constraints?.pattern"
+                                placeholder="Leave empty to skip"
+                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
+                            >
+                        </template>
+
+                        <!-- Number field -->
+                        <template x-if="field.field_type === 'number'">
+                            <input
+                                type="number"
+                                :value="bulkCustomFieldValues[field.id] ?? ''"
+                                @input="bulkCustomFieldValues[field.id] = $event.target.value ? parseFloat($event.target.value) : null"
+                                :min="field.constraints?.min"
+                                :max="field.constraints?.max"
+                                :step="field.constraints?.step || 'any'"
+                                placeholder="Leave empty to skip"
+                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
+                            >
+                        </template>
+
+                        <!-- Date field -->
+                        <template x-if="field.field_type === 'date'">
+                            <input
+                                type="date"
+                                :value="bulkCustomFieldValues[field.id] || ''"
+                                @input="bulkCustomFieldValues[field.id] = $event.target.value"
+                                :min="field.constraints?.min_date"
+                                :max="field.constraints?.max_date"
+                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
+                            >
+                        </template>
+
+                        <!-- URL field -->
+                        <template x-if="field.field_type === 'url'">
+                            <input
+                                type="url"
+                                :value="bulkCustomFieldValues[field.id] || ''"
+                                @input="bulkCustomFieldValues[field.id] = $event.target.value"
+                                placeholder="https://..."
+                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
+                            >
+                        </template>
+
+                        <!-- Select field -->
+                        <template x-if="field.field_type === 'select'">
+                            <select
+                                :value="bulkCustomFieldValues[field.id] || ''"
+                                @change="bulkCustomFieldValues[field.id] = $event.target.value"
+                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
+                            >
+                                <option value="">-- Don't change --</option>
+                                <template x-for="opt in field.options" :key="opt">
+                                    <option :value="opt" x-text="opt"></option>
+                                </template>
+                            </select>
+                        </template>
+
+                        <!-- Multi-select field -->
+                        <template x-if="field.field_type === 'multi_select'">
+                            <div class="space-y-1">
+                                <template x-for="opt in field.options" :key="opt">
+                                    <label class="flex items-center gap-2 text-sm cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            :checked="(bulkCustomFieldValues[field.id] || []).includes(opt)"
+                                            @change="toggleBulkMultiSelectOption(field.id, opt)"
+                                            class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+                                        >
+                                        <span x-text="opt"></span>
+                                    </label>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <div x-show="customFields.filter(f => f.category_id === null).length === 0" class="text-dark-400 text-center py-4">
+                    No global custom fields defined. Create custom fields in Settings first.
+                </div>
+            </div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div class="flex gap-3">
+                <button
+                    @click="bulkCustomFieldsModal = false"
+                    :disabled="bulkOpLoading"
+                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
+                >Cancel</button>
+                <button
+                    @click="executeBulkCustomFields"
+                    :disabled="bulkOpLoading || customFields.filter(f => f.category_id === null).length === 0"
+                    class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                >
+                    <span x-show="!bulkOpLoading">Apply</span>
+                    <span x-show="bulkOpLoading">Applying...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Auth Modal -->
     <div x-show="showAuthModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
         <div class="bg-dark-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
@@ -1648,6 +2073,26 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 settingsModified: {},       // Track modified values per category
                 settingsOriginal: {},       // Original values for reset
 
+                // Custom Fields (Issue #224)
+                customFields: [],                   // All custom field definitions
+                customFieldsLoading: false,
+                customFieldModal: false,            // Create/edit modal open
+                customFieldEditing: null,           // Field being edited (null = create)
+                customFieldForm: {                  // Form state
+                    name: '',
+                    field_type: 'text',
+                    options: [],
+                    required: false,
+                    category_id: null,
+                    position: 0,
+                    description: '',
+                },
+                customFieldSaving: false,
+                customFieldMessage: '',
+                customFieldError: false,
+                editCustomFields: [],               // Fields applicable to current video
+                editCustomFieldValues: {},          // field_id -> value map
+
                 // Bulk operations
                 selectedVideos: [],
                 bulkDeleteModal: false,
@@ -1658,6 +2103,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 bulkUpdateUnpublish: false,
                 bulkRetranscodeModal: false,
                 bulkRetranscodeQuality: 'all',
+                bulkCustomFieldsModal: false,
+                bulkCustomFieldValues: {},
                 bulkOpLoading: false,
                 bulkOpMessage: '',
                 bulkOpError: false,
@@ -2567,7 +3014,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     }
                 },
 
-                openEditModal(video) {
+                async openEditModal(video) {
                     this.editVideoId = video.id;
                     this.editTitle = video.title;
                     this.editDescription = video.description || '';
@@ -2578,6 +3025,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     } else {
                         this.editPublishedAt = '';
                     }
+                    // Load custom fields for this video
+                    this.editCustomFieldValues = {};
+                    await this.loadVideoCustomFields(video.id);
                     this.editModal = true;
                 },
 
@@ -2597,6 +3047,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         });
 
                         if (res.ok) {
+                            // Save custom fields if any
+                            await this.saveVideoCustomFields(this.editVideoId);
                             this.editModal = false;
                             await this.loadVideos();
                         } else {
@@ -2815,6 +3267,74 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     this.bulkOpMessage = '';
                     this.bulkOpError = false;
                     this.bulkRetranscodeModal = true;
+                },
+
+                openBulkCustomFieldsModal() {
+                    this.bulkCustomFieldValues = {};
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+                    this.bulkCustomFieldsModal = true;
+                },
+
+                toggleBulkMultiSelectOption(fieldId, option) {
+                    let current = this.bulkCustomFieldValues[fieldId] || [];
+                    if (!Array.isArray(current)) current = [];
+
+                    const idx = current.indexOf(option);
+                    if (idx >= 0) {
+                        current.splice(idx, 1);
+                    } else {
+                        current.push(option);
+                    }
+                    this.bulkCustomFieldValues[fieldId] = [...current];
+                },
+
+                async executeBulkCustomFields() {
+                    // Filter out empty values
+                    const values = {};
+                    for (const [fieldId, value] of Object.entries(this.bulkCustomFieldValues)) {
+                        if (value !== '' && value !== null && value !== undefined) {
+                            if (Array.isArray(value) && value.length === 0) continue;
+                            values[fieldId] = value;
+                        }
+                    }
+
+                    if (Object.keys(values).length === 0) {
+                        this.bulkOpMessage = 'No field values specified';
+                        this.bulkOpError = true;
+                        return;
+                    }
+
+                    this.bulkOpLoading = true;
+                    this.bulkOpMessage = '';
+                    this.bulkOpError = false;
+
+                    try {
+                        const res = await this.apiFetch('/api/videos/bulk/custom-fields', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                video_ids: this.selectedVideos,
+                                values: values
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (res.ok) {
+                            this.bulkOpMessage = `Updated ${data.updated} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : '');
+                            this.bulkOpError = data.failed > 0;
+                            this.selectedVideos = [];
+                            setTimeout(() => { this.bulkCustomFieldsModal = false; }, 1500);
+                        } else {
+                            this.bulkOpMessage = data.detail || 'Update failed';
+                            this.bulkOpError = true;
+                        }
+                    } catch (e) {
+                        this.bulkOpMessage = 'Update failed: ' + e.message;
+                        this.bulkOpError = true;
+                    }
+
+                    this.bulkOpLoading = false;
                 },
 
                 async executeBulkDelete() {
@@ -3255,6 +3775,194 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
 
                     // Clear file input
                     event.target.value = '';
+                },
+
+                // Custom Fields methods
+                async loadCustomFields() {
+                    this.customFieldsLoading = true;
+                    this.customFieldMessage = '';
+                    this.customFieldError = false;
+
+                    try {
+                        const res = await this.apiFetch('/api/custom-fields');
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.customFields = data.fields || [];
+                        } else {
+                            console.error('Failed to load custom fields:', res.status);
+                        }
+                    } catch (e) {
+                        console.error('Failed to load custom fields:', e);
+                    } finally {
+                        this.customFieldsLoading = false;
+                    }
+                },
+
+                openCreateFieldModal() {
+                    this.customFieldEditing = null;
+                    this.customFieldForm = {
+                        name: '',
+                        field_type: 'text',
+                        options: [],
+                        required: false,
+                        category_id: null,
+                        position: 0,
+                        description: '',
+                    };
+                    this.customFieldModal = true;
+                },
+
+                openEditFieldModal(field) {
+                    this.customFieldEditing = field;
+                    this.customFieldForm = {
+                        name: field.name,
+                        field_type: field.field_type,
+                        options: field.options ? [...field.options] : [],
+                        required: field.required,
+                        category_id: field.category_id,
+                        position: field.position,
+                        description: field.description || '',
+                    };
+                    this.customFieldModal = true;
+                },
+
+                async saveCustomField() {
+                    this.customFieldSaving = true;
+
+                    try {
+                        // Filter out empty options
+                        const options = this.customFieldForm.options.filter(o => o && o.trim());
+                        const payload = {
+                            name: this.customFieldForm.name,
+                            field_type: this.customFieldForm.field_type,
+                            options: options.length > 0 ? options : null,
+                            required: this.customFieldForm.required,
+                            category_id: this.customFieldForm.category_id,
+                            position: this.customFieldForm.position,
+                            description: this.customFieldForm.description || null,
+                        };
+
+                        let res;
+                        if (this.customFieldEditing) {
+                            // Update - only send editable fields
+                            res = await this.apiFetch(`/api/custom-fields/${this.customFieldEditing.id}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    name: payload.name,
+                                    options: payload.options,
+                                    required: payload.required,
+                                    position: payload.position,
+                                    description: payload.description,
+                                }),
+                            });
+                        } else {
+                            // Create
+                            res = await this.apiFetch('/api/custom-fields', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload),
+                            });
+                        }
+
+                        if (res.ok) {
+                            this.customFieldModal = false;
+                            this.customFieldMessage = this.customFieldEditing ? 'Field updated successfully' : 'Field created successfully';
+                            this.customFieldError = false;
+                            await this.loadCustomFields();
+                        } else {
+                            const err = await res.json();
+                            this.customFieldMessage = err.detail || 'Operation failed';
+                            this.customFieldError = true;
+                        }
+                    } catch (e) {
+                        this.customFieldMessage = 'Operation failed: ' + e.message;
+                        this.customFieldError = true;
+                    } finally {
+                        this.customFieldSaving = false;
+                    }
+                },
+
+                async deleteCustomField(field) {
+                    if (!confirm(`Delete field "${field.name}"? This will remove all values from videos.`)) {
+                        return;
+                    }
+
+                    try {
+                        const res = await this.apiFetch(`/api/custom-fields/${field.id}`, {
+                            method: 'DELETE',
+                        });
+
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.customFieldMessage = `Field deleted. ${data.affected_videos} video(s) affected.`;
+                            this.customFieldError = false;
+                            await this.loadCustomFields();
+                        } else {
+                            const err = await res.json();
+                            this.customFieldMessage = err.detail || 'Delete failed';
+                            this.customFieldError = true;
+                        }
+                    } catch (e) {
+                        this.customFieldMessage = 'Delete failed: ' + e.message;
+                        this.customFieldError = true;
+                    }
+                },
+
+                // Load custom fields for a video (when editing)
+                async loadVideoCustomFields(videoId) {
+                    try {
+                        const res = await this.apiFetch(`/api/videos/${videoId}/custom-fields`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.editCustomFields = data.fields || [];
+                            this.editCustomFieldValues = {};
+                            for (const field of data.fields) {
+                                this.editCustomFieldValues[field.field_id] = field.value;
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to load video custom fields:', e);
+                    }
+                },
+
+                // Save custom fields for a video
+                async saveVideoCustomFields(videoId) {
+                    if (Object.keys(this.editCustomFieldValues).length === 0) return true;
+
+                    try {
+                        const res = await this.apiFetch(`/api/videos/${videoId}/custom-fields`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ values: this.editCustomFieldValues }),
+                        });
+                        return res.ok;
+                    } catch (e) {
+                        console.error('Failed to save video custom fields:', e);
+                        return false;
+                    }
+                },
+
+                // Toggle multi-select option
+                toggleMultiSelectOption(fieldId, option) {
+                    let current = this.editCustomFieldValues[fieldId] || [];
+                    if (!Array.isArray(current)) current = [];
+
+                    const idx = current.indexOf(option);
+                    if (idx >= 0) {
+                        current.splice(idx, 1);
+                    } else {
+                        current.push(option);
+                    }
+                    this.editCustomFieldValues[fieldId] = [...current];
+                },
+
+                // Get applicable custom fields for current video (global + category-specific)
+                getApplicableCustomFields() {
+                    const categoryId = parseInt(this.editCategory) || 0;
+                    return this.customFields.filter(f =>
+                        f.category_id === null || f.category_id === categoryId
+                    ).sort((a, b) => a.position - b.position);
                 },
 
                 // Watermark settings methods

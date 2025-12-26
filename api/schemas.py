@@ -180,6 +180,16 @@ class VideoResponse(BaseModel):
     def default_description(cls, v):
         return v if v is not None else ""
 
+    @field_validator("streaming_format", mode="before")
+    @classmethod
+    def default_streaming_format(cls, v):
+        return v if v is not None else "hls_ts"
+
+    @field_validator("primary_codec", mode="before")
+    @classmethod
+    def default_primary_codec(cls, v):
+        return v if v is not None else "h264"
+
     @field_validator("created_at", mode="before")
     @classmethod
     def default_created_at(cls, v):
@@ -780,3 +790,156 @@ class SettingsImport(BaseModel):
 
     settings: List[SettingCreate]
     overwrite: bool = Field(default=False, description="Overwrite existing settings")
+
+
+# ============ Custom Field Models ============
+
+# Valid field types for custom fields
+CUSTOM_FIELD_TYPES = {"text", "number", "date", "select", "multi_select", "url"}
+
+
+class CustomFieldConstraints(BaseModel):
+    """Validation constraints for custom field values."""
+
+    min: Optional[float] = Field(default=None, description="Minimum value for number fields")
+    max: Optional[float] = Field(default=None, description="Maximum value for number fields")
+    min_length: Optional[int] = Field(default=None, description="Minimum length for text/url fields")
+    max_length: Optional[int] = Field(default=None, description="Maximum length for text/url fields")
+    pattern: Optional[str] = Field(default=None, description="Regex pattern for text/url validation")
+
+
+class CustomFieldCreate(BaseModel):
+    """Request to create a custom field definition."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Display name for the field")
+    field_type: str = Field(..., description="Field type: text, number, date, select, multi_select, url")
+    options: Optional[List[str]] = Field(
+        default=None,
+        description="Options for select/multi_select fields",
+        max_length=100
+    )
+    required: bool = Field(default=False, description="Whether the field is required")
+    category_id: Optional[int] = Field(default=None, description="Category ID (null for global field)")
+    position: int = Field(default=0, ge=0, description="Display order position")
+    constraints: Optional[CustomFieldConstraints] = Field(default=None, description="Validation constraints")
+    description: Optional[str] = Field(default=None, max_length=500, description="Help text for the field")
+
+    @field_validator("field_type")
+    @classmethod
+    def validate_field_type(cls, v: str) -> str:
+        if v not in CUSTOM_FIELD_TYPES:
+            raise ValueError(f"Invalid field_type '{v}'. Valid options: {', '.join(sorted(CUSTOM_FIELD_TYPES))}")
+        return v
+
+    @field_validator("options")
+    @classmethod
+    def validate_options(cls, v: Optional[List[str]], info) -> Optional[List[str]]:
+        field_type = info.data.get("field_type")
+        if field_type in ("select", "multi_select"):
+            if not v or len(v) == 0:
+                raise ValueError("Options are required for select/multi_select fields")
+            # Validate each option is non-empty and reasonable length
+            for opt in v:
+                if not opt or not opt.strip():
+                    raise ValueError("Options cannot be empty strings")
+                if len(opt) > 100:
+                    raise ValueError("Each option must be 100 characters or less")
+        elif v is not None and len(v) > 0:
+            raise ValueError("Options should only be provided for select/multi_select fields")
+        return v
+
+
+class CustomFieldUpdate(BaseModel):
+    """Request to update a custom field definition.
+
+    Note: field_type and category_id cannot be changed after creation.
+    """
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    options: Optional[List[str]] = Field(default=None, max_length=100)
+    required: Optional[bool] = None
+    position: Optional[int] = Field(default=None, ge=0)
+    constraints: Optional[CustomFieldConstraints] = None
+    description: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("options")
+    @classmethod
+    def validate_options(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is not None:
+            for opt in v:
+                if not opt or not opt.strip():
+                    raise ValueError("Options cannot be empty strings")
+                if len(opt) > 100:
+                    raise ValueError("Each option must be 100 characters or less")
+        return v
+
+
+class CustomFieldResponse(BaseModel):
+    """Response for a custom field definition."""
+
+    id: int
+    name: str
+    slug: str
+    field_type: str
+    options: Optional[List[str]] = None
+    required: bool
+    category_id: Optional[int]
+    category_name: Optional[str] = None
+    position: int
+    constraints: Optional[CustomFieldConstraints] = None
+    description: Optional[str] = None
+    created_at: datetime
+
+
+class CustomFieldListResponse(BaseModel):
+    """Response for listing custom field definitions."""
+
+    fields: List[CustomFieldResponse]
+    total_count: int
+
+
+class VideoCustomFieldValue(BaseModel):
+    """A single custom field value for a video."""
+
+    field_id: int
+    field_slug: str
+    field_name: str
+    field_type: str
+    value: Any  # Type depends on field_type
+    required: bool
+    options: Optional[List[str]] = None  # For select/multi_select fields
+
+
+class VideoCustomFieldsUpdate(BaseModel):
+    """Request to update custom field values for a video."""
+
+    values: dict[int, Any] = Field(
+        ...,
+        description="Map of field_id to value. Use null to clear a field value."
+    )
+
+
+class VideoCustomFieldsResponse(BaseModel):
+    """Response for a video's custom field values."""
+
+    video_id: int
+    fields: List[VideoCustomFieldValue]
+
+
+class BulkCustomFieldsUpdate(BaseModel):
+    """Request to update custom field values for multiple videos."""
+
+    video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
+    values: dict[int, Any] = Field(
+        ...,
+        description="Map of field_id to value. Applied to all specified videos."
+    )
+
+
+class BulkCustomFieldsResponse(BaseModel):
+    """Response from bulk custom fields update operation."""
+
+    status: str
+    updated: int
+    failed: int
+    results: List[BulkOperationResult]

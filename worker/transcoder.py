@@ -821,8 +821,8 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
             if not line or line.startswith("#"):
                 continue
 
-            # This should be a segment filename
-            if line.endswith(".ts"):
+            # This should be a segment filename (.ts for HLS/MPEG-TS, .m4s for CMAF/fMP4)
+            if line.endswith(".ts") or line.endswith(".m4s"):
                 segment_path = playlist_path.parent / line
                 if not segment_path.exists():
                     return False, f"Missing segment file: {line}"
@@ -839,6 +839,14 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
         # Validate first segment actually contains a video stream
         # This catches cases where encoding failed but audio-only output was produced
         if first_segment_path:
+            # For CMAF/fMP4, probe init.mp4 instead of segment (m4s segments are fragmented)
+            if first_segment_path.suffix == ".m4s":
+                probe_path = first_segment_path.parent / "init.mp4"
+                if not probe_path.exists():
+                    return False, "Missing init.mp4 for CMAF segments"
+            else:
+                probe_path = first_segment_path
+
             try:
                 proc = await asyncio.wait_for(
                     asyncio.create_subprocess_exec(
@@ -851,7 +859,7 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
                         "stream=codec_type",
                         "-of",
                         "csv=p=0",
-                        str(first_segment_path),
+                        str(probe_path),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     ),
@@ -859,7 +867,7 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
                 )
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
                 if proc.returncode != 0 or b"video" not in stdout:
-                    return False, f"Segment {first_segment_path.name} has no video stream (encoding may have failed)"
+                    return False, f"Segment {probe_path.name} has no video stream (encoding may have failed)"
             except asyncio.TimeoutError:
                 return False, f"Timeout probing segment {first_segment_path.name}"
             except OSError as e:
@@ -936,6 +944,7 @@ async def transcode_quality_with_progress(
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     gpu_caps: Optional["GPUCapabilities"] = None,
     streaming_format: str = "hls_ts",
+    preferred_codec: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking and timeout.
@@ -948,6 +957,7 @@ async def transcode_quality_with_progress(
         progress_callback: Optional async callback for progress updates (0-100)
         gpu_caps: GPU capabilities from hwaccel module for hardware encoding
         streaming_format: Output format - "hls_ts" for MPEG-TS or "cmaf" for fMP4
+        preferred_codec: Preferred video codec ("h264", "hevc", "av1") from settings
 
     Returns:
         Tuple[bool, Optional[str]]: (success, error_message) where error_message
@@ -968,12 +978,19 @@ async def transcode_quality_with_progress(
 
     # Use hardware acceleration if GPU capabilities provided
     if gpu_caps is not None:
-        from worker.hwaccel import build_cmaf_transcode_command, build_transcode_command, select_encoder
+        from worker.hwaccel import VideoCodec, build_cmaf_transcode_command, build_transcode_command, select_encoder
 
-        selection = select_encoder(gpu_caps, height)
+        # Convert preferred_codec string to VideoCodec enum
+        codec_enum = None
+        if preferred_codec:
+            codec_map = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}
+            codec_enum = codec_map.get(preferred_codec.lower())
+
+        selection = select_encoder(gpu_caps, height, preferred_codec=codec_enum)
         encoder_name = selection.encoder.name
         encoder_type = "GPU" if selection.encoder.is_hardware else "CPU"
-        print(f"      Using encoder: {encoder_name} ({encoder_type})")
+        codec_name = codec_enum.value if codec_enum else "default"
+        print(f"      Using encoder: {encoder_name} ({encoder_type}, codec={codec_name})")
 
         if use_cmaf:
             # Create quality subdirectory for CMAF output
@@ -2198,9 +2215,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             if status and status["status"] == QualityStatus.COMPLETED:
                 print(f"    {quality_name}: Already completed, skipping...")
                 # Get actual dimensions from existing segment
-                # CMAF uses subdirectory structure with .m4s segments
+                # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                 if streaming_format == "cmaf":
-                    first_segment = output_dir / quality_name / "seg_0000.m4s"
+                    first_segment = output_dir / quality_name / "init.mp4"
                 else:
                     first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
@@ -2229,8 +2246,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 print(f"    {quality_name}: Found complete playlist, marking complete...")
                 await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                 # Get actual dimensions from existing segment
+                # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                 if streaming_format == "cmaf":
-                    first_segment = output_dir / quality_name / "seg_0000.m4s"
+                    first_segment = output_dir / quality_name / "init.mp4"
                 else:
                     first_segment = output_dir / f"{quality_name}_0000.ts"
                 if first_segment.exists():
@@ -2282,9 +2300,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 if success:
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                     # Get actual dimensions from transcoded segment
-                    # CMAF uses subdirectory structure with .m4s segments
+                    # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                     if streaming_format == "cmaf":
-                        first_segment = output_dir / quality_name / "seg_0000.m4s"
+                        first_segment = output_dir / quality_name / "init.mp4"
                     else:
                         first_segment = output_dir / f"{quality_name}_0000.ts"
                     if first_segment.exists():
@@ -2460,9 +2478,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         )
                         if success:
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
-                            # CMAF uses subdirectory structure with .m4s segments
+                            # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                             if streaming_format == "cmaf":
-                                first_segment = output_dir / quality_name / "seg_0000.m4s"
+                                first_segment = output_dir / quality_name / "init.mp4"
                             else:
                                 first_segment = output_dir / f"{quality_name}_0000.ts"
                             if first_segment.exists():
