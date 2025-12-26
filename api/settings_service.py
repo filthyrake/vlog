@@ -929,6 +929,21 @@ KNOWN_SETTINGS = [
         "Also generate H.264 version for older device compatibility",
         None,
     ),
+    # CDN settings (Issue #222)
+    (
+        "cdn.enabled",
+        "cdn",
+        "boolean",
+        "Enable CDN for video streaming content",
+        None,
+    ),
+    (
+        "cdn.base_url",
+        "cdn",
+        "string",
+        "CDN base URL (e.g., https://cdn.example.com) - video paths appended to this",
+        {"pattern": r"^https?://[a-zA-Z0-9][\w\-\.]*[a-zA-Z0-9](:[0-9]+)?$"},
+    ),
     # Re-encoding settings (Issue #212)
     (
         "reencode.batch_size",

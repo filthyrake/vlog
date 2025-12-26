@@ -176,6 +176,73 @@ def reset_watermark_settings_cache() -> None:
     _cached_watermark_settings_time = 0
 
 
+# Cached CDN settings (refreshed every 60 seconds)
+_cached_cdn_settings: Dict[str, Any] = {}
+_cached_cdn_settings_time: float = 0
+_CDN_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+
+async def get_cdn_settings() -> Dict[str, Any]:
+    """
+    Get CDN settings from database with caching.
+
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    on every video request.
+
+    Returns:
+        Dict with keys:
+        - enabled: Whether CDN is enabled for video streaming
+        - base_url: CDN base URL (e.g., https://cdn.example.com)
+    """
+    global _cached_cdn_settings, _cached_cdn_settings_time
+
+    now = time.time()
+    if _cached_cdn_settings and (now - _cached_cdn_settings_time) < _CDN_SETTINGS_CACHE_TTL:
+        return _cached_cdn_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "enabled": await service.get("cdn.enabled", False),
+            "base_url": await service.get("cdn.base_url", ""),
+        }
+
+        _cached_cdn_settings = settings
+        _cached_cdn_settings_time = now
+    except Exception as e:
+        logger.debug(f"Failed to get CDN settings from DB: {e}")
+        _cached_cdn_settings = {"enabled": False, "base_url": ""}
+        _cached_cdn_settings_time = now
+
+    return _cached_cdn_settings
+
+
+async def get_video_url_prefix() -> str:
+    """
+    Get the URL prefix for video streaming content.
+
+    Returns CDN base URL if CDN is enabled and configured,
+    otherwise returns empty string for relative URLs.
+
+    Only video streaming content (manifests, segments) should use this.
+    Thumbnails, captions, and other assets use direct origin URLs.
+    """
+    cdn_settings = await get_cdn_settings()
+    if cdn_settings["enabled"] and cdn_settings["base_url"]:
+        return cdn_settings["base_url"]
+    return ""
+
+
+def reset_cdn_settings_cache() -> None:
+    """Reset the cached CDN settings. Useful for testing."""
+    global _cached_cdn_settings, _cached_cdn_settings_time
+    _cached_cdn_settings = {}
+    _cached_cdn_settings_time = 0
+
+
 # Initialize rate limiter
 # Uses in-memory storage by default, can be configured to use Redis
 limiter = Limiter(
@@ -706,6 +773,9 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
             source = row["thumbnail_source"] or "auto"
             thumb_version = hash((row["id"], source)) % 1000000000
 
+    # Get CDN URL prefix for video streaming content (Issue #222)
+    video_url_prefix = await get_video_url_prefix()
+
     return VideoResponse(
         id=row["id"],
         title=row["title"],
@@ -728,10 +798,15 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         ),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
-        stream_url=f"/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None,
+        # Stream URLs use CDN if configured (Issue #222)
+        stream_url=(
+            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8"
+            if row["status"] == VideoStatus.READY
+            else None
+        ),
         # DASH URL only available for CMAF format videos
         dash_url=(
-            f"/videos/{row['slug']}/manifest.mpd"
+            f"{video_url_prefix}/videos/{row['slug']}/manifest.mpd"
             if row["status"] == VideoStatus.READY
             and row._mapping.get("streaming_format") == "cmaf"
             else None
