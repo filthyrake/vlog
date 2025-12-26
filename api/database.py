@@ -232,6 +232,9 @@ transcoding_jobs = sa.Table(
     # Permanent record of which worker processed this job (for audit/debugging)
     sa.Column("processed_by_worker_id", sa.String(36), nullable=True),
     sa.Column("processed_by_worker_name", sa.String(100), nullable=True),
+    # Retranscode metadata - JSON with cleanup info for deferred retranscode (Issue #408)
+    # Format: {"retranscode_all": bool, "qualities_to_delete": [...], "delete_transcription": bool}
+    sa.Column("retranscode_metadata", sa.Text, nullable=True),
     sa.Index("ix_transcoding_jobs_video_id", "video_id"),
     sa.Index("ix_transcoding_jobs_claim_expires", "claim_expires_at"),
 )

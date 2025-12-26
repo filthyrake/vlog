@@ -625,7 +625,36 @@ async def cleanup_orphaned_jobs() -> int:
     return len(orphaned)
 
 
-async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal") -> None:
+def build_retranscode_metadata(
+    video_dir: Path,
+    qualities_to_delete: List[str],
+    retranscode_all: bool,
+) -> str:
+    """
+    Build JSON metadata for deferred retranscode cleanup (Issue #408).
+
+    This metadata is stored in the transcoding_jobs.retranscode_metadata field
+    and is read by claim_job() to perform cleanup when the worker claims the job.
+
+    Args:
+        video_dir: Path to the video's output directory
+        qualities_to_delete: List of quality names to delete (e.g., ["1080p", "720p"])
+        retranscode_all: Whether this is a full retranscode (deletes all files including thumbnail)
+
+    Returns:
+        JSON string with cleanup instructions
+    """
+    return json.dumps({
+        "retranscode_all": retranscode_all,
+        "qualities_to_delete": qualities_to_delete,
+        "delete_transcription": retranscode_all,
+        "video_dir": str(video_dir),
+    })
+
+
+async def create_or_reset_transcoding_job(
+    video_id: int, priority: str = "normal", retranscode_metadata: Optional[str] = None
+) -> None:
     """
     Create a new transcoding job or reset an existing one for a video.
 
@@ -642,6 +671,8 @@ async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal
     Args:
         video_id: The video ID to create/reset a job for
         priority: Job priority ("high", "normal", "low")
+        retranscode_metadata: Optional JSON string with retranscode cleanup info (Issue #408)
+            Format: {"retranscode_all": bool, "qualities_to_delete": [...], "delete_transcription": bool}
     """
     # Validate priority (defense-in-depth beyond Pydantic validation)
     if priority not in ("high", "normal", "low"):
@@ -655,8 +686,8 @@ async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal
         # create or reset the job in a single statement
         await db_execute_with_retry(
             sa.text("""
-                INSERT INTO transcoding_jobs (video_id, current_step, progress_percent, attempt_number, max_attempts)
-                VALUES (:video_id, 'pending', 0, 1, 3)
+                INSERT INTO transcoding_jobs (video_id, current_step, progress_percent, attempt_number, max_attempts, retranscode_metadata)
+                VALUES (:video_id, 'pending', 0, 1, 3, :retranscode_metadata)
                 ON CONFLICT (video_id) DO UPDATE SET
                     current_step = 'pending',
                     progress_percent = 0,
@@ -666,8 +697,9 @@ async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal
                     claim_expires_at = NULL,
                     started_at = NULL,
                     completed_at = NULL,
-                    last_error = NULL
-            """).bindparams(video_id=video_id)
+                    last_error = NULL,
+                    retranscode_metadata = :retranscode_metadata
+            """).bindparams(video_id=video_id, retranscode_metadata=retranscode_metadata)
         )
     else:
         # SQLite: Try insert, catch IntegrityError and update instead
@@ -679,6 +711,7 @@ async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal
                     progress_percent=0,
                     attempt_number=1,
                     max_attempts=3,
+                    retranscode_metadata=retranscode_metadata,
                 )
             )
         except Exception as e:
@@ -699,6 +732,7 @@ async def create_or_reset_transcoding_job(video_id: int, priority: str = "normal
                         started_at=None,
                         completed_at=None,
                         last_error=None,
+                        retranscode_metadata=retranscode_metadata,
                     )
                 )
             else:
@@ -2559,7 +2593,8 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
     """
     Queue multiple videos for re-transcoding.
 
-    Each video will be reset to pending status and queued for transcoding.
+    Videos remain playable until a worker actually claims and starts
+    processing the job (Issue #408).
     """
     bulk_operation_id = str(uuid.uuid4())
     results = []
@@ -2579,6 +2614,7 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
 
             slug = row["slug"]
             source_height = row["source_height"]
+            video_dir = VIDEOS_DIR / slug
 
             # Check source file exists
             source_file = None
@@ -2603,8 +2639,11 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
             else:
                 qualities_to_delete = [q for q in data.qualities if q != "all"]
 
+            # Build retranscode metadata for deferred cleanup (Issue #408)
+            retranscode_metadata = build_retranscode_metadata(video_dir, qualities_to_delete, retranscode_all)
+
             async with database.transaction():
-                # Cancel existing transcoding job
+                # Cancel existing transcoding job (job-related cleanup only)
                 existing_job = await database.fetch_one(
                     transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
                 )
@@ -2614,42 +2653,13 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
                     )
                     await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
 
-                # Delete specified quality records
-                for quality in qualities_to_delete:
-                    await database.execute(
-                        video_qualities.delete().where(
-                            (video_qualities.c.video_id == video_id) & (video_qualities.c.quality == quality)
-                        )
-                    )
+                # NOTE: File deletion, video_qualities deletion, transcription deletion,
+                # and status change are all deferred to claim_job() (Issue #408)
 
-                # Reset video status
-                await database.execute(
-                    videos.update()
-                    .where(videos.c.id == video_id)
-                    .values(status=VideoStatus.PENDING, error_message=None)
+                # Create new transcoding job with retranscode metadata
+                await create_or_reset_transcoding_job(
+                    video_id, priority=data.priority, retranscode_metadata=retranscode_metadata
                 )
-
-                # Create new transcoding job
-                # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
-                await create_or_reset_transcoding_job(video_id, priority=data.priority)
-
-                # If retranscoding all, delete transcription record (inside transaction)
-                if retranscode_all:
-                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
-
-            # Delete quality files from disk (after transaction succeeds)
-            video_dir = VIDEOS_DIR / slug
-            if video_dir.exists():
-                for quality in qualities_to_delete:
-                    for pattern in [f"{quality}.m3u8", f"{quality}_*.ts"]:
-                        for f in video_dir.glob(pattern):
-                            f.unlink()
-
-                # Delete VTT file if retranscoding all
-                if retranscode_all:
-                    vtt_path = video_dir / "captions.vtt"
-                    if vtt_path.exists():
-                        vtt_path.unlink()
 
             # Emit individual audit event for successful retranscode
             log_audit(
@@ -3157,12 +3167,11 @@ async def retranscode_video(
     """
     Re-transcode a video, either all qualities or specific ones.
 
-    This will:
-    - Cancel any in-progress transcoding job
-    - Delete specified quality files (HLS segments and playlists)
-    - Delete corresponding video_qualities records
-    - Reset video status to pending for reprocessing
-    - Preserve: source file, metadata, thumbnail (unless re-transcoding all)
+    This will queue the video for re-transcoding while keeping it playable
+    until a worker actually claims and starts processing the job (Issue #408).
+
+    The actual cleanup (file deletion, video_qualities deletion, status change)
+    is deferred to when a worker claims the job via claim_job().
     """
     # Get video info
     row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
@@ -3201,78 +3210,30 @@ async def retranscode_video(
             if preset["height"] <= source_height:
                 qualities_to_delete.append(preset["name"])
     else:
-        qualities_to_delete = requested_qualities
+        qualities_to_delete = list(requested_qualities)
 
-    # === FILE CLEANUP ===
-    if video_dir.exists():
-        for quality in qualities_to_delete:
-            # Delete quality playlist
-            playlist = video_dir / f"{quality}.m3u8"
-            if playlist.exists():
-                playlist.unlink()
+    # Build retranscode metadata for deferred cleanup (Issue #408)
+    retranscode_metadata = build_retranscode_metadata(video_dir, qualities_to_delete, retranscode_all)
 
-            # Delete quality segments (pattern: {quality}_XXXX.ts)
-            for segment in video_dir.glob(f"{quality}_*.ts"):
-                segment.unlink()
-
-        # If re-transcoding all, also delete master playlist and thumbnail
-        if retranscode_all:
-            master = video_dir / "master.m3u8"
-            if master.exists():
-                master.unlink()
-            thumb = video_dir / "thumbnail.jpg"
-            if thumb.exists():
-                thumb.unlink()
-
-    # === DATABASE CLEANUP ===
+    # === DATABASE CLEANUP (job-related only) ===
     async with database.transaction():
         # Cancel any existing transcoding job
         job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         if job:
-            # Delete quality_progress records
-            if retranscode_all:
-                await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
-            else:
-                # Only delete progress for specified qualities
-                await database.execute(
-                    quality_progress.delete().where(
-                        (quality_progress.c.job_id == job["id"]) & (quality_progress.c.quality.in_(qualities_to_delete))
-                    )
-                )
+            # Delete quality_progress records (these are job-related, not video-related)
+            await database.execute(quality_progress.delete().where(quality_progress.c.job_id == job["id"]))
             # Delete the job itself
             await database.execute(transcoding_jobs.delete().where(transcoding_jobs.c.video_id == video_id))
 
-        # Delete video_qualities records for specified qualities
-        if retranscode_all:
-            await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
-        else:
-            await database.execute(
-                video_qualities.delete().where(
-                    (video_qualities.c.video_id == video_id) & (video_qualities.c.quality.in_(qualities_to_delete))
-                )
-            )
+        # NOTE: File deletion, video_qualities deletion, transcription deletion,
+        # and status change are all deferred to claim_job() to keep video playable
+        # until processing actually begins (Issue #408)
 
-        # If re-transcoding all, also delete transcription
-        if retranscode_all:
-            await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
-            # Delete VTT file if exists
-            vtt_path = video_dir / "captions.vtt"
-            if vtt_path.exists():
-                vtt_path.unlink()
-
-        # Reset video status to pending
-        await database.execute(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(
-                status=VideoStatus.PENDING,
-                error_message=None,
-            )
-        )
-
-        # Create new transcoding job for remote workers to claim
+        # Create new transcoding job with retranscode metadata
         # Uses ON CONFLICT to handle duplicate jobs gracefully (issue #270)
-        await create_or_reset_transcoding_job(video_id, priority=data.priority)
+        await create_or_reset_transcoding_job(
+            video_id, priority=data.priority, retranscode_metadata=retranscode_metadata
+        )
 
     # Audit log
     log_audit(

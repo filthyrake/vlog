@@ -239,14 +239,15 @@ class TestRetranscode:
         data = response.json()
         assert data["status"] == "ok"
 
-        # Verify video was reset to pending
+        # Issue #408: Video remains READY until worker claims the job
         video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
-        assert video["status"] == VideoStatus.PENDING
+        assert video["status"] == VideoStatus.READY
 
-        # Verify transcoding job was created
+        # Verify transcoding job was created with retranscode metadata
         job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id))
         assert job is not None
         assert job["current_step"] == "pending"
+        assert job["retranscode_metadata"] is not None  # Has cleanup info for deferred processing
 
 
 class TestConcurrentUploadRaceCondition:

@@ -1818,10 +1818,17 @@ class TestBulkOperationsHTTP:
         assert data["failed"] == 0
         assert data["status"] == "ok"
 
-        # Verify videos were reset to pending
+        # Issue #408: Videos remain READY until worker claims the job
         for video_id in video_ids:
             video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
-            assert video["status"] == VideoStatus.PENDING
+            assert video["status"] == VideoStatus.READY
+
+            # Verify transcoding job was created with retranscode metadata
+            job = await test_database.fetch_one(
+                transcoding_jobs.select().where(transcoding_jobs.c.video_id == video_id)
+            )
+            assert job is not None
+            assert job["retranscode_metadata"] is not None
 
     @pytest.mark.asyncio
     async def test_bulk_delete_partial_failure(self, admin_client, test_database, sample_category, test_storage):

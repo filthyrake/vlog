@@ -95,6 +95,7 @@ from api.database import (
     quality_progress,
     reencode_queue,
     transcoding_jobs,
+    transcriptions,
     video_qualities,
     videos,
     worker_api_keys,
@@ -864,16 +865,20 @@ async def claim_job(
             db_url = str(database.url)
             is_postgresql = db_url.startswith("postgresql")
 
+            # Job is claimable if:
+            # - video status is 'pending' (normal new upload), OR
+            # - video status is 'ready' AND job has retranscode_metadata (Issue #408)
             if job_id is not None:
                 # Targeted claim for a specific job (Redis-dispatched)
                 if is_postgresql:
                     job = await database.fetch_one(
                         sa.text("""
-                            SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                            SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height,
+                                   tj.retranscode_metadata
                             FROM transcoding_jobs tj
                             JOIN videos v ON tj.video_id = v.id
                             WHERE tj.id = :job_id
-                              AND v.status = 'pending'
+                              AND (v.status = 'pending' OR (v.status = 'ready' AND tj.retranscode_metadata IS NOT NULL))
                               AND v.deleted_at IS NULL
                               AND tj.claimed_at IS NULL
                               AND tj.completed_at IS NULL
@@ -883,11 +888,12 @@ async def claim_job(
                 else:
                     job = await database.fetch_one(
                         sa.text("""
-                            SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                            SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height,
+                                   tj.retranscode_metadata
                             FROM transcoding_jobs tj
                             JOIN videos v ON tj.video_id = v.id
                             WHERE tj.id = :job_id
-                              AND v.status = 'pending'
+                              AND (v.status = 'pending' OR (v.status = 'ready' AND tj.retranscode_metadata IS NOT NULL))
                               AND v.deleted_at IS NULL
                               AND tj.claimed_at IS NULL
                               AND tj.completed_at IS NULL
@@ -897,10 +903,11 @@ async def claim_job(
                 # Find oldest unclaimed pending job
                 job = await database.fetch_one(
                     sa.text("""
-                        SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                        SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height,
+                               tj.retranscode_metadata
                         FROM transcoding_jobs tj
                         JOIN videos v ON tj.video_id = v.id
-                        WHERE v.status = 'pending'
+                        WHERE (v.status = 'pending' OR (v.status = 'ready' AND tj.retranscode_metadata IS NOT NULL))
                           AND v.deleted_at IS NULL
                           AND tj.claimed_at IS NULL
                           AND tj.completed_at IS NULL
@@ -914,10 +921,11 @@ async def claim_job(
                 # SQLite's transaction isolation prevents concurrent modifications
                 job = await database.fetch_one(
                     sa.text("""
-                        SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height
+                        SELECT tj.id, tj.video_id, v.slug, v.duration, v.source_width, v.source_height,
+                               tj.retranscode_metadata
                         FROM transcoding_jobs tj
                         JOIN videos v ON tj.video_id = v.id
-                        WHERE v.status = 'pending'
+                        WHERE (v.status = 'pending' OR (v.status = 'ready' AND tj.retranscode_metadata IS NOT NULL))
                           AND v.deleted_at IS NULL
                           AND tj.claimed_at IS NULL
                           AND tj.completed_at IS NULL
@@ -970,6 +978,100 @@ async def claim_job(
     job = claim_result["job"]
     if not job:
         return ClaimJobResponse(message="No jobs available")
+
+    # Handle retranscode cleanup if metadata is present (Issue #408)
+    # This performs the deferred cleanup that was postponed when the video was queued
+    if job.get("retranscode_metadata"):
+        try:
+            metadata = json.loads(job["retranscode_metadata"])
+            video_id = job["video_id"]
+            video_dir = Path(metadata.get("video_dir", ""))
+            qualities_to_delete = metadata.get("qualities_to_delete", [])
+            retranscode_all = metadata.get("retranscode_all", False)
+            delete_transcription = metadata.get("delete_transcription", False)
+
+            # Delete quality files from disk
+            if video_dir.exists():
+                for quality in qualities_to_delete:
+                    # Delete quality playlist (.m3u8)
+                    playlist = video_dir / f"{quality}.m3u8"
+                    if playlist.exists():
+                        playlist.unlink()
+
+                    # Delete quality segments (pattern: {quality}_XXXX.ts for HLS/TS)
+                    for segment in video_dir.glob(f"{quality}_*.ts"):
+                        segment.unlink()
+
+                    # Delete CMAF segments if present (pattern: {quality}/*.m4s and init.mp4)
+                    quality_dir = video_dir / quality
+                    if quality_dir.exists() and quality_dir.is_dir():
+                        shutil.rmtree(quality_dir, ignore_errors=True)
+
+                # If retranscoding all, also delete master playlist and thumbnail
+                if retranscode_all:
+                    for master_file in ["master.m3u8", "manifest.mpd"]:
+                        master = video_dir / master_file
+                        if master.exists():
+                            master.unlink()
+                    thumb = video_dir / "thumbnail.jpg"
+                    if thumb.exists():
+                        thumb.unlink()
+
+                # Delete VTT file if deleting transcription
+                if delete_transcription:
+                    vtt_path = video_dir / "captions.vtt"
+                    if vtt_path.exists():
+                        vtt_path.unlink()
+
+            # Database cleanup in a transaction for consistency
+            async with database.transaction():
+                # Delete video_qualities records
+                if retranscode_all:
+                    await database.execute(
+                        video_qualities.delete().where(video_qualities.c.video_id == video_id)
+                    )
+                else:
+                    await database.execute(
+                        video_qualities.delete().where(
+                            (video_qualities.c.video_id == video_id)
+                            & (video_qualities.c.quality.in_(qualities_to_delete))
+                        )
+                    )
+
+                # Delete transcription records if needed
+                if delete_transcription:
+                    await database.execute(
+                        transcriptions.delete().where(transcriptions.c.video_id == video_id)
+                    )
+
+                # Clear the retranscode_metadata now that cleanup is done
+                await database.execute(
+                    transcoding_jobs.update()
+                    .where(transcoding_jobs.c.id == job["id"])
+                    .values(retranscode_metadata=None)
+                )
+
+            logger.info(
+                "Retranscode cleanup completed for job %d, video %d: "
+                "deleted %d qualities (%s), retranscode_all=%s, delete_transcription=%s",
+                job["id"],
+                video_id,
+                len(qualities_to_delete),
+                ", ".join(qualities_to_delete),
+                retranscode_all,
+                delete_transcription,
+            )
+        except Exception as e:
+            # Log but don't fail the claim - worker can still proceed
+            logger.error(
+                "Failed to perform retranscode cleanup for job %d, video %d: %s. "
+                "Metadata: retranscode_all=%s, qualities=%s",
+                job["id"],
+                video_id,
+                e,
+                retranscode_all,
+                qualities_to_delete,
+            )
 
     # Find source filename
     source_filename = None
