@@ -625,6 +625,68 @@ class WorkerAPIClient:
             timeout=TIMEOUT_DEFAULT,
         )
 
+    # Re-encode job methods
+    async def claim_reencode_job(self) -> dict:
+        """
+        Attempt to claim a re-encode job from the queue.
+
+        Returns:
+            Job info if claimed, or empty dict if no jobs available
+        """
+        return await self._request(
+            "POST",
+            "/api/reencode/claim",
+            timeout=TIMEOUT_CLAIM,
+        )
+
+    async def update_reencode_job(
+        self,
+        job_id: int,
+        status: str,
+        error_message: Optional[str] = None,
+        retry_count: Optional[int] = None,
+    ) -> dict:
+        """
+        Update re-encode job status.
+
+        Args:
+            job_id: The re-encode job ID
+            status: New status (pending, in_progress, completed, failed)
+            error_message: Optional error message for failed jobs
+            retry_count: Optional retry count update
+
+        Returns:
+            Server response
+        """
+        data = {"status": status}
+        if error_message:
+            data["error_message"] = error_message
+        if retry_count is not None:
+            data["retry_count"] = retry_count
+
+        return await self._request(
+            "PATCH",
+            f"/api/reencode/{job_id}",
+            json=data,
+            timeout=TIMEOUT_DEFAULT,
+        )
+
+    async def get_video_info(self, video_id: int) -> dict:
+        """
+        Get video information for re-encoding.
+
+        Args:
+            video_id: The video ID
+
+        Returns:
+            Video metadata including slug and current format
+        """
+        return await self._request(
+            "GET",
+            f"/api/videos/{video_id}",
+            timeout=TIMEOUT_DEFAULT,
+        )
+
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:

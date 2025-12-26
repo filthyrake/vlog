@@ -29,12 +29,14 @@ import signal
 import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from api.job_queue import JobDispatch, JobQueue
 from config import (
     JOB_QUEUE_MODE,
     QUALITY_PRESETS,
+    VIDEOS_DIR,
     WORKER_API_KEY,
     WORKER_API_URL,
     WORKER_HEALTH_PORT,
@@ -46,18 +48,25 @@ from worker.health_server import HealthServer
 from worker.http_client import WorkerAPIClient, WorkerAPIError
 from worker.hwaccel import (
     GPUCapabilities,
+    VideoCodec,
+    build_cmaf_transcode_command,
     detect_gpu_capabilities,
     get_recommended_parallel_sessions,
     get_worker_capabilities,
+    select_encoder,
 )
 from worker.transcoder import (
+    calculate_ffmpeg_timeout,
     create_original_quality,
+    generate_dash_manifest,
     generate_master_playlist,
+    generate_master_playlist_cmaf,
     generate_thumbnail,
     get_applicable_qualities,
     get_output_dimensions,
     get_video_info,
     group_qualities_by_resolution,
+    run_ffmpeg_with_progress,
     transcode_quality_with_progress,
     validate_hls_playlist,
 )
@@ -292,9 +301,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         else:
             print("    original: Remuxing...")
             quality_progress_list[0] = {"name": "original", "status": "in_progress", "progress": 0}
-            await check_claim_expiration(
-                client.update_progress(job_id, "transcode", 15, quality_progress_list)
-            )
+            await check_claim_expiration(client.update_progress(job_id, "transcode", 15, quality_progress_list))
 
             success, error, quality_info = await create_original_quality(source_path, output_dir, duration, None)
             if success:
@@ -392,9 +399,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
         # Shared progress tracking for parallel qualities (with lock for coroutine safety)
         # Initialize skipped qualities with 100% progress for accurate overall calculation
-        quality_progresses: Dict[str, int] = {
-            q["name"]: 100 for q in qualities if q["name"] in existing_qualities
-        }
+        quality_progresses: Dict[str, int] = {q["name"]: 100 for q in qualities if q["name"] in existing_qualities}
         last_update_times: Dict[str, float] = {}
         progress_lock = asyncio.Lock()
         progress_list_lock = asyncio.Lock()
@@ -441,11 +446,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     last_update_times[qname] = now
                     # Calculate overall progress based on all quality progresses
                     # Uses len(qualities) to include skipped qualities (already at 100%)
-                    avg_progress = (
-                        sum(quality_progresses.values()) / len(qualities)
-                        if qualities
-                        else 0
-                    )
+                    avg_progress = sum(quality_progresses.values()) / len(qualities) if qualities else 0
 
                 # Update quality_progress_list under its dedicated lock
                 async with progress_list_lock:
@@ -547,7 +548,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         print(f"      {qname}: Upload progress update failed: {e}")
 
                 await check_claim_expiration(
-                    client.upload_quality(video_id, quality_name, output_dir, progress_callback=upload_progress_callback)
+                    client.upload_quality(
+                        video_id, quality_name, output_dir, progress_callback=upload_progress_callback
+                    )
                 )
                 async with progress_list_lock:
                     quality_progress_list[quality_idx] = {
@@ -635,9 +638,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         else:
             # Full transcode - generate and upload new master playlist
             print("  Generating master playlist...")
-            await check_claim_expiration(
-                client.update_progress(job_id, "master_playlist", 95, quality_progress_list)
-            )
+            await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
 
             # Convert successful_qualities to format expected by generate_master_playlist
             master_qualities = []
@@ -752,6 +753,298 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             shutil.rmtree(work_dir, ignore_errors=True)
         elif work_dir.exists():
             print(f"  Note: Work directory preserved at {work_dir} (completion not verified)")
+
+
+# Codec map for re-encoding
+REENCODE_CODEC_MAP = {
+    "h264": VideoCodec.H264,
+    "hevc": VideoCodec.HEVC,
+    "av1": VideoCodec.AV1,
+}
+
+
+async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[GPUCapabilities]) -> bool:
+    """
+    Try to claim and process a re-encode job if available.
+
+    Re-encode jobs convert existing HLS/TS videos to CMAF format.
+    This runs at lower priority than new upload transcoding.
+
+    Returns:
+        True if a job was processed, False if no jobs available
+    """
+    # Check if videos directory is accessible (local worker only)
+    if not VIDEOS_DIR.exists():
+        return False
+
+    try:
+        result = await client.claim_reencode_job()
+        if not result.get("job"):
+            return False
+
+        job = result["job"]
+        job_id = job["id"]
+        video_id = job["video_id"]
+        target_codec_str = job.get("target_codec", "hevc")
+        target_codec = REENCODE_CODEC_MAP.get(target_codec_str, VideoCodec.HEVC)
+
+        print(f"Re-encode job {job_id}: video {video_id} -> {target_codec_str}")
+
+        # Get video info to find the slug
+        try:
+            video_info = await client.get_video_info(video_id)
+            slug = video_info.get("slug")
+            if not slug:
+                raise ValueError(f"Video {video_id} has no slug")
+        except Exception as e:
+            print(f"  Failed to get video info: {e}")
+            await client.update_reencode_job(job_id, "failed", error_message=str(e))
+            return True  # Job was processed (failed)
+
+        video_dir = VIDEOS_DIR / slug
+        if not video_dir.exists():
+            error_msg = f"Video directory not found: {video_dir}"
+            print(f"  {error_msg}")
+            await client.update_reencode_job(job_id, "failed", error_message=error_msg)
+            return True
+
+        # Find source to re-encode from
+        source_path = await find_reencode_source(video_dir)
+        if not source_path:
+            error_msg = "No source found for re-encoding"
+            print(f"  {error_msg}")
+            await client.update_reencode_job(job_id, "failed", error_message=error_msg)
+            return True
+
+        print(f"  Source: {source_path}")
+
+        # Get video info for quality selection
+        probe_info = await get_video_info(source_path)
+        source_height = probe_info.get("height", 1080)
+        duration = probe_info.get("duration", 0)
+
+        # Determine qualities to encode
+        qualities = get_applicable_qualities(source_height)
+
+        # Create work directory for new encoding
+        work_dir = WORKER_WORK_DIR / f"reencode_{job_id}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = work_dir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Re-encode each quality
+            completed_qualities = []
+            for quality in qualities:
+                try:
+                    await reencode_quality(
+                        source_path=source_path,
+                        output_dir=output_dir,
+                        quality=quality,
+                        target_codec=target_codec,
+                        duration=duration,
+                        gpu_caps=gpu_caps,
+                    )
+                    completed_qualities.append(quality)
+                    print(f"    Completed quality: {quality['name']}")
+                except Exception as e:
+                    print(f"    Failed quality {quality['name']}: {e}")
+                    # Continue with other qualities
+
+            if not completed_qualities:
+                raise ValueError("No qualities were successfully encoded")
+
+            # Generate manifests
+            await generate_master_playlist_cmaf(output_dir, completed_qualities, target_codec)
+            await generate_dash_manifest(output_dir, completed_qualities, segment_duration=6, codec=target_codec)
+
+            # Copy thumbnail if it exists
+            old_thumbnail = video_dir / "thumbnail.jpg"
+            if old_thumbnail.exists():
+                shutil.copy2(old_thumbnail, output_dir / "thumbnail.jpg")
+
+            # Atomic swap: backup old, move new, cleanup
+            backup_dir = video_dir.parent / f"{slug}_backup_{job_id}"
+            try:
+                shutil.move(str(video_dir), str(backup_dir))
+                shutil.move(str(output_dir), str(video_dir))
+                shutil.rmtree(backup_dir, ignore_errors=True)
+                print(f"  Atomic swap completed for {slug}")
+            except Exception as e:
+                # Try to restore backup if swap failed
+                if backup_dir.exists() and not video_dir.exists():
+                    shutil.move(str(backup_dir), str(video_dir))
+                raise ValueError(f"Failed to swap directories: {e}")
+
+            # Mark job as completed
+            await client.update_reencode_job(job_id, "completed")
+            print(f"  Re-encode job {job_id} completed successfully")
+
+        finally:
+            # Clean up work directory
+            if work_dir.exists():
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+        return True
+
+    except WorkerAPIError as e:
+        if e.status_code == 404:
+            # No jobs available
+            return False
+        print(f"API error claiming re-encode job: {e.message}")
+        return False
+    except Exception as e:
+        print(f"Error processing re-encode job: {e}")
+        return False
+
+
+async def find_reencode_source(video_dir: Path) -> Optional[Path]:
+    """Find a source file to re-encode from."""
+    # Check for archived source file
+    source_extensions = [".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"]
+    for ext in source_extensions:
+        source_path = video_dir / f"source{ext}"
+        if source_path.exists():
+            return source_path
+
+    # Fall back to highest quality available
+    quality_dirs = ["2160p", "1440p", "1080p", "720p", "480p", "360p"]
+    for quality in quality_dirs:
+        quality_dir = video_dir / quality
+        if quality_dir.exists():
+            # Check for TS segments (legacy HLS)
+            ts_files = sorted(quality_dir.glob("*.ts"))
+            if ts_files:
+                # Create a concat file to use as source
+                concat_file = video_dir / f"{quality}_concat.txt"
+                with open(concat_file, "w") as f:
+                    for ts in ts_files:
+                        f.write(f"file '{ts}'\n")
+                return concat_file
+
+            # Check for fMP4 segments (CMAF)
+            m4s_files = sorted(quality_dir.glob("seg_*.m4s"))
+            if m4s_files:
+                init_file = quality_dir / "init.mp4"
+                if init_file.exists():
+                    concat_file = video_dir / f"{quality}_concat.txt"
+                    with open(concat_file, "w") as f:
+                        f.write(f"file '{init_file}'\n")
+                        for seg in m4s_files:
+                            f.write(f"file '{seg}'\n")
+                    return concat_file
+
+    return None
+
+
+async def reencode_quality(
+    source_path: Path,
+    output_dir: Path,
+    quality: dict,
+    target_codec: VideoCodec,
+    duration: float,
+    gpu_caps: Optional[GPUCapabilities],
+) -> None:
+    """Encode a single quality level to CMAF format."""
+    target_height = quality.get("height", 1080)
+
+    # Select encoder
+    selection = select_encoder(gpu_caps, target_height, target_codec)
+
+    # Handle concat files specially
+    if source_path.suffix == ".txt":
+        cmd = build_concat_cmaf_command(
+            concat_file=source_path,
+            output_dir=output_dir,
+            quality=quality,
+            selection=selection,
+            segment_duration=6,
+        )
+    else:
+        cmd = build_cmaf_transcode_command(
+            input_path=source_path,
+            output_dir=output_dir,
+            quality=quality,
+            selection=selection,
+            segment_duration=6,
+        )
+
+    # Calculate timeout based on duration
+    timeout = calculate_ffmpeg_timeout(duration, target_height)
+
+    # Run FFmpeg
+    await run_ffmpeg_with_progress(
+        cmd,
+        duration,
+        progress_callback=None,
+        timeout=timeout,
+    )
+
+
+def build_concat_cmaf_command(
+    concat_file: Path,
+    output_dir: Path,
+    quality: dict,
+    selection,
+    segment_duration: int = 6,
+) -> List[str]:
+    """Build FFmpeg command for CMAF transcoding from a concat file."""
+    name = quality["name"]
+    bitrate = quality["bitrate"]
+    audio_bitrate = quality["audio_bitrate"]
+
+    # Create quality subdirectory
+    quality_dir = output_dir / name
+    quality_dir.mkdir(parents=True, exist_ok=True)
+    playlist_path = quality_dir / "stream.m3u8"
+    segment_pattern = str(quality_dir / "seg_%04d.m4s")
+
+    cmd = ["ffmpeg", "-y"]
+
+    # Concat input
+    cmd.extend(["-f", "concat", "-safe", "0", "-i", str(concat_file)])
+
+    # Video encoding arguments from selection
+    cmd.extend(selection.output_args)
+
+    # Bitrate control
+    bitrate_kbps = int(bitrate.replace("k", "").replace("K", ""))
+    cmd.extend(
+        [
+            "-b:v",
+            bitrate,
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            f"{bitrate_kbps * 2}k",
+        ]
+    )
+
+    # Audio encoding
+    cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate, "-ac", "2"])
+
+    # CMAF/fMP4 HLS output
+    cmd.extend(
+        [
+            "-f",
+            "hls",
+            "-hls_time",
+            str(segment_duration),
+            "-hls_playlist_type",
+            "vod",
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            "init.mp4",
+            "-hls_segment_filename",
+            segment_pattern,
+            "-movflags",
+            "+cmaf+faststart",
+            str(playlist_path),
+        ]
+    )
+
+    return cmd
 
 
 async def worker_loop():
@@ -887,13 +1180,18 @@ async def worker_loop():
                         if redis_job:
                             await JOB_QUEUE.acknowledge_job(redis_job)
                 else:
-                    # No jobs available
-                    # If Redis is enabled, claim_job already blocks for a short time
-                    # Only poll interval sleep if database-only mode
-                    if JOB_QUEUE_MODE == "database" or not (JOB_QUEUE and JOB_QUEUE.is_redis_enabled):
-                        # Refresh settings periodically (cache has 60s TTL)
-                        worker_settings = await get_remote_worker_settings()
-                        await asyncio.sleep(worker_settings["poll_interval"])
+                    # No regular transcoding jobs available
+                    # Try to process a re-encode job at lower priority
+                    reencode_processed = await try_process_reencode_job(client, GPU_CAPS)
+
+                    if not reencode_processed:
+                        # No jobs of any type available
+                        # If Redis is enabled, claim_job already blocks for a short time
+                        # Only poll interval sleep if database-only mode
+                        if JOB_QUEUE_MODE == "database" or not (JOB_QUEUE and JOB_QUEUE.is_redis_enabled):
+                            # Refresh settings periodically (cache has 60s TTL)
+                            worker_settings = await get_remote_worker_settings()
+                            await asyncio.sleep(worker_settings["poll_interval"])
 
             except WorkerAPIError as e:
                 print(f"API error in worker loop: {e.message}")
