@@ -61,6 +61,10 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
 ]
+markers = [
+    "slow: marks test as slow (deselect with '-m \"not slow\"')",
+    "integration: marks test as integration test",
+]
 
 [tool.coverage.run]
 source = ["api", "worker", "cli"]

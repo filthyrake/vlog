@@ -7,9 +7,11 @@ on:
     branches: [main, dev]
 
 jobs:
-  test:
-    name: Tests (PostgreSQL)
+  # Quick tests for dev branch - faster feedback
+  test-quick:
+    name: Quick Tests
     runs-on: self-hosted
+    if: github.base_ref == 'dev' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
 
     services:
       postgres:
@@ -48,7 +50,67 @@ jobs:
             sleep 1
           done
 
-      - name: Run tests with coverage
+      - name: Run quick tests (skip slow integration tests)
+        env:
+          VLOG_TEST_MODE: "1"
+          VLOG_TEST_PG_HOST: localhost
+          VLOG_TEST_PG_PORT: "5433"
+          VLOG_TEST_PG_USER: vlog
+          VLOG_TEST_PG_PASSWORD: vlog_password
+          VLOG_TEST_PG_ADMIN_DB: postgres
+        run: |
+          source .venv/bin/activate
+          pytest -n 4 -v \
+            --ignore=tests/test_workflows.py \
+            --ignore=tests/test_worker_integration.py \
+            --ignore=tests/test_transcoder_integration.py \
+            --ignore=tests/test_e2e_upload.py \
+            --ignore=tests/test_transcoder.py
+
+  # Full tests for main branch - comprehensive coverage
+  test-full:
+    name: Full Tests (PostgreSQL)
+    runs-on: self-hosted
+    if: github.base_ref == 'main' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: vlog
+          POSTGRES_PASSWORD: vlog_password
+          POSTGRES_DB: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python virtual environment
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          source .venv/bin/activate
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -e .
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in {1..30}; do
+            pg_isready -h localhost -p 5433 -U vlog && break
+            sleep 1
+          done
+
+      - name: Run full tests with coverage
         env:
           VLOG_TEST_MODE: "1"
           VLOG_TEST_PG_HOST: localhost
@@ -96,14 +158,27 @@ jobs:
   tests-passed:
     name: All Tests Passed
     runs-on: self-hosted
-    needs: [test, lint]
+    needs: [test-quick, test-full, lint]
     if: always()
     steps:
       - name: Check all tests passed
         run: |
-          if [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.lint.result }}" != "success" ]]; then
-            echo "One or more required jobs failed"
+          # Check lint always
+          if [[ "${{ needs.lint.result }}" != "success" ]]; then
+            echo "Lint failed"
             exit 1
           fi
-          echo "All tests passed successfully!"
+
+          # For dev branch, check quick tests
+          if [[ "${{ needs.test-quick.result }}" == "failure" ]]; then
+            echo "Quick tests failed"
+            exit 1
+          fi
+
+          # For main branch, check full tests
+          if [[ "${{ needs.test-full.result }}" == "failure" ]]; then
+            echo "Full tests failed"
+            exit 1
+          fi
+
+          echo "All required tests passed!"
