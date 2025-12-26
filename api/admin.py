@@ -5670,6 +5670,7 @@ async def queue_all_legacy_videos(
                 target_codec=target_codec,
                 priority=priority,
                 status="pending",
+                retry_count=0,
                 created_at=datetime.now(timezone.utc),
             )
         )
