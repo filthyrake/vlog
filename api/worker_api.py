@@ -1181,6 +1181,10 @@ async def complete_job(
                 video_updates["source_width"] = data.source_width
             if data.source_height is not None:
                 video_updates["source_height"] = data.source_height
+            if data.streaming_format is not None:
+                video_updates["streaming_format"] = data.streaming_format
+            if data.streaming_codec is not None:
+                video_updates["primary_codec"] = data.streaming_codec
 
             # Mark job complete
             await database.execute(

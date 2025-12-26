@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import shutil
 import uuid
@@ -6072,13 +6073,41 @@ async def create_custom_field(
             detail=f"A field with this name already exists in {scope}"
         )
 
-    # Serialize options and constraints to JSON
+    # Validate and serialize options and constraints to JSON
     options_json = json.dumps(data.options) if data.options else None
-    constraints_json = (
-        json.dumps(data.constraints.model_dump(exclude_none=True))
-        if data.constraints
-        else None
-    )
+    constraints_json = None
+    if data.constraints:
+        constraints_dict = data.constraints.model_dump(exclude_none=True)
+
+        # min/max only valid for number fields
+        if (constraints_dict.get("min") is not None or constraints_dict.get("max") is not None):
+            if data.field_type != "number":
+                raise HTTPException(
+                    status_code=400,
+                    detail="min/max constraints are only valid for number fields"
+                )
+
+        # min_length/max_length/pattern only valid for text/url fields
+        if (constraints_dict.get("min_length") is not None or
+            constraints_dict.get("max_length") is not None or
+            constraints_dict.get("pattern") is not None):
+            if data.field_type not in ("text", "url"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="min_length/max_length/pattern constraints are only valid for text/url fields"
+                )
+
+        # Validate pattern is a valid regex
+        if constraints_dict.get("pattern"):
+            try:
+                re.compile(constraints_dict["pattern"])
+            except re.error as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid regex pattern: {e}"
+                )
+
+        constraints_json = json.dumps(constraints_dict)
 
     # Insert the field
     query = custom_field_definitions.insert().values(
@@ -6259,9 +6288,39 @@ async def update_custom_field(
         update_values["position"] = data.position
 
     if data.constraints is not None:
-        update_values["constraints"] = json.dumps(
-            data.constraints.model_dump(exclude_none=True)
-        )
+        # Validate constraints match field type
+        field_type = existing["field_type"]
+        constraints_dict = data.constraints.model_dump(exclude_none=True)
+
+        # min/max only valid for number fields
+        if (constraints_dict.get("min") is not None or constraints_dict.get("max") is not None):
+            if field_type != "number":
+                raise HTTPException(
+                    status_code=400,
+                    detail="min/max constraints are only valid for number fields"
+                )
+
+        # min_length/max_length/pattern only valid for text/url fields
+        if (constraints_dict.get("min_length") is not None or
+            constraints_dict.get("max_length") is not None or
+            constraints_dict.get("pattern") is not None):
+            if field_type not in ("text", "url"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="min_length/max_length/pattern constraints are only valid for text/url fields"
+                )
+
+        # Validate pattern is a valid regex
+        if constraints_dict.get("pattern"):
+            try:
+                re.compile(constraints_dict["pattern"])
+            except re.error as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid regex pattern: {e}"
+                )
+
+        update_values["constraints"] = json.dumps(constraints_dict)
 
     if data.description is not None:
         update_values["description"] = data.description
@@ -6350,6 +6409,12 @@ def _validate_custom_field_value(field_type: str, value, options: list = None, c
                 raise ValueError(f"Value must be at least {constraints['min_length']} characters")
             if constraints.get("max_length") and len(value) > constraints["max_length"]:
                 raise ValueError(f"Value must be at most {constraints['max_length']} characters")
+            if constraints.get("pattern"):
+                try:
+                    if not re.match(constraints["pattern"], value):
+                        raise ValueError("Value does not match required pattern")
+                except re.error:
+                    raise ValueError("Invalid regex pattern in field constraints")
 
     elif field_type == "number":
         if not isinstance(value, (int, float)):
@@ -6374,6 +6439,17 @@ def _validate_custom_field_value(field_type: str, value, options: list = None, c
             raise ValueError("Value must be a string")
         if not value.startswith(("http://", "https://")):
             raise ValueError("Value must be a valid URL starting with http:// or https://")
+        if constraints:
+            if constraints.get("min_length") and len(value) < constraints["min_length"]:
+                raise ValueError(f"Value must be at least {constraints['min_length']} characters")
+            if constraints.get("max_length") and len(value) > constraints["max_length"]:
+                raise ValueError(f"Value must be at most {constraints['max_length']} characters")
+            if constraints.get("pattern"):
+                try:
+                    if not re.match(constraints["pattern"], value):
+                        raise ValueError("Value does not match required pattern")
+                except re.error:
+                    raise ValueError("Invalid regex pattern in field constraints")
 
     elif field_type == "select":
         if not isinstance(value, str):
@@ -6670,48 +6746,65 @@ async def bulk_update_custom_fields(
             failed += 1
             continue
 
-        try:
-            async with database.transaction():
-                for field_id, value in data.values.items():
-                    if value is None:
-                        await database.execute(
-                            video_custom_fields.delete()
-                            .where(video_custom_fields.c.video_id == video_id)
-                            .where(video_custom_fields.c.field_id == field_id)
-                        )
-                    else:
-                        existing = await database.fetch_one(
-                            video_custom_fields.select()
-                            .where(video_custom_fields.c.video_id == video_id)
-                            .where(video_custom_fields.c.field_id == field_id)
-                        )
-                        value_json = json.dumps(value)
-                        if existing:
+        # Retry logic for transient database errors
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                async with database.transaction():
+                    for field_id, value in data.values.items():
+                        if value is None:
                             await database.execute(
-                                video_custom_fields.update()
+                                video_custom_fields.delete()
                                 .where(video_custom_fields.c.video_id == video_id)
                                 .where(video_custom_fields.c.field_id == field_id)
-                                .values(value=value_json)
                             )
                         else:
-                            await database.execute(
-                                video_custom_fields.insert().values(
-                                    video_id=video_id,
-                                    field_id=field_id,
-                                    value=value_json,
-                                )
+                            existing = await database.fetch_one(
+                                video_custom_fields.select()
+                                .where(video_custom_fields.c.video_id == video_id)
+                                .where(video_custom_fields.c.field_id == field_id)
                             )
+                            value_json = json.dumps(value)
+                            if existing:
+                                await database.execute(
+                                    video_custom_fields.update()
+                                    .where(video_custom_fields.c.video_id == video_id)
+                                    .where(video_custom_fields.c.field_id == field_id)
+                                    .values(value=value_json)
+                                )
+                            else:
+                                await database.execute(
+                                    video_custom_fields.insert().values(
+                                        video_id=video_id,
+                                        field_id=field_id,
+                                        value=value_json,
+                                    )
+                                )
 
-            results.append(BulkOperationResult(video_id=video_id, success=True))
-            updated += 1
+                results.append(BulkOperationResult(video_id=video_id, success=True))
+                updated += 1
+                break  # Success, exit retry loop
 
-        except Exception as e:
-            results.append(BulkOperationResult(
-                video_id=video_id,
-                success=False,
-                error=sanitize_error_message(str(e))
-            ))
-            failed += 1
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                # Retry on transient database errors
+                if attempt < max_retries - 1 and (
+                    "database is locked" in error_str or
+                    "deadlock" in error_str or
+                    "lock wait timeout" in error_str
+                ):
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                    continue
+                # Non-retryable error or max retries reached
+                results.append(BulkOperationResult(
+                    video_id=video_id,
+                    success=False,
+                    error=sanitize_error_message(str(last_error))
+                ))
+                failed += 1
+                break
 
     # Audit log
     log_audit(

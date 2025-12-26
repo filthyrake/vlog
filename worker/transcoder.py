@@ -944,6 +944,7 @@ async def transcode_quality_with_progress(
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     gpu_caps: Optional["GPUCapabilities"] = None,
     streaming_format: str = "hls_ts",
+    preferred_codec: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Transcode a single quality variant with progress tracking and timeout.
@@ -956,6 +957,7 @@ async def transcode_quality_with_progress(
         progress_callback: Optional async callback for progress updates (0-100)
         gpu_caps: GPU capabilities from hwaccel module for hardware encoding
         streaming_format: Output format - "hls_ts" for MPEG-TS or "cmaf" for fMP4
+        preferred_codec: Preferred video codec ("h264", "hevc", "av1") from settings
 
     Returns:
         Tuple[bool, Optional[str]]: (success, error_message) where error_message
@@ -976,12 +978,19 @@ async def transcode_quality_with_progress(
 
     # Use hardware acceleration if GPU capabilities provided
     if gpu_caps is not None:
-        from worker.hwaccel import build_cmaf_transcode_command, build_transcode_command, select_encoder
+        from worker.hwaccel import VideoCodec, build_cmaf_transcode_command, build_transcode_command, select_encoder
 
-        selection = select_encoder(gpu_caps, height)
+        # Convert preferred_codec string to VideoCodec enum
+        codec_enum = None
+        if preferred_codec:
+            codec_map = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}
+            codec_enum = codec_map.get(preferred_codec.lower())
+
+        selection = select_encoder(gpu_caps, height, preferred_codec=codec_enum)
         encoder_name = selection.encoder.name
         encoder_type = "GPU" if selection.encoder.is_hardware else "CPU"
-        print(f"      Using encoder: {encoder_name} ({encoder_type})")
+        codec_name = codec_enum.value if codec_enum else "default"
+        print(f"      Using encoder: {encoder_name} ({encoder_type}, codec={codec_name})")
 
         if use_cmaf:
             # Create quality subdirectory for CMAF output

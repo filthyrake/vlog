@@ -580,6 +580,8 @@ class WorkerAPIClient:
         duration: Optional[float] = None,
         source_width: Optional[int] = None,
         source_height: Optional[int] = None,
+        streaming_format: Optional[str] = None,
+        streaming_codec: Optional[str] = None,
     ) -> dict:
         """
         Mark job as complete.
@@ -590,6 +592,8 @@ class WorkerAPIClient:
             duration: Video duration in seconds
             source_width: Source video width
             source_height: Source video height
+            streaming_format: Streaming format used ("hls_ts" or "cmaf")
+            streaming_codec: Video codec used ("h264", "hevc", "av1")
 
         Returns:
             Server response
@@ -601,6 +605,10 @@ class WorkerAPIClient:
             data["source_width"] = source_width
         if source_height is not None:
             data["source_height"] = source_height
+        if streaming_format is not None:
+            data["streaming_format"] = streaming_format
+        if streaming_codec is not None:
+            data["streaming_codec"] = streaming_codec
         return await self._request(
             "POST",
             f"/api/worker/{job_id}/complete",

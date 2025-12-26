@@ -180,6 +180,16 @@ class VideoResponse(BaseModel):
     def default_description(cls, v):
         return v if v is not None else ""
 
+    @field_validator("streaming_format", mode="before")
+    @classmethod
+    def default_streaming_format(cls, v):
+        return v if v is not None else "hls_ts"
+
+    @field_validator("primary_codec", mode="before")
+    @classmethod
+    def default_primary_codec(cls, v):
+        return v if v is not None else "h264"
+
     @field_validator("created_at", mode="before")
     @classmethod
     def default_created_at(cls, v):

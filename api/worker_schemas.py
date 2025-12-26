@@ -239,6 +239,8 @@ class CompleteJobRequest(BaseModel):
     duration: Optional[float] = None
     source_width: Optional[int] = None
     source_height: Optional[int] = None
+    streaming_format: Optional[str] = None  # "hls_ts" or "cmaf"
+    streaming_codec: Optional[str] = None  # "h264", "hevc", "av1"
 
 
 class CompleteJobResponse(BaseModel):

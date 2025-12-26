@@ -123,12 +123,18 @@ async def get_remote_worker_settings() -> Dict:
 
         _cached_remote_settings = {
             "poll_interval": await service.get("workers.poll_interval", WORKER_POLL_INTERVAL),
+            "streaming_format": await service.get("streaming.default_format", "cmaf"),
+            "streaming_codec": await service.get("streaming.default_codec", "av1"),
+            "streaming_enable_dash": await service.get("streaming.enable_dash", True),
         }
         _cached_remote_settings_time = now
     except Exception:
         # Fall back to config values on error
         _cached_remote_settings = {
             "poll_interval": WORKER_POLL_INTERVAL,
+            "streaming_format": STREAMING_FORMAT,
+            "streaming_codec": "av1",
+            "streaming_enable_dash": True,
         }
         _cached_remote_settings_time = now
 
@@ -219,7 +225,14 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     # source_filename may be None if file not found; default to video_id.mp4
     source_filename = job.get("source_filename") or f"{video_id}.mp4"
 
+    # Fetch streaming settings from database
+    settings = await get_remote_worker_settings()
+    streaming_format = settings.get("streaming_format", "cmaf")
+    streaming_codec = settings.get("streaming_codec", "av1")
+    enable_dash = settings.get("streaming_enable_dash", True)
+
     print(f"Processing video: {video_slug} (job={job_id})")
+    print(f"  Streaming format: {streaming_format}, codec: {streaming_codec}")
 
     # Create work directories
     work_dir = WORKER_WORK_DIR / str(job_id)
@@ -476,7 +489,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 duration,
                 update_quality_progress,
                 gpu_caps=GPU_CAPS,
-                streaming_format=STREAMING_FORMAT,
+                streaming_format=streaming_format,
+                preferred_codec=streaming_codec,
             )
 
             if not success:
@@ -491,7 +505,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
             # Get actual dimensions from transcoded segment
             # CMAF uses init.mp4 for track info (m4s segments are fragmented)
-            if STREAMING_FORMAT == "cmaf":
+            if streaming_format == "cmaf":
                 first_segment = output_dir / quality_name / "init.mp4"
             else:
                 first_segment = output_dir / f"{quality_name}_0000.ts"
@@ -513,7 +527,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
             # Validate HLS playlist before upload (issue #166)
             # CMAF uses subdirectory structure
-            if STREAMING_FORMAT == "cmaf":
+            if streaming_format == "cmaf":
                 quality_playlist_path = output_dir / quality_name / "stream.m3u8"
             else:
                 quality_playlist_path = output_dir / f"{quality_name}.m3u8"
@@ -670,7 +684,15 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     mq["bitrate_bps"] = q["bitrate"] * 1000
                 master_qualities.append(mq)
 
-            await generate_master_playlist(output_dir, master_qualities)
+            # Use appropriate master playlist generator based on streaming format
+            if streaming_format == "cmaf":
+                await generate_master_playlist_cmaf(output_dir, master_qualities, streaming_codec)
+                # Also generate DASH manifest if enabled
+                if enable_dash:
+                    print("  Generating DASH manifest...")
+                    await generate_dash_manifest(output_dir, master_qualities, codec=streaming_codec)
+            else:
+                await generate_master_playlist(output_dir, master_qualities)
 
             # Validate master playlist before upload (issue #166)
             master_playlist_path = output_dir / "master.m3u8"
@@ -701,6 +723,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         duration=duration,
                         source_width=source_width,
                         source_height=source_height,
+                        streaming_format=streaming_format,
+                        streaming_codec=streaming_codec,
                     )
                 )
                 completion_verified = True
