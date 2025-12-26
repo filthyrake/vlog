@@ -323,6 +323,12 @@ WORKER_OFFLINE_THRESHOLD_MINUTES = get_int_env("VLOG_WORKER_OFFLINE_THRESHOLD", 
 # Worker health check server port (for K8s liveness/readiness probes)
 WORKER_HEALTH_PORT = get_int_env("VLOG_WORKER_HEALTH_PORT", 8080, min_val=1, max_val=65535)
 
+# Streaming format settings for remote workers (Issue #222)
+# These override database settings for distributed workers that can't access the DB
+STREAMING_FORMAT = os.getenv("VLOG_STREAMING_FORMAT", "cmaf")  # "hls_ts" or "cmaf"
+STREAMING_CODEC = os.getenv("VLOG_STREAMING_CODEC", "hevc")  # "h264", "hevc", "av1"
+STREAMING_ENABLE_DASH = os.getenv("VLOG_STREAMING_ENABLE_DASH", "true").lower() in ("true", "1", "yes")
+
 # How often to check for stale jobs from offline workers (in seconds)
 STALE_JOB_CHECK_INTERVAL = get_int_env("VLOG_STALE_JOB_CHECK_INTERVAL", 60, min_val=1)
 

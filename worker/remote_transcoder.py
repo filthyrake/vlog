@@ -36,6 +36,9 @@ from api.job_queue import JobDispatch, JobQueue
 from config import (
     JOB_QUEUE_MODE,
     QUALITY_PRESETS,
+    STREAMING_CODEC,
+    STREAMING_ENABLE_DASH,
+    STREAMING_FORMAT,
     WORKER_API_KEY,
     WORKER_API_URL,
     WORKER_HEALTH_PORT,
@@ -475,6 +478,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 duration,
                 update_quality_progress,
                 gpu_caps=GPU_CAPS,
+                streaming_format=STREAMING_FORMAT,
             )
 
             if not success:
@@ -488,7 +492,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 return (None, quality_name)
 
             # Get actual dimensions from transcoded segment
-            first_segment = output_dir / f"{quality_name}_0000.ts"
+            # CMAF uses subdirectory structure with .m4s segments
+            if STREAMING_FORMAT == "cmaf":
+                first_segment = output_dir / quality_name / "seg_0000.m4s"
+            else:
+                first_segment = output_dir / f"{quality_name}_0000.ts"
             if first_segment.exists():
                 actual_width, actual_height = await get_output_dimensions(first_segment)
             else:
@@ -506,7 +514,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
 
             # Validate HLS playlist before upload (issue #166)
-            quality_playlist_path = output_dir / f"{quality_name}.m3u8"
+            # CMAF uses subdirectory structure
+            if STREAMING_FORMAT == "cmaf":
+                quality_playlist_path = output_dir / quality_name / "stream.m3u8"
+            else:
+                quality_playlist_path = output_dir / f"{quality_name}.m3u8"
             is_valid, validation_error = await validate_hls_playlist(quality_playlist_path)
             if not is_valid:
                 print(f"    {quality_name}: HLS validation failed - {validation_error}")
