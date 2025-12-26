@@ -1116,7 +1116,12 @@
                     // Check if browser supports Shaka
                     if (!shaka.Player.isBrowserSupported()) {
                         console.warn('Shaka not supported, falling back to HLS.js');
-                        this.initHlsPlayer(videoElement, hlsFallbackUrl);
+                        if (hlsFallbackUrl) {
+                            this.initHlsPlayer(videoElement, hlsFallbackUrl);
+                        } else {
+                            console.error('No HLS fallback URL available and Shaka not supported');
+                            this.error = 'Your browser does not support this video format';
+                        }
                         return;
                     }
 
@@ -1151,6 +1156,8 @@
                             player.destroy();
                             self.shakaPlayer = null;
                             self.initHlsPlayer(videoElement, hlsFallbackUrl);
+                        } else if (!hlsFallbackUrl) {
+                            self.error = 'Video playback error';
                         }
                     });
 
@@ -1198,6 +1205,8 @@
                             player.destroy();
                             self.shakaPlayer = null;
                             self.initHlsPlayer(videoElement, hlsFallbackUrl);
+                        } else {
+                            self.error = 'Failed to load video';
                         }
                     });
                 },
