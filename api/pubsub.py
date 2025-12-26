@@ -14,6 +14,7 @@ Channels:
 - vlog:jobs:failed - Job failure notifications
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -510,6 +511,21 @@ async def request_worker_response(
 
     # Subscribe to response channel before sending command
     response_channel = f"{REDIS_PUBSUB_PREFIX}:worker:{worker_id}:response:{request_id}"
+    pubsub = None
+
+    async def _wait_for_response(ps) -> Optional[Dict]:
+        """Inner coroutine to wait for response message."""
+        async for message in ps.listen():
+            msg_type = message.get("type", "")
+            if msg_type in ("subscribe", "unsubscribe"):
+                continue
+
+            if msg_type == "message":
+                try:
+                    return json.loads(message.get("data", "{}"))
+                except json.JSONDecodeError:
+                    continue
+        return None
 
     try:
         pubsub = redis.pubsub()
@@ -518,35 +534,26 @@ async def request_worker_response(
         # Send the command
         success = await publish_worker_command(worker_id, command, params, request_id)
         if not success:
-            await pubsub.close()
             return None
 
-        # Wait for response with timeout
-        start_time = datetime.now(timezone.utc)
-        timeout_delta = timeout_seconds
-
-        async for message in pubsub.listen():
-            # Check timeout
-            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-            if elapsed > timeout_delta:
-                logger.warning(f"Timeout waiting for worker {worker_id} response")
-                break
-
-            msg_type = message.get("type", "")
-            if msg_type in ("subscribe", "unsubscribe"):
-                continue
-
-            if msg_type == "message":
-                try:
-                    data = json.loads(message.get("data", "{}"))
-                    await pubsub.close()
-                    return data
-                except json.JSONDecodeError:
-                    continue
-
-        await pubsub.close()
-        return None
+        # Wait for response with proper timeout using asyncio.wait_for
+        try:
+            result = await asyncio.wait_for(
+                _wait_for_response(pubsub),
+                timeout=timeout_seconds
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout waiting for worker {worker_id} response after {timeout_seconds}s")
+            return None
 
     except Exception as e:
         logger.warning(f"Error in request_worker_response: {e}")
         return None
+    finally:
+        # Always clean up the pubsub connection
+        if pubsub:
+            try:
+                await pubsub.close()
+            except Exception:
+                pass  # Ignore cleanup errors
