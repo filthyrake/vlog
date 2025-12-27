@@ -107,6 +107,36 @@ template.innerHTML = `
       background-color: var(--vlog-error-hover, #dc2626);
     }
 
+    /* Success variant */
+    button.variant-success {
+      background-color: var(--vlog-success, #22c55e);
+      color: white;
+    }
+
+    button.variant-success:hover:not(:disabled) {
+      background-color: var(--vlog-success-hover, #16a34a);
+    }
+
+    /* Info variant (cyan) */
+    button.variant-info {
+      background-color: var(--vlog-info, #06b6d4);
+      color: white;
+    }
+
+    button.variant-info:hover:not(:disabled) {
+      background-color: var(--vlog-info-hover, #0891b2);
+    }
+
+    /* Warning variant (purple for special actions) */
+    button.variant-warning {
+      background-color: var(--vlog-warning, #a855f7);
+      color: white;
+    }
+
+    button.variant-warning:hover:not(:disabled) {
+      background-color: var(--vlog-warning-hover, #9333ea);
+    }
+
     /* Ghost variant */
     button.variant-ghost {
       background-color: transparent;
@@ -117,6 +147,19 @@ template.innerHTML = `
     button.variant-ghost:hover:not(:disabled) {
       background-color: var(--vlog-bg-tertiary, #1e293b);
       color: var(--vlog-text-primary, #f1f5f9);
+    }
+
+    /* Ghost-danger variant (for delete buttons) */
+    button.variant-ghost-danger {
+      background-color: transparent;
+      color: var(--vlog-error-text, #fca5a5);
+      border: 1px solid transparent;
+    }
+
+    button.variant-ghost-danger:hover:not(:disabled) {
+      background-color: var(--vlog-error-bg, rgba(239, 68, 68, 0.15));
+      color: var(--vlog-error, #ef4444);
+      border-color: var(--vlog-error, #ef4444);
     }
 
     /* Text variant (link-style) */
@@ -178,13 +221,17 @@ template.innerHTML = `
     }
 
     button.variant-primary.loading::after,
-    button.variant-danger.loading::after {
+    button.variant-danger.loading::after,
+    button.variant-success.loading::after,
+    button.variant-info.loading::after,
+    button.variant-warning.loading::after {
       border-color: white;
       border-right-color: transparent;
     }
 
     button.variant-secondary.loading::after,
     button.variant-ghost.loading::after,
+    button.variant-ghost-danger.loading::after,
     button.variant-text.loading::after {
       border-color: var(--vlog-text-secondary, #cbd5e1);
       border-right-color: transparent;

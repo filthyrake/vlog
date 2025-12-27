@@ -34,6 +34,9 @@ const icons = {
   error: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
   </svg>`,
+  chart: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+  </svg>`,
 };
 
 const template = document.createElement('template');
@@ -146,7 +149,38 @@ template.innerHTML = `
       gap: var(--vlog-space-3, 0.75rem);
     }
 
-    .actions:empty {
+    .actions:empty:not(:has(.action-button)) {
+      display: none;
+    }
+
+    /* Action button (when using action-text attribute) */
+    .action-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--vlog-space-2, 0.5rem);
+      padding: var(--vlog-space-2, 0.5rem) var(--vlog-space-4, 1rem);
+      border: none;
+      border-radius: var(--vlog-radius-lg, 0.5rem);
+      background-color: var(--vlog-primary, #3b82f6);
+      color: white;
+      font-family: var(--vlog-font-sans, system-ui, sans-serif);
+      font-size: var(--vlog-text-sm, 0.875rem);
+      font-weight: var(--vlog-font-medium, 500);
+      cursor: pointer;
+      transition: var(--vlog-transition-colors);
+    }
+
+    .action-button:hover {
+      background-color: var(--vlog-primary-hover, #2563eb);
+    }
+
+    .action-button:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
+    }
+
+    .action-button:empty {
       display: none;
     }
 
@@ -171,6 +205,7 @@ template.innerHTML = `
     <h3 class="title" part="title"></h3>
     <p class="description" part="description"></p>
     <div class="actions" part="actions">
+      <button class="action-button" part="action-button"></button>
       <slot name="actions"></slot>
     </div>
   </div>
@@ -181,9 +216,10 @@ export class VlogEmptyState extends HTMLElement {
   private iconWrapper!: HTMLDivElement;
   private titleElement!: HTMLHeadingElement;
   private descriptionElement!: HTMLParagraphElement;
+  private actionButton!: HTMLButtonElement;
 
   static get observedAttributes() {
-    return ['icon', 'title', 'description', 'size'];
+    return ['icon', 'title', 'description', 'size', 'action-text', 'compact'];
   }
 
   constructor() {
@@ -195,10 +231,27 @@ export class VlogEmptyState extends HTMLElement {
     this.iconWrapper = this.shadowRoot!.querySelector('.icon-wrapper')!;
     this.titleElement = this.shadowRoot!.querySelector('.title')!;
     this.descriptionElement = this.shadowRoot!.querySelector('.description')!;
+    this.actionButton = this.shadowRoot!.querySelector('.action-button')!;
+
+    this.handleActionClick = this.handleActionClick.bind(this);
   }
 
   connectedCallback() {
     this.updateContent();
+    this.actionButton.addEventListener('click', this.handleActionClick);
+  }
+
+  disconnectedCallback() {
+    this.actionButton.removeEventListener('click', this.handleActionClick);
+  }
+
+  private handleActionClick() {
+    this.dispatchEvent(
+      new CustomEvent('action', {
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 
   attributeChangedCallback(_name: string, oldValue: string | null, newValue: string | null) {
@@ -207,10 +260,13 @@ export class VlogEmptyState extends HTMLElement {
   }
 
   private updateContent() {
-    const size = this.getAttribute('size') || 'md';
+    // Handle compact as alias for size="sm"
+    const isCompact = this.hasAttribute('compact');
+    const size = isCompact ? 'sm' : (this.getAttribute('size') || 'md');
     const iconName = this.getAttribute('icon') as keyof typeof icons | null;
     const title = this.getAttribute('title');
     const description = this.getAttribute('description');
+    const actionText = this.getAttribute('action-text');
 
     // Update size class
     this.wrapper.className = `empty-state size-${size}`;
@@ -239,6 +295,15 @@ export class VlogEmptyState extends HTMLElement {
       this.descriptionElement.textContent = description;
     } else {
       this.descriptionElement.textContent = '';
+    }
+
+    // Update action button
+    if (actionText) {
+      this.actionButton.textContent = actionText;
+      this.actionButton.style.display = '';
+    } else {
+      this.actionButton.textContent = '';
+      this.actionButton.style.display = 'none';
     }
   }
 
@@ -285,6 +350,30 @@ export class VlogEmptyState extends HTMLElement {
 
   set size(value: string) {
     this.setAttribute('size', value);
+  }
+
+  get actionText(): string {
+    return this.getAttribute('action-text') || '';
+  }
+
+  set actionText(value: string) {
+    if (value) {
+      this.setAttribute('action-text', value);
+    } else {
+      this.removeAttribute('action-text');
+    }
+  }
+
+  get compact(): boolean {
+    return this.hasAttribute('compact');
+  }
+
+  set compact(value: boolean) {
+    if (value) {
+      this.setAttribute('compact', '');
+    } else {
+      this.removeAttribute('compact');
+    }
   }
 }
 
