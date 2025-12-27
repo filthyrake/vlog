@@ -71,6 +71,7 @@ from api.db_retry import (
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
+from api.metrics import get_metrics, init_app_info
 from api.public import get_video_url_prefix, get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
@@ -356,6 +357,7 @@ class AdminAuthMiddleware:
     Paths that are always allowed (no auth required):
     - / (admin HTML page)
     - /health (monitoring)
+    - /metrics (Prometheus scraping)
     - /static/* (static files)
     - /videos/* (video file serving for preview)
     - /api/auth/* (login, logout, check, csrf-token endpoints)
@@ -804,6 +806,9 @@ async def lifespan(app: FastAPI):
     await database.connect()
     await configure_database()
 
+    # Initialize Prometheus metrics
+    init_app_info()
+
     # Auto-seed settings from environment on fresh install
     try:
         service = get_settings_service()
@@ -922,6 +927,17 @@ async def health_check():
             },
         },
     )
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    """
+    Prometheus metrics endpoint.
+
+    Returns metrics in Prometheus text format for scraping.
+    No authentication required for metrics collection.
+    """
+    return Response(content=get_metrics(), media_type="text/plain; charset=utf-8")
 
 
 # ============ Authentication ============

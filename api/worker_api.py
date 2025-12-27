@@ -74,7 +74,7 @@ from pathlib import Path
 from typing import Optional
 
 import sqlalchemy as sa
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
@@ -102,6 +102,7 @@ from api.database import (
     workers,
 )
 from api.db_retry import DatabaseLockedError, execute_with_retry
+from api.metrics import get_metrics
 from api.pubsub import Publisher
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
@@ -1879,6 +1880,17 @@ async def health_check(request: Request):
             },
         },
     )
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    """
+    Prometheus metrics endpoint.
+
+    Returns metrics in Prometheus text format for scraping.
+    No authentication required for metrics collection.
+    """
+    return Response(content=get_metrics(), media_type="text/plain; charset=utf-8")
 
 
 # =============================================================================

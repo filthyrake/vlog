@@ -459,6 +459,11 @@ STORAGE_CHECK_TIMEOUT = get_int_env("VLOG_STORAGE_CHECK_TIMEOUT", 2, min_val=1)
 AUDIT_LOG_ENABLED = os.getenv("VLOG_AUDIT_LOG_ENABLED", "true").lower() not in ("false", "0", "no")
 AUDIT_LOG_PATH = Path(os.getenv("VLOG_AUDIT_LOG_PATH", "/var/log/vlog/audit.log"))
 AUDIT_LOG_LEVEL = os.getenv("VLOG_AUDIT_LOG_LEVEL", "INFO").upper()
+# Log rotation settings
+# Maximum size of audit log file before rotation (in bytes, default: 10MB)
+AUDIT_LOG_MAX_BYTES = get_int_env("VLOG_AUDIT_LOG_MAX_BYTES", 10 * 1024 * 1024, min_val=1024)
+# Number of backup files to keep (default: 5, so 6 total files including current)
+AUDIT_LOG_BACKUP_COUNT = get_int_env("VLOG_AUDIT_LOG_BACKUP_COUNT", 5, min_val=0)
 
 # Error Message Truncation Limits
 # Standardized limits for consistent debugging experience across the codebase
