@@ -9,7 +9,6 @@ Use create_analytics_cache() factory function to get the appropriate implementat
 """
 
 import json
-import redis
 import logging
 import random
 import time
@@ -189,6 +188,7 @@ class RedisAnalyticsCache:
     def _initialize_client(self) -> None:
         """Initialize the Redis client."""
         try:
+            import redis # Lazy import
             self._client = redis.Redis.from_url(
                 self._redis_url,
                 socket_timeout=5.0,
@@ -199,6 +199,7 @@ class RedisAnalyticsCache:
             self._client.ping()
             logger.info(f"Redis analytics cache connected: {self._redis_url.split('@')[-1]}")
         except Exception as e:
+            # Catch broad exceptions to avoid hard dependency on redis
             logger.warning(f"Redis analytics cache connection failed: {e}")
             self._client = None
             self._connection_failed = True
@@ -211,14 +212,14 @@ class RedisAnalyticsCache:
         self,
         operation: Callable[[], T],
         operation_name: str,
-        fallback: T = None,
-    ) -> T:
+        fallback: Optional[T] = None
+    ) -> Optional[T]:
 
         if not self._enabled or self._client is None:
             return fallback
         try:
             return operation()
-        except redis.RedisError as e:
+        except Exception as e:
             logger.warning(f"Redis analytics cache {operation_name} failed: {e}")
             return fallback
 
@@ -232,12 +233,12 @@ class RedisAnalyticsCache:
         Returns:
             Cached value if exists and not expired, None otherwise
         """
+        def get_operation():
+            data = self._client.get(self._get_full_key(key))
+            return None if data is None else json.loads(data)
+
         return self._safe_redis_call(
-            lambda: (
-                None
-                if (data := self._client.get(self._get_full_key(key))) is None
-                else json.loads(data)
-            ),
+            get_operation,
             "get",
             fallback=None,
         )
@@ -303,6 +304,7 @@ class RedisAnalyticsCache:
 
         Returns:
             Dict with cache stats (TTL, enabled status, backend type)
+            # Redis has no fixed max size
         """
         def count_keys():
             entry_count = 0
