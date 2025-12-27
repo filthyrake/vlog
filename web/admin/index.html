@@ -169,8 +169,8 @@
                 </span>
                 <div class="flex gap-2 ml-auto">
                     <vlog-button variant="primary" size="sm" @click="openBulkUpdateModal">Update</vlog-button>
-                    <vlog-button variant="secondary" size="sm" @click="openBulkRetranscodeModal" class="!bg-cyan-600 hover:!bg-cyan-700">Re-transcode</vlog-button>
-                    <vlog-button variant="secondary" size="sm" @click="openBulkCustomFieldsModal" x-show="customFields.length > 0" class="!bg-purple-600 hover:!bg-purple-700">Custom Fields</vlog-button>
+                    <vlog-button variant="info" size="sm" @click="openBulkRetranscodeModal">Re-transcode</vlog-button>
+                    <vlog-button variant="warning" size="sm" @click="openBulkCustomFieldsModal" x-show="customFields.length > 0">Custom Fields</vlog-button>
                     <vlog-button variant="success" size="sm" @click="bulkRestoreVideos" x-show="selectedVideos.some(id => videos.find(v => v.id === id)?.deleted_at)">Restore</vlog-button>
                     <vlog-button variant="danger" size="sm" @click="openBulkDeleteModal">Delete</vlog-button>
                     <vlog-button variant="secondary" size="sm" @click="clearSelection">Clear</vlog-button>
@@ -338,7 +338,7 @@
                                         <vlog-button variant="ghost" size="sm" x-show="video.status === 'failed'" @click="retryVideo(video.id)">Retry</vlog-button>
                                         <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click="togglePublish(video)" x-text="video.published_at ? 'Unpublish' : 'Publish'"></vlog-button>
                                         <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click="openThumbnailModal(video)">Thumbnail</vlog-button>
-                                        <vlog-button variant="ghost" size="sm" @click="deleteVideo(video.id)" class="text-red-400">Delete</vlog-button>
+                                        <vlog-button variant="ghost-danger" size="sm" @click="deleteVideo(video.id)">Delete</vlog-button>
                                     </div>
                                 </td>
                             </tr>
@@ -401,7 +401,7 @@
                                     <div class="font-medium" x-text="cat.name"></div>
                                     <div class="text-dark-300 text-sm" x-text="cat.video_count + ' videos'"></div>
                                 </div>
-                                <vlog-button variant="ghost" size="sm" @click="deleteCategory(cat.id)" class="text-red-400">Delete</vlog-button>
+                                <vlog-button variant="ghost-danger" size="sm" @click="deleteCategory(cat.id)">Delete</vlog-button>
                             </div>
                         </template>
                         <vlog-empty-state
@@ -877,9 +877,9 @@
                     <!-- Import/Export buttons -->
                     <div class="flex gap-2">
                         <vlog-button variant="secondary" size="sm" @click="exportSettings()">Export</vlog-button>
-                        <label>
-                            <vlog-button variant="secondary" size="sm" style="pointer-events: none;">Import</vlog-button>
-                            <input type="file" accept=".json" @change="importSettings($event)" class="hidden">
+                        <label class="cursor-pointer">
+                            <input type="file" accept=".json" @change="importSettings($event)" class="sr-only">
+                            <vlog-button variant="secondary" size="sm" @click="$el.previousElementSibling.click()">Import</vlog-button>
                         </label>
                     </div>
                 </div>
