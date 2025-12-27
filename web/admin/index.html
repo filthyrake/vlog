@@ -383,9 +383,9 @@
                 @action="videoSearch = ''; videoStatusFilter = ''; videoCategoryFilter = ''; filterVideos()"
             ></vlog-empty-state>
 
-            <!-- Empty state when no videos exist -->
+            <!-- Empty state when no videos exist (only show when no filters active) -->
             <vlog-empty-state
-                x-show="!loading && videos.length === 0"
+                x-show="!loading && videos.length === 0 && !videoSearch && !videoStatusFilter && !videoCategoryFilter"
                 icon="video"
                 title="No videos yet"
                 description="Upload your first video to get started."

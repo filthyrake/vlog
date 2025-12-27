@@ -216,6 +216,7 @@ export function createVideosStore(): VideosStore {
       try {
         await videosApi.delete(id);
         this.videos = this.videos.filter((v) => v.id !== id);
+        this.filterVideos();
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to delete video';
       }
@@ -229,6 +230,7 @@ export function createVideosStore(): VideosStore {
         if (video) {
           video.status = 'pending';
         }
+        this.filterVideos();
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to retry video';
       }
@@ -243,6 +245,7 @@ export function createVideosStore(): VideosStore {
           await videosApi.publish(video.id);
           video.published_at = new Date().toISOString();
         }
+        this.filterVideos();
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to toggle publish status';
       }
@@ -289,7 +292,9 @@ export function createVideosStore(): VideosStore {
       // Category filter
       if (this.videoCategoryFilter) {
         const categoryId = parseInt(this.videoCategoryFilter, 10);
-        result = result.filter((v) => v.category_id === categoryId);
+        if (!isNaN(categoryId)) {
+          result = result.filter((v) => v.category_id === categoryId);
+        }
       }
 
       this.filteredVideos = result;
