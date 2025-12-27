@@ -27,6 +27,20 @@ export { VlogAlert } from './base/vlog-alert';
 export { VlogAlertContainer } from './base/vlog-alert-container';
 export type { AlertConfig } from './base/vlog-alert-container';
 
+// Phase 3 - Core Improvements
+export { VlogSkeleton } from './base/vlog-skeleton';
+export type { SkeletonVariant, SkeletonSize } from './base/vlog-skeleton';
+export { VlogSearch } from './base/vlog-search';
+export { VlogFilter, VlogFilterOption } from './base/vlog-filter';
+export type { FilterOption } from './base/vlog-filter';
+export { VlogDropzone } from './base/vlog-dropzone';
+export type { FileInfo } from './base/vlog-dropzone';
+
+// Phase 5 - Mobile & Polish
+export { VlogHamburger } from './base/vlog-hamburger';
+export { VlogNavDrawer } from './base/vlog-nav-drawer';
+export { VlogVideoCard } from './base/vlog-video-card';
+
 // Type exports for TypeScript consumers
 export type { VlogButton as VlogButtonElement } from './base/vlog-button';
 export type { VlogBadge as VlogBadgeElement } from './base/vlog-badge';
@@ -41,3 +55,10 @@ export type { VlogTabButton as VlogTabButtonElement } from './base/vlog-tab-butt
 export type { VlogTabPanel as VlogTabPanelElement } from './base/vlog-tab-panel';
 export type { VlogAlert as VlogAlertElement } from './base/vlog-alert';
 export type { VlogAlertContainer as VlogAlertContainerElement } from './base/vlog-alert-container';
+export type { VlogSkeleton as VlogSkeletonElement } from './base/vlog-skeleton';
+export type { VlogSearch as VlogSearchElement } from './base/vlog-search';
+export type { VlogFilter as VlogFilterElement } from './base/vlog-filter';
+export type { VlogDropzone as VlogDropzoneElement } from './base/vlog-dropzone';
+export type { VlogHamburger as VlogHamburgerElement } from './base/vlog-hamburger';
+export type { VlogNavDrawer as VlogNavDrawerElement } from './base/vlog-nav-drawer';
+export type { VlogVideoCard as VlogVideoCardElement } from './base/vlog-video-card';
