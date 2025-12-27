@@ -1342,6 +1342,8 @@ async def list_all_videos(
             videos.c.published_at,
             videos.c.thumbnail_source,
             videos.c.thumbnail_timestamp,
+            videos.c.streaming_format,
+            videos.c.primary_codec,
             categories.c.name.label("category_name"),
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
@@ -1371,6 +1373,8 @@ async def list_all_videos(
             thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None,
             thumbnail_source=row["thumbnail_source"] or "auto",
             thumbnail_timestamp=row["thumbnail_timestamp"],
+            streaming_format=row["streaming_format"],
+            primary_codec=row["primary_codec"],
         )
         for row in rows
     ]
