@@ -1,0 +1,20 @@
+{
+  "name": "vlog-admin",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/alpinejs": "^3.13.10",
+    "@types/node": "^25.0.3",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.6"
+  },
+  "dependencies": {
+    "alpinejs": "^3.14.8"
+  }
+}

@@ -75,7 +75,7 @@
                             type="file"
                             accept="video/*"
                             @change="uploadFile = $event.target.files[0]"
-                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                             required
                         >
                     </div>
@@ -85,7 +85,7 @@
                         <input
                             type="text"
                             x-model="uploadTitle"
-                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                             placeholder="Video title"
                             required
                         >
@@ -96,7 +96,7 @@
                         <textarea
                             x-model="uploadDescription"
                             rows="4"
-                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                             placeholder="Video description (optional)"
                         ></textarea>
                     </div>
@@ -105,7 +105,7 @@
                         <label class="block text-sm font-medium mb-2">Category</label>
                         <select
                             x-model="uploadCategory"
-                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                         >
                             <option value="">No category</option>
                             <template x-for="cat in categories" :key="cat.id">
@@ -115,12 +115,12 @@
                     </div>
 
                     <!-- Upload Progress -->
-                    <div x-show="uploadProgress >= 0" class="space-y-2">
+                    <div x-show="uploadProgress >= 0" class="space-y-2" role="status" aria-live="polite" aria-label="Upload progress">
                         <div class="flex justify-between text-sm">
                             <span>Uploading...</span>
                             <span x-text="uploadProgress + '%'"></span>
                         </div>
-                        <div class="w-full bg-dark-700 rounded-full h-2">
+                        <div class="w-full bg-dark-700 rounded-full h-2" role="progressbar" :aria-valuenow="uploadProgress" aria-valuemin="0" aria-valuemax="100">
                             <div
                                 class="bg-blue-500 h-2 rounded-full transition-all"
                                 :style="'width: ' + uploadProgress + '%'"
@@ -128,7 +128,7 @@
                         </div>
                     </div>
 
-                    <div x-show="uploadMessage" :class="uploadError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="uploadMessage"></div>
+                    <div x-show="uploadMessage" :class="uploadError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="uploadMessage" :role="uploadError ? 'alert' : 'status'" aria-live="polite"></div>
 
                     <button
                         type="submit"
@@ -222,6 +222,7 @@
                                     <div class="w-24 aspect-video bg-dark-800 rounded overflow-hidden">
                                         <img
                                             :src="video.thumbnail_url"
+                                            :alt="'Thumbnail for ' + video.title"
                                             class="w-full h-full object-cover"
                                             @error="$el.style.display='none'"
                                         >
@@ -229,7 +230,7 @@
                                 </td>
                                 <td class="px-4 py-3">
                                     <div class="font-medium" x-text="video.title"></div>
-                                    <div class="text-dark-500 text-sm" x-text="video.slug"></div>
+                                    <div class="text-dark-300 text-sm" x-text="video.slug"></div>
                                 </td>
                                 <td class="px-4 py-3 text-dark-400" x-text="video.category_name || '-'"></td>
                                 <td class="px-4 py-3">
@@ -241,15 +242,44 @@
                                                 'bg-blue-500/20 text-blue-400': video.status === 'pending',
                                                 'bg-red-500/20 text-red-400': video.status === 'failed'
                                             }"
-                                            class="px-2 py-1 rounded text-sm"
-                                            x-text="video.status"
-                                        ></span>
+                                            class="px-2 py-1 rounded text-sm inline-flex items-center gap-1"
+                                            role="status"
+                                        >
+                                            <!-- Ready: checkmark icon -->
+                                            <svg x-show="video.status === 'ready'" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd" />
+                                            </svg>
+                                            <!-- Processing: spinner icon -->
+                                            <svg x-show="video.status === 'processing'" class="w-3.5 h-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clip-rule="evenodd" />
+                                            </svg>
+                                            <!-- Pending: clock icon -->
+                                            <svg x-show="video.status === 'pending'" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd" />
+                                            </svg>
+                                            <!-- Failed: X icon -->
+                                            <svg x-show="video.status === 'failed'" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
+                                            </svg>
+                                            <span x-text="video.status"></span>
+                                        </span>
                                         <span
                                             x-show="video.status === 'ready'"
                                             :class="video.published_at ? 'bg-emerald-500/20 text-emerald-400' : 'bg-dark-600 text-dark-400'"
-                                            class="px-2 py-1 rounded text-sm"
-                                            x-text="video.published_at ? 'published' : 'draft'"
-                                        ></span>
+                                            class="px-2 py-1 rounded text-sm inline-flex items-center gap-1"
+                                        >
+                                            <!-- Published: eye icon -->
+                                            <svg x-show="video.published_at" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
+                                                <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+                                            </svg>
+                                            <!-- Draft: eye-slash icon -->
+                                            <svg x-show="!video.published_at" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                <path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd" />
+                                                <path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z" />
+                                            </svg>
+                                            <span x-text="video.published_at ? 'published' : 'draft'"></span>
+                                        </span>
                                         <!-- Progress details for processing videos -->
                                         <template x-if="video.status === 'processing' && progressData[video.id]">
                                             <div class="text-xs space-y-1 mt-2">
@@ -262,7 +292,7 @@
                                                     </div>
                                                     <span class="text-dark-400 w-8" x-text="(progressData[video.id]?.progress_percent || 0) + '%'"></span>
                                                 </div>
-                                                <div class="text-dark-500" x-text="progressData[video.id]?.current_step || ''"></div>
+                                                <div class="text-dark-300" x-text="progressData[video.id]?.current_step || ''"></div>
                                                 <template x-if="progressData[video.id]?.qualities?.length">
                                                     <div class="flex flex-wrap gap-1 mt-1">
                                                         <template x-for="q in progressData[video.id].qualities" :key="q.name">
@@ -284,7 +314,7 @@
                                         </template>
                                         <!-- Pending indicator -->
                                         <template x-if="video.status === 'pending'">
-                                            <div class="text-xs text-dark-500 mt-1">Waiting for worker...</div>
+                                            <div class="text-xs text-dark-300 mt-1">Waiting for worker...</div>
                                         </template>
                                         <!-- Error message for failed -->
                                         <template x-if="video.status === 'failed' && progressData[video.id]?.last_error">
@@ -376,7 +406,7 @@
                             <input
                                 type="text"
                                 x-model="newCategoryName"
-                                class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                 placeholder="Category name"
                                 required
                             >
@@ -386,7 +416,7 @@
                             <textarea
                                 x-model="newCategoryDesc"
                                 rows="2"
-                                class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                 placeholder="Optional description"
                             ></textarea>
                         </div>
@@ -405,7 +435,7 @@
                             <div class="flex justify-between items-center p-3 bg-dark-800 rounded-lg">
                                 <div>
                                     <div class="font-medium" x-text="cat.name"></div>
-                                    <div class="text-dark-500 text-sm" x-text="cat.video_count + ' videos'"></div>
+                                    <div class="text-dark-300 text-sm" x-text="cat.video_count + ' videos'"></div>
                                 </div>
                                 <button
                                     @click="deleteCategory(cat.id)"
@@ -482,7 +512,7 @@
                                 <td class="px-4 py-3">
                                     <div class="flex items-center gap-3">
                                         <div class="w-16 aspect-video bg-dark-800 rounded overflow-hidden flex-shrink-0">
-                                            <img :src="video.thumbnail_url" class="w-full h-full object-cover" @error="$el.style.display='none'">
+                                            <img :src="video.thumbnail_url" :alt="'Thumbnail for ' + video.title" class="w-full h-full object-cover" @error="$el.style.display='none'">
                                         </div>
                                         <div class="font-medium truncate max-w-xs" x-text="video.title"></div>
                                     </div>
@@ -522,8 +552,8 @@
                     <div class="text-2xl font-bold text-red-400" x-text="workerStats.offline_count || 0"></div>
                 </div>
                 <div class="bg-dark-900 rounded-xl p-4 text-center">
-                    <div class="text-dark-500 text-sm mb-1">Disabled</div>
-                    <div class="text-2xl font-bold text-dark-500" x-text="workerStats.disabled_count || 0"></div>
+                    <div class="text-dark-300 text-sm mb-1">Disabled</div>
+                    <div class="text-2xl font-bold text-dark-300" x-text="workerStats.disabled_count || 0"></div>
                 </div>
             </div>
 
@@ -555,16 +585,29 @@
                                             'bg-red-500': worker.status === 'offline',
                                             'bg-dark-600': worker.status === 'disabled'
                                         }"
-                                        class="w-3 h-3 rounded-full"
-                                    ></div>
+                                        class="w-4 h-4 rounded-full flex items-center justify-center"
+                                        role="status"
+                                        :aria-label="worker.status"
+                                    >
+                                        <!-- Active: pulse indicator -->
+                                        <span x-show="worker.status === 'active'" class="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+                                        <!-- Idle: small dot -->
+                                        <span x-show="worker.status === 'idle'" class="w-1.5 h-1.5 bg-white rounded-full"></span>
+                                        <!-- Offline: X -->
+                                        <svg x-show="worker.status === 'offline'" class="w-2.5 h-2.5 text-white" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                            <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                                        </svg>
+                                        <!-- Disabled: minus -->
+                                        <span x-show="worker.status === 'disabled'" class="w-2 h-0.5 bg-dark-400 rounded"></span>
+                                    </div>
                                     <div>
                                         <div class="font-medium" x-text="worker.worker_name || worker.worker_id.slice(0, 8)"></div>
-                                        <div class="text-dark-500 text-sm flex items-center gap-2">
+                                        <div class="text-dark-300 text-sm flex items-center gap-2">
                                             <span :class="{
                                                 'text-green-400': worker.status === 'active',
                                                 'text-blue-400': worker.status === 'idle',
                                                 'text-red-400': worker.status === 'offline',
-                                                'text-dark-500': worker.status === 'disabled'
+                                                'text-dark-300': worker.status === 'disabled'
                                             }" x-text="worker.status.charAt(0).toUpperCase() + worker.status.slice(1)"></span>
                                             <span class="text-dark-600">•</span>
                                             <span x-text="worker.hwaccel_type ? (worker.gpu_name || worker.hwaccel_type.toUpperCase()) : 'CPU'"></span>
@@ -586,7 +629,7 @@
                                                 <span class="text-dark-600">•</span>
                                             </template>
                                             <template x-if="worker.deployment_type">
-                                                <span class="text-dark-500" x-text="worker.deployment_type === 'kubernetes' ? 'k8s' : worker.deployment_type"></span>
+                                                <span class="text-dark-300" x-text="worker.deployment_type === 'kubernetes' ? 'k8s' : worker.deployment_type"></span>
                                             </template>
                                             <template x-if="worker.seconds_since_heartbeat !== null">
                                                 <span class="text-dark-600">•</span>
@@ -670,7 +713,7 @@
                                     <div class="flex items-center gap-2">
                                         <span class="text-dark-400">Processing:</span>
                                         <span class="text-white" x-text="worker.current_video_title"></span>
-                                        <span class="text-dark-500" x-text="'(' + worker.current_step + ')'"></span>
+                                        <span class="text-dark-300" x-text="'(' + worker.current_step + ')'"></span>
                                     </div>
                                     <div class="flex items-center gap-2 mt-1">
                                         <div class="flex-1 max-w-xs bg-dark-700 rounded-full h-1.5">
@@ -697,7 +740,7 @@
                 <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
                     <h3 class="font-semibold">
                         Active Transcoding Jobs
-                        <span class="text-dark-500 font-normal" x-text="'(' + (activeJobs.processing_count || 0) + ' processing, ' + (activeJobs.pending_count || 0) + ' pending)'"></span>
+                        <span class="text-dark-300 font-normal" x-text="'(' + (activeJobs.processing_count || 0) + ' processing, ' + (activeJobs.pending_count || 0) + ' pending)'"></span>
                     </h3>
                 </div>
 
@@ -708,7 +751,7 @@
                                 <!-- Video info -->
                                 <div class="flex-1">
                                     <div class="font-medium" x-text="job.video_title"></div>
-                                    <div class="text-dark-500 text-sm flex items-center gap-2 mt-1">
+                                    <div class="text-dark-300 text-sm flex items-center gap-2 mt-1">
                                         <template x-if="job.worker_name">
                                             <span>
                                                 Worker: <span class="text-white" x-text="job.worker_name"></span>
@@ -776,7 +819,7 @@
                 <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
                     <h3 class="font-semibold">
                         Deployment History
-                        <span class="text-dark-500 font-normal" x-text="'(' + deploymentEvents.length + ' events)'"></span>
+                        <span class="text-dark-300 font-normal" x-text="'(' + deploymentEvents.length + ' events)'"></span>
                     </h3>
                     <button @click="loadDeploymentHistory" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
                 </div>
@@ -801,7 +844,7 @@
                                 <div class="flex-1">
                                     <div class="flex items-center gap-2">
                                         <span class="font-medium capitalize" x-text="event.event_type.replace('_', ' ')"></span>
-                                        <span class="text-dark-500">-</span>
+                                        <span class="text-dark-300">-</span>
                                         <span class="text-dark-300" x-text="event.worker_name || event.worker_id.slice(0, 8)"></span>
                                         <template x-if="event.status !== 'completed'">
                                             <span
@@ -814,7 +857,7 @@
                                             ></span>
                                         </template>
                                     </div>
-                                    <div class="text-dark-500 text-sm flex items-center gap-2 mt-1">
+                                    <div class="text-dark-300 text-sm flex items-center gap-2 mt-1">
                                         <span x-text="formatDeploymentTime(event.created_at)"></span>
                                         <template x-if="event.old_version || event.new_version">
                                             <span class="text-dark-600">|</span>
@@ -975,7 +1018,7 @@
                                     <button
                                         @click="uploadWatermarkImage()"
                                         :disabled="!watermarkImageFile || watermarkUploading"
-                                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 disabled:text-dark-500 rounded-lg font-medium transition"
+                                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 disabled:text-dark-300 rounded-lg font-medium transition"
                                     >
                                         <span x-show="!watermarkUploading">Upload</span>
                                         <span x-show="watermarkUploading">Uploading...</span>
@@ -1132,9 +1175,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 </div>
 
                 <!-- Custom Field Create/Edit Modal -->
-                <div x-show="customFieldModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" @keydown.escape.window="customFieldModal = false">
+                <div x-show="customFieldModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="custom-field-modal-title" @keydown.escape.window="customFieldModal = false">
                     <div class="bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto" @click.stop>
-                        <h3 class="text-lg font-semibold mb-4" x-text="customFieldEditing ? 'Edit Custom Field' : 'Create Custom Field'"></h3>
+                        <h3 id="custom-field-modal-title" class="text-lg font-semibold mb-4" x-text="customFieldEditing ? 'Edit Custom Field' : 'Create Custom Field'"></h3>
 
                         <form @submit.prevent="saveCustomField" class="space-y-4">
                             <!-- Name -->
@@ -1289,7 +1332,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     @input="setting.value = parseInt($event.target.value, 10); markSettingModified(category, setting.key, setting.value)"
                                                     :min="setting.constraints?.min"
                                                     :max="setting.constraints?.max"
-                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
 
@@ -1302,7 +1345,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     @input="setting.value = parseFloat($event.target.value); markSettingModified(category, setting.key, setting.value)"
                                                     :min="setting.constraints?.min"
                                                     :max="setting.constraints?.max"
-                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
 
@@ -1311,7 +1354,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                 <select
                                                     :value="setting.value"
                                                     @change="setting.value = $event.target.value; markSettingModified(category, setting.key, setting.value)"
-                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                    class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                                     <template x-for="opt in setting.constraints?.enum_values || []" :key="opt">
                                                         <option :value="opt" :selected="setting.value === opt" x-text="opt"></option>
@@ -1328,7 +1371,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     :minlength="setting.constraints?.min_length"
                                                     :maxlength="setting.constraints?.max_length"
                                                     :pattern="setting.constraints?.pattern"
-                                                    class="w-full max-w-md px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                                                    class="w-full max-w-md px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
 
@@ -1338,12 +1381,12 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     :value="JSON.stringify(setting.value, null, 2)"
                                                     @input="try { setting.value = JSON.parse($event.target.value); markSettingModified(category, setting.key, setting.value); } catch(e) {}"
                                                     rows="4"
-                                                    class="w-full px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-sm"
+                                                    class="w-full px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 font-mono text-sm"
                                                 ></textarea>
                                             </template>
 
                                             <!-- Constraints info -->
-                                            <div x-show="setting.constraints" class="mt-2 text-xs text-dark-500">
+                                            <div x-show="setting.constraints" class="mt-2 text-xs text-dark-300">
                                                 <span x-show="setting.constraints?.min !== undefined" x-text="'Min: ' + setting.constraints?.min + ' '"></span>
                                                 <span x-show="setting.constraints?.max !== undefined" x-text="'Max: ' + setting.constraints?.max"></span>
                                             </div>
@@ -1372,17 +1415,17 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </main>
 
     <!-- Edit Video Modal -->
-    <div x-show="editModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="editModal = false"></div>
+    <div x-show="editModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title" @keydown.escape.window="editModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="editModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 class="text-xl font-semibold mb-4">Edit Video</h3>
+            <h3 id="edit-modal-title" class="text-xl font-semibold mb-4">Edit Video</h3>
             <form @submit.prevent="saveVideo" class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium mb-2">Title</label>
                     <input
                         type="text"
                         x-model="editTitle"
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                         required
                     >
                 </div>
@@ -1391,14 +1434,14 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <textarea
                         x-model="editDescription"
                         rows="4"
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                     ></textarea>
                 </div>
                 <div>
                     <label class="block text-sm font-medium mb-2">Category</label>
                     <select
                         x-model="editCategory"
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                     >
                         <option value="0">No category</option>
                         <template x-for="cat in categories" :key="cat.id">
@@ -1411,7 +1454,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <input
                         type="datetime-local"
                         x-model="editPublishedAt"
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                     >
                     <p class="text-xs text-gray-500 mt-1">Leave empty to use current date when video becomes ready</p>
                 </div>
@@ -1439,7 +1482,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :minlength="field.constraints?.min_length"
                                             :maxlength="field.constraints?.max_length"
                                             :pattern="field.constraints?.pattern"
-                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
 
@@ -1453,7 +1496,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :min="field.constraints?.min"
                                             :max="field.constraints?.max"
                                             :step="field.constraints?.step || 'any'"
-                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
 
@@ -1466,7 +1509,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :required="field.required"
                                             :min="field.constraints?.min_date"
                                             :max="field.constraints?.max_date"
-                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
 
@@ -1478,7 +1521,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             @input="editCustomFieldValues[field.id] = $event.target.value"
                                             :required="field.required"
                                             placeholder="https://..."
-                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
 
@@ -1488,7 +1531,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :value="editCustomFieldValues[field.id] || ''"
                                             @change="editCustomFieldValues[field.id] = $event.target.value"
                                             :required="field.required"
-                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                                            class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                             <option value="">-- Select --</option>
                                             <template x-for="opt in field.options" :key="opt">
@@ -1535,10 +1578,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Re-upload Video Modal -->
-    <div x-show="reuploadModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="reuploadModal = false"></div>
+    <div x-show="reuploadModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="reupload-modal-title" @keydown.escape.window="reuploadModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="reuploadModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 class="text-xl font-semibold mb-2">Re-upload Video</h3>
+            <h3 id="reupload-modal-title" class="text-xl font-semibold mb-2">Re-upload Video</h3>
             <p class="text-dark-400 text-sm mb-4">
                 Replace the video file for "<span x-text="reuploadTitle" class="text-white"></span>".
                 This will delete all transcoded files and re-process the video.
@@ -1593,10 +1636,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Re-transcode Video Modal -->
-    <div x-show="retranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="retranscodeModal = false"></div>
+    <div x-show="retranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="retranscode-modal-title" @keydown.escape.window="retranscodeModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="retranscodeModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 class="text-xl font-semibold mb-2">Re-transcode Video</h3>
+            <h3 id="retranscode-modal-title" class="text-xl font-semibold mb-2">Re-transcode Video</h3>
             <p class="text-dark-400 text-sm mb-4">
                 Select qualities to re-transcode for "<span x-text="retranscodeTitle" class="text-white"></span>".
                 Selected quality files will be deleted and regenerated from the source.
@@ -1631,7 +1674,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             <span
                                 :class="{
                                     'text-green-400': getQualityStatus(quality) === 'completed',
-                                    'text-dark-500': getQualityStatus(quality) === 'not transcoded'
+                                    'text-dark-300': getQualityStatus(quality) === 'not transcoded'
                                 }"
                                 class="text-xs"
                                 x-text="getQualityStatus(quality)"
@@ -1670,10 +1713,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Thumbnail Selection Modal -->
-    <div x-show="thumbnailModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="thumbnailModal = false"></div>
+    <div x-show="thumbnailModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="thumbnail-modal-title" @keydown.escape.window="thumbnailModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="thumbnailModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-            <h3 class="text-xl font-semibold mb-2">Select Thumbnail</h3>
+            <h3 id="thumbnail-modal-title" class="text-xl font-semibold mb-2">Select Thumbnail</h3>
             <p class="text-dark-400 text-sm mb-4">
                 Choose a thumbnail for "<span x-text="thumbnailVideoTitle" class="text-white"></span>"
             </p>
@@ -1684,6 +1727,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 <div class="flex items-center gap-4">
                     <div class="w-40 aspect-video bg-dark-800 rounded overflow-hidden">
                         <img :src="'/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + thumbnailCacheBust"
+                             :alt="'Current thumbnail for ' + thumbnailVideoTitle"
                              class="w-full h-full object-cover"
                              @error="$el.style.display='none'">
                     </div>
@@ -1716,13 +1760,13 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             style="min-width: 0;"
                         >
                             <div style="position: relative; padding-bottom: 56.25%; overflow: hidden;">
-                                <img :src="frame.url + '?t=' + Date.now()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;">
+                                <img :src="frame.url + '?t=' + Date.now()" :alt="'Video frame at ' + formatDuration(frame.timestamp)" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;">
                             </div>
                             <div class="bg-black/70 text-xs text-center py-1" x-text="formatDuration(frame.timestamp)"></div>
                         </button>
                     </template>
                 </div>
-                <div x-show="thumbnailFrames.length === 0" class="text-dark-500 text-sm py-4 text-center bg-dark-800 rounded">
+                <div x-show="thumbnailFrames.length === 0" class="text-dark-300 text-sm py-4 text-center bg-dark-800 rounded">
                     Click "Generate Frames" to see frame options from the video.
                 </div>
             </div>
@@ -1746,7 +1790,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         <span x-show="thumbnailUploading">Uploading...</span>
                     </button>
                 </div>
-                <p class="text-xs text-dark-500 mt-2">Accepts JPEG, PNG, or WebP (max 10MB). Will be resized to 640px width.</p>
+                <p class="text-xs text-dark-300 mt-2">Accepts JPEG, PNG, or WebP (max 10MB). Will be resized to 640px width.</p>
             </div>
 
             <!-- Revert Option -->
@@ -1772,10 +1816,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Bulk Delete Modal -->
-    <div x-show="bulkDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="bulkDeleteModal = false"></div>
+    <div x-show="bulkDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-modal-title" @keydown.escape.window="bulkDeleteModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="bulkDeleteModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 class="text-xl font-semibold mb-4">Delete Videos</h3>
+            <h3 id="bulk-delete-modal-title" class="text-xl font-semibold mb-4">Delete Videos</h3>
             <p class="text-dark-300 mb-4">
                 You are about to delete <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
             </p>
@@ -1789,7 +1833,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <span class="text-dark-300">Permanently delete (cannot be undone)</span>
                 </label>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
             <div class="flex gap-3">
                 <button
                     @click="bulkDeleteModal = false"
@@ -1809,10 +1853,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Bulk Update Modal -->
-    <div x-show="bulkUpdateModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="bulkUpdateModal = false"></div>
+    <div x-show="bulkUpdateModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-update-modal-title" @keydown.escape.window="bulkUpdateModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="bulkUpdateModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 class="text-xl font-semibold mb-4">Update Videos</h3>
+            <h3 id="bulk-update-modal-title" class="text-xl font-semibold mb-4">Update Videos</h3>
             <p class="text-dark-300 mb-4">
                 Update <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) with the following settings:
             </p>
@@ -1821,7 +1865,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <label class="block text-sm font-medium mb-2">Category</label>
                     <select
                         x-model="bulkUpdateCategory"
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                     >
                         <option value="">-- Don't change --</option>
                         <option value="0">Remove category</option>
@@ -1835,7 +1879,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <input
                         type="datetime-local"
                         x-model="bulkUpdatePublishedAt"
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                     >
                     <div class="mt-2">
                         <label class="flex items-center gap-2 cursor-pointer">
@@ -1849,7 +1893,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </div>
                 </div>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
             <div class="flex gap-3">
                 <button
                     @click="bulkUpdateModal = false"
@@ -1869,10 +1913,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Bulk Retranscode Modal -->
-    <div x-show="bulkRetranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="bulkRetranscodeModal = false"></div>
+    <div x-show="bulkRetranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-retranscode-modal-title" @keydown.escape.window="bulkRetranscodeModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="bulkRetranscodeModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 class="text-xl font-semibold mb-4">Re-transcode Videos</h3>
+            <h3 id="bulk-retranscode-modal-title" class="text-xl font-semibold mb-4">Re-transcode Videos</h3>
             <p class="text-dark-300 mb-4">
                 Queue <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) for re-transcoding.
             </p>
@@ -1909,7 +1953,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <span>720p only</span>
                 </label>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
             <div class="flex gap-3">
                 <button
                     @click="bulkRetranscodeModal = false"
@@ -1929,10 +1973,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Bulk Custom Fields Modal -->
-    <div x-show="bulkCustomFieldsModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/70" @click="bulkCustomFieldsModal = false"></div>
+    <div x-show="bulkCustomFieldsModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-custom-fields-modal-title" @keydown.escape.window="bulkCustomFieldsModal = false">
+        <div class="absolute inset-0 bg-black/70" @click="bulkCustomFieldsModal = false" aria-hidden="true"></div>
         <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
-            <h3 class="text-xl font-semibold mb-4">Set Custom Fields</h3>
+            <h3 id="bulk-custom-fields-modal-title" class="text-xl font-semibold mb-4">Set Custom Fields</h3>
             <p class="text-dark-300 mb-4">
                 Set custom field values for <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
                 Only global fields are available for bulk updates.
@@ -2033,7 +2077,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     No global custom fields defined. Create custom fields in Settings first.
                 </div>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage"></div>
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
             <div class="flex gap-3">
                 <button
                     @click="bulkCustomFieldsModal = false"
@@ -2053,9 +2097,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </div>
 
     <!-- Auth Modal -->
-    <div x-show="showAuthModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+    <div x-show="showAuthModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
         <div class="bg-dark-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
-            <h3 class="text-xl font-semibold mb-4">Authentication Required</h3>
+            <h3 id="auth-modal-title" class="text-xl font-semibold mb-4">Authentication Required</h3>
             <p class="text-dark-400 mb-4">This Admin API requires authentication. Enter your admin secret to continue.</p>
             <form @submit.prevent="submitAuth">
                 <div class="mb-4">
@@ -2064,7 +2108,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         type="password"
                         x-model="authSecretInput"
                         x-ref="authInput"
-                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                         placeholder="Enter VLOG_ADMIN_API_SECRET"
                         required
                         autocomplete="new-password"
@@ -2082,7 +2126,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </button>
                 </div>
             </form>
-            <p class="text-dark-500 text-xs mt-4 text-center">Session is managed securely on the server</p>
+            <p class="text-dark-300 text-xs mt-4 text-center">Session is managed securely on the server</p>
         </div>
     </div>
 
@@ -4502,15 +4546,15 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             <div class="grid grid-cols-3 gap-4">
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
                                     <div class="text-2xl font-bold text-blue-400" x-text="(metricsData?.process?.cpu_percent || 0).toFixed(1) + '%'"></div>
-                                    <div class="text-xs text-dark-500">CPU</div>
+                                    <div class="text-xs text-dark-300">CPU</div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
                                     <div class="text-2xl font-bold text-purple-400" x-text="(metricsData?.process?.memory_rss_mb || 0).toFixed(0) + ' MB'"></div>
-                                    <div class="text-xs text-dark-500">Memory</div>
+                                    <div class="text-xs text-dark-300">Memory</div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
                                     <div class="text-2xl font-bold text-green-400" x-text="metricsData?.process?.threads || 0"></div>
-                                    <div class="text-xs text-dark-500">Threads</div>
+                                    <div class="text-xs text-dark-300">Threads</div>
                                 </div>
                             </div>
                         </div>
@@ -4575,7 +4619,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="mt-2 text-sm text-dark-500 text-center" x-text="'Temperature: ' + (metricsData?.gpu?.temperature_c || 0) + '\u00B0C'"></div>
+                                <div class="mt-2 text-sm text-dark-300 text-center" x-text="'Temperature: ' + (metricsData?.gpu?.temperature_c || 0) + '\u00B0C'"></div>
                             </div>
                         </template>
                     </div>
