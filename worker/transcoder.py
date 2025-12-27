@@ -1409,16 +1409,28 @@ async def generate_dash_manifest(
     Creates a simple DASH manifest that references the same fMP4 segments
     used by HLS, enabling dual-protocol streaming from a single encode.
 
+    Note: Only transcoded qualities (CMAF/fMP4) are included in the DASH manifest.
+    The "original" quality uses TS segments and is excluded.
+
     Args:
         output_dir: Directory containing the CMAF quality subdirectories
         completed_qualities: List of quality dicts with name, width, height, bitrate fields
         segment_duration: Segment duration in seconds
         codec: Video codec used for encoding
     """
+    # Filter out "original" quality - it uses TS segments, not CMAF/fMP4
+    # DASH manifest only supports fMP4 segments (init.mp4 + seg_*.m4s)
+    cmaf_qualities = [q for q in completed_qualities if q["name"] != "original"]
+
+    if not cmaf_qualities:
+        # No CMAF qualities to include - skip manifest generation
+        print("    No CMAF qualities for DASH manifest, skipping...")
+        return
+
     # Calculate total duration from first quality's playlist
     total_duration = 0
     segment_count = 0
-    for quality in completed_qualities:
+    for quality in cmaf_qualities:
         quality_dir = output_dir / quality["name"]
         playlist = quality_dir / "stream.m3u8"
         if playlist.exists():
@@ -1459,7 +1471,7 @@ async def generate_dash_manifest(
 
     # Sort qualities by bandwidth descending
     sorted_qualities = sorted(
-        completed_qualities,
+        cmaf_qualities,
         key=lambda q: q.get("bitrate_bps", int(q.get("bitrate", "0").replace("k", "")) * 1000),
         reverse=True,
     )

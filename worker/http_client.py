@@ -407,7 +407,7 @@ class WorkerAPIClient:
         skip_master: bool = False,
     ) -> dict:
         """
-        Upload final files (master.m3u8 and thumbnail.jpg) after all qualities uploaded.
+        Upload final files (master.m3u8, manifest.mpd, and thumbnail.jpg) after all qualities uploaded.
 
         Args:
             video_id: The video ID
@@ -427,6 +427,11 @@ class WorkerAPIClient:
                     master = output_dir / "master.m3u8"
                     if master.exists():
                         tar.add(master, arcname=master.name)
+
+                # Add DASH manifest (for CMAF streaming)
+                mpd = output_dir / "manifest.mpd"
+                if mpd.exists():
+                    tar.add(mpd, arcname=mpd.name)
 
                 # Add thumbnail
                 thumb = output_dir / "thumbnail.jpg"
