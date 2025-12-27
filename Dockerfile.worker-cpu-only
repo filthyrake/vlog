@@ -1,39 +1,28 @@
-# VLog Remote Transcoding Worker
+# VLog Remote Transcoding Worker (CPU-only)
 # Containerized worker for distributed video transcoding
 #
-# Build: docker build -f Dockerfile.worker -t vlog-worker --build-arg VERSION=$(git rev-parse --short=8 HEAD) .
+# Build: docker build -f Dockerfile.worker-cpu-only -t vlog-worker --build-arg VERSION=$(git rev-parse --short=8 HEAD) .
 # Run: docker run -e VLOG_WORKER_API_KEY=<key> -e VLOG_WORKER_API_URL=http://host:9002 vlog-worker
 
-FROM python:3.9-slim
+# Pin base image version for reproducible builds
+# python:3.12-slim-bookworm is Debian Bookworm (12) based
+ARG PYTHON_VERSION=3.12-slim-bookworm
+
+# =============================================================================
+# Stage 1: Builder - Install Python dependencies
+# =============================================================================
+FROM python:${PYTHON_VERSION} AS builder
 
 # Version arg - pass git commit hash at build time
 ARG VERSION=unknown
 
-# Install FFmpeg and other dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
 
-# Create non-root user for security
-RUN useradd -m -u 1000 -s /bin/bash vlog
-
-WORKDIR /app
-
-# Write version file from build arg
-RUN echo "$VERSION" > VERSION
-
-# Copy package files first for better caching
+# Copy package files for dependency installation
 COPY pyproject.toml ./
 
-# Copy source code
-COPY config.py ./
-COPY api/ api/
-COPY worker/ worker/
-COPY cli/ cli/
-
-# Install package (without dev dependencies, and skip whisper for workers)
-# We create a minimal requirements file for the worker
-RUN pip install --no-cache-dir \
+# Install Python dependencies to a specific location for copying
+RUN pip install --no-cache-dir --prefix=/install \
     fastapi>=0.100.0 \
     uvicorn>=0.23.0 \
     python-multipart>=0.0.6 \
@@ -49,11 +38,44 @@ RUN pip install --no-cache-dir \
     slowapi>=0.1.9 \
     limits>=3.0.0
 
-# Install the package itself
-RUN pip install --no-cache-dir -e .
+# Copy source code and install the package
+COPY config.py ./
+COPY api/ api/
+COPY worker/ worker/
+COPY cli/ cli/
 
-# Change ownership to non-root user
-RUN chown -R vlog:vlog /app
+RUN pip install --no-cache-dir --prefix=/install .
+
+# Write version file
+RUN echo "$VERSION" > /build/VERSION
+
+# =============================================================================
+# Stage 2: Runtime - Minimal production image
+# =============================================================================
+FROM python:${PYTHON_VERSION} AS runtime
+
+# Install FFmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN useradd -m -u 1000 -s /bin/bash vlog
+
+WORKDIR /app
+
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy version file
+COPY --from=builder /build/VERSION ./
+
+# Copy source code
+COPY --chown=vlog:vlog pyproject.toml ./
+COPY --chown=vlog:vlog config.py ./
+COPY --chown=vlog:vlog api/ api/
+COPY --chown=vlog:vlog worker/ worker/
+COPY --chown=vlog:vlog cli/ cli/
 
 # Switch to non-root user
 USER vlog
@@ -68,9 +90,9 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     VLOG_WORKER_POLL_INTERVAL=10 \
     PYTHONUNBUFFERED=1
 
-# Health check - verify the worker process is running
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+# Health check - verify worker module can be imported
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "from worker import remote_transcoder; print('ok')" || exit 1
 
 # Run the remote transcoder
 CMD ["python", "-m", "worker.remote_transcoder"]
