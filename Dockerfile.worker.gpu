@@ -78,11 +78,12 @@ RUN dnf install -y epel-release && \
         https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-10.noarch.rpm && \
     dnf clean all
 
-# Install FFmpeg with hardware acceleration support
+# Install FFmpeg with hardware acceleration support and curl for health checks
 # RPM Fusion's FFmpeg 7.1.2 includes nvenc, vaapi, and qsv encoders
 RUN dnf install -y \
     ffmpeg \
     ffmpeg-libs \
+    curl \
     && dnf clean all
 
 # Install Intel VAAPI driver for Arc/Battlemage support
@@ -138,9 +139,13 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     # Python settings
     PYTHONUNBUFFERED=1
 
-# Health check - verify worker module can be imported
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python3 -c "from worker import remote_transcoder; print('ok')" || exit 1
+# Health check - verify worker's health server is responding
+# The worker exposes /health on port 8080 which verifies:
+# - Worker process is alive
+# - API connection is working
+# - FFmpeg is available (including GPU codecs)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Run the remote transcoder
 CMD ["python3", "-m", "worker.remote_transcoder"]

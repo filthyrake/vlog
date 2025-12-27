@@ -54,9 +54,10 @@ RUN echo "$VERSION" > /build/VERSION
 # =============================================================================
 FROM python:${PYTHON_VERSION} AS runtime
 
-# Install FFmpeg
+# Install FFmpeg and curl (for health checks)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
@@ -90,9 +91,13 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     VLOG_WORKER_POLL_INTERVAL=10 \
     PYTHONUNBUFFERED=1
 
-# Health check - verify worker module can be imported
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "from worker import remote_transcoder; print('ok')" || exit 1
+# Health check - verify worker's health server is responding
+# The worker exposes /health on port 8080 which verifies:
+# - Worker process is alive
+# - API connection is working
+# - FFmpeg is available
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Run the remote transcoder
 CMD ["python", "-m", "worker.remote_transcoder"]
