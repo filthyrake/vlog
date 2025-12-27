@@ -37,6 +37,14 @@ jobs:
           source .venv/bin/activate
           python -m pip install --upgrade pip
 
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
           source .venv/bin/activate
@@ -102,6 +110,14 @@ jobs:
           source .venv/bin/activate
           python -m pip install --upgrade pip
 
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
           source .venv/bin/activate
@@ -146,6 +162,15 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-lint-
+            ${{ runner.os }}-pip-
 
       - name: Install ruff
         run: |

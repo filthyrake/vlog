@@ -1,0 +1,140 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    # Weekly scan on Sundays at midnight UTC
+    # Purpose: Detect newly disclosed vulnerabilities in dependencies
+    # even when no code changes have been made
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  trivy-filesystem:
+    name: Trivy Filesystem Scan
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          format: 'table'
+
+      - name: Run Trivy filesystem scan (SARIF)
+        uses: aquasecurity/trivy-action@0.28.0
+        if: always()
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+  trivy-image:
+    name: Trivy Container Image Scan
+    runs-on: self-hosted
+    needs: trivy-filesystem
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build Docker image for scanning
+        run: |
+          docker build -f Dockerfile.worker.gpu -t vlog-worker:scan .
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'vlog-worker:scan'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          format: 'table'
+
+      - name: Run Trivy image scan (SARIF)
+        uses: aquasecurity/trivy-action@0.28.0
+        if: always()
+        with:
+          image-ref: 'vlog-worker:scan'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+
+      - name: Upload image scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-image-results.sarif'
+        continue-on-error: true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rmi vlog-worker:scan || true
+
+  dependency-check:
+    name: Python Dependency Audit
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python virtual environment
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+
+      - name: Install pip-audit
+        run: |
+          source .venv/bin/activate
+          pip install pip-audit
+
+      - name: Run pip-audit
+        run: |
+          source .venv/bin/activate
+          pip install -r requirements.txt
+          # Ignored vulnerabilities (review quarterly):
+          # - PYSEC-2024-87: Jinja2 sandbox escape - not exploitable in our use case (no user templates)
+          # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
+          # Last reviewed: 2025-12-27
+          pip-audit --ignore-vuln PYSEC-2024-87 --ignore-vuln GHSA-34jh-p97f-mpxf
+        continue-on-error: true
+
+  security-summary:
+    name: Security Scan Summary
+    runs-on: self-hosted
+    needs: [trivy-filesystem, trivy-image, dependency-check]
+    if: always()
+
+    steps:
+      - name: Check scan results
+        run: |
+          if [[ "${{ needs.trivy-filesystem.result }}" == "failure" ]]; then
+            echo "::error::Trivy filesystem scan found critical/high vulnerabilities"
+            exit 1
+          fi
+
+          if [[ "${{ needs.trivy-image.result }}" == "failure" ]]; then
+            echo "::error::Trivy image scan found critical/high vulnerabilities"
+            exit 1
+          fi
+
+          echo "All security scans passed!"
