@@ -357,6 +357,7 @@ class AdminAuthMiddleware:
     Paths that are always allowed (no auth required):
     - / (admin HTML page)
     - /health (monitoring)
+    - /metrics (Prometheus scraping)
     - /static/* (static files)
     - /videos/* (video file serving for preview)
     - /api/auth/* (login, logout, check, csrf-token endpoints)

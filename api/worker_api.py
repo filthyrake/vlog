@@ -1882,7 +1882,7 @@ async def health_check(request: Request):
     )
 
 
-@app.get("/api/metrics")
+@app.get("/metrics")
 async def metrics_endpoint():
     """
     Prometheus metrics endpoint.

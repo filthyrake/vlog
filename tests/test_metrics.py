@@ -1,0 +1,142 @@
+"""Tests for Prometheus metrics functionality."""
+
+import os
+
+os.environ["VLOG_TEST_MODE"] = "1"
+
+
+class TestMetricsModule:
+    """Tests for the metrics module."""
+
+    def test_get_metrics_returns_bytes(self):
+        """Test that get_metrics returns bytes in Prometheus format."""
+        from api.metrics import get_metrics
+
+        metrics = get_metrics()
+
+        assert isinstance(metrics, bytes)
+        assert len(metrics) > 0
+
+    def test_get_metrics_contains_expected_metrics(self):
+        """Test that generated metrics contain expected metric names."""
+        from api.metrics import get_metrics
+
+        metrics = get_metrics()
+
+        # Check for key metric names in the output
+        assert b"vlog_http_requests_total" in metrics
+        assert b"vlog_transcoding_jobs_total" in metrics
+        assert b"vlog_workers_total" in metrics
+        assert b"vlog_videos_total" in metrics
+
+    def test_init_app_info_sets_version(self):
+        """Test that init_app_info sets the application info metric."""
+        from api.metrics import get_metrics, init_app_info
+
+        init_app_info(version="1.2.3")
+        metrics = get_metrics()
+
+        assert b"vlog_info" in metrics
+        assert b'version="1.2.3"' in metrics
+
+    def test_init_app_info_default_version(self):
+        """Test that init_app_info uses default version when not specified."""
+        from api.metrics import get_metrics, init_app_info
+
+        init_app_info()
+        metrics = get_metrics()
+
+        assert b"vlog_info" in metrics
+        assert b'version="0.1.0"' in metrics
+
+    def test_metrics_valid_prometheus_format(self):
+        """Test that metrics output is valid Prometheus exposition format."""
+        from api.metrics import get_metrics
+
+        metrics = get_metrics().decode("utf-8")
+
+        # Prometheus format has lines starting with # for comments/HELP/TYPE
+        # and metric lines in format: metric_name{labels} value
+        lines = metrics.strip().split("\n")
+
+        for line in lines:
+            if not line:
+                continue
+            # Lines should either be comments (# ...) or metric data
+            assert line.startswith("#") or " " in line or "{" in line, f"Invalid line: {line}"
+
+
+class TestMetricDefinitions:
+    """Tests for metric definitions."""
+
+    def test_counter_metrics_exist(self):
+        """Test that Counter metrics are properly defined."""
+        from api.metrics import (
+            HTTP_REQUESTS_TOTAL,
+            TRANSCODING_JOBS_TOTAL,
+            VIDEO_UPLOADS_TOTAL,
+            WORKER_HEARTBEAT_TOTAL,
+        )
+
+        # Counters - prometheus-client adds _total suffix automatically in output
+        # but internal _name doesn't include it
+        assert "http_requests" in HTTP_REQUESTS_TOTAL._name
+        assert "transcoding_jobs" in TRANSCODING_JOBS_TOTAL._name
+        assert "video_uploads" in VIDEO_UPLOADS_TOTAL._name
+        assert "worker_heartbeat" in WORKER_HEARTBEAT_TOTAL._name
+
+    def test_gauge_metrics_exist(self):
+        """Test that Gauge metrics are properly defined."""
+        from api.metrics import (
+            TRANSCODING_JOBS_ACTIVE,
+            TRANSCODING_QUEUE_SIZE,
+            VIDEOS_TOTAL,
+            WORKERS_TOTAL,
+        )
+
+        assert VIDEOS_TOTAL._name == "vlog_videos_total"
+        assert TRANSCODING_JOBS_ACTIVE._name == "vlog_transcoding_jobs_active"
+        assert TRANSCODING_QUEUE_SIZE._name == "vlog_transcoding_queue_size"
+        assert WORKERS_TOTAL._name == "vlog_workers_total"
+
+    def test_histogram_metrics_exist(self):
+        """Test that Histogram metrics are properly defined."""
+        from api.metrics import (
+            DB_QUERY_DURATION_SECONDS,
+            HTTP_REQUEST_DURATION_SECONDS,
+            TRANSCODING_JOB_DURATION_SECONDS,
+        )
+
+        assert HTTP_REQUEST_DURATION_SECONDS._name == "vlog_http_request_duration_seconds"
+        assert TRANSCODING_JOB_DURATION_SECONDS._name == "vlog_transcoding_job_duration_seconds"
+        assert DB_QUERY_DURATION_SECONDS._name == "vlog_db_query_duration_seconds"
+
+
+class TestAuditLogRotationConfig:
+    """Tests for audit log rotation configuration."""
+
+    def test_audit_log_max_bytes_default(self):
+        """Test that audit log max bytes has correct default (10MB)."""
+        from config import AUDIT_LOG_MAX_BYTES
+
+        assert AUDIT_LOG_MAX_BYTES == 10 * 1024 * 1024  # 10MB
+
+    def test_audit_log_backup_count_default(self):
+        """Test that audit log backup count has correct default (5)."""
+        from config import AUDIT_LOG_BACKUP_COUNT
+
+        assert AUDIT_LOG_BACKUP_COUNT == 5
+
+    def test_audit_log_max_bytes_is_integer(self):
+        """Test that audit log max bytes is an integer."""
+        from config import AUDIT_LOG_MAX_BYTES
+
+        assert isinstance(AUDIT_LOG_MAX_BYTES, int)
+        assert AUDIT_LOG_MAX_BYTES >= 1024  # Minimum validation
+
+    def test_audit_log_backup_count_is_integer(self):
+        """Test that audit log backup count is an integer."""
+        from config import AUDIT_LOG_BACKUP_COUNT
+
+        assert isinstance(AUDIT_LOG_BACKUP_COUNT, int)
+        assert AUDIT_LOG_BACKUP_COUNT >= 0  # Minimum validation

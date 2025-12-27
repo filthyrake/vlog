@@ -83,17 +83,18 @@ spec:
             - /bin/sh
             - -c
             - |
-              set -e
+              set -eo pipefail
 
               echo "Starting PostgreSQL backup at $(date -Iseconds)"
 
               # Generate timestamp for backup filename
               TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
-              BACKUP_FILE="${BACKUP_PATH}/vlog-${TIMESTAMP}.sql.gz"
+              # Use .dump extension for pg custom format (already compressed internally)
+              BACKUP_FILE="${BACKUP_PATH}/vlog-${TIMESTAMP}.dump"
 
-              # Perform the backup with compression
+              # Perform the backup with custom format (includes built-in compression)
               echo "Creating backup: ${BACKUP_FILE}"
-              pg_dump --no-password --format=custom --compress=6 | gzip > "${BACKUP_FILE}"
+              pg_dump --no-password --format=custom --compress=6 > "${BACKUP_FILE}"
 
               # Verify backup was created and has content
               if [ ! -s "${BACKUP_FILE}" ]; then
@@ -101,16 +102,24 @@ spec:
                 exit 1
               fi
 
+              # Verify backup integrity by listing contents (catches corruption)
+              echo "Verifying backup integrity..."
+              if ! pg_restore --list "${BACKUP_FILE}" > /dev/null 2>&1; then
+                echo "ERROR: Backup file is corrupted or invalid"
+                rm -f "${BACKUP_FILE}"
+                exit 1
+              fi
+
               BACKUP_SIZE=$(du -h "${BACKUP_FILE}" | cut -f1)
-              echo "Backup completed successfully: ${BACKUP_FILE} (${BACKUP_SIZE})"
+              echo "Backup completed and verified: ${BACKUP_FILE} (${BACKUP_SIZE})"
 
               # Clean up old backups beyond retention period
               echo "Cleaning up backups older than ${BACKUP_RETENTION_DAYS} days..."
-              find "${BACKUP_PATH}" -name "vlog-*.sql.gz" -type f -mtime +${BACKUP_RETENTION_DAYS} -delete -print
+              find "${BACKUP_PATH}" -name "vlog-*.dump" -type f -mtime +${BACKUP_RETENTION_DAYS} -delete -print
 
               # List current backups
               echo "Current backups:"
-              ls -lh "${BACKUP_PATH}"/vlog-*.sql.gz 2>/dev/null || echo "  (none found)"
+              ls -lh "${BACKUP_PATH}"/vlog-*.dump 2>/dev/null || echo "  (none found)"
 
               echo "Backup job completed at $(date -Iseconds)"
             resources:
