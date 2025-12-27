@@ -861,6 +861,125 @@ def get_codec_string(codec: VideoCodec, level: str = "L120") -> str:
         return "avc1.640028,mp4a.40.2"
 
 
+async def extract_codec_string_from_file(file_path: Path) -> Optional[str]:
+    """
+    Extract actual codec string from an MP4/fMP4 file using ffprobe.
+
+    This provides accurate codec strings based on the actual encoded output
+    rather than using hardcoded values that may not match.
+
+    Args:
+        file_path: Path to MP4 file (typically init.mp4 for CMAF)
+
+    Returns:
+        Codec string like "av01.0.08M.08,mp4a.40.2" or None if extraction fails
+    """
+    import json
+    import subprocess
+
+    if not file_path.exists():
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_entries",
+                "stream=codec_name,profile,level,pix_fmt,codec_tag_string,sample_rate",
+            ]
+            + [str(file_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            return None
+
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+
+        video_codec = None
+        audio_codec = None
+
+        for stream in streams:
+            codec_name = stream.get("codec_name", "")
+            codec_tag = stream.get("codec_tag_string", "")
+
+            if codec_tag == "av01" or codec_name == "av1":
+                # AV1 codec string: av01.P.LLT.DD
+                # P = profile (0=Main, 1=High, 2=Professional)
+                # LL = level (08=4.0, 09=4.1, 10=5.0, etc.)
+                # T = tier (M=Main, H=High)
+                # DD = bit depth (08=8-bit, 10=10-bit)
+                profile = stream.get("profile", "Main")
+                level = stream.get("level", 8)
+                pix_fmt = stream.get("pix_fmt", "yuv420p")
+
+                profile_num = {"Main": 0, "High": 1, "Professional": 2}.get(profile, 0)
+                # Level is already numeric (e.g., 8 for level 4.0, 9 for 4.1)
+                level_str = f"{level:02d}"
+                tier = "M"  # Main tier (High tier rarely used)
+                bit_depth = "10" if "10" in pix_fmt else "08"
+
+                video_codec = f"av01.{profile_num}.{level_str}{tier}.{bit_depth}"
+
+            elif codec_tag == "hvc1" or codec_tag == "hev1" or codec_name == "hevc":
+                # HEVC codec string: hvc1.P.C.Lnn.BB
+                # Simplified: hvc1.1.6.L120.90 for Main profile, level 4.0
+                profile = stream.get("profile", "Main")
+                level = stream.get("level", 120)
+
+                profile_num = {"Main": 1, "Main 10": 2, "Main Still Picture": 3}.get(
+                    profile, 1
+                )
+                # Level is multiplied by 30 in ffprobe (e.g., 120 = level 4.0)
+                video_codec = f"hvc1.{profile_num}.6.L{level}.90"
+
+            elif codec_tag == "avc1" or codec_name == "h264":
+                # H.264 codec string: avc1.PPCCLL
+                # PP = profile (42=baseline, 4d=main, 64=high)
+                # CC = constraints (usually 00)
+                # LL = level (1e=3.0, 1f=3.1, 28=4.0, 29=4.1, 2a=4.2)
+                profile = stream.get("profile", "High")
+                level = stream.get("level", 40)
+
+                profile_hex = {"Baseline": "42", "Main": "4d", "High": "64"}.get(
+                    profile, "64"
+                )
+                # Level is multiplied by 10 (e.g., 40 = level 4.0 = 0x28)
+                level_hex = f"{level:02x}"
+                video_codec = f"avc1.{profile_hex}00{level_hex}"
+
+            elif codec_tag == "mp4a" or codec_name == "aac":
+                # AAC codec string: mp4a.40.2 (AAC-LC)
+                audio_codec = "mp4a.40.2"
+
+            elif codec_name == "ac3":
+                audio_codec = "ac-3"
+
+            elif codec_name == "eac3":
+                audio_codec = "ec-3"
+
+            elif codec_name == "opus":
+                audio_codec = "opus"
+
+        if video_codec and audio_codec:
+            return f"{video_codec},{audio_codec}"
+        elif video_codec:
+            return f"{video_codec},mp4a.40.2"  # Default to AAC audio
+        else:
+            return None
+
+    except Exception as e:
+        logger.debug(f"Failed to extract codec string from {file_path}: {e}")
+        return None
+
+
 def get_code_version() -> Optional[str]:
     """
     Get worker code version from git commit hash or VERSION file.

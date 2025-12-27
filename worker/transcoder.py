@@ -81,6 +81,7 @@ from worker.alerts import (
 from worker.hwaccel import (
     StreamingFormat,  # noqa: F401 - Used in future CMAF transcoding integration
     VideoCodec,
+    extract_codec_string_from_file,
     get_codec_string,
     get_recommended_parallel_sessions,
 )
@@ -1344,10 +1345,9 @@ async def generate_master_playlist_cmaf(
     # Sort by bandwidth descending (highest quality first)
     qualities_with_bandwidth.sort(key=lambda q: q["bandwidth"], reverse=True)
 
-    # Get codec string for manifest
-    codec_string = get_codec_string(codec)
-    # Original quality keeps source codec (typically H.264) since it's not re-encoded
-    # Map audio codec name to HLS codec string
+    # Get default codec string for manifest (fallback if extraction fails)
+    default_codec_string = get_codec_string(codec)
+    # Map audio codec name to HLS codec string for original quality
     audio_codec_map = {
         "aac": "mp4a.40.2",
         "ac3": "ac-3",
@@ -1360,11 +1360,29 @@ async def generate_master_playlist_cmaf(
     }
     original_audio_string = audio_codec_map.get(original_audio_codec.lower(), "mp4a.40.2")
     # Build original codec string: H.264 video + actual source audio
-    original_codec_string = f"avc1.640028,{original_audio_string}"
+    default_original_codec_string = f"avc1.640028,{original_audio_string}"
+
+    # Try to extract actual codec strings from init.mp4 files
+    quality_codec_strings = {}
+    for quality in qualities_with_bandwidth:
+        quality_dir = output_dir / quality["name"]
+        init_segment = quality_dir / "init.mp4"
+        if init_segment.exists():
+            extracted = await extract_codec_string_from_file(init_segment)
+            if extracted:
+                quality_codec_strings[quality["name"]] = extracted
+                logger.debug(
+                    f"Extracted codec string for {quality['name']}: {extracted}"
+                )
 
     for quality in qualities_with_bandwidth:
-        # Original quality uses source codec, transcoded qualities use target codec
-        quality_codec = original_codec_string if quality["name"] == "original" else codec_string
+        # Use extracted codec string if available, otherwise use defaults
+        if quality["name"] in quality_codec_strings:
+            quality_codec = quality_codec_strings[quality["name"]]
+        elif quality["name"] == "original":
+            quality_codec = default_original_codec_string
+        else:
+            quality_codec = default_codec_string
         master_content += (
             f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},'
             f'RESOLUTION={quality["width"]}x{quality["height"]},'
@@ -1425,13 +1443,13 @@ async def generate_dash_manifest(
     seconds = total_duration % 60
     duration_str = f"PT{hours}H{minutes}M{seconds:.3f}S"
 
-    # Determine codec-specific codecs string (video + AAC audio)
+    # Determine default codec-specific codecs string (video + AAC audio)
     if codec == VideoCodec.HEVC:
-        video_codecs = "hvc1.1.6.L120.90,mp4a.40.2"
+        default_video_codecs = "hvc1.1.6.L120.90,mp4a.40.2"
     elif codec == VideoCodec.AV1:
-        video_codecs = "av01.0.08M.08,mp4a.40.2"
+        default_video_codecs = "av01.0.08M.08,mp4a.40.2"
     else:
-        video_codecs = "avc1.640028,mp4a.40.2"
+        default_video_codecs = "avc1.640028,mp4a.40.2"
 
     # Build adaptation sets for each quality
     # Note: CMAF segments have muxed audio+video, so we use a single AdaptationSet
@@ -1446,11 +1464,24 @@ async def generate_dash_manifest(
         reverse=True,
     )
 
+    # Try to extract actual codec strings from init.mp4 files
+    quality_codec_strings = {}
+    for quality in sorted_qualities:
+        quality_dir = output_dir / quality["name"]
+        init_segment = quality_dir / "init.mp4"
+        if init_segment.exists():
+            extracted = await extract_codec_string_from_file(init_segment)
+            if extracted:
+                quality_codec_strings[quality["name"]] = extracted
+
     for i, quality in enumerate(sorted_qualities):
         name = quality["name"]
         width = quality["width"]
         height = quality["height"]
         bandwidth = quality.get("bitrate_bps", int(quality.get("bitrate", "0").replace("k", "")) * 1000)
+
+        # Use extracted codec string if available, otherwise use default
+        video_codecs = quality_codec_strings.get(name, default_video_codecs)
 
         # startNumber=0 since segments are named seg_0000.m4s, seg_0001.m4s, etc.
         adaptation_sets.append(
