@@ -1090,9 +1090,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             <h3 class="text-lg font-semibold">Custom Fields</h3>
                             <p class="text-dark-400 text-sm mt-1">Define custom metadata fields for videos. Fields can be global or category-specific.</p>
                         </div>
-                        <button @click="openCreateFieldModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition text-sm">
-                            Add Field
-                        </button>
+                        <vlog-button @click="openCreateFieldModal()" size="sm">Add Field</vlog-button>
                     </div>
 
                     <!-- Loading state -->
@@ -1170,18 +1168,14 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <!-- Empty state -->
                     <div x-show="!customFieldsLoading && customFields.length === 0" class="text-center py-12">
                         <div class="text-dark-400 mb-4">No custom fields defined yet.</div>
-                        <button @click="openCreateFieldModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition text-sm">
-                            Create Your First Field
-                        </button>
+                        <vlog-button @click="openCreateFieldModal()">Create Your First Field</vlog-button>
                     </div>
                 </div>
 
                 <!-- Custom Field Create/Edit Modal -->
-                <div x-show="customFieldModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="custom-field-modal-title" @keydown.escape.window="customFieldModal = false">
-                    <div class="bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto" @click.stop>
-                        <h3 id="custom-field-modal-title" class="text-lg font-semibold mb-4" x-text="customFieldEditing ? 'Edit Custom Field' : 'Create Custom Field'"></h3>
-
-                        <form @submit.prevent="saveCustomField" class="space-y-4">
+                <vlog-modal :open="customFieldModal" @close="customFieldModal = false" size="md">
+                    <span slot="header" x-text="customFieldEditing ? 'Edit Custom Field' : 'Create Custom Field'"></span>
+                    <form @submit.prevent="saveCustomField" class="space-y-4">
                             <!-- Name -->
                             <div>
                                 <label class="block text-sm font-medium mb-2">Name <span class="text-red-400">*</span></label>
@@ -1256,19 +1250,14 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             </div>
 
                             <!-- Buttons -->
-                            <div class="flex justify-end gap-3 pt-4">
-                                <button type="button" @click="customFieldModal = false" class="px-4 py-2 bg-dark-800 hover:bg-dark-700 rounded-lg transition">
-                                    Cancel
-                                </button>
-                                <button type="submit" :disabled="customFieldSaving"
-                                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg font-medium transition">
-                                    <span x-show="!customFieldSaving" x-text="customFieldEditing ? 'Save Changes' : 'Create Field'"></span>
-                                    <span x-show="customFieldSaving">Saving...</span>
-                                </button>
+                            <div class="flex gap-3 pt-4">
+                                <vlog-button variant="secondary" full-width @click="customFieldModal = false">Cancel</vlog-button>
+                                <vlog-button variant="primary" type="submit" full-width :disabled="customFieldSaving" :loading="customFieldSaving">
+                                    <span x-text="customFieldEditing ? 'Save Changes' : 'Create Field'"></span>
+                                </vlog-button>
                             </div>
                         </form>
-                    </div>
-                </div>
+                </vlog-modal>
 
                 <!-- Dynamic Category Settings Panels -->
                 <template x-for="category in settingsCategories" :key="category">
@@ -1276,19 +1265,18 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         <div class="flex items-center justify-between mb-6">
                             <h3 class="text-lg font-semibold capitalize" x-text="category.replace(/_/g, ' ') + ' Settings'"></h3>
                             <div class="flex gap-2">
-                                <button
+                                <vlog-button
+                                    variant="secondary"
+                                    size="sm"
                                     @click="resetCategorySettings(category)"
                                     :disabled="!hasModifiedSettings(category)"
-                                    class="px-3 py-1.5 text-sm bg-dark-800 hover:bg-dark-700 disabled:opacity-50 disabled:cursor-not-allowed border border-dark-700 rounded-lg transition"
-                                >Reset</button>
-                                <button
+                                >Reset</vlog-button>
+                                <vlog-button
+                                    size="sm"
                                     @click="saveAllCategorySettings(category)"
                                     :disabled="!hasModifiedSettings(category) || settingsSaving"
-                                    class="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium transition"
-                                >
-                                    <span x-show="!settingsSaving">Save Changes</span>
-                                    <span x-show="settingsSaving">Saving...</span>
-                                </button>
+                                    :loading="settingsSaving"
+                                >Save Changes</vlog-button>
                             </div>
                         </div>
 
@@ -1953,15 +1941,14 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </vlog-modal>
 
     <!-- Bulk Custom Fields Modal -->
-    <div x-show="bulkCustomFieldsModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-custom-fields-modal-title" @keydown.escape.window="bulkCustomFieldsModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkCustomFieldsModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
-            <h3 id="bulk-custom-fields-modal-title" class="text-xl font-semibold mb-4">Set Custom Fields</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkCustomFieldsModal" @close="bulkCustomFieldsModal = false" size="md">
+        <span slot="header">Set Custom Fields</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 Set custom field values for <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
                 Only global fields are available for bulk updates.
             </p>
-            <div class="space-y-4 mb-4">
+            <div class="space-y-4">
                 <template x-for="field in customFields.filter(f => f.category_id === null)" :key="field.id">
                     <div>
                         <label class="block text-sm font-medium mb-1">
@@ -2053,36 +2040,39 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </div>
                 </template>
 
-                <div x-show="customFields.filter(f => f.category_id === null).length === 0" class="text-dark-400 text-center py-4">
-                    No global custom fields defined. Create custom fields in Settings first.
-                </div>
+                <vlog-empty-state
+                    x-show="customFields.filter(f => f.category_id === null).length === 0"
+                    icon="settings"
+                    title="No Custom Fields"
+                    description="No global custom fields defined. Create custom fields in Settings first."
+                ></vlog-empty-state>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkCustomFieldsModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
                     @click="executeBulkCustomFields"
                     :disabled="bulkOpLoading || customFields.filter(f => f.category_id === null).length === 0"
-                    class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Apply</span>
-                    <span x-show="bulkOpLoading">Applying...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Apply</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Auth Modal -->
-    <div x-show="showAuthModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
-        <div class="bg-dark-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
-            <h3 id="auth-modal-title" class="text-xl font-semibold mb-4">Authentication Required</h3>
-            <p class="text-dark-400 mb-4">This Admin API requires authentication. Enter your admin secret to continue.</p>
-            <form @submit.prevent="submitAuth">
-                <div class="mb-4">
+    <vlog-modal :open="showAuthModal" no-close size="sm">
+        <span slot="header">Authentication Required</span>
+        <div class="space-y-4">
+            <p class="text-dark-400">This Admin API requires authentication. Enter your admin secret to continue.</p>
+            <form @submit.prevent="submitAuth" class="space-y-4">
+                <div>
                     <label class="block text-sm font-medium mb-2">Admin Secret</label>
                     <input
                         type="password"
@@ -2094,71 +2084,41 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         autocomplete="new-password"
                     >
                 </div>
-                <div x-show="authError" class="text-red-400 text-sm mb-4" x-text="authError"></div>
-                <div class="flex gap-3">
-                    <button
-                        type="submit"
-                        :disabled="authLoading"
-                        class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                    >
-                        <span x-show="!authLoading">Authenticate</span>
-                        <span x-show="authLoading">Checking...</span>
-                    </button>
-                </div>
+                <div x-show="authError" class="text-red-400 text-sm" x-text="authError"></div>
+                <vlog-button
+                    variant="primary"
+                    type="submit"
+                    full-width
+                    :disabled="authLoading"
+                    :loading="authLoading"
+                >Authenticate</vlog-button>
             </form>
-            <p class="text-dark-300 text-xs mt-4 text-center">Session is managed securely on the server</p>
+            <p class="text-dark-300 text-xs text-center">Session is managed securely on the server</p>
         </div>
-    </div>
+    </vlog-modal>
 
 
     <!-- Worker Logs Modal -->
-    <div x-show="showLogsModal" x-cloak
-         class="fixed inset-0 z-50 flex items-center justify-center p-4"
-         @keydown.escape.window="showLogsModal = false">
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/70" @click="showLogsModal = false"></div>
-        <!-- Modal -->
-        <div class="relative bg-dark-900 rounded-xl w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl border border-dark-700">
-            <div class="flex items-center justify-between px-6 py-4 border-b border-dark-700">
-                <h3 class="text-lg font-semibold" x-text="'Logs: ' + logsWorkerName"></h3>
-                <button @click="showLogsModal = false" class="text-dark-400 hover:text-white">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-            <div class="flex-1 overflow-auto p-4">
-                <template x-if="logsLoading">
-                    <div class="flex items-center justify-center py-12">
-                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                        <span class="ml-3 text-dark-400">Fetching logs from worker...</span>
-                    </div>
-                </template>
-                <template x-if="!logsLoading">
-                    <pre class="text-sm text-dark-300 font-mono whitespace-pre-wrap bg-dark-950 p-4 rounded-lg overflow-auto max-h-[60vh]"
-                         x-text="logsContent || 'No logs available'"></pre>
-                </template>
-            </div>
+    <vlog-modal :open="showLogsModal" @close="showLogsModal = false" size="lg">
+        <span slot="header" x-text="'Logs: ' + logsWorkerName"></span>
+        <div class="min-h-[300px]">
+            <template x-if="logsLoading">
+                <div class="flex items-center justify-center py-12">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                    <span class="ml-3 text-dark-400">Fetching logs from worker...</span>
+                </div>
+            </template>
+            <template x-if="!logsLoading">
+                <pre class="text-sm text-dark-300 font-mono whitespace-pre-wrap bg-dark-950 p-4 rounded-lg overflow-auto max-h-[60vh]"
+                     x-text="logsContent || 'No logs available'"></pre>
+            </template>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Worker Metrics Modal -->
-    <div x-show="showMetricsModal" x-cloak
-         class="fixed inset-0 z-50 flex items-center justify-center p-4"
-         @keydown.escape.window="showMetricsModal = false">
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/70" @click="showMetricsModal = false"></div>
-        <!-- Modal -->
-        <div class="relative bg-dark-900 rounded-xl w-full max-w-2xl shadow-2xl border border-dark-700">
-            <div class="flex items-center justify-between px-6 py-4 border-b border-dark-700">
-                <h3 class="text-lg font-semibold" x-text="'Metrics: ' + metricsWorkerName"></h3>
-                <button @click="showMetricsModal = false" class="text-dark-400 hover:text-white">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-            <div class="p-6">
+    <vlog-modal :open="showMetricsModal" @close="showMetricsModal = false" size="md">
+        <span slot="header" x-text="'Metrics: ' + metricsWorkerName"></span>
+        <div>
                 <template x-if="metricsLoading">
                     <div class="flex items-center justify-center py-8">
                         <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
@@ -2254,8 +2214,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         </template>
                     </div>
                 </template>
-            </div>
         </div>
-    </div>
+    </vlog-modal>
 </body>
 </html>
