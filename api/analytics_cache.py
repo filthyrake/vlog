@@ -12,7 +12,8 @@ import json
 import logging
 import random
 import time
-from typing import Any, Dict, Optional, Union, Callable, TypeVar
+from typing import Any, Callable, Dict, Optional, TypeVar, Union
+
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
@@ -188,7 +189,7 @@ class RedisAnalyticsCache:
     def _initialize_client(self) -> None:
         """Initialize the Redis client."""
         try:
-            import redis # Lazy import
+            import redis  # Lazy import
             self._client = redis.Redis.from_url(
                 self._redis_url,
                 socket_timeout=5.0,
@@ -207,7 +208,7 @@ class RedisAnalyticsCache:
     def _get_full_key(self, key: str) -> str:
         """Get the full Redis key with prefix."""
         return f"{self.CACHE_KEY_PREFIX}{key}"
-    
+
     def _safe_redis_call(
         self,
         operation: Callable[[], T],
