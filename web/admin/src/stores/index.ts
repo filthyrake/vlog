@@ -13,6 +13,7 @@ import { createAnalyticsStore, type AnalyticsStore } from './analytics.store';
 import { createSettingsStore, type SettingsStore } from './settings.store';
 import { createBulkStore, type BulkStore } from './bulk.store';
 import { createSSEStore, type SSEStore, getActiveVideoIds } from './sse.store';
+import { getKeyboardManager, destroyKeyboardManager } from '@/utils/keyboard';
 import type { ProgressSSEEvent, WorkerSSEEvent, CustomField } from '@/api/types';
 
 // Polling interval IDs for cleanup
@@ -99,6 +100,9 @@ export function createAdminStore(): AdminStore {
       // Close SSE connections
       this.disconnectProgressSSE();
       this.disconnectWorkersSSE();
+
+      // Clean up keyboard manager
+      destroyKeyboardManager();
     },
 
     /**
@@ -106,6 +110,12 @@ export function createAdminStore(): AdminStore {
      * Called automatically by Alpine.js on component mount
      */
     async init(): Promise<void> {
+      // Initialize toast container
+      this.initToastContainer();
+
+      // Initialize keyboard shortcuts
+      getKeyboardManager();
+
       // Check authentication first
       const authOk = await this.checkAuth();
       if (!authOk) {

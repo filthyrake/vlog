@@ -212,6 +212,8 @@ class VideoListResponse(BaseModel):
     thumbnail_url: Optional[str] = None
     thumbnail_source: str = "auto"  # auto, selected, custom
     thumbnail_timestamp: Optional[float] = None  # timestamp for selected thumbnails
+    streaming_format: str = "hls_ts"  # hls_ts (legacy) or cmaf (modern fMP4)
+    primary_codec: str = "h264"  # h264, hevc, or av1
     tags: List[VideoTagInfo] = []
 
     @field_validator("description", mode="before")
@@ -225,6 +227,16 @@ class VideoListResponse(BaseModel):
         from datetime import timezone
 
         return v if v is not None else datetime.now(timezone.utc)
+
+    @field_validator("streaming_format", mode="before")
+    @classmethod
+    def default_streaming_format(cls, v):
+        return v if v is not None else "hls_ts"
+
+    @field_validator("primary_codec", mode="before")
+    @classmethod
+    def default_primary_codec(cls, v):
+        return v if v is not None else "h264"
 
 
 # Analytics request models
