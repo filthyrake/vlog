@@ -1417,11 +1417,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </main>
 
     <!-- Edit Video Modal -->
-    <div x-show="editModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title" @keydown.escape.window="editModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="editModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 id="edit-modal-title" class="text-xl font-semibold mb-4">Edit Video</h3>
-            <form @submit.prevent="saveVideo" class="space-y-4">
+    <vlog-modal :open="editModal" @close="editModal = false" size="md">
+        <span slot="header">Edit Video</span>
+        <form @submit.prevent="saveVideo" class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium mb-2">Title</label>
                     <input
@@ -1564,27 +1562,26 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </div>
                 </template>
 
-                <div class="flex gap-3 pt-2">
-                    <button
-                        type="button"
+                <div class="flex gap-3 pt-4">
+                    <vlog-button
+                        variant="secondary"
+                        full-width
                         @click="editModal = false"
-                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg font-medium transition"
-                    >Cancel</button>
-                    <button
+                    >Cancel</vlog-button>
+                    <vlog-button
+                        variant="primary"
                         type="submit"
-                        class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition"
-                    >Save</button>
+                        full-width
+                    >Save</vlog-button>
                 </div>
             </form>
-        </div>
-    </div>
+    </vlog-modal>
 
     <!-- Re-upload Video Modal -->
-    <div x-show="reuploadModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="reupload-modal-title" @keydown.escape.window="reuploadModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="reuploadModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 id="reupload-modal-title" class="text-xl font-semibold mb-2">Re-upload Video</h3>
-            <p class="text-dark-400 text-sm mb-4">
+    <vlog-modal :open="reuploadModal" @close="reuploadModal = false" size="md">
+        <span slot="header">Re-upload Video</span>
+        <div class="space-y-4">
+            <p class="text-dark-400 text-sm">
                 Replace the video file for "<span x-text="reuploadTitle" class="text-white"></span>".
                 This will delete all transcoded files and re-process the video.
                 Metadata (title, description, category, dates) will be preserved.
@@ -1602,129 +1599,115 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 </div>
 
                 <!-- Re-upload Progress -->
-                <div x-show="reuploadProgress >= 0" class="space-y-2">
-                    <div class="flex justify-between text-sm">
-                        <span>Uploading...</span>
-                        <span x-text="reuploadProgress + '%'"></span>
-                    </div>
-                    <div class="w-full bg-dark-700 rounded-full h-2">
-                        <div
-                            class="bg-purple-500 h-2 rounded-full transition-all"
-                            :style="'width: ' + reuploadProgress + '%'"
-                        ></div>
-                    </div>
-                </div>
+                <vlog-progress
+                    x-show="reuploadProgress >= 0"
+                    :value="reuploadProgress"
+                    variant="purple"
+                    show-label
+                    label-text="Uploading..."
+                ></vlog-progress>
 
                 <div x-show="reuploadMessage" :class="reuploadError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="reuploadMessage"></div>
 
-                <div class="flex gap-3 pt-2">
-                    <button
-                        type="button"
+                <div class="flex gap-3 pt-4">
+                    <vlog-button
+                        variant="secondary"
+                        full-width
                         @click="reuploadModal = false"
                         :disabled="reuploading"
-                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                    >Cancel</button>
-                    <button
+                    >Cancel</vlog-button>
+                    <vlog-button
+                        variant="primary"
                         type="submit"
+                        full-width
                         :disabled="reuploading"
-                        class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                    >
-                        <span x-show="!reuploading">Re-upload</span>
-                        <span x-show="reuploading">Uploading...</span>
-                    </button>
+                        :loading="reuploading"
+                    >Re-upload</vlog-button>
                 </div>
             </form>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Re-transcode Video Modal -->
-    <div x-show="retranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="retranscode-modal-title" @keydown.escape.window="retranscodeModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="retranscodeModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 id="retranscode-modal-title" class="text-xl font-semibold mb-2">Re-transcode Video</h3>
-            <p class="text-dark-400 text-sm mb-4">
+    <vlog-modal :open="retranscodeModal" @close="retranscodeModal = false" size="md">
+        <span slot="header">Re-transcode Video</span>
+        <div class="space-y-4">
+            <p class="text-dark-400 text-sm">
                 Select qualities to re-transcode for "<span x-text="retranscodeTitle" class="text-white"></span>".
                 Selected quality files will be deleted and regenerated from the source.
             </p>
 
-            <div class="space-y-4">
-                <!-- Select All / Deselect All buttons -->
-                <div class="flex gap-2">
-                    <button
-                        @click="selectAllQualities"
-                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 rounded transition"
-                    >Select All</button>
-                    <button
-                        @click="deselectAllQualities"
-                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 rounded transition"
-                    >Deselect All</button>
-                </div>
+            <!-- Select All / Deselect All buttons -->
+            <div class="flex gap-2">
+                <vlog-button size="sm" variant="secondary" @click="selectAllQualities">Select All</vlog-button>
+                <vlog-button size="sm" variant="secondary" @click="deselectAllQualities">Deselect All</vlog-button>
+            </div>
 
-                <!-- Quality checkboxes -->
-                <div class="space-y-2 max-h-64 overflow-y-auto">
-                    <template x-for="quality in retranscodeAvailable" :key="quality">
-                        <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
-                            <input
-                                type="checkbox"
-                                :checked="retranscodeSelected.includes(quality)"
-                                @change="toggleRetranscodeQuality(quality)"
-                                class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
-                            >
-                            <span class="flex-1">
-                                <span class="font-medium" x-text="quality"></span>
-                            </span>
-                            <span
-                                :class="{
-                                    'text-green-400': getQualityStatus(quality) === 'completed',
-                                    'text-dark-300': getQualityStatus(quality) === 'not transcoded'
-                                }"
-                                class="text-xs"
-                                x-text="getQualityStatus(quality)"
-                            ></span>
-                        </label>
-                    </template>
-                </div>
+            <!-- Quality checkboxes -->
+            <div class="space-y-2 max-h-64 overflow-y-auto">
+                <template x-for="quality in retranscodeAvailable" :key="quality">
+                    <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
+                        <input
+                            type="checkbox"
+                            :checked="retranscodeSelected.includes(quality)"
+                            @change="toggleRetranscodeQuality(quality)"
+                            class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        >
+                        <span class="flex-1">
+                            <span class="font-medium" x-text="quality"></span>
+                        </span>
+                        <span
+                            :class="{
+                                'text-green-400': getQualityStatus(quality) === 'completed',
+                                'text-dark-300': getQualityStatus(quality) === 'not transcoded'
+                            }"
+                            class="text-xs"
+                            x-text="getQualityStatus(quality)"
+                        ></span>
+                    </label>
+                </template>
+            </div>
 
-                <!-- No qualities message -->
-                <div x-show="retranscodeAvailable.length === 0" class="text-dark-400 text-center py-4">
-                    No qualities available for this video.
-                </div>
+            <!-- No qualities message -->
+            <vlog-empty-state
+                x-show="retranscodeAvailable.length === 0"
+                icon="video"
+                title="No Qualities"
+                description="No qualities available for this video."
+            ></vlog-empty-state>
 
-                <!-- Status message -->
-                <div x-show="retranscodeMessage" :class="retranscodeError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="retranscodeMessage"></div>
+            <!-- Status message -->
+            <div x-show="retranscodeMessage" :class="retranscodeError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="retranscodeMessage"></div>
 
-                <!-- Action buttons -->
-                <div class="flex gap-3 pt-2">
-                    <button
-                        type="button"
-                        @click="retranscodeModal = false"
-                        :disabled="retranscoding"
-                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                    >Cancel</button>
-                    <button
-                        @click="submitRetranscode()"
-                        :disabled="retranscoding || retranscodeSelected.length === 0"
-                        class="flex-1 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                    >
-                        <span x-show="!retranscoding">Re-transcode (<span x-text="retranscodeSelected.length"></span>)</span>
-                        <span x-show="retranscoding">Processing...</span>
-                    </button>
-                </div>
+            <!-- Action buttons -->
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
+                    @click="retranscodeModal = false"
+                    :disabled="retranscoding"
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
+                    @click="submitRetranscode()"
+                    :disabled="retranscoding || retranscodeSelected.length === 0"
+                    :loading="retranscoding"
+                >Re-transcode (<span x-text="retranscodeSelected.length"></span>)</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Thumbnail Selection Modal -->
-    <div x-show="thumbnailModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="thumbnail-modal-title" @keydown.escape.window="thumbnailModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="thumbnailModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-            <h3 id="thumbnail-modal-title" class="text-xl font-semibold mb-2">Select Thumbnail</h3>
-            <p class="text-dark-400 text-sm mb-4">
+    <vlog-modal :open="thumbnailModal" @close="thumbnailModal = false" size="lg">
+        <span slot="header">Select Thumbnail</span>
+        <div class="space-y-6">
+            <p class="text-dark-400 text-sm">
                 Choose a thumbnail for "<span x-text="thumbnailVideoTitle" class="text-white"></span>"
             </p>
 
             <!-- Current Thumbnail -->
-            <div class="mb-6">
+            <div>
                 <h4 class="text-sm font-medium mb-2 text-dark-300">Current Thumbnail</h4>
                 <div class="flex items-center gap-4">
                     <div class="w-40 aspect-video bg-dark-800 rounded overflow-hidden">
@@ -1741,17 +1724,16 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
             </div>
 
             <!-- Frame Selection -->
-            <div class="mb-6">
+            <div>
                 <div class="flex justify-between items-center mb-3">
                     <h4 class="text-sm font-medium text-dark-300">Select from Video Frames</h4>
-                    <button
+                    <vlog-button
+                        size="sm"
+                        variant="secondary"
                         @click="generateThumbnailFrames()"
                         :disabled="thumbnailLoading"
-                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded transition"
-                    >
-                        <span x-show="!thumbnailLoading">Generate Frames</span>
-                        <span x-show="thumbnailLoading">Generating...</span>
-                    </button>
+                        :loading="thumbnailLoading"
+                    >Generate Frames</vlog-button>
                 </div>
                 <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
                     <template x-for="frame in thumbnailFrames" :key="frame.index">
@@ -1768,13 +1750,16 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         </button>
                     </template>
                 </div>
-                <div x-show="thumbnailFrames.length === 0" class="text-dark-300 text-sm py-4 text-center bg-dark-800 rounded">
-                    Click "Generate Frames" to see frame options from the video.
-                </div>
+                <vlog-empty-state
+                    x-show="thumbnailFrames.length === 0"
+                    icon="image"
+                    title="No Frames"
+                    description="Click 'Generate Frames' to see frame options from the video."
+                ></vlog-empty-state>
             </div>
 
             <!-- Custom Upload -->
-            <div class="mb-6">
+            <div>
                 <h4 class="text-sm font-medium mb-2 text-dark-300">Upload Custom Thumbnail</h4>
                 <div class="flex items-center gap-3">
                     <input
@@ -1783,49 +1768,44 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         @change="thumbnailUploadFile = $event.target.files[0]"
                         class="flex-1 px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-dark-700 file:text-white"
                     >
-                    <button
+                    <vlog-button
+                        variant="primary"
                         @click="uploadCustomThumbnail()"
                         :disabled="!thumbnailUploadFile || thumbnailUploading"
-                        class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 disabled:opacity-50 rounded-lg text-sm font-medium transition"
-                    >
-                        <span x-show="!thumbnailUploading">Upload</span>
-                        <span x-show="thumbnailUploading">Uploading...</span>
-                    </button>
+                        :loading="thumbnailUploading"
+                    >Upload</vlog-button>
                 </div>
                 <p class="text-xs text-dark-300 mt-2">Accepts JPEG, PNG, or WebP (max 10MB). Will be resized to 640px width.</p>
             </div>
 
             <!-- Revert Option -->
-            <div class="mb-6" x-show="thumbnailSource !== 'auto'">
-                <button
+            <div x-show="thumbnailSource !== 'auto'">
+                <vlog-button
+                    variant="ghost"
                     @click="revertThumbnail()"
                     :disabled="thumbnailLoading"
-                    class="text-sm text-yellow-400 hover:text-yellow-300 disabled:opacity-50"
-                >Revert to auto-generated thumbnail</button>
+                    class="text-yellow-400 hover:text-yellow-300"
+                >Revert to auto-generated thumbnail</vlog-button>
             </div>
 
             <!-- Messages -->
-            <div x-show="thumbnailMessage" :class="thumbnailError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="thumbnailMessage"></div>
+            <div x-show="thumbnailMessage" :class="thumbnailError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="thumbnailMessage"></div>
 
             <!-- Close Button -->
-            <div class="flex justify-end">
-                <button
-                    @click="thumbnailModal = false"
-                    class="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg font-medium transition"
-                >Close</button>
+            <div class="flex justify-end pt-4">
+                <vlog-button variant="secondary" @click="thumbnailModal = false">Close</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Delete Modal -->
-    <div x-show="bulkDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-modal-title" @keydown.escape.window="bulkDeleteModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkDeleteModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 id="bulk-delete-modal-title" class="text-xl font-semibold mb-4">Delete Videos</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkDeleteModal" @close="bulkDeleteModal = false" size="sm">
+        <span slot="header">Delete Videos</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 You are about to delete <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
             </p>
-            <div class="mb-4">
+            <div>
                 <label class="flex items-center gap-3 cursor-pointer">
                     <input
                         type="checkbox"
@@ -1835,34 +1815,33 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <span class="text-dark-300">Permanently delete (cannot be undone)</span>
                 </label>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkDeleteModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="danger"
+                    full-width
                     @click="executeBulkDelete"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-red-600 hover:bg-red-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Delete</span>
-                    <span x-show="bulkOpLoading">Deleting...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Delete</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Update Modal -->
-    <div x-show="bulkUpdateModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-update-modal-title" @keydown.escape.window="bulkUpdateModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkUpdateModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 id="bulk-update-modal-title" class="text-xl font-semibold mb-4">Update Videos</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkUpdateModal" @close="bulkUpdateModal = false" size="sm">
+        <span slot="header">Update Videos</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 Update <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) with the following settings:
             </p>
-            <div class="space-y-4 mb-4">
+            <div class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium mb-2">Category</label>
                     <select
@@ -1895,34 +1874,33 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </div>
                 </div>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkUpdateModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
                     @click="executeBulkUpdate"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Update</span>
-                    <span x-show="bulkOpLoading">Updating...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Update</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Retranscode Modal -->
-    <div x-show="bulkRetranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-retranscode-modal-title" @keydown.escape.window="bulkRetranscodeModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkRetranscodeModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 id="bulk-retranscode-modal-title" class="text-xl font-semibold mb-4">Re-transcode Videos</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkRetranscodeModal" @close="bulkRetranscodeModal = false" size="sm">
+        <span slot="header">Re-transcode Videos</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 Queue <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) for re-transcoding.
             </p>
-            <div class="space-y-2 mb-4">
+            <div class="space-y-2">
                 <label class="block text-sm font-medium mb-2">Qualities to re-transcode</label>
                 <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
                     <input
@@ -1955,24 +1933,24 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <span>720p only</span>
                 </label>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkRetranscodeModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
                     @click="executeBulkRetranscode"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Re-transcode</span>
-                    <span x-show="bulkOpLoading">Queueing...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Re-transcode</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Custom Fields Modal -->
     <div x-show="bulkCustomFieldsModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-custom-fields-modal-title" @keydown.escape.window="bulkCustomFieldsModal = false">
