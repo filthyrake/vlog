@@ -1406,15 +1406,17 @@ async def generate_dash_manifest(
     seconds = total_duration % 60
     duration_str = f"PT{hours}H{minutes}M{seconds:.3f}S"
 
-    # Determine codec-specific codecs string
+    # Determine codec-specific codecs string (video + AAC audio)
     if codec == VideoCodec.HEVC:
-        video_codecs = "hvc1.1.6.L120.90"
+        video_codecs = "hvc1.1.6.L120.90,mp4a.40.2"
     elif codec == VideoCodec.AV1:
-        video_codecs = "av01.0.08M.08"
+        video_codecs = "av01.0.08M.08,mp4a.40.2"
     else:
-        video_codecs = "avc1.640028"
+        video_codecs = "avc1.640028,mp4a.40.2"
 
     # Build adaptation sets for each quality
+    # Note: CMAF segments have muxed audio+video, so we use a single AdaptationSet
+    # with combined codecs string
     adaptation_sets = []
     seg_duration_ms = segment_duration * 1000
 
@@ -1431,13 +1433,14 @@ async def generate_dash_manifest(
         height = quality["height"]
         bandwidth = quality.get("bitrate_bps", int(quality.get("bitrate", "0").replace("k", "")) * 1000)
 
+        # startNumber=0 since segments are named seg_0000.m4s, seg_0001.m4s, etc.
         adaptation_sets.append(
             f'    <AdaptationSet id="{i}" mimeType="video/mp4" codecs="{video_codecs}" '
             f'startWithSAP="1" segmentAlignment="true">\n'
             f'      <Representation id="{name}" bandwidth="{bandwidth}" '
             f'width="{width}" height="{height}">\n'
             f'        <SegmentTemplate media="{name}/seg_$Number%04d$.m4s" '
-            f'initialization="{name}/init.mp4" startNumber="1" '
+            f'initialization="{name}/init.mp4" startNumber="0" '
             f'duration="{seg_duration_ms}" timescale="1000"/>\n'
             f"      </Representation>\n"
             f"    </AdaptationSet>"
