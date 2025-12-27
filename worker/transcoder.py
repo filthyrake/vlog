@@ -1340,12 +1340,16 @@ async def generate_master_playlist_cmaf(
 
     # Get codec string for manifest
     codec_string = get_codec_string(codec)
+    # Original quality keeps source codec (typically H.264) since it's not re-encoded
+    original_codec_string = get_codec_string(VideoCodec.H264)
 
     for quality in qualities_with_bandwidth:
+        # Original quality uses source codec, transcoded qualities use target codec
+        quality_codec = original_codec_string if quality["name"] == "original" else codec_string
         master_content += (
             f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},'
             f'RESOLUTION={quality["width"]}x{quality["height"]},'
-            f'CODECS="{codec_string}"\n'
+            f'CODECS="{quality_codec}"\n'
         )
         # Original quality uses legacy TS format at root, transcoded use CMAF subdirs
         if quality["name"] == "original":
