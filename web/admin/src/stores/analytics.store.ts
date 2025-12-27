@@ -10,8 +10,8 @@ import { formatPercent, formatWatchTime, formatHours } from '@/utils/formatters'
 import type { AlpineContext } from './types';
 
 export interface AnalyticsState {
-  // Overview data
-  analyticsOverview: AnalyticsOverview | null;
+  // Overview data - always has a value (defaults provided)
+  analyticsOverview: AnalyticsOverview;
   analyticsVideos: VideoAnalytics[];
   analyticsPeriod: AnalyticsPeriod;
 
@@ -36,8 +36,15 @@ export type AnalyticsStore = AnalyticsState & AnalyticsActions;
 
 export function createAnalyticsStore(_context?: AlpineContext): AnalyticsStore {
   return {
-    // Initial state
-    analyticsOverview: null,
+    // Initial state - provide defaults to prevent null access errors in templates
+    analyticsOverview: {
+      total_views: 0,
+      total_watch_time: 0,
+      unique_viewers: 0,
+      avg_watch_duration: 0,
+      completion_rate: 0,
+      views_by_day: [],
+    },
     analyticsVideos: [],
     analyticsPeriod: 'all',
     loading: false,
@@ -75,7 +82,7 @@ export function createAnalyticsStore(_context?: AlpineContext): AnalyticsStore {
         this.analyticsOverview = await analyticsApi.getOverview(this.analyticsPeriod);
       } catch (e) {
         console.error('Failed to load analytics overview:', e);
-        this.analyticsOverview = null;
+        // Keep existing values on error (don't reset to null)
       }
     },
 

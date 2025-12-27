@@ -13,7 +13,7 @@ import { createAnalyticsStore, type AnalyticsStore } from './analytics.store';
 import { createSettingsStore, type SettingsStore } from './settings.store';
 import { createBulkStore, type BulkStore } from './bulk.store';
 import { createSSEStore, type SSEStore, getActiveVideoIds } from './sse.store';
-import type { ProgressSSEEvent, WorkerSSEEvent } from '@/api/types';
+import type { ProgressSSEEvent, WorkerSSEEvent, CustomField } from '@/api/types';
 
 // Combined store type
 export type AdminStore = AuthStore &
@@ -27,6 +27,7 @@ export type AdminStore = AuthStore &
   BulkStore &
   SSEStore & {
     init(): Promise<void>;
+    getApplicableCustomFields(): CustomField[];
   };
 
 /**
@@ -59,6 +60,26 @@ export function createAdminStore(): AdminStore {
     ...settingsStore,
     ...bulkStore,
     ...sseStore,
+
+    /**
+     * Get custom fields applicable to the currently editing video's category
+     * Used in the edit modal to show only relevant custom fields
+     */
+    getApplicableCustomFields(): CustomField[] {
+      const categoryId = this.editCategory;
+      return this.customFields.filter((field) => {
+        // If no category restrictions, field applies to all
+        if (!field.applies_to_categories || field.applies_to_categories.length === 0) {
+          return true;
+        }
+        // If editing video has no category, show fields with no restrictions
+        if (!categoryId) {
+          return field.applies_to_categories.length === 0;
+        }
+        // Check if field applies to the selected category
+        return field.applies_to_categories.includes(categoryId);
+      });
+    },
 
     /**
      * Initialize the admin application

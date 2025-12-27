@@ -20,8 +20,8 @@ export interface SettingsState {
   settingsMessage: string;
   settingsError: string;
 
-  // Watermark settings
-  watermarkSettings: WatermarkSettings | null;
+  // Watermark settings - always has a value (defaults provided)
+  watermarkSettings: WatermarkSettings;
   watermarkLoading: boolean;
   watermarkImageFile: File | null;
   watermarkUploading: boolean;
@@ -96,8 +96,17 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
     settingsMessage: '',
     settingsError: '',
 
-    // Watermark state
-    watermarkSettings: null,
+    // Watermark state - provide defaults to prevent null access errors
+    watermarkSettings: {
+      enabled: false,
+      type: 'image',
+      position: 'bottom-right',
+      opacity: 0.5,
+      image_url: undefined,
+      text: undefined,
+      font_size: 24,
+      font_color: '#ffffff',
+    },
     watermarkLoading: false,
     watermarkImageFile: null,
     watermarkUploading: false,
@@ -349,8 +358,6 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
     },
 
     async saveWatermarkSettings(): Promise<void> {
-      if (!this.watermarkSettings) return;
-
       this.watermarkLoading = true;
       this.watermarkMessage = '';
       this.watermarkError = '';
@@ -379,9 +386,7 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
           this.watermarkUploadProgress = percent;
         },
         (imageUrl) => {
-          if (this.watermarkSettings) {
-            this.watermarkSettings.image_url = imageUrl;
-          }
+          this.watermarkSettings.image_url = imageUrl;
           this.watermarkMessage = 'Watermark image uploaded';
           this.watermarkUploading = false;
           this.watermarkImageFile = null;
@@ -400,9 +405,7 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
 
       try {
         await settingsApi.watermark.deleteImage();
-        if (this.watermarkSettings) {
-          this.watermarkSettings.image_url = undefined;
-        }
+        this.watermarkSettings.image_url = undefined;
         this.watermarkMessage = 'Watermark image deleted';
       } catch (e) {
         this.watermarkError = e instanceof Error ? e.message : 'Failed to delete watermark image';
