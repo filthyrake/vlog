@@ -379,17 +379,33 @@ export class VlogTable extends HTMLElement {
 
       if (column.sortable) {
         th.setAttribute('aria-sort', this.getAriaSortValue(column.key));
-        th.innerHTML = `
-          <button class="sortable-header" data-column="${column.key}" type="button">
-            ${column.label}
-            <svg class="sort-icon ${this._sortColumn === column.key ? 'active' : ''} ${this._sortDirection === 'desc' && this._sortColumn === column.key ? 'desc' : ''}"
-                 xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd" d="M10 3a.75.75 0 01.55.24l3.25 3.5a.75.75 0 11-1.1 1.02L10 4.852 7.3 7.76a.75.75 0 01-1.1-1.02l3.25-3.5A.75.75 0 0110 3z" clip-rule="evenodd" />
-            </svg>
-          </button>
-        `;
-        const button = th.querySelector('button')!;
+
+        // Use DOM methods to avoid XSS from column.label/column.key
+        const button = document.createElement('button');
+        button.className = 'sortable-header';
+        button.type = 'button';
+        button.dataset.column = column.key;
+
+        // Use textContent for the label to prevent XSS
+        const labelText = document.createTextNode(column.label);
+        button.appendChild(labelText);
+
+        // Create sort icon using DOM methods
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', `sort-icon ${this._sortColumn === column.key ? 'active' : ''} ${this._sortDirection === 'desc' && this._sortColumn === column.key ? 'desc' : ''}`);
+        svg.setAttribute('viewBox', '0 0 20 20');
+        svg.setAttribute('fill', 'currentColor');
+        svg.setAttribute('aria-hidden', 'true');
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('fill-rule', 'evenodd');
+        path.setAttribute('d', 'M10 3a.75.75 0 01.55.24l3.25 3.5a.75.75 0 11-1.1 1.02L10 4.852 7.3 7.76a.75.75 0 01-1.1-1.02l3.25-3.5A.75.75 0 0110 3z');
+        path.setAttribute('clip-rule', 'evenodd');
+        svg.appendChild(path);
+
+        button.appendChild(svg);
         button.addEventListener('click', () => this.handleSort(column.key));
+        th.appendChild(button);
       } else {
         th.textContent = column.label;
       }

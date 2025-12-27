@@ -260,6 +260,13 @@ template.innerHTML = `
   <div class="sr-announcement" aria-live="polite" aria-atomic="true"></div>
 `;
 
+// Valid values for size and variant attributes
+const VALID_SIZES = ['sm', 'md', 'lg'] as const;
+const VALID_VARIANTS = ['primary', 'success', 'warning', 'error'] as const;
+
+type Size = typeof VALID_SIZES[number];
+type Variant = typeof VALID_VARIANTS[number];
+
 export class VlogProgress extends HTMLElement {
   private wrapper!: HTMLDivElement;
   private announcement!: HTMLDivElement;
@@ -267,6 +274,22 @@ export class VlogProgress extends HTMLElement {
 
   static get observedAttributes() {
     return ['type', 'value', 'size', 'variant', 'indeterminate', 'show-label'];
+  }
+
+  // Validate and sanitize size attribute
+  private validateSize(size: string | null): Size {
+    if (size && VALID_SIZES.includes(size as Size)) {
+      return size as Size;
+    }
+    return 'md';
+  }
+
+  // Validate and sanitize variant attribute
+  private validateVariant(variant: string | null): Variant {
+    if (variant && VALID_VARIANTS.includes(variant as Variant)) {
+      return variant as Variant;
+    }
+    return 'primary';
   }
 
   constructor() {
@@ -307,8 +330,9 @@ export class VlogProgress extends HTMLElement {
   private render() {
     const type = this.getAttribute('type') || 'linear';
     const value = Math.min(100, Math.max(0, parseInt(this.getAttribute('value') || '0', 10)));
-    const size = this.getAttribute('size') || 'md';
-    const variant = this.getAttribute('variant') || 'primary';
+    // Validate size and variant to prevent XSS via innerHTML interpolation
+    const size = this.validateSize(this.getAttribute('size'));
+    const variant = this.validateVariant(this.getAttribute('variant'));
     const indeterminate = this.hasAttribute('indeterminate');
     const showLabel = this.hasAttribute('show-label');
 
@@ -321,8 +345,8 @@ export class VlogProgress extends HTMLElement {
 
   private renderLinear(
     value: number,
-    size: string,
-    variant: string,
+    size: Size,
+    variant: Variant,
     indeterminate: boolean,
     showLabel: boolean
   ) {
@@ -354,8 +378,8 @@ export class VlogProgress extends HTMLElement {
 
   private renderCircular(
     value: number,
-    size: string,
-    variant: string,
+    size: Size,
+    variant: Variant,
     indeterminate: boolean,
     showLabel: boolean
   ) {
