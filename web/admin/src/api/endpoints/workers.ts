@@ -14,14 +14,16 @@ export const workersApi = {
    * List all workers
    */
   async list(): Promise<Worker[]> {
-    return apiClient.fetch<Worker[]>('/api/workers');
+    const response = await apiClient.fetch<{ workers: Worker[] }>('/api/workers');
+    return response.workers;
   },
 
   /**
    * Get active jobs across all workers
    */
   async getActiveJobs(): Promise<ActiveJob[]> {
-    return apiClient.fetch<ActiveJob[]>('/api/workers/active-jobs');
+    const response = await apiClient.fetch<{ jobs: ActiveJob[] }>('/api/workers/active-jobs');
+    return response.jobs;
   },
 
   /**
