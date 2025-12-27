@@ -69,6 +69,9 @@ spec:
         # Intel Media Driver (iHD) for Arc GPUs
         - name: LIBVA_DRIVER_NAME
           value: "iHD"
+        # Work directory - must have adequate disk space (NOT /tmp!)
+        - name: VLOG_WORKER_WORK_DIR
+          value: "/home/vlog-worker"
 
         # Resource limits
         resources:
@@ -81,10 +84,10 @@ spec:
             cpu: "2000m"
             gpu.intel.com/xe: 1
 
-        # Mount volumes
+        # Mount volumes - use /home for persistent storage with adequate disk space
         volumeMounts:
         - name: work-dir
-          mountPath: /tmp/vlog-worker
+          mountPath: /home/vlog-worker
         # DRI device access for VAAPI
         - name: dri
           mountPath: /dev/dri
@@ -122,8 +125,9 @@ spec:
       # Volumes
       volumes:
       - name: work-dir
-        emptyDir:
-          sizeLimit: 150Gi
+        hostPath:
+          path: /home/vlog-worker
+          type: DirectoryOrCreate
       # Host path for GPU device access
       - name: dri
         hostPath:

@@ -1,10 +1,13 @@
 # VLog Remote Transcoding Worker
 # Containerized worker for distributed video transcoding
 #
-# Build: docker build -f Dockerfile.worker -t vlog-worker .
+# Build: docker build -f Dockerfile.worker -t vlog-worker --build-arg VERSION=$(git rev-parse --short=8 HEAD) .
 # Run: docker run -e VLOG_WORKER_API_KEY=<key> -e VLOG_WORKER_API_URL=http://host:9002 vlog-worker
 
 FROM python:3.9-slim
+
+# Version arg - pass git commit hash at build time
+ARG VERSION=unknown
 
 # Install FFmpeg and other dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,6 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 -s /bin/bash vlog
 
 WORKDIR /app
+
+# Write version file from build arg
+RUN echo "$VERSION" > VERSION
 
 # Copy package files first for better caching
 COPY pyproject.toml ./
