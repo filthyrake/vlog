@@ -705,12 +705,14 @@ async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
 
     data = json.loads(stdout.decode("utf-8", errors="ignore"))
 
-    # Find video stream
+    # Find video and audio streams
     video_stream = None
+    audio_stream = None
     for stream in data.get("streams", []):
-        if stream.get("codec_type") == "video":
+        if stream.get("codec_type") == "video" and video_stream is None:
             video_stream = stream
-            break
+        elif stream.get("codec_type") == "audio" and audio_stream is None:
+            audio_stream = stream
 
     if not video_stream:
         raise RuntimeError("No video stream found")
@@ -724,6 +726,7 @@ async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
         "height": int(video_stream.get("height", 0)),
         "duration": duration,
         "codec": video_stream.get("codec_name", "unknown"),
+        "audio_codec": audio_stream.get("codec_name", "aac") if audio_stream else "aac",
     }
 
 
@@ -878,9 +881,10 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
             # the init.mp4 header. Instead, we do a quick structural check.
             if first_segment_path.suffix == ".m4s":
                 try:
-                    # Read first 256 bytes to check for required fMP4 atoms
+                    # Read first 4KB to check for required fMP4 atoms
+                    # moof atom can be preceded by styp, sidx, or padding
                     with open(first_segment_path, "rb") as f:
-                        header = f.read(256)
+                        header = f.read(4096)
                     # Valid fMP4 segments must have moof (movie fragment) atom
                     # moof contains mfhd and traf which contains tfhd
                     if b"moof" not in header:
@@ -1275,6 +1279,7 @@ async def generate_master_playlist_cmaf(
     output_dir: Path,
     completed_qualities: List[dict],
     codec: VideoCodec = VideoCodec.H264,
+    original_audio_codec: str = "aac",
 ):
     """
     Generate master HLS playlist for CMAF output structure.
@@ -1297,6 +1302,7 @@ async def generate_master_playlist_cmaf(
         output_dir: Directory containing the CMAF quality subdirectories
         completed_qualities: List of quality dicts with name, width, height, bitrate fields
         codec: Video codec used for encoding (affects CODECS attribute)
+        original_audio_codec: Audio codec of original quality (e.g., 'aac', 'ac3', 'eac3')
     """
     # Verify actual dimensions from init segment of each quality
     for quality in completed_qualities:
@@ -1341,7 +1347,20 @@ async def generate_master_playlist_cmaf(
     # Get codec string for manifest
     codec_string = get_codec_string(codec)
     # Original quality keeps source codec (typically H.264) since it's not re-encoded
-    original_codec_string = get_codec_string(VideoCodec.H264)
+    # Map audio codec name to HLS codec string
+    audio_codec_map = {
+        "aac": "mp4a.40.2",
+        "ac3": "ac-3",
+        "ac-3": "ac-3",
+        "eac3": "ec-3",
+        "ec-3": "ec-3",
+        "e-ac-3": "ec-3",
+        "mp3": "mp4a.40.34",
+        "opus": "opus",
+    }
+    original_audio_string = audio_codec_map.get(original_audio_codec.lower(), "mp4a.40.2")
+    # Build original codec string: H.264 video + actual source audio
+    original_codec_string = f"avc1.640028,{original_audio_string}"
 
     for quality in qualities_with_bandwidth:
         # Original quality uses source codec, transcoded qualities use target codec
@@ -2432,7 +2451,12 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     return False
 
                 # Check if playlist file is actually complete on disk
-                playlist_path = output_dir / f"{quality_name}.m3u8"
+                # Use correct path based on streaming format
+                if streaming_format == "cmaf" and quality_name != "original":
+                    playlist_path = output_dir / quality_name / "stream.m3u8"
+                else:
+                    playlist_path = output_dir / f"{quality_name}.m3u8"
+
                 if await is_hls_playlist_complete(playlist_path):
                     print(f"    {quality_name}: Found complete playlist on disk, marking complete...")
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
@@ -2448,11 +2472,17 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             }
                         )
                     else:
-                        first_segment = output_dir / f"{quality_name}_0000.ts"
+                        # Use correct segment path based on streaming format
+                        if streaming_format == "cmaf":
+                            first_segment = output_dir / quality_name / "init.mp4"
+                        else:
+                            first_segment = output_dir / f"{quality_name}_0000.ts"
                         if first_segment.exists():
                             actual_width, actual_height = await get_output_dimensions(first_segment)
                         else:
-                            actual_width = int(quality["height"] * 16 / 9)
+                            # Fallback: use source aspect ratio instead of hardcoded 16:9
+                            source_aspect = info["width"] / info["height"]
+                            actual_width = int(quality["height"] * source_aspect)
                             if actual_width % 2 != 0:
                                 actual_width += 1
                             actual_height = quality["height"]
@@ -2573,7 +2603,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
                 primary_codec.lower(), VideoCodec.AV1
             )
-            await generate_master_playlist_cmaf(output_dir, successful_qualities, codec_enum)
+            # Pass original audio codec for correct manifest codec string
+            original_audio = info.get("audio_codec", "aac")
+            await generate_master_playlist_cmaf(output_dir, successful_qualities, codec_enum, original_audio)
             # Also generate DASH manifest if enabled
             enable_dash = transcoder_settings.get("streaming_enable_dash", True)
             if enable_dash:
