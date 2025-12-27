@@ -20,8 +20,6 @@ jobs:
           POSTGRES_USER: vlog
           POSTGRES_PASSWORD: vlog_password
           POSTGRES_DB: postgres
-          # Increase max connections for parallel tests
-          POSTGRES_INITDB_ARGS: "-c max_connections=200"
         ports:
           - 5433:5432
         options: >-
@@ -87,8 +85,6 @@ jobs:
           POSTGRES_USER: vlog
           POSTGRES_PASSWORD: vlog_password
           POSTGRES_DB: postgres
-          # Increase max connections for parallel tests
-          POSTGRES_INITDB_ARGS: "-c max_connections=200"
         ports:
           - 5433:5432
         options: >-
