@@ -16,9 +16,17 @@ spec:
         spec:
           serviceAccountName: pod-cleanup
           restartPolicy: OnFailure
+          # Security context for the pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
           containers:
           - name: cleanup
-            image: bitnami/kubectl:latest
+            # Pin kubectl version to match cluster version
+            # Update this when upgrading Kubernetes
+            image: bitnami/kubectl:1.31
             command:
             - /bin/sh
             - -c

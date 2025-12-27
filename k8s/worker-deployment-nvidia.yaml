@@ -5,8 +5,8 @@
 # 1. NVIDIA GPU Operator installed on cluster
 # 2. Nodes labeled with nvidia.com/gpu.present=true
 # 3. Build and push GPU worker image:
-#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:latest .
-#    docker push your-registry/vlog-worker-gpu:latest
+#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:v1.0.0 .
+#    docker push your-registry/vlog-worker-gpu:v1.0.0
 # 4. Create the secret with your API key (see secret.yaml)
 # 5. Update the ConfigMap with your API URL (see configmap.yaml)
 
@@ -42,12 +42,15 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
 
       containers:
       - name: worker
         # GPU-enabled worker image
-        image: vlog-worker-gpu:latest
-        imagePullPolicy: Always
+        # IMPORTANT: Always use specific version tags, never use 'latest'
+        image: vlog-worker-gpu:v1.0.0
+        imagePullPolicy: IfNotPresent
 
         # Load environment from ConfigMap and Secret
         envFrom:

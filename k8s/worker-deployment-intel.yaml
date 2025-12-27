@@ -5,8 +5,8 @@
 # 1. Intel GPU device plugin installed (intel/intel-device-plugins-for-kubernetes)
 # 2. Nodes labeled with intel.feature.node.kubernetes.io/gpu=true
 # 3. Build and push GPU worker image:
-#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:latest .
-#    docker push your-registry/vlog-worker-gpu:latest
+#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:v1.0.0 .
+#    docker push your-registry/vlog-worker-gpu:v1.0.0
 # 4. Create the secret with your API key (see secret.yaml)
 # 5. Update the ConfigMap with your API URL (see configmap.yaml)
 
@@ -41,6 +41,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 44  # video group
+        seccompProfile:
+          type: RuntimeDefault
 
       containers:
       - name: worker
