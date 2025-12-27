@@ -655,52 +655,63 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         if not successful_qualities and not all_skipped:
             raise Exception(f"All quality variants failed: {', '.join(failed_qualities)}")
 
-        # Determine if this is a selective retranscode (some qualities skipped)
-        # If so, don't regenerate master playlist - the existing one is correct
-        is_selective_retranscode = bool(existing_qualities)
+        # Build complete quality list for manifest generation
+        # This includes both newly transcoded AND existing qualities
+        # We need the full list to generate proper manifests
+        all_qualities_for_manifest = []
 
-        if is_selective_retranscode and all_skipped:
-            # All qualities already existed - nothing to do, just complete the job
-            print("  All qualities already exist, skipping master playlist generation")
-        elif is_selective_retranscode:
-            # Selective retranscode - upload new qualities but keep existing master playlist
-            print("  Selective retranscode - keeping existing master playlist")
-            # Still upload thumbnail if it was regenerated
-            print("  Uploading thumbnail...")
-            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
-            await check_claim_expiration(client.upload_finalize(video_id, output_dir, skip_master=True))
-        else:
-            # Full transcode - generate and upload new master playlist
-            print("  Generating master playlist...")
-            await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
+        # Add successful qualities from this transcode
+        for q in successful_qualities:
+            mq = {
+                "name": q["name"],
+                "width": q["width"],
+                "height": q["height"],
+                "bitrate": f"{q['bitrate']}k" if q["name"] != "original" else "0k",
+            }
+            if q["name"] == "original":
+                mq["is_original"] = True
+                mq["bitrate_bps"] = q["bitrate"] * 1000
+            all_qualities_for_manifest.append(mq)
 
-            # Convert successful_qualities to format expected by generate_master_playlist
-            master_qualities = []
-            for q in successful_qualities:
+        # Add existing qualities (from the qualities list which has full info)
+        for q in qualities:
+            if q["name"] in existing_qualities:
                 mq = {
                     "name": q["name"],
                     "width": q["width"],
                     "height": q["height"],
-                    "bitrate": f"{q['bitrate']}k" if q["name"] != "original" else "0k",
+                    "bitrate": f"{q['bitrate']}k",
                 }
-                if q["name"] == "original":
-                    mq["is_original"] = True
-                    mq["bitrate_bps"] = q["bitrate"] * 1000
-                master_qualities.append(mq)
+                all_qualities_for_manifest.append(mq)
 
-            # Use appropriate master playlist generator based on streaming format
-            if streaming_format == "cmaf":
-                # Convert codec string to VideoCodec enum for manifest generators
-                codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
-                    streaming_codec.lower(), VideoCodec.AV1
-                )
-                await generate_master_playlist_cmaf(output_dir, master_qualities, codec_enum)
-                # Also generate DASH manifest if enabled
-                if enable_dash:
-                    print("  Generating DASH manifest...")
-                    await generate_dash_manifest(output_dir, master_qualities, codec=codec_enum)
-            else:
-                await generate_master_playlist(output_dir, master_qualities)
+        # Also check for existing "original" quality
+        if "original" in existing_qualities:
+            # Original uses source dimensions
+            all_qualities_for_manifest.append({
+                "name": "original",
+                "width": source_width,
+                "height": source_height,
+                "bitrate": "0k",
+                "is_original": True,
+            })
+
+        # Always generate manifests for CMAF streaming format
+        # Even for selective retranscode, we regenerate to ensure consistency
+        if streaming_format == "cmaf" and all_qualities_for_manifest:
+            print("  Generating master playlist...")
+            await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
+
+            # Convert codec string to VideoCodec enum for manifest generators
+            codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
+                streaming_codec.lower(), VideoCodec.AV1
+            )
+            await generate_master_playlist_cmaf(output_dir, all_qualities_for_manifest, codec_enum)
+
+            # ALWAYS generate DASH manifest for CMAF - this was the bug!
+            # Previously this was conditional on enable_dash and skipped for selective retranscode
+            if enable_dash:
+                print("  Generating DASH manifest...")
+                await generate_dash_manifest(output_dir, all_qualities_for_manifest, codec=codec_enum)
 
             # Validate master playlist before upload (issue #166)
             master_playlist_path = output_dir / "master.m3u8"
@@ -712,11 +723,44 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             if "#EXT-X-STREAM-INF" not in master_content:
                 raise Exception("Master playlist is malformed (no stream variants)")
 
-            # Upload finalize files (master.m3u8 + thumbnail.jpg)
-            # Quality files were already uploaded incrementally after each transcode
+            # Validate DASH manifest exists for CMAF (prevent missing manifest bug)
+            if enable_dash:
+                mpd_path = output_dir / "manifest.mpd"
+                if not mpd_path.exists():
+                    raise Exception("DASH manifest was not generated for CMAF streaming")
+
+            # Upload finalize files (master.m3u8, manifest.mpd, thumbnail.jpg)
+            print("  Uploading master playlist, DASH manifest, and thumbnail...")
+            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
+            await check_claim_expiration(client.upload_finalize(video_id, output_dir))
+
+        elif not all_skipped:
+            # Non-CMAF (HLS/TS) streaming format
+            print("  Generating master playlist...")
+            await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
+            await generate_master_playlist(output_dir, all_qualities_for_manifest)
+
+            # Validate master playlist before upload (issue #166)
+            master_playlist_path = output_dir / "master.m3u8"
+            if not master_playlist_path.exists():
+                raise Exception("Master playlist was not generated")
+            master_content = master_playlist_path.read_text()
+            if not master_content.startswith("#EXTM3U"):
+                raise Exception("Master playlist is malformed (missing #EXTM3U header)")
+            if "#EXT-X-STREAM-INF" not in master_content:
+                raise Exception("Master playlist is malformed (no stream variants)")
+
+            # Upload finalize files
             print("  Uploading master playlist and thumbnail...")
             await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
             await check_claim_expiration(client.upload_finalize(video_id, output_dir))
+
+        else:
+            # All qualities skipped - still need to upload thumbnail if regenerated
+            print("  All qualities already exist, uploading thumbnail only...")
+            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
+            await check_claim_expiration(client.upload_finalize(video_id, output_dir, skip_master=True))
+
         print("  Finalize files uploaded")
 
         # Complete job with retry logic to ensure server-side completion is verified

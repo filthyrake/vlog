@@ -2649,11 +2649,18 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             # Pass original audio codec for correct manifest codec string
             original_audio = info.get("audio_codec", "aac")
             await generate_master_playlist_cmaf(output_dir, successful_qualities, codec_enum, original_audio)
-            # Also generate DASH manifest if enabled
+
+            # Generate DASH manifest for CMAF streaming
             enable_dash = transcoder_settings.get("streaming_enable_dash", True)
             if enable_dash:
                 print("  Generating DASH manifest...")
                 await generate_dash_manifest(output_dir, successful_qualities, codec=codec_enum)
+
+                # Validate DASH manifest was created (prevent missing manifest bug)
+                mpd_path = output_dir / "manifest.mpd"
+                if not mpd_path.exists():
+                    raise RuntimeError("DASH manifest was not generated for CMAF streaming")
+                print(f"  DASH manifest created: {mpd_path}")
         else:
             await generate_master_playlist(output_dir, successful_qualities)
         await checkpoint(job_id)
