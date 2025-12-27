@@ -1603,7 +1603,7 @@ async def upload_finalize(
     worker: dict = Depends(verify_worker_key),
 ):
     """
-    Upload final files after all qualities: master.m3u8 and thumbnail.jpg.
+    Upload final files after all qualities: master.m3u8, manifest.mpd, and thumbnail.jpg.
 
     Called after all quality uploads complete.
     """
@@ -1657,11 +1657,11 @@ async def upload_finalize(
         await extract_tar_async(
             tmp_path,
             output_dir,
-            allowed_extensions=(".m3u8", ".jpg"),
-            max_files=10,  # Only master.m3u8 and thumbnail.jpg
+            allowed_extensions=(".m3u8", ".mpd", ".jpg"),
+            max_files=10,  # master.m3u8, manifest.mpd, and thumbnail.jpg
             max_size=MAX_HLS_SINGLE_FILE_SIZE,  # Small files
             max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
-            strict_filenames=("master.m3u8", "thumbnail.jpg"),
+            strict_filenames=("master.m3u8", "manifest.mpd", "thumbnail.jpg"),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
