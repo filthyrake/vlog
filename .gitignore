@@ -31,6 +31,9 @@ Thumbs.db
 # Node
 node_modules/
 
+# Build output
+web/admin/dist/
+
 # Local config
 .claude/
 test_env/
