@@ -11,6 +11,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
+        admin: resolve(__dirname, 'src/main.ts'),
       },
       output: {
         // Organize output files
@@ -51,7 +52,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
+      '@api': resolve(__dirname, 'src/api'),
       '@components': resolve(__dirname, 'src/components'),
+      '@stores': resolve(__dirname, 'src/stores'),
+      '@utils': resolve(__dirname, 'src/utils'),
       '@styles': resolve(__dirname, 'src/styles'),
     },
   },

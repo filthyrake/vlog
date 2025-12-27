@@ -7,7 +7,8 @@
     <title>VLog Admin</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <script src="/static/js/utils.js"></script>
-    <script defer src="/static/vendor/alpine.min.js"></script>
+    <!-- Main module: sets up store, API, and starts Alpine.js -->
+    <script type="module" src="./src/main.ts"></script>
     <style>
         [x-cloak] { display: none !important; }
     </style>
@@ -246,19 +247,19 @@
                                             role="status"
                                         >
                                             <!-- Ready: checkmark icon -->
-                                            <svg x-show="video.status === 'ready'" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                            <svg x-show="video.status === 'ready'" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                                 <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd" />
                                             </svg>
                                             <!-- Processing: spinner icon -->
-                                            <svg x-show="video.status === 'processing'" class="w-3.5 h-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                            <svg x-show="video.status === 'processing'" style="width: 20px; height: 20px;" class="animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                                 <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clip-rule="evenodd" />
                                             </svg>
                                             <!-- Pending: clock icon -->
-                                            <svg x-show="video.status === 'pending'" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                            <svg x-show="video.status === 'pending'" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd" />
                                             </svg>
                                             <!-- Failed: X icon -->
-                                            <svg x-show="video.status === 'failed'" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                            <svg x-show="video.status === 'failed'" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
                                             </svg>
                                             <span x-text="video.status"></span>
@@ -269,12 +270,12 @@
                                             class="px-2 py-1 rounded text-sm inline-flex items-center gap-1"
                                         >
                                             <!-- Published: eye icon -->
-                                            <svg x-show="video.published_at" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                            <svg x-show="video.published_at" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                                 <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
                                                 <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
                                             </svg>
                                             <!-- Draft: eye-slash icon -->
-                                            <svg x-show="!video.published_at" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                            <svg x-show="!video.published_at" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                                 <path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd" />
                                                 <path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z" />
                                             </svg>
@@ -1088,9 +1089,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             <h3 class="text-lg font-semibold">Custom Fields</h3>
                             <p class="text-dark-400 text-sm mt-1">Define custom metadata fields for videos. Fields can be global or category-specific.</p>
                         </div>
-                        <button @click="openCreateFieldModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition text-sm">
-                            Add Field
-                        </button>
+                        <vlog-button @click="openCreateFieldModal()" size="sm">Add Field</vlog-button>
                     </div>
 
                     <!-- Loading state -->
@@ -1168,18 +1167,14 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <!-- Empty state -->
                     <div x-show="!customFieldsLoading && customFields.length === 0" class="text-center py-12">
                         <div class="text-dark-400 mb-4">No custom fields defined yet.</div>
-                        <button @click="openCreateFieldModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition text-sm">
-                            Create Your First Field
-                        </button>
+                        <vlog-button @click="openCreateFieldModal()">Create Your First Field</vlog-button>
                     </div>
                 </div>
 
                 <!-- Custom Field Create/Edit Modal -->
-                <div x-show="customFieldModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="custom-field-modal-title" @keydown.escape.window="customFieldModal = false">
-                    <div class="bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto" @click.stop>
-                        <h3 id="custom-field-modal-title" class="text-lg font-semibold mb-4" x-text="customFieldEditing ? 'Edit Custom Field' : 'Create Custom Field'"></h3>
-
-                        <form @submit.prevent="saveCustomField" class="space-y-4">
+                <vlog-modal :open="customFieldModal" @close="customFieldModal = false" size="md">
+                    <span slot="header" x-text="customFieldEditing ? 'Edit Custom Field' : 'Create Custom Field'"></span>
+                    <form @submit.prevent="saveCustomField" class="space-y-4">
                             <!-- Name -->
                             <div>
                                 <label class="block text-sm font-medium mb-2">Name <span class="text-red-400">*</span></label>
@@ -1254,19 +1249,14 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             </div>
 
                             <!-- Buttons -->
-                            <div class="flex justify-end gap-3 pt-4">
-                                <button type="button" @click="customFieldModal = false" class="px-4 py-2 bg-dark-800 hover:bg-dark-700 rounded-lg transition">
-                                    Cancel
-                                </button>
-                                <button type="submit" :disabled="customFieldSaving"
-                                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg font-medium transition">
-                                    <span x-show="!customFieldSaving" x-text="customFieldEditing ? 'Save Changes' : 'Create Field'"></span>
-                                    <span x-show="customFieldSaving">Saving...</span>
-                                </button>
+                            <div class="flex gap-3 pt-4">
+                                <vlog-button variant="secondary" full-width @click="customFieldModal = false">Cancel</vlog-button>
+                                <vlog-button variant="primary" type="submit" full-width :disabled="customFieldSaving" :loading="customFieldSaving">
+                                    <span x-text="customFieldEditing ? 'Save Changes' : 'Create Field'"></span>
+                                </vlog-button>
                             </div>
                         </form>
-                    </div>
-                </div>
+                </vlog-modal>
 
                 <!-- Dynamic Category Settings Panels -->
                 <template x-for="category in settingsCategories" :key="category">
@@ -1274,19 +1264,18 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         <div class="flex items-center justify-between mb-6">
                             <h3 class="text-lg font-semibold capitalize" x-text="category.replace(/_/g, ' ') + ' Settings'"></h3>
                             <div class="flex gap-2">
-                                <button
+                                <vlog-button
+                                    variant="secondary"
+                                    size="sm"
                                     @click="resetCategorySettings(category)"
                                     :disabled="!hasModifiedSettings(category)"
-                                    class="px-3 py-1.5 text-sm bg-dark-800 hover:bg-dark-700 disabled:opacity-50 disabled:cursor-not-allowed border border-dark-700 rounded-lg transition"
-                                >Reset</button>
-                                <button
+                                >Reset</vlog-button>
+                                <vlog-button
+                                    size="sm"
                                     @click="saveAllCategorySettings(category)"
                                     :disabled="!hasModifiedSettings(category) || settingsSaving"
-                                    class="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium transition"
-                                >
-                                    <span x-show="!settingsSaving">Save Changes</span>
-                                    <span x-show="settingsSaving">Saving...</span>
-                                </button>
+                                    :loading="settingsSaving"
+                                >Save Changes</vlog-button>
                             </div>
                         </div>
 
@@ -1415,11 +1404,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </main>
 
     <!-- Edit Video Modal -->
-    <div x-show="editModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title" @keydown.escape.window="editModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="editModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 id="edit-modal-title" class="text-xl font-semibold mb-4">Edit Video</h3>
-            <form @submit.prevent="saveVideo" class="space-y-4">
+    <vlog-modal :open="editModal" @close="editModal = false" size="md">
+        <span slot="header">Edit Video</span>
+        <form @submit.prevent="saveVideo" class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium mb-2">Title</label>
                     <input
@@ -1562,27 +1549,26 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </div>
                 </template>
 
-                <div class="flex gap-3 pt-2">
-                    <button
-                        type="button"
+                <div class="flex gap-3 pt-4">
+                    <vlog-button
+                        variant="secondary"
+                        full-width
                         @click="editModal = false"
-                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg font-medium transition"
-                    >Cancel</button>
-                    <button
+                    >Cancel</vlog-button>
+                    <vlog-button
+                        variant="primary"
                         type="submit"
-                        class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition"
-                    >Save</button>
+                        full-width
+                    >Save</vlog-button>
                 </div>
             </form>
-        </div>
-    </div>
+    </vlog-modal>
 
     <!-- Re-upload Video Modal -->
-    <div x-show="reuploadModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="reupload-modal-title" @keydown.escape.window="reuploadModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="reuploadModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 id="reupload-modal-title" class="text-xl font-semibold mb-2">Re-upload Video</h3>
-            <p class="text-dark-400 text-sm mb-4">
+    <vlog-modal :open="reuploadModal" @close="reuploadModal = false" size="md">
+        <span slot="header">Re-upload Video</span>
+        <div class="space-y-4">
+            <p class="text-dark-400 text-sm">
                 Replace the video file for "<span x-text="reuploadTitle" class="text-white"></span>".
                 This will delete all transcoded files and re-process the video.
                 Metadata (title, description, category, dates) will be preserved.
@@ -1600,129 +1586,115 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 </div>
 
                 <!-- Re-upload Progress -->
-                <div x-show="reuploadProgress >= 0" class="space-y-2">
-                    <div class="flex justify-between text-sm">
-                        <span>Uploading...</span>
-                        <span x-text="reuploadProgress + '%'"></span>
-                    </div>
-                    <div class="w-full bg-dark-700 rounded-full h-2">
-                        <div
-                            class="bg-purple-500 h-2 rounded-full transition-all"
-                            :style="'width: ' + reuploadProgress + '%'"
-                        ></div>
-                    </div>
-                </div>
+                <vlog-progress
+                    x-show="reuploadProgress >= 0"
+                    :value="reuploadProgress"
+                    variant="purple"
+                    show-label
+                    label-text="Uploading..."
+                ></vlog-progress>
 
                 <div x-show="reuploadMessage" :class="reuploadError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="reuploadMessage"></div>
 
-                <div class="flex gap-3 pt-2">
-                    <button
-                        type="button"
+                <div class="flex gap-3 pt-4">
+                    <vlog-button
+                        variant="secondary"
+                        full-width
                         @click="reuploadModal = false"
                         :disabled="reuploading"
-                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                    >Cancel</button>
-                    <button
+                    >Cancel</vlog-button>
+                    <vlog-button
+                        variant="primary"
                         type="submit"
+                        full-width
                         :disabled="reuploading"
-                        class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                    >
-                        <span x-show="!reuploading">Re-upload</span>
-                        <span x-show="reuploading">Uploading...</span>
-                    </button>
+                        :loading="reuploading"
+                    >Re-upload</vlog-button>
                 </div>
             </form>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Re-transcode Video Modal -->
-    <div x-show="retranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="retranscode-modal-title" @keydown.escape.window="retranscodeModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="retranscodeModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4">
-            <h3 id="retranscode-modal-title" class="text-xl font-semibold mb-2">Re-transcode Video</h3>
-            <p class="text-dark-400 text-sm mb-4">
+    <vlog-modal :open="retranscodeModal" @close="retranscodeModal = false" size="md">
+        <span slot="header">Re-transcode Video</span>
+        <div class="space-y-4">
+            <p class="text-dark-400 text-sm">
                 Select qualities to re-transcode for "<span x-text="retranscodeTitle" class="text-white"></span>".
                 Selected quality files will be deleted and regenerated from the source.
             </p>
 
-            <div class="space-y-4">
-                <!-- Select All / Deselect All buttons -->
-                <div class="flex gap-2">
-                    <button
-                        @click="selectAllQualities"
-                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 rounded transition"
-                    >Select All</button>
-                    <button
-                        @click="deselectAllQualities"
-                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 rounded transition"
-                    >Deselect All</button>
-                </div>
+            <!-- Select All / Deselect All buttons -->
+            <div class="flex gap-2">
+                <vlog-button size="sm" variant="secondary" @click="selectAllQualities">Select All</vlog-button>
+                <vlog-button size="sm" variant="secondary" @click="deselectAllQualities">Deselect All</vlog-button>
+            </div>
 
-                <!-- Quality checkboxes -->
-                <div class="space-y-2 max-h-64 overflow-y-auto">
-                    <template x-for="quality in retranscodeAvailable" :key="quality">
-                        <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
-                            <input
-                                type="checkbox"
-                                :checked="retranscodeSelected.includes(quality)"
-                                @change="toggleRetranscodeQuality(quality)"
-                                class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
-                            >
-                            <span class="flex-1">
-                                <span class="font-medium" x-text="quality"></span>
-                            </span>
-                            <span
-                                :class="{
-                                    'text-green-400': getQualityStatus(quality) === 'completed',
-                                    'text-dark-300': getQualityStatus(quality) === 'not transcoded'
-                                }"
-                                class="text-xs"
-                                x-text="getQualityStatus(quality)"
-                            ></span>
-                        </label>
-                    </template>
-                </div>
+            <!-- Quality checkboxes -->
+            <div class="space-y-2 max-h-64 overflow-y-auto">
+                <template x-for="quality in retranscodeAvailable" :key="quality">
+                    <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
+                        <input
+                            type="checkbox"
+                            :checked="retranscodeSelected.includes(quality)"
+                            @change="toggleRetranscodeQuality(quality)"
+                            class="w-4 h-4 rounded border-dark-600 bg-dark-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        >
+                        <span class="flex-1">
+                            <span class="font-medium" x-text="quality"></span>
+                        </span>
+                        <span
+                            :class="{
+                                'text-green-400': getQualityStatus(quality) === 'completed',
+                                'text-dark-300': getQualityStatus(quality) === 'not transcoded'
+                            }"
+                            class="text-xs"
+                            x-text="getQualityStatus(quality)"
+                        ></span>
+                    </label>
+                </template>
+            </div>
 
-                <!-- No qualities message -->
-                <div x-show="retranscodeAvailable.length === 0" class="text-dark-400 text-center py-4">
-                    No qualities available for this video.
-                </div>
+            <!-- No qualities message -->
+            <vlog-empty-state
+                x-show="retranscodeAvailable.length === 0"
+                icon="video"
+                title="No Qualities"
+                description="No qualities available for this video."
+            ></vlog-empty-state>
 
-                <!-- Status message -->
-                <div x-show="retranscodeMessage" :class="retranscodeError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="retranscodeMessage"></div>
+            <!-- Status message -->
+            <div x-show="retranscodeMessage" :class="retranscodeError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="retranscodeMessage"></div>
 
-                <!-- Action buttons -->
-                <div class="flex gap-3 pt-2">
-                    <button
-                        type="button"
-                        @click="retranscodeModal = false"
-                        :disabled="retranscoding"
-                        class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                    >Cancel</button>
-                    <button
-                        @click="submitRetranscode()"
-                        :disabled="retranscoding || retranscodeSelected.length === 0"
-                        class="flex-1 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                    >
-                        <span x-show="!retranscoding">Re-transcode (<span x-text="retranscodeSelected.length"></span>)</span>
-                        <span x-show="retranscoding">Processing...</span>
-                    </button>
-                </div>
+            <!-- Action buttons -->
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
+                    @click="retranscodeModal = false"
+                    :disabled="retranscoding"
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
+                    @click="submitRetranscode()"
+                    :disabled="retranscoding || retranscodeSelected.length === 0"
+                    :loading="retranscoding"
+                >Re-transcode (<span x-text="retranscodeSelected.length"></span>)</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Thumbnail Selection Modal -->
-    <div x-show="thumbnailModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="thumbnail-modal-title" @keydown.escape.window="thumbnailModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="thumbnailModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-            <h3 id="thumbnail-modal-title" class="text-xl font-semibold mb-2">Select Thumbnail</h3>
-            <p class="text-dark-400 text-sm mb-4">
+    <vlog-modal :open="thumbnailModal" @close="thumbnailModal = false" size="lg">
+        <span slot="header">Select Thumbnail</span>
+        <div class="space-y-6">
+            <p class="text-dark-400 text-sm">
                 Choose a thumbnail for "<span x-text="thumbnailVideoTitle" class="text-white"></span>"
             </p>
 
             <!-- Current Thumbnail -->
-            <div class="mb-6">
+            <div>
                 <h4 class="text-sm font-medium mb-2 text-dark-300">Current Thumbnail</h4>
                 <div class="flex items-center gap-4">
                     <div class="w-40 aspect-video bg-dark-800 rounded overflow-hidden">
@@ -1739,17 +1711,16 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
             </div>
 
             <!-- Frame Selection -->
-            <div class="mb-6">
+            <div>
                 <div class="flex justify-between items-center mb-3">
                     <h4 class="text-sm font-medium text-dark-300">Select from Video Frames</h4>
-                    <button
+                    <vlog-button
+                        size="sm"
+                        variant="secondary"
                         @click="generateThumbnailFrames()"
                         :disabled="thumbnailLoading"
-                        class="px-3 py-1 text-sm bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded transition"
-                    >
-                        <span x-show="!thumbnailLoading">Generate Frames</span>
-                        <span x-show="thumbnailLoading">Generating...</span>
-                    </button>
+                        :loading="thumbnailLoading"
+                    >Generate Frames</vlog-button>
                 </div>
                 <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
                     <template x-for="frame in thumbnailFrames" :key="frame.index">
@@ -1766,13 +1737,16 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         </button>
                     </template>
                 </div>
-                <div x-show="thumbnailFrames.length === 0" class="text-dark-300 text-sm py-4 text-center bg-dark-800 rounded">
-                    Click "Generate Frames" to see frame options from the video.
-                </div>
+                <vlog-empty-state
+                    x-show="thumbnailFrames.length === 0"
+                    icon="image"
+                    title="No Frames"
+                    description="Click 'Generate Frames' to see frame options from the video."
+                ></vlog-empty-state>
             </div>
 
             <!-- Custom Upload -->
-            <div class="mb-6">
+            <div>
                 <h4 class="text-sm font-medium mb-2 text-dark-300">Upload Custom Thumbnail</h4>
                 <div class="flex items-center gap-3">
                     <input
@@ -1781,49 +1755,44 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         @change="thumbnailUploadFile = $event.target.files[0]"
                         class="flex-1 px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-dark-700 file:text-white"
                     >
-                    <button
+                    <vlog-button
+                        variant="primary"
                         @click="uploadCustomThumbnail()"
                         :disabled="!thumbnailUploadFile || thumbnailUploading"
-                        class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 disabled:opacity-50 rounded-lg text-sm font-medium transition"
-                    >
-                        <span x-show="!thumbnailUploading">Upload</span>
-                        <span x-show="thumbnailUploading">Uploading...</span>
-                    </button>
+                        :loading="thumbnailUploading"
+                    >Upload</vlog-button>
                 </div>
                 <p class="text-xs text-dark-300 mt-2">Accepts JPEG, PNG, or WebP (max 10MB). Will be resized to 640px width.</p>
             </div>
 
             <!-- Revert Option -->
-            <div class="mb-6" x-show="thumbnailSource !== 'auto'">
-                <button
+            <div x-show="thumbnailSource !== 'auto'">
+                <vlog-button
+                    variant="ghost"
                     @click="revertThumbnail()"
                     :disabled="thumbnailLoading"
-                    class="text-sm text-yellow-400 hover:text-yellow-300 disabled:opacity-50"
-                >Revert to auto-generated thumbnail</button>
+                    class="text-yellow-400 hover:text-yellow-300"
+                >Revert to auto-generated thumbnail</vlog-button>
             </div>
 
             <!-- Messages -->
-            <div x-show="thumbnailMessage" :class="thumbnailError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="thumbnailMessage"></div>
+            <div x-show="thumbnailMessage" :class="thumbnailError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="thumbnailMessage"></div>
 
             <!-- Close Button -->
-            <div class="flex justify-end">
-                <button
-                    @click="thumbnailModal = false"
-                    class="px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg font-medium transition"
-                >Close</button>
+            <div class="flex justify-end pt-4">
+                <vlog-button variant="secondary" @click="thumbnailModal = false">Close</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Delete Modal -->
-    <div x-show="bulkDeleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-modal-title" @keydown.escape.window="bulkDeleteModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkDeleteModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 id="bulk-delete-modal-title" class="text-xl font-semibold mb-4">Delete Videos</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkDeleteModal" @close="bulkDeleteModal = false" size="sm">
+        <span slot="header">Delete Videos</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 You are about to delete <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
             </p>
-            <div class="mb-4">
+            <div>
                 <label class="flex items-center gap-3 cursor-pointer">
                     <input
                         type="checkbox"
@@ -1833,34 +1802,33 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <span class="text-dark-300">Permanently delete (cannot be undone)</span>
                 </label>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkDeleteModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="danger"
+                    full-width
                     @click="executeBulkDelete"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-red-600 hover:bg-red-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Delete</span>
-                    <span x-show="bulkOpLoading">Deleting...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Delete</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Update Modal -->
-    <div x-show="bulkUpdateModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-update-modal-title" @keydown.escape.window="bulkUpdateModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkUpdateModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 id="bulk-update-modal-title" class="text-xl font-semibold mb-4">Update Videos</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkUpdateModal" @close="bulkUpdateModal = false" size="sm">
+        <span slot="header">Update Videos</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 Update <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) with the following settings:
             </p>
-            <div class="space-y-4 mb-4">
+            <div class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium mb-2">Category</label>
                     <select
@@ -1893,34 +1861,33 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </div>
                 </div>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkUpdateModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
                     @click="executeBulkUpdate"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Update</span>
-                    <span x-show="bulkOpLoading">Updating...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Update</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Retranscode Modal -->
-    <div x-show="bulkRetranscodeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-retranscode-modal-title" @keydown.escape.window="bulkRetranscodeModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkRetranscodeModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-md mx-4">
-            <h3 id="bulk-retranscode-modal-title" class="text-xl font-semibold mb-4">Re-transcode Videos</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkRetranscodeModal" @close="bulkRetranscodeModal = false" size="sm">
+        <span slot="header">Re-transcode Videos</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 Queue <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s) for re-transcoding.
             </p>
-            <div class="space-y-2 mb-4">
+            <div class="space-y-2">
                 <label class="block text-sm font-medium mb-2">Qualities to re-transcode</label>
                 <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition">
                     <input
@@ -1953,35 +1920,34 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <span>720p only</span>
                 </label>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkRetranscodeModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
                     @click="executeBulkRetranscode"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Re-transcode</span>
-                    <span x-show="bulkOpLoading">Queueing...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Re-transcode</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Bulk Custom Fields Modal -->
-    <div x-show="bulkCustomFieldsModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="bulk-custom-fields-modal-title" @keydown.escape.window="bulkCustomFieldsModal = false">
-        <div class="absolute inset-0 bg-black/70" @click="bulkCustomFieldsModal = false" aria-hidden="true"></div>
-        <div class="relative bg-dark-900 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
-            <h3 id="bulk-custom-fields-modal-title" class="text-xl font-semibold mb-4">Set Custom Fields</h3>
-            <p class="text-dark-300 mb-4">
+    <vlog-modal :open="bulkCustomFieldsModal" @close="bulkCustomFieldsModal = false" size="md">
+        <span slot="header">Set Custom Fields</span>
+        <div class="space-y-4">
+            <p class="text-dark-300">
                 Set custom field values for <span class="text-white font-semibold" x-text="selectedVideos.length"></span> video(s).
                 Only global fields are available for bulk updates.
             </p>
-            <div class="space-y-4 mb-4">
+            <div class="space-y-4">
                 <template x-for="field in customFields.filter(f => f.category_id === null)" :key="field.id">
                     <div>
                         <label class="block text-sm font-medium mb-1">
@@ -2073,36 +2039,39 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     </div>
                 </template>
 
-                <div x-show="customFields.filter(f => f.category_id === null).length === 0" class="text-dark-400 text-center py-4">
-                    No global custom fields defined. Create custom fields in Settings first.
-                </div>
+                <vlog-empty-state
+                    x-show="customFields.filter(f => f.category_id === null).length === 0"
+                    icon="settings"
+                    title="No Custom Fields"
+                    description="No global custom fields defined. Create custom fields in Settings first."
+                ></vlog-empty-state>
             </div>
-            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm mb-4" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
-            <div class="flex gap-3">
-                <button
+            <div x-show="bulkOpMessage" :class="bulkOpError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="bulkOpMessage" :role="bulkOpError ? 'alert' : 'status'" aria-live="polite"></div>
+            <div class="flex gap-3 pt-4">
+                <vlog-button
+                    variant="secondary"
+                    full-width
                     @click="bulkCustomFieldsModal = false"
                     :disabled="bulkOpLoading"
-                    class="flex-1 py-2 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg font-medium transition"
-                >Cancel</button>
-                <button
+                >Cancel</vlog-button>
+                <vlog-button
+                    variant="primary"
+                    full-width
                     @click="executeBulkCustomFields"
                     :disabled="bulkOpLoading || customFields.filter(f => f.category_id === null).length === 0"
-                    class="flex-1 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                >
-                    <span x-show="!bulkOpLoading">Apply</span>
-                    <span x-show="bulkOpLoading">Applying...</span>
-                </button>
+                    :loading="bulkOpLoading"
+                >Apply</vlog-button>
             </div>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Auth Modal -->
-    <div x-show="showAuthModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
-        <div class="bg-dark-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
-            <h3 id="auth-modal-title" class="text-xl font-semibold mb-4">Authentication Required</h3>
-            <p class="text-dark-400 mb-4">This Admin API requires authentication. Enter your admin secret to continue.</p>
-            <form @submit.prevent="submitAuth">
-                <div class="mb-4">
+    <vlog-modal :open="showAuthModal" no-close size="sm">
+        <span slot="header">Authentication Required</span>
+        <div class="space-y-4">
+            <p class="text-dark-400">This Admin API requires authentication. Enter your admin secret to continue.</p>
+            <form @submit.prevent="submitAuth" class="space-y-4">
+                <div>
                     <label class="block text-sm font-medium mb-2">Admin Secret</label>
                     <input
                         type="password"
@@ -2114,2421 +2083,41 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         autocomplete="new-password"
                     >
                 </div>
-                <div x-show="authError" class="text-red-400 text-sm mb-4" x-text="authError"></div>
-                <div class="flex gap-3">
-                    <button
-                        type="submit"
-                        :disabled="authLoading"
-                        class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
-                    >
-                        <span x-show="!authLoading">Authenticate</span>
-                        <span x-show="authLoading">Checking...</span>
-                    </button>
-                </div>
+                <div x-show="authError" class="text-red-400 text-sm" x-text="authError"></div>
+                <vlog-button
+                    variant="primary"
+                    type="submit"
+                    full-width
+                    :disabled="authLoading"
+                    :loading="authLoading"
+                >Authenticate</vlog-button>
             </form>
-            <p class="text-dark-300 text-xs mt-4 text-center">Session is managed securely on the server</p>
+            <p class="text-dark-300 text-xs text-center">Session is managed securely on the server</p>
         </div>
-    </div>
+    </vlog-modal>
 
-    <script>
-        function admin() {
-            return {
-                // Authentication state
-                // Note: Auth is now managed via HTTP-only cookies set by the server
-                // See: https://github.com/filthyrake/vlog/issues/324
-                isAuthenticated: false,
-                showAuthModal: false,
-                authSecretInput: '',
-                authError: '',
-                authLoading: false,
-                authRequired: false,
-                csrfToken: '',  // CSRF token for state-changing requests
-
-                tab: 'videos',
-                videos: [],
-                categories: [],
-
-                // Upload form
-                uploadFile: null,
-                uploadTitle: '',
-                uploadDescription: '',
-                uploadCategory: '',
-                uploading: false,
-                uploadProgress: -1,
-                uploadMessage: '',
-                uploadError: false,
-
-                // Category form
-                newCategoryName: '',
-                newCategoryDesc: '',
-
-                // Edit modal
-                editModal: false,
-                editVideoId: null,
-                editTitle: '',
-                editDescription: '',
-                editCategory: 0,
-                editPublishedAt: '',
-
-                // Re-upload modal
-                reuploadModal: false,
-                reuploadVideoId: null,
-                reuploadTitle: '',
-                reuploadFile: null,
-                reuploading: false,
-                reuploadProgress: -1,
-                reuploadMessage: '',
-                reuploadError: false,
-
-                // Re-transcode modal
-                retranscodeModal: false,
-                retranscodeVideoId: null,
-                retranscodeTitle: '',
-                retranscodeQualities: [],
-                retranscodeAvailable: [],
-                retranscodeExisting: [],
-                retranscodeSelected: [],
-                retranscoding: false,
-                retranscodeMessage: '',
-                retranscodeError: false,
-
-                // Thumbnail selection modal
-                thumbnailModal: false,
-                thumbnailVideoId: null,
-                thumbnailVideoSlug: '',
-                thumbnailVideoTitle: '',
-                thumbnailDuration: 0,
-                thumbnailSource: 'auto',
-                thumbnailFrames: [],
-                thumbnailLoading: false,
-                thumbnailUploading: false,
-                thumbnailUploadFile: null,
-                thumbnailCacheBust: Date.now(),
-                thumbnailMessage: '',
-                thumbnailError: false,
-
-                // Analytics
-                analyticsOverview: {},
-                analyticsVideos: [],
-                analyticsPeriod: 'all',
-
-                // Workers
-                workersList: [],
-                workerStats: {},
-                activeJobs: { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 },
-
-                // Transcode progress
-                progressData: {},
-
-                // SSE connections for real-time updates
-                progressSSE: null,
-                workersSSE: null,
-                sseReconnectAttempts: 0,
-                maxSseReconnectDelay: 30000,
-
-                // Watermark settings
-                watermarkSettings: {
-                    enabled: false,
-                    type: 'image',
-                    position: 'bottom-right',
-                    opacity: 0.5,
-                    image: null,
-                    image_exists: false,
-                    image_url: null,
-                    text: '',
-                    text_size: 24,
-                    text_color: '#ffffff'
-                },
-                watermarkLoading: false,
-                watermarkImageFile: null,
-                watermarkUploading: false,
-                watermarkUploadProgress: 0,
-                watermarkMessage: '',
-                watermarkError: false,
-
-                // Database-backed settings (Phase 2)
-                settingsTab: 'watermark',  // Active settings sub-tab
-                settingsCategories: [],     // List of category names
-                settingsByCategory: {},     // Settings grouped by category
-                settingsLoading: false,
-                settingsLoadingCategory: null,
-                settingsSaving: false,
-                settingsMessage: '',
-                settingsError: false,
-                settingsModified: {},       // Track modified values per category
-                settingsOriginal: {},       // Original values for reset
-
-                // Custom Fields (Issue #224)
-                customFields: [],                   // All custom field definitions
-                customFieldsLoading: false,
-                customFieldModal: false,            // Create/edit modal open
-                customFieldEditing: null,           // Field being edited (null = create)
-                customFieldForm: {                  // Form state
-                    name: '',
-                    field_type: 'text',
-                    options: [],
-                    required: false,
-                    category_id: null,
-                    position: 0,
-                    description: '',
-                },
-                customFieldSaving: false,
-                customFieldMessage: '',
-                customFieldError: false,
-                editCustomFields: [],               // Fields applicable to current video
-                editCustomFieldValues: {},          // field_id -> value map
-
-                // Bulk operations
-                selectedVideos: [],
-                bulkDeleteModal: false,
-                bulkDeletePermanent: false,
-                bulkUpdateModal: false,
-                bulkUpdateCategory: '',
-                bulkUpdatePublishedAt: '',
-                bulkUpdateUnpublish: false,
-                bulkRetranscodeModal: false,
-                bulkRetranscodeQuality: 'all',
-                bulkCustomFieldsModal: false,
-                bulkCustomFieldValues: {},
-                bulkOpLoading: false,
-                bulkOpMessage: '',
-                bulkOpError: false,
-
-                // Fetch CSRF token from server (call after authentication)
-                async fetchCsrfToken() {
-                    try {
-                        const response = await VLogUtils.fetchWithTimeout('/api/auth/csrf-token', {
-                            credentials: 'same-origin'
-                        });
-                        if (response.ok) {
-                            const data = await response.json();
-                            this.csrfToken = data.csrf_token || '';
-                        }
-                    } catch (e) {
-                        console.error('Failed to fetch CSRF token:', e);
-                    }
-                },
-
-                // Helper function to make authenticated API requests
-                // Note: Authentication is now via HTTP-only cookies (set by /api/auth/login)
-                // Cookies are sent automatically with same-origin requests
-                // CSRF token is included for state-changing requests (POST, PUT, DELETE, PATCH)
-                // If CSRF validation fails, automatically refreshes token and retries once
-                async apiFetch(url, options = {}, timeoutMs = 30000, _isRetry = false) {
-                    // Clone options to avoid mutating the original
-                    const fetchOptions = { ...options, headers: { ...options.headers } };
-
-                    // Add CSRF token header for state-changing requests
-                    const method = (fetchOptions.method || 'GET').toUpperCase();
-                    const csrfMethods = ['POST', 'PUT', 'DELETE', 'PATCH'];
-                    if (csrfMethods.includes(method) && this.csrfToken) {
-                        fetchOptions.headers['X-CSRF-Token'] = this.csrfToken;
-                    }
-
-                    const response = await VLogUtils.fetchWithTimeout(url, {
-                        ...fetchOptions,
-                        credentials: 'same-origin',  // Ensure cookies are sent
-                    }, timeoutMs);
-
-                    // Handle auth errors
-                    if (response.status === 401) {
-                        this.authRequired = true;
-                        this.isAuthenticated = false;
-                        this.showAuthModal = true;
-                        throw new Error('Authentication required');
-                    }
-
-                    // Handle CSRF errors specifically
-                    if (response.status === 403) {
-                        const data = await response.clone().json().catch(() => ({}));
-                        if (data.detail && data.detail.includes('CSRF')) {
-                            // CSRF token might be stale - refresh and retry once
-                            if (!_isRetry) {
-                                await this.fetchCsrfToken();
-                                return this.apiFetch(url, options, timeoutMs, true);
-                            }
-                            // Already retried, give up
-                            throw new Error('CSRF validation failed');
-                        }
-                        this.authRequired = true;
-                        this.isAuthenticated = false;
-                        this.showAuthModal = true;
-                        throw new Error('Authentication required');
-                    }
-
-                    return response;
-                },
-
-                // Submit authentication via server-side session
-                async submitAuth() {
-                    this.authError = '';
-                    this.authLoading = true;
-
-                    try {
-                        // Authenticate via the login endpoint
-                        // Server will set an HTTP-only cookie on success
-                        const response = await VLogUtils.fetchWithTimeout('/api/auth/login', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            credentials: 'same-origin',
-                            body: JSON.stringify({ secret: this.authSecretInput })
-                        });
-
-                        if (response.status === 403) {
-                            this.authError = 'Invalid admin secret';
-                            return;
-                        }
-
-                        if (!response.ok) {
-                            const data = await response.json().catch(() => ({}));
-                            this.authError = data.detail || `Server error: ${response.status}`;
-                            return;
-                        }
-
-                        // Success - server has set the session cookie
-                        this.isAuthenticated = true;
-                        this.showAuthModal = false;
-                        this.authSecretInput = '';
-
-                        // Fetch CSRF token for state-changing requests
-                        await this.fetchCsrfToken();
-
-                        // Reload data now that we're authenticated
-                        await Promise.all([
-                            this.loadVideos(),
-                            this.loadCategories()
-                        ]);
-                    } catch (e) {
-                        this.authError = 'Failed to authenticate: ' + e.message;
-                    } finally {
-                        this.authLoading = false;
-                    }
-                },
-
-                // Log out and clear session
-                async logout() {
-                    try {
-                        await VLogUtils.fetchWithTimeout('/api/auth/logout', {
-                            method: 'POST',
-                            credentials: 'same-origin'
-                        });
-                    } catch (e) {
-                        console.error('Logout failed:', e);
-                    }
-                    this.isAuthenticated = false;
-                    this.authRequired = true;
-                    this.showAuthModal = true;
-                    this.csrfToken = '';  // Clear CSRF token on logout
-                },
-
-                // Check if authentication is required
-                async checkAuth() {
-                    try {
-                        const response = await VLogUtils.fetchWithTimeout('/api/auth/check', {
-                            credentials: 'same-origin'
-                        });
-
-                        if (!response.ok) {
-                            console.error('Auth check failed with status:', response.status);
-                            return false;
-                        }
-
-                        const data = await response.json();
-                        this.authRequired = data.auth_required;
-                        this.isAuthenticated = data.authenticated;
-
-                        if (!data.authenticated && data.auth_required) {
-                            this.showAuthModal = true;
-                            return false;
-                        }
-
-                        return true;
-                    } catch (e) {
-                        console.error('Auth check failed:', e);
-                        return true; // Allow to continue on network errors
-                    }
-                },
-
-                async init() {
-                    // Check authentication first
-                    const authOk = await this.checkAuth();
-                    if (!authOk) {
-                        // Focus the auth input after modal is shown
-                        this.$nextTick(() => {
-                            if (this.$refs.authInput) {
-                                this.$refs.authInput.focus();
-                            }
-                        });
-                        return;
-                    }
-
-                    // Fetch CSRF token for state-changing requests
-                    await this.fetchCsrfToken();
-
-                    await Promise.all([
-                        this.loadVideos(),
-                        this.loadCategories()
-                    ]);
-
-                    // Try to connect to SSE for real-time updates (falls back to polling)
-                    this.connectProgressSSE();
-
-                    // Auto-refresh videos every 30 seconds (longer interval since SSE handles progress)
-                    setInterval(() => this.loadVideos(), 30000);
-
-                    // Fallback polling for progress if SSE not connected
-                    setInterval(() => {
-                        if (!this.progressSSE || this.progressSSE.readyState !== EventSource.OPEN) {
-                            this.loadProgressForActiveVideos();
-                        }
-                    }, 5000);
-
-                    // Auto-refresh workers every 10 seconds when workers tab is active (SSE handles real-time)
-                    setInterval(() => {
-                        if (this.tab === 'workers' && (!this.workersSSE || this.workersSSE.readyState !== EventSource.OPEN)) {
-                            this.loadWorkers();
-                        }
-                    }, 10000);
-
-                    // Connect workers SSE when switching to workers tab
-                    this.$watch('tab', (newTab) => {
-                        if (newTab === 'workers') {
-                            this.connectWorkersSSE();
-                        }
-                    });
-
-                    // Cleanup SSE connections on page unload
-                    window.addEventListener('beforeunload', () => {
-                        if (this.progressSSE) {
-                            this.progressSSE.close();
-                        }
-                        if (this.workersSSE) {
-                            this.workersSSE.close();
-                        }
-                    });
-                },
-
-                async loadVideos() {
-                    try {
-                        const res = await this.apiFetch('/api/videos');
-                        if (!res.ok) {
-                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-                        }
-                        this.videos = await res.json();
-                        // Load progress for active videos after loading video list
-                        await this.loadProgressForActiveVideos();
-                    } catch (e) {
-                        console.error('Failed to load videos:', e);
-                        this.videos = [];
-                    }
-                },
-
-                async loadProgressForActiveVideos() {
-                    // Get videos that are processing or failed
-                    const activeVideos = this.videos.filter(v =>
-                        v.status === 'processing' || v.status === 'pending' || v.status === 'failed'
-                    );
-
-                    // Fetch progress for each
-                    await Promise.all(activeVideos.map(async (video) => {
-                        try {
-                            const res = await this.apiFetch(`/api/videos/${video.id}/progress`);
-                            if (res.ok) {
-                                const data = await res.json();
-                                this.progressData[video.id] = data;
-                            }
-                        } catch (e) {
-                            console.error(`Failed to load progress for video ${video.id}:`, e);
-                        }
-                    }));
-                },
-
-                connectProgressSSE() {
-                    // Close existing connection if any
-                    if (this.progressSSE) {
-                        this.progressSSE.close();
-                    }
-
-                    // Get video IDs that need progress tracking
-                    const activeIds = this.videos
-                        .filter(v => v.status === 'processing' || v.status === 'pending')
-                        .map(v => v.id)
-                        .join(',');
-
-                    const url = activeIds
-                        ? `/api/events/progress?video_ids=${activeIds}`
-                        : '/api/events/progress';
-
-                    try {
-                        this.progressSSE = new EventSource(url);
-
-                        this.progressSSE.addEventListener('progress', (e) => {
-                            const data = JSON.parse(e.data);
-                            this.progressData[data.video_id] = {
-                                progress_percent: data.progress_percent,
-                                current_step: data.current_step,
-                                qualities: data.qualities,
-                                last_error: data.last_error,
-                                status: data.status
-                            };
-                        });
-
-                        this.progressSSE.addEventListener('job_completed', (e) => {
-                            const data = JSON.parse(e.data);
-                            const video = this.videos.find(v => v.id === data.video_id);
-                            if (video) {
-                                video.status = 'ready';
-                            }
-                            delete this.progressData[data.video_id];
-                            // Refresh video list to get updated qualities
-                            this.loadVideos();
-                        });
-
-                        this.progressSSE.addEventListener('job_failed', (e) => {
-                            const data = JSON.parse(e.data);
-                            const video = this.videos.find(v => v.id === data.video_id);
-                            if (video && !data.will_retry) {
-                                video.status = 'failed';
-                            }
-                            if (this.progressData[data.video_id]) {
-                                this.progressData[data.video_id].last_error = data.error;
-                            }
-                        });
-
-                        this.progressSSE.addEventListener('initial', (e) => {
-                            // Initial state from SSE connection
-                            const data = JSON.parse(e.data);
-                            if (data.progress) {
-                                for (const [videoId, progress] of Object.entries(data.progress)) {
-                                    this.progressData[parseInt(videoId)] = progress;
-                                }
-                            }
-                        });
-
-                        this.progressSSE.onopen = () => {
-                            console.log('Progress SSE connected');
-                            this.sseReconnectAttempts = 0;
-                        };
-
-                        this.progressSSE.onerror = (e) => {
-                            console.warn('Progress SSE error, will reconnect:', e);
-                            this.scheduleSSEReconnect('progress');
-                        };
-                    } catch (e) {
-                        console.warn('Failed to create progress SSE:', e);
-                    }
-                },
-
-                connectWorkersSSE() {
-                    // Close existing connection if any
-                    if (this.workersSSE) {
-                        this.workersSSE.close();
-                    }
-
-                    try {
-                        this.workersSSE = new EventSource('/api/events/workers');
-
-                        this.workersSSE.addEventListener('initial', (e) => {
-                            const data = JSON.parse(e.data);
-                            if (data.workers) {
-                                this.workersList = data.workers;
-                                this.workerStats = {
-                                    total_count: data.total_count,
-                                    active_count: data.active_count,
-                                    idle_count: data.idle_count,
-                                    offline_count: data.offline_count,
-                                    disabled_count: data.disabled_count
-                                };
-                            }
-                            if (data.active_jobs) {
-                                this.activeJobs = data.active_jobs;
-                            }
-                        });
-
-                        this.workersSSE.addEventListener('worker_status', (e) => {
-                            const data = JSON.parse(e.data);
-                            // Update worker in list
-                            const worker = this.workersList.find(w => w.worker_id === data.worker_id);
-                            if (worker) {
-                                worker.status = data.status;
-                                worker.current_video_title = data.current_video_slug;
-                                worker.current_step = data.current_step;
-                                worker.current_progress = data.progress_percent;
-                            }
-                        });
-
-                        this.workersSSE.addEventListener('job_completed', (e) => {
-                            // Refresh active jobs on completion
-                            this.loadActiveJobs();
-                        });
-
-                        this.workersSSE.addEventListener('job_failed', (e) => {
-                            // Refresh active jobs on failure
-                            this.loadActiveJobs();
-                        });
-
-                        this.workersSSE.addEventListener('progress', (e) => {
-                            const data = JSON.parse(e.data);
-                            // Update active job progress
-                            if (this.activeJobs && this.activeJobs.jobs) {
-                                const job = this.activeJobs.jobs.find(j => j.job_id === data.job_id);
-                                if (job) {
-                                    job.progress_percent = data.progress_percent;
-                                    job.current_step = data.current_step;
-                                    job.qualities = data.qualities;
-                                }
-                            }
-                        });
-
-                        this.workersSSE.onopen = () => {
-                            console.log('Workers SSE connected');
-                        };
-
-                        this.workersSSE.onerror = (e) => {
-                            console.warn('Workers SSE error, will reconnect:', e);
-                            this.scheduleSSEReconnect('workers');
-                        };
-                    } catch (e) {
-                        console.warn('Failed to create workers SSE:', e);
-                    }
-                },
-
-                async loadActiveJobs() {
-                    try {
-                        const res = await this.apiFetch('/api/workers/active-jobs');
-                        if (res.ok) {
-                            this.activeJobs = await res.json();
-                        }
-                    } catch (e) {
-                        console.error('Failed to load active jobs:', e);
-                    }
-                },
-
-                scheduleSSEReconnect(type) {
-                    this.sseReconnectAttempts++;
-                    // Exponential backoff: 1s, 2s, 4s, 8s, ... up to max
-                    const delay = Math.min(1000 * Math.pow(2, this.sseReconnectAttempts - 1), this.maxSseReconnectDelay);
-
-                    setTimeout(() => {
-                        if (type === 'progress') {
-                            this.connectProgressSSE();
-                        } else if (type === 'workers' && this.tab === 'workers') {
-                            this.connectWorkersSSE();
-                        }
-                    }, delay);
-                },
-
-                async loadCategories() {
-                    try {
-                        const res = await this.apiFetch('/api/categories');
-                        if (!res.ok) {
-                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-                        }
-                        this.categories = await res.json();
-                    } catch (e) {
-                        console.error('Failed to load categories:', e);
-                        this.categories = [];
-                    }
-                },
-
-                async uploadVideo() {
-                    if (!this.uploadFile || !this.uploadTitle) return;
-
-                    this.uploading = true;
-                    this.uploadProgress = 0;
-                    this.uploadMessage = '';
-                    this.uploadError = false;
-
-                    const formData = new FormData();
-                    formData.append('file', this.uploadFile);
-                    formData.append('title', this.uploadTitle);
-                    formData.append('description', this.uploadDescription);
-                    if (this.uploadCategory) {
-                        formData.append('category_id', this.uploadCategory);
-                    }
-
-                    try {
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('POST', '/api/videos', true);
-                        xhr.withCredentials = true;  // Send cookies for authentication
-                        if (this.csrfToken) {
-                            xhr.setRequestHeader('X-CSRF-Token', this.csrfToken);
-                        }
-
-                        xhr.upload.onprogress = (e) => {
-                            if (e.lengthComputable) {
-                                this.uploadProgress = Math.round((e.loaded / e.total) * 100);
-                            }
-                        };
-
-                        xhr.onload = () => {
-                            if (xhr.status === 200) {
-                                this.uploadMessage = 'Video uploaded successfully! Processing will begin shortly.';
-                                this.uploadError = false;
-                                this.uploadFile = null;
-                                this.uploadTitle = '';
-                                this.uploadDescription = '';
-                                this.uploadCategory = '';
-                                this.loadVideos();
-                            } else if (xhr.status === 401 || xhr.status === 403) {
-                                this.authRequired = true;
-                                this.isAuthenticated = false;
-                                this.showAuthModal = true;
-                                this.uploadMessage = 'Authentication required';
-                                this.uploadError = true;
-                            } else {
-                                this.uploadMessage = 'Upload failed: ' + xhr.responseText;
-                                this.uploadError = true;
-                            }
-                            this.uploading = false;
-                            this.uploadProgress = -1;
-                        };
-
-                        xhr.onerror = () => {
-                            this.uploadMessage = 'Upload failed. Please try again.';
-                            this.uploadError = true;
-                            this.uploading = false;
-                            this.uploadProgress = -1;
-                        };
-
-                        xhr.send(formData);
-                    } catch (e) {
-                        this.uploadMessage = 'Upload failed: ' + e.message;
-                        this.uploadError = true;
-                        this.uploading = false;
-                        this.uploadProgress = -1;
-                    }
-                },
-
-                async createCategory() {
-                    if (!this.newCategoryName) return;
-
-                    try {
-                        const res = await this.apiFetch('/api/categories', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                name: this.newCategoryName,
-                                description: this.newCategoryDesc
-                            })
-                        });
-
-                        if (res.ok) {
-                            this.newCategoryName = '';
-                            this.newCategoryDesc = '';
-                            await this.loadCategories();
-                        } else {
-                            const data = await res.json();
-                            alert(data.detail || 'Failed to create category');
-                        }
-                    } catch (e) {
-                        alert('Failed to create category: ' + e.message);
-                    }
-                },
-
-                async deleteCategory(id) {
-                    if (!confirm('Delete this category? Videos in it will become uncategorized.')) return;
-
-                    try {
-                        await this.apiFetch(`/api/categories/${id}`, { method: 'DELETE' });
-                        await this.loadCategories();
-                        await this.loadVideos();
-                    } catch (e) {
-                        alert('Failed to delete category: ' + e.message);
-                    }
-                },
-
-                async deleteVideo(id) {
-                    if (!confirm('Delete this video? This cannot be undone.')) return;
-
-                    try {
-                        await this.apiFetch(`/api/videos/${id}`, { method: 'DELETE' });
-                        await this.loadVideos();
-                    } catch (e) {
-                        alert('Failed to delete video: ' + e.message);
-                    }
-                },
-
-                async retryVideo(id) {
-                    try {
-                        await this.apiFetch(`/api/videos/${id}/retry`, { method: 'POST' });
-                        await this.loadVideos();
-                    } catch (e) {
-                        alert('Failed to retry: ' + e.message);
-                    }
-                },
-
-                async togglePublish(video) {
-                    const action = video.published_at ? 'unpublish' : 'publish';
-                    try {
-                        await this.apiFetch(`/api/videos/${video.id}/${action}`, { method: 'POST' });
-                        // Update the video in-place for instant feedback
-                        video.published_at = action === 'publish' ? new Date().toISOString() : null;
-                    } catch (e) {
-                        alert(`Failed to ${action}: ` + e.message);
-                    }
-                },
-
-                openReuploadModal(video) {
-                    this.reuploadVideoId = video.id;
-                    this.reuploadTitle = video.title;
-                    this.reuploadFile = null;
-                    this.reuploading = false;
-                    this.reuploadProgress = -1;
-                    this.reuploadMessage = '';
-                    this.reuploadError = false;
-                    this.reuploadModal = true;
-                },
-
-                async reuploadVideo() {
-                    if (!this.reuploadFile) return;
-
-                    this.reuploading = true;
-                    this.reuploadProgress = 0;
-                    this.reuploadMessage = '';
-                    this.reuploadError = false;
-
-                    const formData = new FormData();
-                    formData.append('file', this.reuploadFile);
-
-                    try {
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('POST', `/api/videos/${this.reuploadVideoId}/re-upload`, true);
-                        xhr.withCredentials = true;  // Send cookies for authentication
-                        if (this.csrfToken) {
-                            xhr.setRequestHeader('X-CSRF-Token', this.csrfToken);
-                        }
-
-                        xhr.upload.onprogress = (e) => {
-                            if (e.lengthComputable) {
-                                this.reuploadProgress = Math.round((e.loaded / e.total) * 100);
-                            }
-                        };
-
-                        xhr.onload = () => {
-                            if (xhr.status === 200) {
-                                this.reuploadMessage = 'Video uploaded successfully! Processing will begin shortly.';
-                                this.reuploadError = false;
-                                this.reuploadFile = null;
-                                this.loadVideos();
-                                // Close modal after a short delay so user sees success message
-                                setTimeout(() => {
-                                    this.reuploadModal = false;
-                                }, 1500);
-                            } else if (xhr.status === 401 || xhr.status === 403) {
-                                this.authRequired = true;
-                                this.isAuthenticated = false;
-                                this.showAuthModal = true;
-                                this.reuploadMessage = 'Authentication required';
-                                this.reuploadError = true;
-                            } else {
-                                let errorMsg = 'Re-upload failed';
-                                try {
-                                    const data = JSON.parse(xhr.responseText);
-                                    errorMsg = data.detail || errorMsg;
-                                } catch (e) {
-                                    errorMsg = xhr.responseText || errorMsg;
-                                }
-                                this.reuploadMessage = errorMsg;
-                                this.reuploadError = true;
-                            }
-                            this.reuploading = false;
-                            this.reuploadProgress = -1;
-                        };
-
-                        xhr.onerror = () => {
-                            this.reuploadMessage = 'Re-upload failed. Please try again.';
-                            this.reuploadError = true;
-                            this.reuploading = false;
-                            this.reuploadProgress = -1;
-                        };
-
-                        xhr.send(formData);
-                    } catch (e) {
-                        this.reuploadMessage = 'Re-upload failed: ' + e.message;
-                        this.reuploadError = true;
-                        this.reuploading = false;
-                        this.reuploadProgress = -1;
-                    }
-                },
-
-                async openRetranscodeModal(video) {
-                    this.retranscodeVideoId = video.id;
-                    this.retranscodeTitle = video.title;
-                    this.retranscodeSelected = [];
-                    this.retranscoding = false;
-                    this.retranscodeMessage = '';
-                    this.retranscodeError = false;
-
-                    // Fetch available qualities
-                    try {
-                        const res = await this.apiFetch(`/api/videos/${video.id}/qualities`);
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.retranscodeAvailable = data.available_qualities || [];
-                            this.retranscodeExisting = data.existing_qualities || [];
-                        } else {
-                            this.retranscodeAvailable = [];
-                            this.retranscodeExisting = [];
-                        }
-                    } catch (e) {
-                        console.error('Failed to load qualities:', e);
-                        this.retranscodeAvailable = [];
-                        this.retranscodeExisting = [];
-                    }
-
-                    this.retranscodeModal = true;
-                },
-
-                async retranscodeAll(video) {
-                    if (!confirm(`Re-transcode all qualities for "${video.title}"? This will delete all existing transcoded files and re-process the video.`)) return;
-
-                    try {
-                        const res = await this.apiFetch(`/api/videos/${video.id}/retranscode`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ qualities: ['all'] })
-                        });
-
-                        if (res.ok) {
-                            await this.loadVideos();
-                        } else {
-                            const data = await res.json();
-                            alert(data.detail || 'Re-transcode failed');
-                        }
-                    } catch (e) {
-                        alert('Re-transcode failed: ' + e.message);
-                    }
-                },
-
-                async submitRetranscode() {
-                    if (this.retranscodeSelected.length === 0) {
-                        this.retranscodeMessage = 'Please select at least one quality';
-                        this.retranscodeError = true;
-                        return;
-                    }
-
-                    this.retranscoding = true;
-                    this.retranscodeMessage = '';
-                    this.retranscodeError = false;
-
-                    try {
-                        const res = await this.apiFetch(`/api/videos/${this.retranscodeVideoId}/retranscode`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ qualities: this.retranscodeSelected })
-                        });
-
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.retranscodeMessage = `Queued for re-transcoding: ${data.qualities_queued.join(', ')}`;
-                            this.retranscodeError = false;
-                            await this.loadVideos();
-                            setTimeout(() => {
-                                this.retranscodeModal = false;
-                            }, 1500);
-                        } else {
-                            const data = await res.json();
-                            this.retranscodeMessage = data.detail || 'Re-transcode failed';
-                            this.retranscodeError = true;
-                        }
-                    } catch (e) {
-                        this.retranscodeMessage = 'Re-transcode failed: ' + e.message;
-                        this.retranscodeError = true;
-                    }
-
-                    this.retranscoding = false;
-                },
-
-                toggleRetranscodeQuality(quality) {
-                    const idx = this.retranscodeSelected.indexOf(quality);
-                    if (idx === -1) {
-                        this.retranscodeSelected.push(quality);
-                    } else {
-                        this.retranscodeSelected.splice(idx, 1);
-                    }
-                },
-
-                selectAllQualities() {
-                    this.retranscodeSelected = [...this.retranscodeAvailable];
-                },
-
-                deselectAllQualities() {
-                    this.retranscodeSelected = [];
-                },
-
-                getQualityStatus(quality) {
-                    const existing = this.retranscodeExisting.find(q => q.name === quality);
-                    return existing ? existing.status : 'not transcoded';
-                },
-
-                // Thumbnail selection methods
-                openThumbnailModal(video) {
-                    this.thumbnailVideoId = video.id;
-                    this.thumbnailVideoSlug = video.slug;
-                    this.thumbnailVideoTitle = video.title;
-                    this.thumbnailDuration = video.duration;
-                    this.thumbnailSource = video.thumbnail_source || 'auto';
-                    this.thumbnailFrames = [];
-                    this.thumbnailLoading = false;
-                    this.thumbnailUploading = false;
-                    this.thumbnailUploadFile = null;
-                    this.thumbnailCacheBust = Date.now();
-                    this.thumbnailMessage = '';
-                    this.thumbnailError = false;
-                    this.thumbnailModal = true;
-                },
-
-                async generateThumbnailFrames() {
-                    this.thumbnailLoading = true;
-                    this.thumbnailMessage = '';
-                    this.thumbnailError = false;
-
-                    try {
-                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/frames`, {
-                            method: 'POST'
-                        });
-
-                        if (!res.ok) {
-                            const data = await res.json();
-                            throw new Error(data.detail || 'Failed to generate frames');
-                        }
-
-                        const data = await res.json();
-                        this.thumbnailFrames = data.frames;
-                    } catch (e) {
-                        this.thumbnailError = true;
-                        this.thumbnailMessage = e.message;
-                    } finally {
-                        this.thumbnailLoading = false;
-                    }
-                },
-
-                async selectThumbnailFrame(timestamp) {
-                    this.thumbnailLoading = true;
-                    this.thumbnailMessage = '';
-                    this.thumbnailError = false;
-
-                    try {
-                        const formData = new FormData();
-                        formData.append('timestamp', timestamp);
-
-                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/select`, {
-                            method: 'POST',
-                            body: formData
-                        });
-
-                        if (!res.ok) {
-                            const data = await res.json();
-                            throw new Error(data.detail || 'Failed to select frame');
-                        }
-
-                        this.thumbnailSource = 'selected';
-                        this.thumbnailCacheBust = Date.now();
-                        this.thumbnailMessage = 'Thumbnail updated successfully';
-                        this.thumbnailError = false;
-                        await this.loadVideos();
-                    } catch (e) {
-                        this.thumbnailError = true;
-                        this.thumbnailMessage = e.message;
-                    } finally {
-                        this.thumbnailLoading = false;
-                    }
-                },
-
-                async uploadCustomThumbnail() {
-                    if (!this.thumbnailUploadFile) return;
-
-                    this.thumbnailUploading = true;
-                    this.thumbnailMessage = '';
-                    this.thumbnailError = false;
-
-                    try {
-                        const formData = new FormData();
-                        formData.append('file', this.thumbnailUploadFile);
-
-                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/upload`, {
-                            method: 'POST',
-                            body: formData
-                        });
-
-                        if (!res.ok) {
-                            const data = await res.json();
-                            throw new Error(data.detail || 'Failed to upload thumbnail');
-                        }
-
-                        this.thumbnailSource = 'custom';
-                        this.thumbnailCacheBust = Date.now();
-                        this.thumbnailMessage = 'Thumbnail uploaded successfully';
-                        this.thumbnailError = false;
-                        this.thumbnailUploadFile = null;
-                        await this.loadVideos();
-                    } catch (e) {
-                        this.thumbnailError = true;
-                        this.thumbnailMessage = e.message;
-                    } finally {
-                        this.thumbnailUploading = false;
-                    }
-                },
-
-                async revertThumbnail() {
-                    this.thumbnailLoading = true;
-                    this.thumbnailMessage = '';
-                    this.thumbnailError = false;
-
-                    try {
-                        const res = await this.apiFetch(`/api/videos/${this.thumbnailVideoId}/thumbnail/revert`, {
-                            method: 'POST'
-                        });
-
-                        if (!res.ok) {
-                            const data = await res.json();
-                            throw new Error(data.detail || 'Failed to revert thumbnail');
-                        }
-
-                        this.thumbnailSource = 'auto';
-                        this.thumbnailCacheBust = Date.now();
-                        this.thumbnailMessage = 'Thumbnail reverted to auto-generated';
-                        this.thumbnailError = false;
-                        await this.loadVideos();
-                    } catch (e) {
-                        this.thumbnailError = true;
-                        this.thumbnailMessage = e.message;
-                    } finally {
-                        this.thumbnailLoading = false;
-                    }
-                },
-
-                async openEditModal(video) {
-                    this.editVideoId = video.id;
-                    this.editTitle = video.title;
-                    this.editDescription = video.description || '';
-                    this.editCategory = video.category_id || 0;
-                    // Convert ISO datetime to datetime-local format (YYYY-MM-DDTHH:MM)
-                    if (video.published_at) {
-                        this.editPublishedAt = video.published_at.slice(0, 16);
-                    } else {
-                        this.editPublishedAt = '';
-                    }
-                    // Load custom fields for this video
-                    this.editCustomFieldValues = {};
-                    await this.loadVideoCustomFields(video.id);
-                    this.editModal = true;
-                },
-
-                async saveVideo() {
-                    if (!this.editTitle) return;
-
-                    try {
-                        const formData = new FormData();
-                        formData.append('title', this.editTitle);
-                        formData.append('description', this.editDescription);
-                        formData.append('category_id', this.editCategory);
-                        formData.append('published_at', this.editPublishedAt);
-
-                        const res = await this.apiFetch(`/api/videos/${this.editVideoId}`, {
-                            method: 'PUT',
-                            body: formData
-                        });
-
-                        if (res.ok) {
-                            // Save custom fields if any
-                            await this.saveVideoCustomFields(this.editVideoId);
-                            this.editModal = false;
-                            await this.loadVideos();
-                        } else {
-                            const data = await res.json();
-                            alert(data.detail || 'Failed to update video');
-                        }
-                    } catch (e) {
-                        alert('Failed to update video: ' + e.message);
-                    }
-                },
-
-                formatDuration(seconds) {
-                    if (!seconds) return '-';
-                    const h = Math.floor(seconds / 3600);
-                    const m = Math.floor((seconds % 3600) / 60);
-                    const s = Math.floor(seconds % 60);
-                    if (h > 0) {
-                        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                    }
-                    return `${m}:${s.toString().padStart(2, '0')}`;
-                },
-
-                // Analytics methods
-                async loadAnalytics() {
-                    await Promise.all([
-                        this.loadAnalyticsOverview(),
-                        this.loadVideoAnalytics()
-                    ]);
-                },
-
-                async loadAnalyticsOverview() {
-                    try {
-                        const res = await this.apiFetch('/api/analytics/overview');
-                        if (!res.ok) {
-                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-                        }
-                        this.analyticsOverview = await res.json();
-                    } catch (e) {
-                        console.error('Failed to load analytics overview:', e);
-                        this.analyticsOverview = {};
-                    }
-                },
-
-                async loadVideoAnalytics() {
-                    try {
-                        const res = await this.apiFetch(`/api/analytics/videos?period=${this.analyticsPeriod}&limit=20&sort_by=views`);
-                        if (!res.ok) {
-                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-                        }
-                        const data = await res.json();
-                        this.analyticsVideos = data.videos || [];
-                    } catch (e) {
-                        console.error('Failed to load video analytics:', e);
-                        this.analyticsVideos = [];
-                    }
-                },
-
-                formatHours(hours) {
-                    if (!hours) return '0h';
-                    if (hours < 1) return Math.round(hours * 60) + 'm';
-                    return hours.toFixed(1) + 'h';
-                },
-
-                formatPercent(rate) {
-                    if (rate === undefined || rate === null) return '0%';
-                    return Math.round(rate * 100) + '%';
-                },
-
-                formatWatchTime(seconds) {
-                    if (!seconds) return '0m';
-                    const hours = Math.floor(seconds / 3600);
-                    const minutes = Math.floor((seconds % 3600) / 60);
-                    if (hours > 0) return `${hours}h ${minutes}m`;
-                    return `${minutes}m`;
-                },
-
-                // Worker management methods
-                async loadWorkers() {
-                    try {
-                        const [workersRes, jobsRes] = await Promise.all([
-                            this.apiFetch('/api/workers'),
-                            this.apiFetch('/api/workers/active-jobs')
-                        ]);
-
-                        if (workersRes.ok) {
-                            const data = await workersRes.json();
-                            this.workersList = data.workers || [];
-                            this.workerStats = {
-                                total_count: data.total_count,
-                                active_count: data.active_count,
-                                idle_count: data.idle_count,
-                                offline_count: data.offline_count,
-                                disabled_count: data.disabled_count
-                            };
-                        } else {
-                            console.error('Failed to load workers:', workersRes.status);
-                            this.workersList = [];
-                            this.workerStats = {};
-                        }
-
-                        if (jobsRes.ok) {
-                            this.activeJobs = await jobsRes.json();
-                        } else {
-                            console.error('Failed to load active jobs:', jobsRes.status);
-                            this.activeJobs = { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 };
-                        }
-                    } catch (e) {
-                        console.error('Failed to load workers:', e);
-                        this.workersList = [];
-                        this.workerStats = {};
-                        this.activeJobs = { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 };
-                    }
-                },
-
-                async disableWorker(workerId) {
-                    if (!confirm('Disable this worker? It will not be able to claim new jobs.')) return;
-
-                    try {
-                        const res = await this.apiFetch(`/api/workers/${workerId}/disable`, { method: 'PUT' });
-                        if (res.ok) {
-                            await this.loadWorkers();
-                        } else {
-                            const data = await res.json();
-                            alert(data.detail || 'Failed to disable worker');
-                        }
-                    } catch (e) {
-                        alert('Failed to disable worker: ' + e.message);
-                    }
-                },
-
-                async enableWorker(workerId) {
-                    try {
-                        const res = await this.apiFetch(`/api/workers/${workerId}/enable`, { method: 'PUT' });
-                        if (res.ok) {
-                            await this.loadWorkers();
-                        } else {
-                            const data = await res.json();
-                            alert(data.detail || 'Failed to enable worker');
-                        }
-                    } catch (e) {
-                        alert('Failed to enable worker: ' + e.message);
-                    }
-                },
-
-                async deleteWorker(workerId, workerName) {
-                    const name = workerName || workerId.slice(0, 8);
-                    if (!confirm(`Delete worker "${name}"? This will revoke its API key and remove it from the system.`)) return;
-
-                    try {
-                        const res = await this.apiFetch(`/api/workers/${workerId}`, { method: 'DELETE' });
-                        if (res.ok) {
-                            await this.loadWorkers();
-                        } else {
-                            const data = await res.json();
-                            alert(data.detail || 'Failed to delete worker');
-                        }
-                    } catch (e) {
-                        alert('Failed to delete worker: ' + e.message);
-                    }
-                },
-
-                // Worker remote control methods (Issue #410)
-                workerCommandPending: {},
-
-                async restartWorker(workerId, workerName) {
-                    const name = workerName || workerId.slice(0, 8);
-                    if (!confirm(`Restart worker "${name}"?\n\nThe worker will finish its current job before restarting.`)) return;
-
-                    this.workerCommandPending[workerId] = true;
-                    try {
-                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/restart`, { method: 'POST' });
-                        if (res.ok) {
-                            const data = await res.json();
-                            // Show success feedback briefly
-                            setTimeout(() => {
-                                delete this.workerCommandPending[workerId];
-                                this.loadWorkers();
-                            }, 3000);
-                        } else {
-                            const data = await res.json();
-                            delete this.workerCommandPending[workerId];
-                            alert(data.detail || 'Failed to send restart command');
-                        }
-                    } catch (e) {
-                        delete this.workerCommandPending[workerId];
-                        alert('Failed to send restart command: ' + e.message);
-                    }
-                },
-
-                async updateWorker(workerId, workerName) {
-                    const name = workerName || workerId.slice(0, 8);
-                    if (!confirm(`Update worker "${name}"?\n\nThe worker will:\n1. Finish its current job\n2. Pull latest code via git\n3. Restart to apply updates`)) return;
-
-                    this.workerCommandPending[workerId] = true;
-                    try {
-                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/update`, { method: 'POST' });
-                        if (res.ok) {
-                            const data = await res.json();
-                            setTimeout(() => {
-                                delete this.workerCommandPending[workerId];
-                                this.loadWorkers();
-                            }, 3000);
-                        } else {
-                            const data = await res.json();
-                            delete this.workerCommandPending[workerId];
-                            alert(data.detail || 'Failed to send update command');
-                        }
-                    } catch (e) {
-                        delete this.workerCommandPending[workerId];
-                        alert('Failed to send update command: ' + e.message);
-                    }
-                },
-
-                async restartAllWorkers() {
-                    if (!confirm('Restart ALL workers?\n\nEach worker will finish its current job before restarting.\nThis is useful for deploying updates across all workers.')) return;
-
-                    try {
-                        const res = await this.apiFetch('/api/admin/workers/restart-all', { method: 'POST' });
-                        if (res.ok) {
-                            // Mark all workers as pending
-                            this.workersList.forEach(w => {
-                                if (w.status !== 'offline' && w.status !== 'disabled') {
-                                    this.workerCommandPending[w.worker_id] = true;
-                                }
-                            });
-                            setTimeout(() => {
-                                this.workerCommandPending = {};
-                                this.loadWorkers();
-                            }, 5000);
-                        } else {
-                            const data = await res.json();
-                            alert(data.detail || 'Failed to broadcast restart command');
-                        }
-                    } catch (e) {
-                        alert('Failed to broadcast restart command: ' + e.message);
-                    }
-                },
-
-                // Worker logs and metrics viewer (Phase 3)
-                showLogsModal: false,
-                showMetricsModal: false,
-                logsWorkerName: '',
-                logsContent: '',
-                logsLoading: false,
-                metricsWorkerName: '',
-                metricsData: null,
-                metricsLoading: false,
-
-                // Deployment history (Phase 4)
-                deploymentEvents: [],
-                deploymentEventsLoading: false,
-
-                async loadDeploymentHistory() {
-                    this.deploymentEventsLoading = true;
-                    try {
-                        const res = await this.apiFetch('/api/admin/deployments?limit=50');
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.deploymentEvents = data.events || [];
-                        }
-                    } catch (e) {
-                        console.error('Failed to load deployment history:', e);
-                    } finally {
-                        this.deploymentEventsLoading = false;
-                    }
-                },
-
-                formatDeploymentTime(isoStr) {
-                    if (!isoStr) return '';
-                    const date = new Date(isoStr);
-                    const now = new Date();
-                    const diffMs = now - date;
-                    const diffMins = Math.floor(diffMs / 60000);
-                    const diffHours = Math.floor(diffMs / 3600000);
-                    const diffDays = Math.floor(diffMs / 86400000);
-
-                    if (diffMins < 1) return 'just now';
-                    if (diffMins < 60) return `${diffMins}m ago`;
-                    if (diffHours < 24) return `${diffHours}h ago`;
-                    if (diffDays < 7) return `${diffDays}d ago`;
-                    return date.toLocaleDateString();
-                },
-
-                getEventIcon(eventType) {
-                    switch(eventType) {
-                        case 'restart': return 'R';
-                        case 'stop': return 'S';
-                        case 'update': return 'U';
-                        case 'version_change': return 'V';
-                        default: return eventType[0].toUpperCase();
-                    }
-                },
-
-                getEventColor(eventType, status) {
-                    if (status === 'failed') return 'bg-red-500';
-                    if (status === 'in_progress' || status === 'pending') return 'bg-yellow-500';
-                    switch(eventType) {
-                        case 'restart': return 'bg-blue-500';
-                        case 'update': return 'bg-purple-500';
-                        case 'stop': return 'bg-red-500';
-                        case 'version_change': return 'bg-green-500';
-                        default: return 'bg-dark-500';
-                    }
-                },
-
-                async viewWorkerLogs(workerId, workerName) {
-                    this.logsWorkerName = workerName || workerId.slice(0, 8);
-                    this.logsContent = '';
-                    this.logsLoading = true;
-                    this.showLogsModal = true;
-
-                    try {
-                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/logs?lines=200`);
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.logsContent = data.logs || 'No logs available';
-                        } else {
-                            const data = await res.json();
-                            this.logsContent = `Error: ${data.detail || 'Failed to fetch logs'}`;
-                        }
-                    } catch (e) {
-                        this.logsContent = `Error: ${e.message}`;
-                    } finally {
-                        this.logsLoading = false;
-                    }
-                },
-
-                async viewWorkerMetrics(workerId, workerName) {
-                    this.metricsWorkerName = workerName || workerId.slice(0, 8);
-                    this.metricsData = null;
-                    this.metricsLoading = true;
-                    this.showMetricsModal = true;
-
-                    try {
-                        const res = await this.apiFetch(`/api/admin/workers/${workerId}/metrics`);
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.metricsData = data.metrics;
-                        } else {
-                            const data = await res.json();
-                            this.metricsData = { error: data.detail || 'Failed to fetch metrics' };
-                        }
-                    } catch (e) {
-                        this.metricsData = { error: e.message };
-                    } finally {
-                        this.metricsLoading = false;
-                    }
-                },
-
-                formatBytes(gb) {
-                    if (gb >= 1) return gb.toFixed(1) + ' GB';
-                    return (gb * 1024).toFixed(0) + ' MB';
-                },
-
-                formatTimeSince(seconds) {
-                    if (seconds === null || seconds === undefined) return '';
-                    if (seconds < 60) return seconds + 's ago';
-                    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
-                    if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
-                    return Math.floor(seconds / 86400) + 'd ago';
-                },
-
-                isVersionOutdated(version) {
-                    // Compare against the most common version among online workers
-                    if (!version || !this.workersList || this.workersList.length === 0) return false;
-
-                    // Get versions from online workers only
-                    const onlineWorkers = this.workersList.filter(w =>
-                        w.status !== 'offline' && w.status !== 'disabled' && w.code_version
-                    );
-                    if (onlineWorkers.length === 0) return false;
-
-                    // Find the most common version (likely the "current" version)
-                    const versionCounts = {};
-                    onlineWorkers.forEach(w => {
-                        versionCounts[w.code_version] = (versionCounts[w.code_version] || 0) + 1;
-                    });
-
-                    const latestVersion = Object.entries(versionCounts)
-                        .sort((a, b) => b[1] - a[1])[0][0];
-
-                    return version !== latestVersion;
-                },
-
-                formatDate(dateStr) {
-                    if (!dateStr) return 'N/A';
-                    const date = new Date(dateStr);
-                    return date.toLocaleString();
-                },
-
-                // Bulk operation methods
-                toggleSelectAll() {
-                    if (this.selectedVideos.length === this.videos.length) {
-                        this.selectedVideos = [];
-                    } else {
-                        this.selectedVideos = this.videos.map(v => v.id);
-                    }
-                },
-
-                toggleVideoSelection(videoId) {
-                    const idx = this.selectedVideos.indexOf(videoId);
-                    if (idx === -1) {
-                        this.selectedVideos.push(videoId);
-                    } else {
-                        this.selectedVideos.splice(idx, 1);
-                    }
-                },
-
-                clearSelection() {
-                    this.selectedVideos = [];
-                },
-
-                openBulkDeleteModal() {
-                    this.bulkDeletePermanent = false;
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-                    this.bulkDeleteModal = true;
-                },
-
-                openBulkUpdateModal() {
-                    this.bulkUpdateCategory = '';
-                    this.bulkUpdatePublishedAt = '';
-                    this.bulkUpdateUnpublish = false;
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-                    this.bulkUpdateModal = true;
-                },
-
-                openBulkRetranscodeModal() {
-                    this.bulkRetranscodeQuality = 'all';
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-                    this.bulkRetranscodeModal = true;
-                },
-
-                openBulkCustomFieldsModal() {
-                    this.bulkCustomFieldValues = {};
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-                    this.bulkCustomFieldsModal = true;
-                },
-
-                toggleBulkMultiSelectOption(fieldId, option) {
-                    let current = this.bulkCustomFieldValues[fieldId] || [];
-                    if (!Array.isArray(current)) current = [];
-
-                    const idx = current.indexOf(option);
-                    if (idx >= 0) {
-                        current.splice(idx, 1);
-                    } else {
-                        current.push(option);
-                    }
-                    this.bulkCustomFieldValues[fieldId] = [...current];
-                },
-
-                async executeBulkCustomFields() {
-                    // Filter out empty values
-                    const values = {};
-                    for (const [fieldId, value] of Object.entries(this.bulkCustomFieldValues)) {
-                        if (value !== '' && value !== null && value !== undefined) {
-                            if (Array.isArray(value) && value.length === 0) continue;
-                            values[fieldId] = value;
-                        }
-                    }
-
-                    if (Object.keys(values).length === 0) {
-                        this.bulkOpMessage = 'No field values specified';
-                        this.bulkOpError = true;
-                        return;
-                    }
-
-                    this.bulkOpLoading = true;
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/videos/bulk/custom-fields', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                video_ids: this.selectedVideos,
-                                values: values
-                            })
-                        });
-
-                        const data = await res.json();
-                        if (res.ok) {
-                            this.bulkOpMessage = `Updated ${data.updated} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : '');
-                            this.bulkOpError = data.failed > 0;
-                            this.selectedVideos = [];
-                            setTimeout(() => { this.bulkCustomFieldsModal = false; }, 1500);
-                        } else {
-                            this.bulkOpMessage = data.detail || 'Update failed';
-                            this.bulkOpError = true;
-                        }
-                    } catch (e) {
-                        this.bulkOpMessage = 'Update failed: ' + e.message;
-                        this.bulkOpError = true;
-                    }
-
-                    this.bulkOpLoading = false;
-                },
-
-                async executeBulkDelete() {
-                    this.bulkOpLoading = true;
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/videos/bulk/delete', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                video_ids: this.selectedVideos,
-                                permanent: this.bulkDeletePermanent
-                            })
-                        });
-
-                        const data = await res.json();
-                        if (res.ok) {
-                            this.bulkOpMessage = `Deleted ${data.deleted} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : '');
-                            this.bulkOpError = data.failed > 0;
-                            await this.loadVideos();
-                            this.selectedVideos = [];
-                            setTimeout(() => { this.bulkDeleteModal = false; }, 1500);
-                        } else {
-                            this.bulkOpMessage = data.detail || 'Delete failed';
-                            this.bulkOpError = true;
-                        }
-                    } catch (e) {
-                        this.bulkOpMessage = 'Delete failed: ' + e.message;
-                        this.bulkOpError = true;
-                    }
-
-                    this.bulkOpLoading = false;
-                },
-
-                async executeBulkUpdate() {
-                    // Build update payload
-                    const payload = { video_ids: this.selectedVideos };
-
-                    if (this.bulkUpdateCategory !== '') {
-                        payload.category_id = parseInt(this.bulkUpdateCategory);
-                    }
-                    if (this.bulkUpdateUnpublish) {
-                        payload.unpublish = true;
-                    } else if (this.bulkUpdatePublishedAt) {
-                        payload.published_at = this.bulkUpdatePublishedAt;
-                    }
-
-                    const hasUpdates = (payload.category_id !== undefined) || payload.unpublish || payload.published_at;
-                    if (!hasUpdates) {
-                        this.bulkOpMessage = 'Please select at least one field to update';
-                        this.bulkOpError = true;
-                        return;
-                    }
-
-                    this.bulkOpLoading = true;
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/videos/bulk/update', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-
-                        const data = await res.json();
-                        if (res.ok) {
-                            this.bulkOpMessage = `Updated ${data.updated} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : '');
-                            this.bulkOpError = data.failed > 0;
-                            await this.loadVideos();
-                            this.selectedVideos = [];
-                            setTimeout(() => { this.bulkUpdateModal = false; }, 1500);
-                        } else {
-                            this.bulkOpMessage = data.detail || 'Update failed';
-                            this.bulkOpError = true;
-                        }
-                    } catch (e) {
-                        this.bulkOpMessage = 'Update failed: ' + e.message;
-                        this.bulkOpError = true;
-                    }
-
-                    this.bulkOpLoading = false;
-                },
-
-                async executeBulkRetranscode() {
-                    this.bulkOpLoading = true;
-                    this.bulkOpMessage = '';
-                    this.bulkOpError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/videos/bulk/retranscode', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                video_ids: this.selectedVideos,
-                                qualities: [this.bulkRetranscodeQuality]
-                            })
-                        });
-
-                        const data = await res.json();
-                        if (res.ok) {
-                            this.bulkOpMessage = `Queued ${data.queued} video(s) for re-transcoding` + (data.failed > 0 ? `, ${data.failed} failed` : '');
-                            this.bulkOpError = data.failed > 0;
-                            await this.loadVideos();
-                            this.selectedVideos = [];
-                            setTimeout(() => { this.bulkRetranscodeModal = false; }, 1500);
-                        } else {
-                            this.bulkOpMessage = data.detail || 'Re-transcode failed';
-                            this.bulkOpError = true;
-                        }
-                    } catch (e) {
-                        this.bulkOpMessage = 'Re-transcode failed: ' + e.message;
-                        this.bulkOpError = true;
-                    }
-
-                    this.bulkOpLoading = false;
-                },
-
-                async bulkRestoreVideos() {
-                    if (!confirm(`Restore ${this.selectedVideos.length} video(s) from archive?`)) return;
-
-                    try {
-                        const res = await this.apiFetch('/api/videos/bulk/restore', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ video_ids: this.selectedVideos })
-                        });
-
-                        const data = await res.json();
-                        if (res.ok) {
-                            alert(`Restored ${data.restored} video(s)` + (data.failed > 0 ? `, ${data.failed} failed` : ''));
-                            await this.loadVideos();
-                            this.selectedVideos = [];
-                        } else {
-                            alert(data.detail || 'Restore failed');
-                        }
-                    } catch (e) {
-                        alert('Restore failed: ' + e.message);
-                    }
-                },
-
-                async exportVideos() {
-                    try {
-                        const res = await this.apiFetch('/api/videos/export');
-                        if (!res.ok) {
-                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-                        }
-                        const data = await res.json();
-
-                        // Create downloadable JSON file
-                        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `vlog-export-${new Date().toISOString().slice(0, 10)}.json`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                    } catch (e) {
-                        alert('Export failed: ' + e.message);
-                    }
-                },
-
-                // Database-backed settings methods
-                async loadSettingsCategories() {
-                    this.settingsLoading = true;
-                    try {
-                        const res = await this.apiFetch('/api/settings/categories');
-                        if (res.ok) {
-                            this.settingsCategories = await res.json();
-                        }
-                    } catch (e) {
-                        console.error('Failed to load settings categories:', e);
-                    } finally {
-                        this.settingsLoading = false;
-                    }
-                },
-
-                async loadSettingsCategory(category) {
-                    this.settingsLoadingCategory = category;
-                    this.settingsMessage = '';
-                    this.settingsError = false;
-
-                    try {
-                        const res = await this.apiFetch(`/api/settings/category/${category}`);
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.settingsByCategory[category] = data.settings;
-                            // Store original values for reset
-                            this.settingsOriginal[category] = JSON.parse(JSON.stringify(data.settings));
-                            // Clear modified tracking
-                            if (!this.settingsModified[category]) {
-                                this.settingsModified[category] = {};
-                            }
-                        }
-                    } catch (e) {
-                        console.error(`Failed to load settings for ${category}:`, e);
-                    } finally {
-                        this.settingsLoadingCategory = null;
-                    }
-                },
-
-                async loadAllSettings() {
-                    this.settingsLoading = true;
-                    this.settingsMessage = '';
-                    this.settingsError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/settings');
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.settingsByCategory = data.categories || {};
-                            this.settingsCategories = Object.keys(this.settingsByCategory);
-                            // Store original values for reset
-                            this.settingsOriginal = JSON.parse(JSON.stringify(this.settingsByCategory));
-                            // Initialize modified tracking
-                            this.settingsModified = {};
-                            for (const cat of this.settingsCategories) {
-                                this.settingsModified[cat] = {};
-                            }
-                        }
-                    } catch (e) {
-                        console.error('Failed to load settings:', e);
-                    } finally {
-                        this.settingsLoading = false;
-                    }
-                },
-
-                markSettingModified(category, key, value) {
-                    if (!this.settingsModified[category]) {
-                        this.settingsModified[category] = {};
-                    }
-                    this.settingsModified[category][key] = value;
-                },
-
-                hasModifiedSettings(category) {
-                    return this.settingsModified[category] &&
-                           Object.keys(this.settingsModified[category]).length > 0;
-                },
-
-                async saveSetting(category, key) {
-                    this.settingsSaving = true;
-                    this.settingsMessage = '';
-                    this.settingsError = false;
-
-                    try {
-                        const setting = this.settingsByCategory[category]?.find(s => s.key === key);
-                        if (!setting) return;
-
-                        const res = await this.apiFetch(`/api/settings/key/${key}`, {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ value: setting.value })
-                        });
-
-                        if (res.ok) {
-                            this.settingsMessage = `Setting "${key}" saved successfully`;
-                            this.settingsError = false;
-                            // Remove from modified tracking
-                            if (this.settingsModified[category]) {
-                                delete this.settingsModified[category][key];
-                            }
-                            // Update original value
-                            const origSetting = this.settingsOriginal[category]?.find(s => s.key === key);
-                            if (origSetting) {
-                                origSetting.value = setting.value;
-                            }
-                        } else {
-                            const data = await res.json();
-                            this.settingsMessage = data.detail || 'Failed to save setting';
-                            this.settingsError = true;
-                        }
-                    } catch (e) {
-                        this.settingsMessage = 'Failed to save: ' + e.message;
-                        this.settingsError = true;
-                    } finally {
-                        this.settingsSaving = false;
-                    }
-                },
-
-                async saveAllCategorySettings(category) {
-                    if (!this.hasModifiedSettings(category)) return;
-
-                    this.settingsSaving = true;
-                    this.settingsMessage = '';
-                    this.settingsError = false;
-
-                    const modifiedKeys = Object.keys(this.settingsModified[category] || {});
-                    let savedCount = 0;
-                    let errors = [];
-
-                    for (const key of modifiedKeys) {
-                        try {
-                            const setting = this.settingsByCategory[category]?.find(s => s.key === key);
-                            if (!setting) continue;
-
-                            const res = await this.apiFetch(`/api/settings/key/${key}`, {
-                                method: 'PUT',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ value: setting.value })
-                            });
-
-                            if (res.ok) {
-                                savedCount++;
-                                delete this.settingsModified[category][key];
-                                // Update original value
-                                const origSetting = this.settingsOriginal[category]?.find(s => s.key === key);
-                                if (origSetting) {
-                                    origSetting.value = setting.value;
-                                }
-                            } else {
-                                const data = await res.json();
-                                errors.push(`${key}: ${data.detail || 'Failed'}`);
-                            }
-                        } catch (e) {
-                            errors.push(`${key}: ${e.message}`);
-                        }
-                    }
-
-                    this.settingsSaving = false;
-
-                    if (errors.length === 0) {
-                        this.settingsMessage = `Saved ${savedCount} setting(s) successfully`;
-                        this.settingsError = false;
-                    } else {
-                        this.settingsMessage = `Saved ${savedCount}, failed ${errors.length}: ${errors.join(', ')}`;
-                        this.settingsError = true;
-                    }
-                },
-
-                resetCategorySettings(category) {
-                    if (!this.settingsOriginal[category]) return;
-
-                    // Restore original values
-                    this.settingsByCategory[category] = JSON.parse(JSON.stringify(this.settingsOriginal[category]));
-                    // Clear modified tracking
-                    this.settingsModified[category] = {};
-                    this.settingsMessage = 'Settings reset to last saved values';
-                    this.settingsError = false;
-                },
-
-                getSettingInputType(valueType) {
-                    switch (valueType) {
-                        case 'boolean': return 'checkbox';
-                        case 'integer': return 'number';
-                        case 'float': return 'number';
-                        case 'enum': return 'select';
-                        case 'json': return 'textarea';
-                        default: return 'text';
-                    }
-                },
-
-                formatSettingValue(value, valueType) {
-                    if (valueType === 'json') {
-                        try {
-                            return JSON.stringify(value, null, 2);
-                        } catch {
-                            return String(value);
-                        }
-                    }
-                    return value;
-                },
-
-                parseSettingValue(value, valueType) {
-                    switch (valueType) {
-                        case 'integer':
-                            return parseInt(value, 10);
-                        case 'float':
-                            return parseFloat(value);
-                        case 'boolean':
-                            return value === true || value === 'true';
-                        case 'json':
-                            try {
-                                return JSON.parse(value);
-                            } catch {
-                                return value;
-                            }
-                        default:
-                            return value;
-                    }
-                },
-
-                async exportSettings() {
-                    try {
-                        const res = await this.apiFetch('/api/settings/export', {
-                            method: 'POST'
-                        });
-                        if (res.ok) {
-                            const data = await res.json();
-                            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `vlog-settings-${new Date().toISOString().split('T')[0]}.json`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                            this.settingsMessage = 'Settings exported successfully';
-                            this.settingsError = false;
-                        }
-                    } catch (e) {
-                        this.settingsMessage = 'Export failed: ' + e.message;
-                        this.settingsError = true;
-                    }
-                },
-
-                async importSettings(event) {
-                    const file = event.target.files[0];
-                    if (!file) return;
-
-                    try {
-                        const text = await file.text();
-                        const data = JSON.parse(text);
-
-                        const res = await this.apiFetch('/api/settings/import', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ settings: data.settings, overwrite: true })
-                        });
-
-                        if (res.ok) {
-                            const result = await res.json();
-                            this.settingsMessage = `Import complete: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`;
-                            this.settingsError = result.errors?.length > 0;
-                            // Reload settings
-                            await this.loadAllSettings();
-                        } else {
-                            const err = await res.json();
-                            this.settingsMessage = err.detail || 'Import failed';
-                            this.settingsError = true;
-                        }
-                    } catch (e) {
-                        this.settingsMessage = 'Import failed: ' + e.message;
-                        this.settingsError = true;
-                    }
-
-                    // Clear file input
-                    event.target.value = '';
-                },
-
-                // Custom Fields methods
-                async loadCustomFields() {
-                    this.customFieldsLoading = true;
-                    this.customFieldMessage = '';
-                    this.customFieldError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/custom-fields');
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.customFields = data.fields || [];
-                        } else {
-                            console.error('Failed to load custom fields:', res.status);
-                        }
-                    } catch (e) {
-                        console.error('Failed to load custom fields:', e);
-                    } finally {
-                        this.customFieldsLoading = false;
-                    }
-                },
-
-                openCreateFieldModal() {
-                    this.customFieldEditing = null;
-                    this.customFieldForm = {
-                        name: '',
-                        field_type: 'text',
-                        options: [],
-                        required: false,
-                        category_id: null,
-                        position: 0,
-                        description: '',
-                    };
-                    this.customFieldModal = true;
-                },
-
-                openEditFieldModal(field) {
-                    this.customFieldEditing = field;
-                    this.customFieldForm = {
-                        name: field.name,
-                        field_type: field.field_type,
-                        options: field.options ? [...field.options] : [],
-                        required: field.required,
-                        category_id: field.category_id,
-                        position: field.position,
-                        description: field.description || '',
-                    };
-                    this.customFieldModal = true;
-                },
-
-                async saveCustomField() {
-                    this.customFieldSaving = true;
-
-                    try {
-                        // Filter out empty options
-                        const options = this.customFieldForm.options.filter(o => o && o.trim());
-                        const payload = {
-                            name: this.customFieldForm.name,
-                            field_type: this.customFieldForm.field_type,
-                            options: options.length > 0 ? options : null,
-                            required: this.customFieldForm.required,
-                            category_id: this.customFieldForm.category_id,
-                            position: this.customFieldForm.position,
-                            description: this.customFieldForm.description || null,
-                        };
-
-                        let res;
-                        if (this.customFieldEditing) {
-                            // Update - only send editable fields
-                            res = await this.apiFetch(`/api/custom-fields/${this.customFieldEditing.id}`, {
-                                method: 'PUT',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    name: payload.name,
-                                    options: payload.options,
-                                    required: payload.required,
-                                    position: payload.position,
-                                    description: payload.description,
-                                }),
-                            });
-                        } else {
-                            // Create
-                            res = await this.apiFetch('/api/custom-fields', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(payload),
-                            });
-                        }
-
-                        if (res.ok) {
-                            this.customFieldModal = false;
-                            this.customFieldMessage = this.customFieldEditing ? 'Field updated successfully' : 'Field created successfully';
-                            this.customFieldError = false;
-                            await this.loadCustomFields();
-                        } else {
-                            const err = await res.json();
-                            this.customFieldMessage = err.detail || 'Operation failed';
-                            this.customFieldError = true;
-                        }
-                    } catch (e) {
-                        this.customFieldMessage = 'Operation failed: ' + e.message;
-                        this.customFieldError = true;
-                    } finally {
-                        this.customFieldSaving = false;
-                    }
-                },
-
-                async deleteCustomField(field) {
-                    if (!confirm(`Delete field "${field.name}"? This will remove all values from videos.`)) {
-                        return;
-                    }
-
-                    try {
-                        const res = await this.apiFetch(`/api/custom-fields/${field.id}`, {
-                            method: 'DELETE',
-                        });
-
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.customFieldMessage = `Field deleted. ${data.affected_videos} video(s) affected.`;
-                            this.customFieldError = false;
-                            await this.loadCustomFields();
-                        } else {
-                            const err = await res.json();
-                            this.customFieldMessage = err.detail || 'Delete failed';
-                            this.customFieldError = true;
-                        }
-                    } catch (e) {
-                        this.customFieldMessage = 'Delete failed: ' + e.message;
-                        this.customFieldError = true;
-                    }
-                },
-
-                // Load custom fields for a video (when editing)
-                async loadVideoCustomFields(videoId) {
-                    try {
-                        const res = await this.apiFetch(`/api/videos/${videoId}/custom-fields`);
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.editCustomFields = data.fields || [];
-                            this.editCustomFieldValues = {};
-                            for (const field of data.fields) {
-                                this.editCustomFieldValues[field.field_id] = field.value;
-                            }
-                        }
-                    } catch (e) {
-                        console.error('Failed to load video custom fields:', e);
-                    }
-                },
-
-                // Save custom fields for a video
-                async saveVideoCustomFields(videoId) {
-                    if (Object.keys(this.editCustomFieldValues).length === 0) return true;
-
-                    try {
-                        const res = await this.apiFetch(`/api/videos/${videoId}/custom-fields`, {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ values: this.editCustomFieldValues }),
-                        });
-                        return res.ok;
-                    } catch (e) {
-                        console.error('Failed to save video custom fields:', e);
-                        return false;
-                    }
-                },
-
-                // Toggle multi-select option
-                toggleMultiSelectOption(fieldId, option) {
-                    let current = this.editCustomFieldValues[fieldId] || [];
-                    if (!Array.isArray(current)) current = [];
-
-                    const idx = current.indexOf(option);
-                    if (idx >= 0) {
-                        current.splice(idx, 1);
-                    } else {
-                        current.push(option);
-                    }
-                    this.editCustomFieldValues[fieldId] = [...current];
-                },
-
-                // Get applicable custom fields for current video (global + category-specific)
-                getApplicableCustomFields() {
-                    const categoryId = parseInt(this.editCategory) || 0;
-                    return this.customFields.filter(f =>
-                        f.category_id === null || f.category_id === categoryId
-                    ).sort((a, b) => a.position - b.position);
-                },
-
-                // Watermark settings methods
-                async loadWatermarkSettings() {
-                    this.watermarkLoading = true;
-                    this.watermarkMessage = '';
-                    this.watermarkError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/settings/watermark');
-                        if (res.ok) {
-                            this.watermarkSettings = await res.json();
-                        } else {
-                            console.error('Failed to load watermark settings:', res.status);
-                            this.watermarkSettings = null;
-                        }
-                    } catch (e) {
-                        console.error('Failed to load watermark settings:', e);
-                        this.watermarkSettings = null;
-                    } finally {
-                        this.watermarkLoading = false;
-                    }
-                },
-
-                async uploadWatermarkImage() {
-                    if (!this.watermarkImageFile) return;
-
-                    this.watermarkUploading = true;
-                    this.watermarkUploadProgress = 0;
-                    this.watermarkMessage = '';
-                    this.watermarkError = false;
-
-                    const formData = new FormData();
-                    formData.append('file', this.watermarkImageFile);
-
-                    try {
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('POST', '/api/settings/watermark/upload', true);
-                        xhr.withCredentials = true;
-                        if (this.csrfToken) {
-                            xhr.setRequestHeader('X-CSRF-Token', this.csrfToken);
-                        }
-
-                        xhr.upload.onprogress = (e) => {
-                            if (e.lengthComputable) {
-                                this.watermarkUploadProgress = Math.round((e.loaded / e.total) * 100);
-                            }
-                        };
-
-                        xhr.onload = async () => {
-                            this.watermarkUploading = false;
-                            this.watermarkUploadProgress = 0;
-
-                            if (xhr.status >= 200 && xhr.status < 300) {
-                                const data = JSON.parse(xhr.responseText);
-                                this.watermarkMessage = data.message || 'Watermark uploaded successfully';
-                                this.watermarkError = false;
-                                this.watermarkImageFile = null;
-                                // Reload settings to show new image
-                                await this.loadWatermarkSettings();
-                            } else {
-                                try {
-                                    const data = JSON.parse(xhr.responseText);
-                                    this.watermarkMessage = data.detail || 'Upload failed';
-                                } catch {
-                                    this.watermarkMessage = 'Upload failed: ' + xhr.statusText;
-                                }
-                                this.watermarkError = true;
-                            }
-                        };
-
-                        xhr.onerror = () => {
-                            this.watermarkUploading = false;
-                            this.watermarkUploadProgress = 0;
-                            this.watermarkMessage = 'Upload failed: Network error';
-                            this.watermarkError = true;
-                        };
-
-                        xhr.send(formData);
-                    } catch (e) {
-                        this.watermarkUploading = false;
-                        this.watermarkUploadProgress = 0;
-                        this.watermarkMessage = 'Upload failed: ' + e.message;
-                        this.watermarkError = true;
-                    }
-                },
-
-                async deleteWatermarkImage() {
-                    if (!confirm('Delete the watermark image?')) return;
-
-                    this.watermarkMessage = '';
-                    this.watermarkError = false;
-
-                    try {
-                        const res = await this.apiFetch('/api/settings/watermark', {
-                            method: 'DELETE'
-                        });
-
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.watermarkMessage = data.message || 'Watermark deleted';
-                            this.watermarkError = false;
-                            // Reload settings
-                            await this.loadWatermarkSettings();
-                        } else {
-                            const data = await res.json();
-                            this.watermarkMessage = data.detail || 'Delete failed';
-                            this.watermarkError = true;
-                        }
-                    } catch (e) {
-                        this.watermarkMessage = 'Delete failed: ' + e.message;
-                        this.watermarkError = true;
-                    }
-                }
-            };
-        }
-    </script>
 
     <!-- Worker Logs Modal -->
-    <div x-show="showLogsModal" x-cloak
-         class="fixed inset-0 z-50 flex items-center justify-center p-4"
-         @keydown.escape.window="showLogsModal = false">
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/70" @click="showLogsModal = false"></div>
-        <!-- Modal -->
-        <div class="relative bg-dark-900 rounded-xl w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl border border-dark-700">
-            <div class="flex items-center justify-between px-6 py-4 border-b border-dark-700">
-                <h3 class="text-lg font-semibold" x-text="'Logs: ' + logsWorkerName"></h3>
-                <button @click="showLogsModal = false" class="text-dark-400 hover:text-white">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-            <div class="flex-1 overflow-auto p-4">
-                <template x-if="logsLoading">
-                    <div class="flex items-center justify-center py-12">
-                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                        <span class="ml-3 text-dark-400">Fetching logs from worker...</span>
-                    </div>
-                </template>
-                <template x-if="!logsLoading">
-                    <pre class="text-sm text-dark-300 font-mono whitespace-pre-wrap bg-dark-950 p-4 rounded-lg overflow-auto max-h-[60vh]"
-                         x-text="logsContent || 'No logs available'"></pre>
-                </template>
-            </div>
+    <vlog-modal :open="showLogsModal" @close="showLogsModal = false" size="lg">
+        <span slot="header" x-text="'Logs: ' + logsWorkerName"></span>
+        <div class="min-h-[300px]">
+            <template x-if="logsLoading">
+                <div class="flex items-center justify-center py-12">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                    <span class="ml-3 text-dark-400">Fetching logs from worker...</span>
+                </div>
+            </template>
+            <template x-if="!logsLoading">
+                <pre class="text-sm text-dark-300 font-mono whitespace-pre-wrap bg-dark-950 p-4 rounded-lg overflow-auto max-h-[60vh]"
+                     x-text="logsContent || 'No logs available'"></pre>
+            </template>
         </div>
-    </div>
+    </vlog-modal>
 
     <!-- Worker Metrics Modal -->
-    <div x-show="showMetricsModal" x-cloak
-         class="fixed inset-0 z-50 flex items-center justify-center p-4"
-         @keydown.escape.window="showMetricsModal = false">
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/70" @click="showMetricsModal = false"></div>
-        <!-- Modal -->
-        <div class="relative bg-dark-900 rounded-xl w-full max-w-2xl shadow-2xl border border-dark-700">
-            <div class="flex items-center justify-between px-6 py-4 border-b border-dark-700">
-                <h3 class="text-lg font-semibold" x-text="'Metrics: ' + metricsWorkerName"></h3>
-                <button @click="showMetricsModal = false" class="text-dark-400 hover:text-white">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-            <div class="p-6">
+    <vlog-modal :open="showMetricsModal" @close="showMetricsModal = false" size="md">
+        <span slot="header" x-text="'Metrics: ' + metricsWorkerName"></span>
+        <div>
                 <template x-if="metricsLoading">
                     <div class="flex items-center justify-center py-8">
                         <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
@@ -4624,8 +2213,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         </template>
                     </div>
                 </template>
-            </div>
         </div>
-    </div>
+    </vlog-modal>
 </body>
 </html>

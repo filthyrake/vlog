@@ -873,29 +873,18 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
             except OSError as e:
                 return False, f"Error probing segment: {e}"
 
-            # For CMAF/fMP4: also verify first segment is a valid fMP4 fragment
-            # This catches corrupted segments with missing moof/tfhd atoms
+            # For CMAF/fMP4: validate segment structure by checking for required atoms
+            # Note: m4s segments cannot be probed directly with ffprobe - they require
+            # the init.mp4 header. Instead, we do a quick structural check.
             if first_segment_path.suffix == ".m4s":
                 try:
-                    proc = await asyncio.wait_for(
-                        asyncio.create_subprocess_exec(
-                            "ffprobe",
-                            "-v",
-                            "error",
-                            "-show_format",
-                            str(first_segment_path),
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
-                        ),
-                        timeout=10,
-                    )
-                    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-                    # Check for common fMP4 corruption errors
-                    stderr_str = stderr.decode("utf-8", errors="replace").lower()
-                    if "invalid data" in stderr_str or "no tfhd" in stderr_str or "error" in stderr_str:
-                        return False, f"Corrupted fMP4 segment: {first_segment_path.name} (invalid fragment structure)"
-                except asyncio.TimeoutError:
-                    return False, f"Timeout validating fMP4 segment {first_segment_path.name}"
+                    # Read first 256 bytes to check for required fMP4 atoms
+                    with open(first_segment_path, "rb") as f:
+                        header = f.read(256)
+                    # Valid fMP4 segments must have moof (movie fragment) atom
+                    # moof contains mfhd and traf which contains tfhd
+                    if b"moof" not in header:
+                        return False, f"Corrupted fMP4 segment: {first_segment_path.name} (missing moof atom)"
                 except OSError as e:
                     return False, f"Error validating fMP4 segment: {e}"
 
@@ -1351,15 +1340,22 @@ async def generate_master_playlist_cmaf(
 
     # Get codec string for manifest
     codec_string = get_codec_string(codec)
+    # Original quality keeps source codec (typically H.264) since it's not re-encoded
+    original_codec_string = get_codec_string(VideoCodec.H264)
 
     for quality in qualities_with_bandwidth:
+        # Original quality uses source codec, transcoded qualities use target codec
+        quality_codec = original_codec_string if quality["name"] == "original" else codec_string
         master_content += (
             f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},'
             f'RESOLUTION={quality["width"]}x{quality["height"]},'
-            f'CODECS="{codec_string}"\n'
+            f'CODECS="{quality_codec}"\n'
         )
-        # Reference subdirectory playlist
-        master_content += f"{quality['name']}/stream.m3u8\n"
+        # Original quality uses legacy TS format at root, transcoded use CMAF subdirs
+        if quality["name"] == "original":
+            master_content += "original.m3u8\n"
+        else:
+            master_content += f"{quality['name']}/stream.m3u8\n"
 
     (output_dir / "master.m3u8").write_text(master_content)
 
@@ -1410,15 +1406,17 @@ async def generate_dash_manifest(
     seconds = total_duration % 60
     duration_str = f"PT{hours}H{minutes}M{seconds:.3f}S"
 
-    # Determine codec-specific codecs string
+    # Determine codec-specific codecs string (video + AAC audio)
     if codec == VideoCodec.HEVC:
-        video_codecs = "hvc1.1.6.L120.90"
+        video_codecs = "hvc1.1.6.L120.90,mp4a.40.2"
     elif codec == VideoCodec.AV1:
-        video_codecs = "av01.0.08M.08"
+        video_codecs = "av01.0.08M.08,mp4a.40.2"
     else:
-        video_codecs = "avc1.640028"
+        video_codecs = "avc1.640028,mp4a.40.2"
 
     # Build adaptation sets for each quality
+    # Note: CMAF segments have muxed audio+video, so we use a single AdaptationSet
+    # with combined codecs string
     adaptation_sets = []
     seg_duration_ms = segment_duration * 1000
 
@@ -1435,13 +1433,14 @@ async def generate_dash_manifest(
         height = quality["height"]
         bandwidth = quality.get("bitrate_bps", int(quality.get("bitrate", "0").replace("k", "")) * 1000)
 
+        # startNumber=0 since segments are named seg_0000.m4s, seg_0001.m4s, etc.
         adaptation_sets.append(
             f'    <AdaptationSet id="{i}" mimeType="video/mp4" codecs="{video_codecs}" '
             f'startWithSAP="1" segmentAlignment="true">\n'
             f'      <Representation id="{name}" bandwidth="{bandwidth}" '
             f'width="{width}" height="{height}">\n'
             f'        <SegmentTemplate media="{name}/seg_$Number%04d$.m4s" '
-            f'initialization="{name}/init.mp4" startNumber="1" '
+            f'initialization="{name}/init.mp4" startNumber="0" '
             f'duration="{seg_duration_ms}" timescale="1000"/>\n'
             f"      </Representation>\n"
             f"    </AdaptationSet>"

@@ -878,8 +878,19 @@ app.add_middleware(
 app.mount("/videos", StaticFiles(directory=str(VIDEOS_DIR)), name="videos")
 
 # Serve admin web files
-WEB_DIR = Path(__file__).parent.parent / "web" / "admin"
-app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+# Use dist/ for production (built files), source for development
+ADMIN_SRC_DIR = Path(__file__).parent.parent / "web" / "admin"
+ADMIN_DIST_DIR = ADMIN_SRC_DIR / "dist"
+
+# Check if dist exists (production build), otherwise fall back to source
+if ADMIN_DIST_DIR.exists():
+    WEB_DIR = ADMIN_DIST_DIR
+    # Mount the assets directory for bundled JS/CSS
+    app.mount("/assets", StaticFiles(directory=str(ADMIN_DIST_DIR / "assets")), name="assets")
+else:
+    WEB_DIR = ADMIN_SRC_DIR
+
+app.mount("/static", StaticFiles(directory=str(ADMIN_SRC_DIR / "static")), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)
