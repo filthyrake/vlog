@@ -9,10 +9,12 @@ Use create_analytics_cache() factory function to get the appropriate implementat
 """
 
 import json
+import redis
 import logging
 import random
 import time
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, Callable, TypeVar
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +189,6 @@ class RedisAnalyticsCache:
     def _initialize_client(self) -> None:
         """Initialize the Redis client."""
         try:
-            import redis
-
             self._client = redis.Redis.from_url(
                 self._redis_url,
                 socket_timeout=5.0,
@@ -206,6 +206,21 @@ class RedisAnalyticsCache:
     def _get_full_key(self, key: str) -> str:
         """Get the full Redis key with prefix."""
         return f"{self.CACHE_KEY_PREFIX}{key}"
+    
+    def _safe_redis_call(
+        self,
+        operation: Callable[[], T],
+        operation_name: str,
+        fallback: T = None,
+    ) -> T:
+
+        if not self._enabled or self._client is None:
+            return fallback
+        try:
+            return operation()
+        except redis.RedisError as e:
+            logger.warning(f"Redis analytics cache {operation_name} failed: {e}")
+            return fallback
 
     def get(self, key: str) -> Optional[Any]:
         """
@@ -217,18 +232,15 @@ class RedisAnalyticsCache:
         Returns:
             Cached value if exists and not expired, None otherwise
         """
-        if not self._enabled or self._client is None:
-            return None
-
-        try:
-            full_key = self._get_full_key(key)
-            data = self._client.get(full_key)
-            if data is None:
-                return None
-            return json.loads(data)
-        except Exception as e:
-            logger.warning(f"Redis analytics cache get failed: {e}")
-            return None
+        return self._safe_redis_call(
+            lambda: (
+                None
+                if (data := self._client.get(self._get_full_key(key))) is None
+                else json.loads(data)
+            ),
+            "get",
+            fallback=None,
+        )
 
     def set(self, key: str, value: Any) -> None:
         """
@@ -238,23 +250,18 @@ class RedisAnalyticsCache:
             key: Cache key
             value: Value to cache
         """
-        if not self._enabled or self._client is None:
-            return
-
-        try:
-            full_key = self._get_full_key(key)
-            data = json.dumps(value)
-            self._client.setex(full_key, self._ttl, data)
-        except Exception as e:
-            logger.warning(f"Redis analytics cache set failed: {e}")
+        self._safe_redis_call(
+            lambda: self._client.setex(
+                self._get_full_key(key),
+                self._ttl,
+                json.dumps(value),
+            ),
+            "set",
+        )
 
     def clear(self) -> None:
         """Clear all analytics cache entries."""
-        if self._client is None:
-            return
-
-        try:
-            # Use SCAN to find all analytics cache keys (safe for production)
+        def operation():
             cursor = 0
             pattern = f"{self.CACHE_KEY_PREFIX}*"
             while True:
@@ -263,8 +270,8 @@ class RedisAnalyticsCache:
                     self._client.delete(*keys)
                 if cursor == 0:
                     break
-        except Exception as e:
-            logger.warning(f"Redis analytics cache clear failed: {e}")
+
+        self._safe_redis_call(operation, "clear")
 
     def invalidate(self, key: str) -> None:
         """
@@ -273,14 +280,10 @@ class RedisAnalyticsCache:
         Args:
             key: Cache key to invalidate
         """
-        if self._client is None:
-            return
-
-        try:
-            full_key = self._get_full_key(key)
-            self._client.delete(full_key)
-        except Exception as e:
-            logger.warning(f"Redis analytics cache invalidate failed: {e}")
+        self._safe_redis_call(
+            lambda: self._client.delete(self._get_full_key(key)),
+            "invalidate",
+        )
 
     def cleanup_expired(self) -> int:
         """
@@ -301,25 +304,24 @@ class RedisAnalyticsCache:
         Returns:
             Dict with cache stats (TTL, enabled status, backend type)
         """
-        entry_count = 0
-        if self._client is not None:
-            try:
-                # Count keys matching our prefix
-                cursor = 0
-                pattern = f"{self.CACHE_KEY_PREFIX}*"
-                while True:
-                    cursor, keys = self._client.scan(cursor, match=pattern, count=100)
-                    entry_count += len(keys)
-                    if cursor == 0:
-                        break
-            except Exception:
-                pass  # Return 0 if we can't count
+        def count_keys():
+            entry_count = 0
+            cursor = 0
+            pattern = f"{self.CACHE_KEY_PREFIX}*"
+            while True:
+                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                entry_count += len(keys)
+                if cursor == 0:
+                    break
+            return entry_count
+
+        entry_count = self._safe_redis_call(count_keys, "count", fallback=0)
 
         return {
             "enabled": self._enabled,
             "ttl_seconds": self._ttl,
             "entry_count": entry_count,
-            "max_size": -1,  # Redis has no fixed max size
+            "max_size": -1,
             "backend": "redis",
             "connected": self._client is not None and not self._connection_failed,
         }
