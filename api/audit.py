@@ -12,10 +12,18 @@ import logging
 import os
 from datetime import datetime, timezone
 from enum import Enum
+from logging.handlers import RotatingFileHandler
 from typing import Any, Optional
 
 from api.errors import truncate_string
-from config import AUDIT_LOG_ENABLED, AUDIT_LOG_LEVEL, AUDIT_LOG_PATH, ERROR_DETAIL_MAX_LENGTH
+from config import (
+    AUDIT_LOG_BACKUP_COUNT,
+    AUDIT_LOG_ENABLED,
+    AUDIT_LOG_LEVEL,
+    AUDIT_LOG_MAX_BYTES,
+    AUDIT_LOG_PATH,
+    ERROR_DETAIL_MAX_LENGTH,
+)
 
 # Ensure log directory exists (skip in test mode)
 if not os.environ.get("VLOG_TEST_MODE") and AUDIT_LOG_ENABLED:
@@ -99,13 +107,20 @@ class AuditLogger:
             self._setup_handlers()
 
     def _setup_handlers(self):
-        """Set up logging handlers."""
+        """Set up logging handlers with rotation support."""
         formatter = logging.Formatter("%(message)s")  # Raw JSON output
 
         if AUDIT_LOG_ENABLED:
             try:
-                # Try file handler first
-                file_handler = logging.FileHandler(AUDIT_LOG_PATH, encoding="utf-8")
+                # Use RotatingFileHandler for automatic log rotation
+                # Rotates when file reaches AUDIT_LOG_MAX_BYTES (default 10MB)
+                # Keeps AUDIT_LOG_BACKUP_COUNT backup files (default 5)
+                file_handler = RotatingFileHandler(
+                    AUDIT_LOG_PATH,
+                    maxBytes=AUDIT_LOG_MAX_BYTES,
+                    backupCount=AUDIT_LOG_BACKUP_COUNT,
+                    encoding="utf-8",
+                )
                 file_handler.setFormatter(formatter)
                 self.logger.addHandler(file_handler)
             except (PermissionError, OSError):
