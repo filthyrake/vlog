@@ -4,7 +4,7 @@
  */
 
 import { workersApi } from '@/api/endpoints/workers';
-import type { Worker, ActiveJob, WorkerStats, DeploymentEvent, WorkerMetrics } from '@/api/types';
+import type { Worker, ActiveJobsResponse, WorkerStats, DeploymentEvent, WorkerMetrics } from '@/api/types';
 import { formatTimeSince, formatDeploymentTime, isVersionOutdated, getEventIcon, getEventColor } from '@/utils/formatters';
 import type { AlpineContext } from './types';
 
@@ -12,7 +12,7 @@ export interface WorkersState {
   // Worker list
   workersList: Worker[];
   workerStats: WorkerStats;
-  activeJobs: ActiveJob[];
+  activeJobs: ActiveJobsResponse;
   loading: boolean;
   error: string | null;
 
@@ -74,7 +74,7 @@ export function createWorkersStore(_context?: AlpineContext): WorkersStore {
     // Initial state
     workersList: [],
     workerStats: { active: 0, idle: 0, offline: 0, disabled: 0, total: 0 },
-    activeJobs: [],
+    activeJobs: { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 },
     loading: false,
     error: null,
     workerCommandPending: {},
@@ -111,18 +111,18 @@ export function createWorkersStore(_context?: AlpineContext): WorkersStore {
       this.error = null;
 
       try {
-        const [workers, jobs] = await Promise.all([
+        const [workers, jobsResponse] = await Promise.all([
           workersApi.list(),
           workersApi.getActiveJobs(),
         ]);
 
         this.workersList = workers;
-        this.activeJobs = jobs;
+        this.activeJobs = jobsResponse;
         this.computeWorkerStats();
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to load workers';
         this.workersList = [];
-        this.activeJobs = [];
+        this.activeJobs = { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 };
       } finally {
         this.loading = false;
       }
@@ -133,6 +133,7 @@ export function createWorkersStore(_context?: AlpineContext): WorkersStore {
         this.activeJobs = await workersApi.getActiveJobs();
       } catch (e) {
         console.error('Failed to load active jobs:', e);
+        // Keep existing jobs on error
       }
     },
 

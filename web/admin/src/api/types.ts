@@ -93,13 +93,29 @@ export interface Worker {
 }
 
 export interface ActiveJob {
+  job_id: number;
   video_id: number;
+  video_slug: string;
   video_title: string;
-  worker_id: string;
+  thumbnail_url?: string;
+  worker_id: string | null;
   worker_name?: string;
-  step: string;
-  progress: number;
+  worker_hwaccel_type?: string;
+  status: string;
+  current_step?: string;
+  progress_percent: number;
+  qualities?: Array<{ name: string; status: string; progress: number }>;
   started_at?: string;
+  claimed_at?: string;
+  attempt: number;
+  max_attempts: number;
+}
+
+export interface ActiveJobsResponse {
+  jobs: ActiveJob[];
+  total_count: number;
+  processing_count: number;
+  pending_count: number;
 }
 
 export interface WorkerStats {

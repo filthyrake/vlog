@@ -3,7 +3,7 @@
  */
 
 import { apiClient } from '../client';
-import type { Worker, ActiveJob, WorkerLogs, WorkerMetrics, DeploymentEvent } from '../types';
+import type { Worker, ActiveJobsResponse, WorkerLogs, WorkerMetrics, DeploymentEvent } from '../types';
 
 export const workersApi = {
   // ===========================================================================
@@ -21,9 +21,8 @@ export const workersApi = {
   /**
    * Get active jobs across all workers
    */
-  async getActiveJobs(): Promise<ActiveJob[]> {
-    const response = await apiClient.fetch<{ jobs: ActiveJob[] }>('/api/workers/active-jobs');
-    return response.jobs;
+  async getActiveJobs(): Promise<ActiveJobsResponse> {
+    return apiClient.fetch<ActiveJobsResponse>('/api/workers/active-jobs');
   },
 
   /**
