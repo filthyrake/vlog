@@ -4,8 +4,12 @@
  * This module initializes the admin UI by:
  * 1. Importing design tokens (CSS custom properties)
  * 2. Registering all web components
- * 3. Exporting the admin store factory for Alpine.js
+ * 3. Setting up the admin store factory for Alpine.js
+ * 4. Starting Alpine.js (to ensure correct execution order)
  */
+
+// Import Alpine.js - we control when it starts
+import Alpine from 'alpinejs';
 
 // Import design tokens
 import '@/styles/tokens.css';
@@ -34,6 +38,9 @@ import * as formatters from '@/utils/formatters';
 // Declare global types
 declare global {
   interface Window {
+    // Alpine.js
+    Alpine: typeof Alpine;
+
     // Admin store factory
     createAdminStore: typeof createAdminStore;
     admin: () => AdminStore;
@@ -55,6 +62,9 @@ declare global {
     VLogFormatters: typeof formatters;
   }
 }
+
+// Export Alpine to window for debugging
+window.Alpine = Alpine;
 
 // Export store factory to window for Alpine.js
 window.createAdminStore = createAdminStore;
@@ -80,7 +90,13 @@ window.VLogApi = {
 window.VLogFormatters = formatters;
 
 // Log initialization
-console.log('VLog Admin initialized');
+console.log('VLog Admin: Store and API initialized');
+
+// Start Alpine.js AFTER everything is set up
+// This ensures window.admin() is defined before Alpine processes x-data
+Alpine.start();
+
+console.log('VLog Admin: Alpine.js started');
 
 // Export for module consumers
 export { createAdminStore };

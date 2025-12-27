@@ -7,9 +7,8 @@
     <title>VLog Admin</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <script src="/static/js/utils.js"></script>
-    <!-- Load admin module before Alpine.js - sets up window.admin() -->
+    <!-- Main module: sets up store, API, and starts Alpine.js -->
     <script type="module" src="./src/main.ts"></script>
-    <script defer src="/static/vendor/alpine.min.js"></script>
     <style>
         [x-cloak] { display: none !important; }
     </style>
