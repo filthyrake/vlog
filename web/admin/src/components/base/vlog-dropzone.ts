@@ -259,6 +259,7 @@ export class VlogDropzone extends HTMLElement {
     this.handleClick = this.handleClick.bind(this);
     this.handleInputChange = this.handleInputChange.bind(this);
     this.handleKeyDown = this.handleKeyDown.bind(this);
+    this.handleFileListClick = this.handleFileListClick.bind(this);
   }
 
   connectedCallback() {
@@ -274,6 +275,7 @@ export class VlogDropzone extends HTMLElement {
     this.dropzone.removeEventListener('click', this.handleClick);
     this.dropzone.removeEventListener('keydown', this.handleKeyDown);
     this.fileInput.removeEventListener('change', this.handleInputChange);
+    this.fileListElement.removeEventListener('click', this.handleFileListClick);
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null) {
@@ -348,6 +350,19 @@ export class VlogDropzone extends HTMLElement {
     this.dropzone.addEventListener('click', this.handleClick);
     this.dropzone.addEventListener('keydown', this.handleKeyDown);
     this.fileInput.addEventListener('change', this.handleInputChange);
+    this.fileListElement.addEventListener('click', this.handleFileListClick);
+  }
+
+  private handleFileListClick(e: Event) {
+    // Event delegation for remove buttons
+    const removeBtn = (e.target as HTMLElement).closest('.file-remove');
+    if (removeBtn) {
+      e.stopPropagation();
+      const id = removeBtn.getAttribute('data-file-id');
+      if (id) {
+        this.removeFile(id);
+      }
+    }
   }
 
   private handleDragOver(e: DragEvent) {
@@ -474,8 +489,34 @@ export class VlogDropzone extends HTMLElement {
       }
       // MIME type match
       else if (type.includes('/')) {
-        const [mainType, subType] = type.split('/');
-        const [fileMainType, fileSubType] = file.type.toLowerCase().split('/');
+        // Handle empty file.type by checking extension as fallback
+        if (!file.type) {
+          // Try extension-based matching for common video types
+          const ext = file.name.toLowerCase().split('.').pop();
+          const extToMime: Record<string, string> = {
+            mp4: 'video/mp4',
+            webm: 'video/webm',
+            mov: 'video/quicktime',
+            avi: 'video/x-msvideo',
+            mkv: 'video/x-matroska',
+          };
+          const inferredType = ext ? extToMime[ext] : undefined;
+          if (inferredType) {
+            const [mainType, subType] = type.split('/');
+            const [inferredMain, inferredSub] = inferredType.split('/');
+            if (mainType === inferredMain && (subType === '*' || subType === inferredSub)) {
+              return true;
+            }
+          }
+          continue;
+        }
+
+        const typeParts = type.split('/');
+        const fileParts = file.type.toLowerCase().split('/');
+        const mainType = typeParts[0] || '';
+        const subType = typeParts[1] || '';
+        const fileMainType = fileParts[0] || '';
+        const fileSubType = fileParts[1] || '';
 
         if (mainType === fileMainType) {
           if (subType === '*' || subType === fileSubType) return true;
@@ -506,13 +547,7 @@ export class VlogDropzone extends HTMLElement {
           </svg>
         </button>
       `;
-
-      const removeBtn = item.querySelector('.file-remove')!;
-      removeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.removeFile(id);
-      });
-
+      // No per-element listener needed - using event delegation on fileListElement
       this.fileListElement.appendChild(item);
     }
   }
@@ -534,10 +569,10 @@ export class VlogDropzone extends HTMLElement {
   }
 
   private formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 Bytes';
+    if (bytes <= 0) return '0 Bytes';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 

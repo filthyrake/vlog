@@ -29,7 +29,25 @@ export interface RegisteredShortcut extends Shortcut {
   id: string;
 }
 
-const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+/**
+ * Detect if running on Mac/iOS platform
+ * Uses modern userAgentData API with fallback to deprecated navigator.platform
+ */
+function detectMac(): boolean {
+  if (typeof navigator === 'undefined') return false;
+
+  // Modern API (Chromium browsers)
+  const uaData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  if (uaData?.platform) {
+    return /macOS|iOS/i.test(uaData.platform);
+  }
+
+  // Fallback for Safari and older browsers
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
+  return /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+}
+
+const isMac = detectMac();
 
 /**
  * Format a key combination for display

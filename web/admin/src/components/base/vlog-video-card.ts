@@ -173,8 +173,8 @@ template.innerHTML = `
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 36px;
-      height: 36px;
+      width: 44px;
+      height: 44px;
       padding: 0;
       border: none;
       border-radius: var(--vlog-radius-md, 0.375rem);
@@ -217,7 +217,7 @@ template.innerHTML = `
     }
   </style>
 
-  <article class="card" part="card" tabindex="0">
+  <article class="card" part="card" tabindex="0" role="button">
     <div class="thumbnail-container" part="thumbnail-container">
       <div class="thumbnail-placeholder" part="placeholder">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">

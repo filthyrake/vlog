@@ -153,13 +153,9 @@ export class VlogSkeleton extends HTMLElement {
       this.skeleton.classList.add(`size-${size}`);
     }
 
-    // Apply custom dimensions
-    if (width) {
-      this.skeleton.style.width = width;
-    }
-    if (height) {
-      this.skeleton.style.height = height;
-    }
+    // Apply custom dimensions (clear if attribute removed)
+    this.skeleton.style.width = width || '';
+    this.skeleton.style.height = height || '';
   }
 
   // Getters and setters

@@ -193,6 +193,11 @@ export class VlogNavDrawer extends HTMLElement {
     this.backdrop.removeEventListener('click', this.handleBackdropClick);
     this.closeButton.removeEventListener('click', this.handleCloseClick);
     document.removeEventListener('keydown', this.handleKeyDown);
+    // Reset body styles if component is removed while open
+    if (this.hasAttribute('open')) {
+      document.body.style.overflow = '';
+      document.body.style.paddingRight = '';
+    }
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null) {
@@ -215,6 +220,15 @@ export class VlogNavDrawer extends HTMLElement {
     this.close();
   }
 
+  private getActiveElement(): Element | null {
+    // Handle focus in shadow DOM - drill into shadow roots
+    let active = document.activeElement;
+    while (active?.shadowRoot?.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active;
+  }
+
   private handleKeyDown(e: KeyboardEvent) {
     if (!this.open) return;
 
@@ -223,7 +237,7 @@ export class VlogNavDrawer extends HTMLElement {
       this.close();
     }
 
-    // Simple focus trap
+    // Focus trap
     if (e.key === 'Tab') {
       const focusableElements = this.drawer.querySelectorAll<HTMLElement>(
         'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -237,19 +251,30 @@ export class VlogNavDrawer extends HTMLElement {
 
       const firstFocusable = allFocusable[0];
       const lastFocusable = allFocusable[allFocusable.length - 1];
+      const activeElement = this.getActiveElement();
 
-      if (e.shiftKey && document.activeElement === firstFocusable) {
+      if (e.shiftKey && activeElement === firstFocusable) {
         e.preventDefault();
         lastFocusable?.focus();
-      } else if (!e.shiftKey && document.activeElement === lastFocusable) {
+      } else if (!e.shiftKey && activeElement === lastFocusable) {
         e.preventDefault();
         firstFocusable?.focus();
       }
     }
   }
 
+  private getScrollbarWidth(): number {
+    return window.innerWidth - document.documentElement.clientWidth;
+  }
+
   private onOpen() {
     this.previousActiveElement = document.activeElement;
+
+    // Compensate for scrollbar width to prevent layout shift
+    const scrollbarWidth = this.getScrollbarWidth();
+    if (scrollbarWidth > 0) {
+      document.body.style.paddingRight = `${scrollbarWidth}px`;
+    }
     document.body.style.overflow = 'hidden';
     this.closeButton.focus();
 
@@ -263,6 +288,7 @@ export class VlogNavDrawer extends HTMLElement {
 
   private onClose() {
     document.body.style.overflow = '';
+    document.body.style.paddingRight = '';
     if (this.previousActiveElement instanceof HTMLElement) {
       this.previousActiveElement.focus();
     }

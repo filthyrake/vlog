@@ -218,11 +218,13 @@ export interface FilterOption {
 export class VlogFilter extends HTMLElement {
   private trigger!: HTMLButtonElement;
   private dropdown!: HTMLDivElement;
+  private optionsContainer!: HTMLDivElement;
   private labelElement!: HTMLSpanElement;
   private badgeElement!: HTMLSpanElement;
   private clearButton!: HTMLButtonElement;
   private selectedValues: Set<string> = new Set();
   private isOpen = false;
+  private mutationObserver: MutationObserver | null = null;
 
   static get observedAttributes() {
     return ['label', 'name', 'multiple', 'value'];
@@ -235,12 +237,13 @@ export class VlogFilter extends HTMLElement {
 
     this.trigger = this.shadowRoot!.querySelector('.filter-trigger')!;
     this.dropdown = this.shadowRoot!.querySelector('.filter-dropdown')!;
+    this.optionsContainer = this.shadowRoot!.querySelector('.filter-options')!;
     this.labelElement = this.shadowRoot!.querySelector('.filter-label')!;
     this.badgeElement = this.shadowRoot!.querySelector('.filter-badge')!;
     this.clearButton = this.shadowRoot!.querySelector('.filter-clear')!;
 
     this.handleTriggerClick = this.handleTriggerClick.bind(this);
-    this.handleOptionClick = this.handleOptionClick.bind(this);
+    this.handleOptionsClick = this.handleOptionsClick.bind(this);
     this.handleClearClick = this.handleClearClick.bind(this);
     this.handleOutsideClick = this.handleOutsideClick.bind(this);
     this.handleKeyDown = this.handleKeyDown.bind(this);
@@ -254,9 +257,12 @@ export class VlogFilter extends HTMLElement {
 
   disconnectedCallback() {
     this.trigger.removeEventListener('click', this.handleTriggerClick);
+    this.optionsContainer.removeEventListener('click', this.handleOptionsClick);
     this.clearButton.removeEventListener('click', this.handleClearClick);
     document.removeEventListener('click', this.handleOutsideClick);
     document.removeEventListener('keydown', this.handleKeyDown);
+    this.mutationObserver?.disconnect();
+    this.mutationObserver = null;
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null) {
@@ -275,23 +281,22 @@ export class VlogFilter extends HTMLElement {
 
   private setupListeners() {
     this.trigger.addEventListener('click', this.handleTriggerClick);
+    this.optionsContainer.addEventListener('click', this.handleOptionsClick);
     this.clearButton.addEventListener('click', this.handleClearClick);
   }
 
   private setupOptions() {
     // Set up mutation observer for dynamic options
-    const observer = new MutationObserver(() => {
+    this.mutationObserver = new MutationObserver(() => {
       this.renderOptions();
     });
-    observer.observe(this, { childList: true, subtree: true });
+    this.mutationObserver.observe(this, { childList: true, subtree: true });
     this.renderOptions();
   }
 
   private renderOptions() {
-    const optionsContainer = this.shadowRoot!.querySelector('.filter-options')!;
-
     // Clear existing options (but keep slot)
-    const existingButtons = optionsContainer.querySelectorAll('button.filter-option');
+    const existingButtons = this.optionsContainer.querySelectorAll('button.filter-option');
     existingButtons.forEach((btn) => btn.remove());
 
     // Get options from slotted content or attribute
@@ -311,19 +316,29 @@ export class VlogFilter extends HTMLElement {
         button.classList.add('selected');
       }
 
-      button.innerHTML = `
-        <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd" />
-        </svg>
-        <span>${label}</span>
-      `;
+      // Create check icon
+      const checkIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      checkIcon.setAttribute('class', 'check-icon');
+      checkIcon.setAttribute('viewBox', '0 0 20 20');
+      checkIcon.setAttribute('fill', 'currentColor');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('fill-rule', 'evenodd');
+      path.setAttribute('d', 'M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z');
+      path.setAttribute('clip-rule', 'evenodd');
+      checkIcon.appendChild(path);
+      button.appendChild(checkIcon);
 
-      button.addEventListener('click', this.handleOptionClick);
-      optionsContainer.insertBefore(button, optionsContainer.firstChild);
+      // Create label span with textContent for safety
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = label;
+      button.appendChild(labelSpan);
+
+      // No per-element listener needed - using event delegation
+      this.optionsContainer.insertBefore(button, this.optionsContainer.firstChild);
     });
 
     // Hide slot since we've rendered buttons
-    const slot = optionsContainer.querySelector('slot');
+    const slot = this.optionsContainer.querySelector('slot');
     if (slot) {
       slot.style.display = 'none';
     }
@@ -334,8 +349,11 @@ export class VlogFilter extends HTMLElement {
     this.toggle();
   }
 
-  private handleOptionClick(e: Event) {
-    const button = e.currentTarget as HTMLButtonElement;
+  private handleOptionsClick(e: Event) {
+    // Event delegation for option buttons
+    const button = (e.target as HTMLElement).closest('.filter-option') as HTMLButtonElement | null;
+    if (!button) return;
+
     const value = button.dataset.value || '';
 
     if (this.hasAttribute('multiple')) {
@@ -489,12 +507,11 @@ customElements.define('vlog-filter', VlogFilter);
 
 /**
  * VLog Filter Option Element
- * A simple element to define filter options in markup
+ * A simple element to define filter options in markup.
+ * Attributes are read by the parent VlogFilter component.
  */
 export class VlogFilterOption extends HTMLElement {
-  static get observedAttributes() {
-    return ['value', 'selected'];
-  }
+  // This is a marker element - attributes are read by parent VlogFilter
 }
 
 customElements.define('vlog-filter-option', VlogFilterOption);

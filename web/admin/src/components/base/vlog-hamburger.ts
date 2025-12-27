@@ -123,32 +123,31 @@ export class VlogHamburger extends HTMLElement {
     this.button = this.shadowRoot!.querySelector('.hamburger')!;
 
     this.handleClick = this.handleClick.bind(this);
-    this.handleKeyDown = this.handleKeyDown.bind(this);
   }
 
   connectedCallback() {
     this.button.addEventListener('click', this.handleClick);
-    this.button.addEventListener('keydown', this.handleKeyDown);
-    this.updateAriaExpanded();
+    this.updateAriaState();
   }
 
   disconnectedCallback() {
     this.button.removeEventListener('click', this.handleClick);
-    this.button.removeEventListener('keydown', this.handleKeyDown);
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null) {
     if (oldValue === newValue) return;
 
     if (name === 'open') {
-      this.updateAriaExpanded();
+      this.updateAriaState();
     } else if (name === 'aria-controls') {
       this.button.setAttribute('aria-controls', newValue || '');
     }
   }
 
-  private updateAriaExpanded() {
-    this.button.setAttribute('aria-expanded', String(this.hasAttribute('open')));
+  private updateAriaState() {
+    const isOpen = this.hasAttribute('open');
+    this.button.setAttribute('aria-expanded', String(isOpen));
+    this.button.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
   }
 
   private handleClick() {
@@ -160,13 +159,6 @@ export class VlogHamburger extends HTMLElement {
         composed: true,
       })
     );
-  }
-
-  private handleKeyDown(e: KeyboardEvent) {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      this.handleClick();
-    }
   }
 
   // Public API

@@ -39,8 +39,7 @@ template.innerHTML = `
 
     .search-input {
       width: 100%;
-      padding: var(--vlog-space-2, 0.5rem) var(--vlog-space-10, 2.5rem);
-      padding-left: var(--vlog-space-10, 2.5rem);
+      padding: var(--vlog-space-2, 0.5rem) var(--vlog-space-12, 3rem) var(--vlog-space-2, 0.5rem) var(--vlog-space-10, 2.5rem);
       border: 1px solid var(--vlog-border-secondary, #334155);
       border-radius: var(--vlog-radius-md, 0.375rem);
       background-color: var(--vlog-bg-tertiary, #1e293b);
@@ -66,12 +65,12 @@ template.innerHTML = `
 
     .clear-button {
       position: absolute;
-      right: var(--vlog-space-2, 0.5rem);
+      right: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 1.5rem;
-      height: 1.5rem;
+      width: 44px;
+      height: 44px;
       padding: 0;
       border: none;
       border-radius: var(--vlog-radius-sm, 0.25rem);
@@ -116,8 +115,7 @@ template.innerHTML = `
 
     /* Size variants */
     :host([size="sm"]) .search-input {
-      padding: var(--vlog-space-1, 0.25rem) var(--vlog-space-8, 2rem);
-      padding-left: var(--vlog-space-8, 2rem);
+      padding: var(--vlog-space-1, 0.25rem) var(--vlog-space-12, 3rem) var(--vlog-space-1, 0.25rem) var(--vlog-space-8, 2rem);
       font-size: var(--vlog-text-xs, 0.75rem);
     }
 
@@ -128,8 +126,7 @@ template.innerHTML = `
     }
 
     :host([size="lg"]) .search-input {
-      padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-12, 3rem);
-      padding-left: var(--vlog-space-12, 3rem);
+      padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-12, 3rem) var(--vlog-space-3, 0.75rem) var(--vlog-space-12, 3rem);
       font-size: var(--vlog-text-base, 1rem);
     }
 
