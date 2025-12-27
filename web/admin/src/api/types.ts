@@ -119,11 +119,11 @@ export interface ActiveJobsResponse {
 }
 
 export interface WorkerStats {
-  active: number;
-  idle: number;
-  offline: number;
-  disabled: number;
-  total: number;
+  active_count: number;
+  idle_count: number;
+  offline_count: number;
+  disabled_count: number;
+  total_count: number;
 }
 
 export interface WorkerLogs {

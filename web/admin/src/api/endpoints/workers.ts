@@ -3,7 +3,16 @@
  */
 
 import { apiClient } from '../client';
-import type { Worker, ActiveJobsResponse, WorkerLogs, WorkerMetrics, DeploymentEvent } from '../types';
+import type { Worker, ActiveJobsResponse, WorkerStats, WorkerLogs, WorkerMetrics, DeploymentEvent } from '../types';
+
+interface WorkersListResponse {
+  workers: Worker[];
+  total_count: number;
+  active_count: number;
+  idle_count: number;
+  offline_count: number;
+  disabled_count: number;
+}
 
 export const workersApi = {
   // ===========================================================================
@@ -11,11 +20,20 @@ export const workersApi = {
   // ===========================================================================
 
   /**
-   * List all workers
+   * List all workers with stats
    */
-  async list(): Promise<Worker[]> {
-    const response = await apiClient.fetch<{ workers: Worker[] }>('/api/workers');
-    return response.workers;
+  async list(): Promise<{ workers: Worker[]; stats: WorkerStats }> {
+    const response = await apiClient.fetch<WorkersListResponse>('/api/workers');
+    return {
+      workers: response.workers,
+      stats: {
+        total_count: response.total_count,
+        active_count: response.active_count,
+        idle_count: response.idle_count,
+        offline_count: response.offline_count,
+        disabled_count: response.disabled_count,
+      },
+    };
   },
 
   /**

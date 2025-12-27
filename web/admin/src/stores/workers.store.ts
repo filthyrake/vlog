@@ -73,7 +73,7 @@ export function createWorkersStore(_context?: AlpineContext): WorkersStore {
   return {
     // Initial state
     workersList: [],
-    workerStats: { active: 0, idle: 0, offline: 0, disabled: 0, total: 0 },
+    workerStats: { active_count: 0, idle_count: 0, offline_count: 0, disabled_count: 0, total_count: 0 },
     activeJobs: { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 },
     loading: false,
     error: null,
@@ -111,17 +111,18 @@ export function createWorkersStore(_context?: AlpineContext): WorkersStore {
       this.error = null;
 
       try {
-        const [workers, jobsResponse] = await Promise.all([
+        const [workersResponse, jobsResponse] = await Promise.all([
           workersApi.list(),
           workersApi.getActiveJobs(),
         ]);
 
-        this.workersList = workers;
+        this.workersList = workersResponse.workers;
+        this.workerStats = workersResponse.stats;
         this.activeJobs = jobsResponse;
-        this.computeWorkerStats();
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to load workers';
         this.workersList = [];
+        this.workerStats = { active_count: 0, idle_count: 0, offline_count: 0, disabled_count: 0, total_count: 0 };
         this.activeJobs = { jobs: [], total_count: 0, processing_count: 0, pending_count: 0 };
       } finally {
         this.loading = false;
@@ -290,22 +291,22 @@ export function createWorkersStore(_context?: AlpineContext): WorkersStore {
     // ===========================================================================
 
     computeWorkerStats(): void {
-      const stats = { active: 0, idle: 0, offline: 0, disabled: 0, total: 0 };
+      const stats = { active_count: 0, idle_count: 0, offline_count: 0, disabled_count: 0, total_count: 0 };
 
       for (const worker of this.workersList) {
-        stats.total++;
+        stats.total_count++;
         switch (worker.status) {
           case 'active':
-            stats.active++;
+            stats.active_count++;
             break;
           case 'idle':
-            stats.idle++;
+            stats.idle_count++;
             break;
           case 'offline':
-            stats.offline++;
+            stats.offline_count++;
             break;
           case 'disabled':
-            stats.disabled++;
+            stats.disabled_count++;
             break;
         }
       }
