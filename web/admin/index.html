@@ -407,8 +407,14 @@
                         <div slot="meta">
                             <span x-text="video.category_name || 'Uncategorized'"></span>
                         </div>
-                        <div slot="actions">
+                        <div slot="actions" class="flex flex-wrap gap-1">
                             <vlog-button variant="ghost" size="sm" @click.stop="openEditModal(video)">Edit</vlog-button>
+                            <vlog-button variant="ghost" size="sm" x-show="video.status !== 'processing'" @click.stop="openReuploadModal(video)">Re-upload</vlog-button>
+                            <vlog-button variant="ghost" size="sm" @click.stop="retranscodeAll(video)">Re-transcode</vlog-button>
+                            <vlog-button variant="ghost" size="sm" x-show="video.status === 'failed'" @click.stop="retryVideo(video.id)">Retry</vlog-button>
+                            <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click.stop="togglePublish(video)" x-text="video.published_at ? 'Unpublish' : 'Publish'"></vlog-button>
+                            <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click.stop="openThumbnailModal(video)">Thumbnail</vlog-button>
+                            <vlog-button variant="ghost-danger" size="sm" @click.stop="deleteVideo(video.id)">Delete</vlog-button>
                         </div>
                     </vlog-video-card>
                 </template>

@@ -147,13 +147,16 @@ export interface WorkerMetrics {
 
 export interface DeploymentEvent {
   id: number;
-  event_type: 'deployed' | 'restarted' | 'updated' | 'deleted';
+  event_type: 'restart' | 'stop' | 'update' | 'deploy' | 'rollback' | 'version_change';
   worker_id: string;
   worker_name?: string;
   old_version?: string;
   new_version?: string;
-  timestamp: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  triggered_by?: string;
   details?: string;
+  created_at: string;
+  completed_at?: string;
 }
 
 // =============================================================================

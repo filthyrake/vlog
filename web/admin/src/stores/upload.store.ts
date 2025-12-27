@@ -120,6 +120,12 @@ export function createUploadStore(): UploadStore {
       this.uploadProgress = 0;
       this.uploadMessage = '';
       this.uploadError = '';
+
+      // Clear the dropzone component if it exists
+      const dropzone = document.querySelector('vlog-dropzone[x-ref="uploadDropzone"]');
+      if (dropzone && 'clear' in dropzone) {
+        (dropzone as { clear(): void }).clear();
+      }
     },
 
     /**
