@@ -38,9 +38,11 @@ function createSSEConnection(
   let reconnectAttempts = 0;
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
+  let isReconnecting = false;
 
   const connect = () => {
     if (closed) return;
+    isReconnecting = false;
 
     eventSource = new EventSource(url);
 
@@ -59,10 +61,14 @@ function createSSEConnection(
     };
 
     eventSource.onerror = (error) => {
+      // Prevent overlapping reconnection attempts
+      if (isReconnecting || closed) return;
+      isReconnecting = true;
+
       onError?.(error);
 
       // Attempt reconnection with exponential backoff
-      if (!closed && reconnectAttempts < maxReconnectAttempts) {
+      if (reconnectAttempts < maxReconnectAttempts) {
         eventSource.close();
         const delay = Math.min(reconnectDelay * Math.pow(2, reconnectAttempts), 60000);
         reconnectAttempts++;

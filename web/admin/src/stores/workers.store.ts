@@ -6,7 +6,6 @@
 import { workersApi } from '@/api/endpoints/workers';
 import type { Worker, ActiveJobsResponse, WorkerStats, DeploymentEvent, WorkerMetrics } from '@/api/types';
 import { formatTimeSince, formatDeploymentTime, isVersionOutdated, getEventIcon, getEventColor } from '@/utils/formatters';
-import type { AlpineContext } from './types';
 
 export interface WorkersState {
   // Worker list
@@ -69,7 +68,7 @@ export interface WorkersActions {
 
 export type WorkersStore = WorkersState & WorkersActions;
 
-export function createWorkersStore(_context?: AlpineContext): WorkersStore {
+export function createWorkersStore(): WorkersStore {
   return {
     // Initial state
     workersList: [],

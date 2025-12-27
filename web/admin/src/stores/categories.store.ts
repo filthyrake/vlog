@@ -5,7 +5,6 @@
 
 import { categoriesApi } from '@/api/endpoints/categories';
 import type { Category } from '@/api/types';
-import type { AlpineContext } from './types';
 
 export interface CategoriesState {
   // Data
@@ -29,7 +28,7 @@ export interface CategoriesActions {
 
 export type CategoriesStore = CategoriesState & CategoriesActions;
 
-export function createCategoriesStore(_context?: AlpineContext): CategoriesStore {
+export function createCategoriesStore(): CategoriesStore {
   return {
     // Initial state
     categories: [],

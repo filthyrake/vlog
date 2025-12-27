@@ -6,7 +6,6 @@
 import { sseApi } from '@/api/endpoints/sse';
 import type { SSEConnection } from '@/api/endpoints/sse';
 import type { ProgressSSEEvent, WorkerSSEEvent, Video } from '@/api/types';
-import type { AlpineContext } from './types';
 
 export interface SSEState {
   // Connection state
@@ -32,7 +31,7 @@ export interface SSEActions {
 
 export type SSEStore = SSEState & SSEActions;
 
-export function createSSEStore(_context?: AlpineContext): SSEStore {
+export function createSSEStore(): SSEStore {
   return {
     // Connection state
     progressSSE: null,

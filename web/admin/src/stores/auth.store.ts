@@ -5,7 +5,6 @@
 
 import { authApi } from '@/api/endpoints/auth';
 import { apiClient } from '@/api/client';
-import type { AlpineContext } from './types';
 
 export interface AuthState {
   // State
@@ -27,7 +26,7 @@ export interface AuthActions {
 
 export type AuthStore = AuthState & AuthActions;
 
-export function createAuthStore(_context?: AlpineContext): AuthStore {
+export function createAuthStore(): AuthStore {
   return {
     // Initial state
     isAuthenticated: false,

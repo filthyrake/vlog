@@ -6,7 +6,6 @@
 import { settingsApi } from '@/api/endpoints/settings';
 import { customFieldsApi } from '@/api/endpoints/custom-fields';
 import type { SettingDefinition, WatermarkSettings, CustomField, CustomFieldType, CustomFieldConstraint } from '@/api/types';
-import type { AlpineContext } from './types';
 
 export interface SettingsState {
   // Settings categories and values
@@ -83,7 +82,7 @@ export interface SettingsActions {
 
 export type SettingsStore = SettingsState & SettingsActions;
 
-export function createSettingsStore(_context?: AlpineContext): SettingsStore {
+export function createSettingsStore(): SettingsStore {
   return {
     // Settings state
     settingsCategories: [],
@@ -331,7 +330,16 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
     async importSettings(file: File): Promise<void> {
       try {
         const text = await file.text();
-        const data = JSON.parse(text);
+
+        // Parse JSON with user-friendly error handling
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          this.settingsError = 'Invalid settings file format. Please select a valid JSON file.';
+          return;
+        }
+
         const result = await settingsApi.import(data);
         this.settingsMessage = `Imported ${result.imported} settings (${result.skipped} skipped)`;
         await this.loadAllSettings();

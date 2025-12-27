@@ -89,14 +89,9 @@ window.VLogApi = {
 // Export formatters
 window.VLogFormatters = formatters;
 
-// Log initialization
-console.log('VLog Admin: Store and API initialized');
-
 // Start Alpine.js AFTER everything is set up
 // This ensures window.admin() is defined before Alpine processes x-data
 Alpine.start();
-
-console.log('VLog Admin: Alpine.js started');
 
 // Export for module consumers
 export { createAdminStore };

@@ -5,7 +5,6 @@
 
 import { videosApi } from '@/api/endpoints/videos';
 import type { Video } from '@/api/types';
-import type { AlpineContext } from './types';
 
 export interface UploadState {
   // Form fields
@@ -33,7 +32,7 @@ export interface UploadActions {
 
 export type UploadStore = UploadState & UploadActions;
 
-export function createUploadStore(_context?: AlpineContext): UploadStore {
+export function createUploadStore(): UploadStore {
   return {
     // Initial state
     uploadFile: null,

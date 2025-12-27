@@ -3,7 +3,7 @@
  * Manages global UI state like active tab, loading states, etc.
  */
 
-import type { AdminTab, SettingsTab, AlpineContext } from './types';
+import type { AdminTab, SettingsTab } from './types';
 
 export interface UIState {
   // Current active tab
@@ -20,7 +20,7 @@ export interface UIActions {
 
 export type UIStore = UIState & UIActions;
 
-export function createUIStore(_context?: AlpineContext): UIStore {
+export function createUIStore(): UIStore {
   return {
     // Initial state
     tab: 'videos',

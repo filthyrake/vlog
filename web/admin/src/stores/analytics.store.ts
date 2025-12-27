@@ -7,7 +7,6 @@ import { analyticsApi } from '@/api/endpoints/analytics';
 import type { AnalyticsPeriod } from '@/api/endpoints/analytics';
 import type { AnalyticsOverview, VideoAnalytics } from '@/api/types';
 import { formatPercent, formatWatchTime, formatHours } from '@/utils/formatters';
-import type { AlpineContext } from './types';
 
 export interface AnalyticsState {
   // Overview data - always has a value (defaults provided)
@@ -34,7 +33,7 @@ export interface AnalyticsActions {
 
 export type AnalyticsStore = AnalyticsState & AnalyticsActions;
 
-export function createAnalyticsStore(_context?: AlpineContext): AnalyticsStore {
+export function createAnalyticsStore(): AnalyticsStore {
   return {
     // Initial state - provide defaults to prevent null access errors in templates
     analyticsOverview: {

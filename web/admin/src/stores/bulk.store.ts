@@ -5,7 +5,6 @@
 
 import { videosApi } from '@/api/endpoints/videos';
 import type { Video, VideoCustomFields } from '@/api/types';
-import type { AlpineContext } from './types';
 
 export interface BulkState {
   // Selection
@@ -69,7 +68,7 @@ export interface BulkActions {
 
 export type BulkStore = BulkState & BulkActions;
 
-export function createBulkStore(_context?: AlpineContext): BulkStore {
+export function createBulkStore(): BulkStore {
   return {
     // Selection
     selectedVideos: [],

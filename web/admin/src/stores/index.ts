@@ -15,6 +15,9 @@ import { createBulkStore, type BulkStore } from './bulk.store';
 import { createSSEStore, type SSEStore, getActiveVideoIds } from './sse.store';
 import type { ProgressSSEEvent, WorkerSSEEvent, CustomField } from '@/api/types';
 
+// Polling interval IDs for cleanup
+let pollingIntervals: ReturnType<typeof setInterval>[] = [];
+
 // Combined store type
 export type AdminStore = AuthStore &
   UIStore &
@@ -27,6 +30,7 @@ export type AdminStore = AuthStore &
   BulkStore &
   SSEStore & {
     init(): Promise<void>;
+    destroy(): void;
     getApplicableCustomFields(): CustomField[];
   };
 
@@ -79,6 +83,22 @@ export function createAdminStore(): AdminStore {
         // Check if field applies to the selected category
         return field.applies_to_categories.includes(categoryId);
       });
+    },
+
+    /**
+     * Clean up polling intervals and SSE connections
+     * Called when the admin component is destroyed (if ever)
+     */
+    destroy(): void {
+      // Clear all polling intervals
+      for (const intervalId of pollingIntervals) {
+        clearInterval(intervalId);
+      }
+      pollingIntervals = [];
+
+      // Close SSE connections
+      this.disconnectProgressSSE();
+      this.disconnectWorkersSSE();
     },
 
     /**
@@ -136,26 +156,41 @@ export function createAdminStore(): AdminStore {
   return store;
 }
 
-// Polling setup (internal)
+/**
+ * Set up polling intervals as fallback for SSE
+ * Interval IDs are stored for cleanup in destroy()
+ */
 function setupPolling(this: AdminStore) {
+  // Clear any existing intervals first
+  for (const intervalId of pollingIntervals) {
+    clearInterval(intervalId);
+  }
+  pollingIntervals = [];
+
   // Auto-refresh videos every 30 seconds
-  setInterval(() => {
-    this.loadVideos();
-  }, 30000);
+  pollingIntervals.push(
+    setInterval(() => {
+      this.loadVideos();
+    }, 30000)
+  );
 
   // Fallback polling for progress if SSE not connected
-  setInterval(() => {
-    if (!this.progressSSE || this.progressSSE.eventSource.readyState !== EventSource.OPEN) {
-      this.loadProgressForActiveVideos();
-    }
-  }, 5000);
+  pollingIntervals.push(
+    setInterval(() => {
+      if (!this.progressSSE || this.progressSSE.eventSource.readyState !== EventSource.OPEN) {
+        this.loadProgressForActiveVideos();
+      }
+    }, 5000)
+  );
 
   // Auto-refresh workers every 10 seconds when workers tab is active
-  setInterval(() => {
-    if (this.tab === 'workers' && (!this.workersSSE || this.workersSSE.eventSource.readyState !== EventSource.OPEN)) {
-      this.loadWorkers();
-    }
-  }, 10000);
+  pollingIntervals.push(
+    setInterval(() => {
+      if (this.tab === 'workers' && (!this.workersSSE || this.workersSSE.eventSource.readyState !== EventSource.OPEN)) {
+        this.loadWorkers();
+      }
+    }, 10000)
+  );
 }
 
 // Export for Alpine.js global access

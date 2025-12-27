@@ -6,7 +6,6 @@
 import { videosApi } from '@/api/endpoints/videos';
 import type { Video, QualityInfo, ThumbnailFrame, VideoProgress } from '@/api/types';
 import { formatDuration, formatDate } from '@/utils/formatters';
-import type { AlpineContext } from './types';
 
 export interface VideosState {
   // Video list
@@ -117,7 +116,7 @@ export interface VideosActions {
 
 export type VideosStore = VideosState & VideosActions;
 
-export function createVideosStore(_context?: AlpineContext): VideosStore {
+export function createVideosStore(): VideosStore {
   return {
     // Initial state
     videos: [],
@@ -620,15 +619,12 @@ export function createVideosStore(_context?: AlpineContext): VideosStore {
     updateProgress(videoId: number, progress: VideoProgress): void {
       this.progressData[videoId] = progress;
 
-      // Update video in list
-      const idx = this.videos.findIndex((v) => v.id === videoId);
-      if (idx !== -1) {
-        const existing = this.videos[idx];
-        if (existing) {
-          existing.status = progress.status;
-          existing.current_step = progress.current_step;
-          existing.current_progress = progress.current_progress;
-        }
+      // Update video in list if found
+      const video = this.videos.find((v) => v.id === videoId);
+      if (video) {
+        video.status = progress.status;
+        video.current_step = progress.current_step;
+        video.current_progress = progress.current_progress;
       }
     },
   };
