@@ -1085,7 +1085,7 @@ async def transcode_quality_with_progress(
                 "-hls_segment_filename",
                 segment_pattern,
                 "-movflags",
-                "+cmaf+faststart",
+                "+frag_keyframe+empty_moov+default_base_moof",
                 "-progress",
                 "pipe:1",
                 "-f",

@@ -809,7 +809,11 @@ def build_cmaf_transcode_command(
     # CMAF/fMP4 HLS output
     # -hls_segment_type fmp4: Use fragmented MP4 instead of MPEG-TS
     # -hls_fmp4_init_filename: Name of the initialization segment
-    # -movflags +cmaf: Enable CMAF compatibility flags
+    # -movflags: CMAF requires specific flags for valid fMP4 segments
+    #   +frag_keyframe: Start new fragment at each keyframe
+    #   +empty_moov: Write empty moov atom (required for fMP4)
+    #   +default_base_moof: Use moof as base for data offsets (required for CMAF/DASH)
+    # NOTE: Do NOT use +faststart with fMP4 - it conflicts with fragmented output
     cmd.extend(
         [
             "-hls_time",
@@ -823,7 +827,7 @@ def build_cmaf_transcode_command(
             "-hls_segment_filename",
             segment_pattern,
             "-movflags",
-            "+cmaf+faststart",
+            "+frag_keyframe+empty_moov+default_base_moof",
             "-progress",
             "pipe:1",
             "-f",

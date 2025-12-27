@@ -1094,7 +1094,7 @@ def build_concat_cmaf_command(
             "-hls_segment_filename",
             segment_pattern,
             "-movflags",
-            "+cmaf+faststart",
+            "+frag_keyframe+empty_moov+default_base_moof",
             str(playlist_path),
         ]
     )
