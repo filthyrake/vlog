@@ -2544,15 +2544,15 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             # Use CMAF-specific master playlist generator
             # Get codec from settings for CMAF manifest
             primary_codec = transcoder_settings.get("streaming_codec", "av1")
-            await generate_master_playlist_cmaf(output_dir, successful_qualities, primary_codec)
+            # Convert codec string to VideoCodec enum for manifest generators
+            codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
+                primary_codec.lower(), VideoCodec.AV1
+            )
+            await generate_master_playlist_cmaf(output_dir, successful_qualities, codec_enum)
             # Also generate DASH manifest if enabled
             enable_dash = transcoder_settings.get("streaming_enable_dash", True)
             if enable_dash:
                 print("  Generating DASH manifest...")
-                # Convert codec string to VideoCodec enum for generate_dash_manifest
-                codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
-                    primary_codec.lower(), VideoCodec.AV1
-                )
                 await generate_dash_manifest(output_dir, successful_qualities, codec=codec_enum)
         else:
             await generate_master_playlist(output_dir, successful_qualities)
