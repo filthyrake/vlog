@@ -21,6 +21,7 @@ export interface VideosState {
   editDescription: string;
   editCategory: number;
   editPublishedAt: string;
+  editCustomFieldValues: Record<string, unknown>; // Custom field values for edit modal
   editSaving: boolean;
   editMessage: string;
   editError: string;
@@ -72,6 +73,7 @@ export interface VideosActions {
   deleteVideo(id: number): Promise<void>;
   retryVideo(id: number): Promise<void>;
   toggleVideoPublish(video: Video): Promise<void>;
+  togglePublish(video: Video): Promise<void>; // Alias for toggleVideoPublish
   exportVideos(): Promise<void>;
 
   // Edit modal
@@ -88,6 +90,12 @@ export interface VideosActions {
   openRetranscodeModal(video: Video): Promise<void>;
   closeRetranscodeModal(): void;
   startRetranscode(): Promise<void>;
+  submitRetranscode(): Promise<void>; // Alias for startRetranscode
+  retranscodeAll(video: Video): Promise<void>;
+  toggleRetranscodeQuality(quality: string): void;
+
+  // Custom field editing
+  toggleMultiSelectOption(fieldId: string, option: string): void;
 
   // Thumbnail modal
   openThumbnailModal(video: Video): Promise<void>;
@@ -96,6 +104,7 @@ export interface VideosActions {
   selectThumbnailFrame(timestamp: number): Promise<void>;
   uploadCustomThumbnail(): Promise<void>;
   revertToGeneratedThumbnail(): Promise<void>;
+  revertThumbnail(): Promise<void>; // Alias for revertToGeneratedThumbnail
 
   // Progress tracking
   loadProgressForActiveVideos(): Promise<void>;
@@ -122,6 +131,7 @@ export function createVideosStore(_context?: AlpineContext): VideosStore {
     editDescription: '',
     editCategory: 0,
     editPublishedAt: '',
+    editCustomFieldValues: {},
     editSaving: false,
     editMessage: '',
     editError: '',
@@ -222,6 +232,11 @@ export function createVideosStore(_context?: AlpineContext): VideosStore {
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to toggle publish status';
       }
+    },
+
+    // Alias for toggleVideoPublish
+    async togglePublish(video: Video): Promise<void> {
+      return this.toggleVideoPublish(video);
     },
 
     async exportVideos(): Promise<void> {
@@ -401,6 +416,52 @@ export function createVideosStore(_context?: AlpineContext): VideosStore {
       }
     },
 
+    // Alias for startRetranscode
+    async submitRetranscode(): Promise<void> {
+      return this.startRetranscode();
+    },
+
+    async retranscodeAll(video: Video): Promise<void> {
+      if (!confirm(`Re-transcode all qualities for "${video.title}"? This will delete all existing transcoded files and re-process the video.`)) {
+        return;
+      }
+
+      try {
+        await videosApi.retranscode(video.id, ['all']);
+        await this.loadVideos();
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : 'Re-transcode failed';
+      }
+    },
+
+    toggleRetranscodeQuality(quality: string): void {
+      const idx = this.retranscodeSelected.indexOf(quality);
+      if (idx === -1) {
+        this.retranscodeSelected.push(quality);
+      } else {
+        this.retranscodeSelected.splice(idx, 1);
+      }
+    },
+
+    // ===========================================================================
+    // Custom Field Editing
+    // ===========================================================================
+
+    toggleMultiSelectOption(fieldId: string, option: string): void {
+      let current = this.editCustomFieldValues[fieldId];
+      if (!Array.isArray(current)) {
+        current = [];
+      }
+
+      const idx = (current as string[]).indexOf(option);
+      if (idx >= 0) {
+        (current as string[]).splice(idx, 1);
+      } else {
+        (current as string[]).push(option);
+      }
+      this.editCustomFieldValues[fieldId] = [...(current as string[])];
+    },
+
     // ===========================================================================
     // Thumbnail Modal
     // ===========================================================================
@@ -519,6 +580,11 @@ export function createVideosStore(_context?: AlpineContext): VideosStore {
       } finally {
         this.thumbnailLoading = false;
       }
+    },
+
+    // Alias for revertToGeneratedThumbnail
+    async revertThumbnail(): Promise<void> {
+      return this.revertToGeneratedThumbnail();
     },
 
     // ===========================================================================

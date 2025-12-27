@@ -64,6 +64,7 @@ export interface BulkActions {
   openBulkCustomFieldsModal(): void;
   closeBulkCustomFieldsModal(): void;
   bulkUpdateCustomFields(): Promise<void>;
+  toggleBulkMultiSelectOption(fieldId: string, option: string): void;
 }
 
 export type BulkStore = BulkState & BulkActions;
@@ -342,6 +343,21 @@ export function createBulkStore(_context?: AlpineContext): BulkStore {
       } finally {
         this.bulkOpLoading = false;
       }
+    },
+
+    toggleBulkMultiSelectOption(fieldId: string, option: string): void {
+      let current = this.bulkCustomFieldValues[fieldId];
+      if (!Array.isArray(current)) {
+        current = [];
+      }
+
+      const idx = (current as string[]).indexOf(option);
+      if (idx >= 0) {
+        (current as string[]).splice(idx, 1);
+      } else {
+        (current as string[]).push(option);
+      }
+      this.bulkCustomFieldValues[fieldId] = [...(current as string[])];
     },
   };
 }

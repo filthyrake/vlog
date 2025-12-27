@@ -23,6 +23,7 @@ export interface CategoriesState {
 export interface CategoriesActions {
   loadCategories(): Promise<void>;
   addCategory(): Promise<void>;
+  createCategory(): Promise<void>; // Alias for addCategory
   deleteCategory(id: number): Promise<void>;
 }
 
@@ -79,6 +80,11 @@ export function createCategoriesStore(_context?: AlpineContext): CategoriesStore
       } finally {
         this.loading = false;
       }
+    },
+
+    // Alias for addCategory
+    async createCategory(): Promise<void> {
+      return this.addCategory();
     },
 
     /**

@@ -55,7 +55,7 @@ export interface ThumbnailFrame {
 }
 
 export interface VideoCustomFields {
-  [fieldId: string]: string | number | boolean | null;
+  [fieldId: string]: string | number | boolean | string[] | null;
 }
 
 // =============================================================================

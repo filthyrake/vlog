@@ -12,8 +12,8 @@ export interface SettingsState {
   // Settings categories and values
   settingsCategories: string[];
   settingsByCategory: Record<string, SettingDefinition[]>;
-  settingsModified: Record<string, boolean>;
-  settingsOriginal: Record<string, string | number | boolean | null>;
+  settingsModified: Record<string, Record<string, boolean>>; // category -> key -> modified
+  settingsOriginal: Record<string, SettingDefinition[]>; // category -> original settings
   settingsLoading: boolean;
   settingsLoadingCategory: string | null;
   settingsSaving: boolean;
@@ -54,7 +54,13 @@ export interface SettingsActions {
   loadSettingsCategories(): Promise<void>;
   loadSettingsCategory(category: string): Promise<void>;
   saveSettingValue(key: string, value: string | number | boolean | null): Promise<void>;
-  resetSettingsCategory(category: string): Promise<void>;
+  resetSettingsCategory(category: string): void;
+  saveAllCategorySettings(category: string): Promise<void>;
+  resetCategorySettings(category: string): void; // Alias for resetSettingsCategory
+  hasModifiedSettings(category: string): boolean;
+  getSettingInputType(valueType: string): string;
+  formatSettingValue(value: unknown, valueType: string): string;
+  markSettingModified(category: string, key: string): void;
   exportSettings(): Promise<void>;
   importSettings(file: File): Promise<void>;
 
@@ -67,7 +73,9 @@ export interface SettingsActions {
   // Custom field operations
   loadCustomFields(): Promise<void>;
   openCreateCustomFieldModal(): void;
+  openCreateFieldModal(): void; // Alias
   openEditCustomFieldModal(field: CustomField): void;
+  openEditFieldModal(field: CustomField): void; // Alias
   closeCustomFieldModal(): void;
   saveCustomField(): Promise<void>;
   deleteCustomField(field: CustomField): Promise<void>;
@@ -80,8 +88,8 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
     // Settings state
     settingsCategories: [],
     settingsByCategory: {},
-    settingsModified: {},
-    settingsOriginal: {},
+    settingsModified: {}, // category -> key -> modified
+    settingsOriginal: {}, // category -> original settings array
     settingsLoading: false,
     settingsLoadingCategory: null,
     settingsSaving: false,
@@ -132,11 +140,10 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
         this.settingsCategories = categories;
         this.settingsByCategory = allSettings;
 
-        // Store original values for change tracking
-        for (const settings of Object.values(allSettings)) {
-          for (const setting of settings) {
-            this.settingsOriginal[setting.key] = setting.value;
-          }
+        // Store original values for change tracking (deep copy per category)
+        for (const [category, settings] of Object.entries(allSettings)) {
+          this.settingsOriginal[category] = JSON.parse(JSON.stringify(settings));
+          this.settingsModified[category] = {};
         }
       } catch (e) {
         this.settingsError = e instanceof Error ? e.message : 'Failed to load settings';
@@ -159,10 +166,8 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
       try {
         const settings = await settingsApi.getCategory(category);
         this.settingsByCategory[category] = settings;
-
-        for (const setting of settings) {
-          this.settingsOriginal[setting.key] = setting.value;
-        }
+        this.settingsOriginal[category] = JSON.parse(JSON.stringify(settings));
+        this.settingsModified[category] = {};
       } catch (e) {
         this.settingsError = e instanceof Error ? e.message : 'Failed to load category';
       } finally {
@@ -177,8 +182,22 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
 
       try {
         await settingsApi.setValue(key, value);
-        this.settingsOriginal[key] = value;
-        this.settingsModified[key] = false;
+
+        // Find the category and update original value
+        for (const [category, settings] of Object.entries(this.settingsByCategory)) {
+          const setting = settings.find((s) => s.key === key);
+          if (setting) {
+            const origSetting = this.settingsOriginal[category]?.find((s) => s.key === key);
+            if (origSetting) {
+              origSetting.value = value;
+            }
+            if (this.settingsModified[category]) {
+              delete this.settingsModified[category][key];
+            }
+            break;
+          }
+        }
+
         this.settingsMessage = 'Setting saved';
       } catch (e) {
         this.settingsError = e instanceof Error ? e.message : 'Failed to save setting';
@@ -187,22 +206,102 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
       }
     },
 
-    async resetSettingsCategory(category: string): Promise<void> {
-      const settings = this.settingsByCategory[category];
-      if (!settings) return;
+    resetSettingsCategory(category: string): void {
+      if (!this.settingsOriginal[category]) return;
 
-      for (const setting of settings) {
-        if (this.settingsModified[setting.key]) {
-          try {
-            await settingsApi.resetValue(setting.key);
-            setting.value = setting.default_value ?? null;
-            this.settingsOriginal[setting.key] = setting.value;
-            this.settingsModified[setting.key] = false;
-          } catch (e) {
-            console.error(`Failed to reset ${setting.key}:`, e);
+      // Restore original values
+      this.settingsByCategory[category] = JSON.parse(JSON.stringify(this.settingsOriginal[category]));
+      // Clear modified tracking
+      this.settingsModified[category] = {};
+      this.settingsMessage = 'Settings reset to last saved values';
+      this.settingsError = '';
+    },
+
+    // Alias for resetSettingsCategory
+    resetCategorySettings(category: string): void {
+      return this.resetSettingsCategory(category);
+    },
+
+    async saveAllCategorySettings(category: string): Promise<void> {
+      if (!this.hasModifiedSettings(category)) return;
+
+      this.settingsSaving = true;
+      this.settingsMessage = '';
+      this.settingsError = '';
+
+      const modifiedKeys = Object.keys(this.settingsModified[category] || {});
+      let savedCount = 0;
+      const errors: string[] = [];
+
+      for (const key of modifiedKeys) {
+        try {
+          const setting = this.settingsByCategory[category]?.find((s) => s.key === key);
+          if (!setting) continue;
+
+          await settingsApi.setValue(key, setting.value);
+          savedCount++;
+          if (this.settingsModified[category]) {
+            delete this.settingsModified[category][key];
           }
+
+          // Update original value
+          const origSetting = this.settingsOriginal[category]?.find((s) => s.key === key);
+          if (origSetting) {
+            origSetting.value = setting.value;
+          }
+        } catch (e) {
+          errors.push(`${key}: ${e instanceof Error ? e.message : 'Failed'}`);
         }
       }
+
+      this.settingsSaving = false;
+
+      if (errors.length === 0) {
+        this.settingsMessage = `Saved ${savedCount} setting(s) successfully`;
+        this.settingsError = '';
+      } else {
+        this.settingsMessage = `Saved ${savedCount}, failed ${errors.length}: ${errors.join(', ')}`;
+        this.settingsError = errors.join(', ');
+      }
+    },
+
+    hasModifiedSettings(category: string): boolean {
+      const modified = this.settingsModified[category];
+      return modified ? Object.keys(modified).length > 0 : false;
+    },
+
+    getSettingInputType(valueType: string): string {
+      switch (valueType) {
+        case 'boolean':
+          return 'checkbox';
+        case 'integer':
+        case 'float':
+          return 'number';
+        case 'enum':
+          return 'select';
+        case 'json':
+          return 'textarea';
+        default:
+          return 'text';
+      }
+    },
+
+    formatSettingValue(value: unknown, valueType: string): string {
+      if (valueType === 'json') {
+        try {
+          return JSON.stringify(value, null, 2);
+        } catch {
+          return String(value);
+        }
+      }
+      return String(value ?? '');
+    },
+
+    markSettingModified(category: string, key: string): void {
+      if (!this.settingsModified[category]) {
+        this.settingsModified[category] = {};
+      }
+      this.settingsModified[category][key] = true;
     },
 
     async exportSettings(): Promise<void> {
@@ -345,6 +444,11 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
       this.customFieldModal = true;
     },
 
+    // Alias for openCreateCustomFieldModal
+    openCreateFieldModal(): void {
+      return this.openCreateCustomFieldModal();
+    },
+
     openEditCustomFieldModal(field: CustomField): void {
       this.customFieldEditing = field;
       this.customFieldForm = {
@@ -359,6 +463,11 @@ export function createSettingsStore(_context?: AlpineContext): SettingsStore {
       this.customFieldMessage = '';
       this.customFieldError = '';
       this.customFieldModal = true;
+    },
+
+    // Alias for openEditCustomFieldModal
+    openEditFieldModal(field: CustomField): void {
+      return this.openEditCustomFieldModal(field);
     },
 
     closeCustomFieldModal(): void {
