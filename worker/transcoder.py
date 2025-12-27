@@ -873,6 +873,32 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
             except OSError as e:
                 return False, f"Error probing segment: {e}"
 
+            # For CMAF/fMP4: also verify first segment is a valid fMP4 fragment
+            # This catches corrupted segments with missing moof/tfhd atoms
+            if first_segment_path.suffix == ".m4s":
+                try:
+                    proc = await asyncio.wait_for(
+                        asyncio.create_subprocess_exec(
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-show_format",
+                            str(first_segment_path),
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        ),
+                        timeout=10,
+                    )
+                    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    # Check for common fMP4 corruption errors
+                    stderr_str = stderr.decode("utf-8", errors="replace").lower()
+                    if "invalid data" in stderr_str or "no tfhd" in stderr_str or "error" in stderr_str:
+                        return False, f"Corrupted fMP4 segment: {first_segment_path.name} (invalid fragment structure)"
+                except asyncio.TimeoutError:
+                    return False, f"Timeout validating fMP4 segment {first_segment_path.name}"
+                except OSError as e:
+                    return False, f"Error validating fMP4 segment: {e}"
+
         return True, None
 
     except (IOError, OSError) as e:
