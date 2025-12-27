@@ -10,8 +10,14 @@ import { formatDuration, formatDate } from '@/utils/formatters';
 export interface VideosState {
   // Video list
   videos: Video[];
+  filteredVideos: Video[];
   loading: boolean;
   error: string | null;
+
+  // Search and filter
+  videoSearch: string;
+  videoStatusFilter: string;
+  videoCategoryFilter: string;
 
   // Edit modal state
   editModal: boolean;
@@ -74,6 +80,7 @@ export interface VideosActions {
   toggleVideoPublish(video: Video): Promise<void>;
   togglePublish(video: Video): Promise<void>; // Alias for toggleVideoPublish
   exportVideos(): Promise<void>;
+  filterVideos(): void;
 
   // Edit modal
   openEditModal(video: Video): void;
@@ -120,8 +127,14 @@ export function createVideosStore(): VideosStore {
   return {
     // Initial state
     videos: [],
+    filteredVideos: [],
     loading: false,
     error: null,
+
+    // Search and filter
+    videoSearch: '',
+    videoStatusFilter: '',
+    videoCategoryFilter: '',
 
     // Edit modal
     editModal: false,
@@ -189,9 +202,11 @@ export function createVideosStore(): VideosStore {
 
       try {
         this.videos = await videosApi.list();
+        this.filterVideos();
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to load videos';
         this.videos = [];
+        this.filteredVideos = [];
       } finally {
         this.loading = false;
       }
@@ -250,6 +265,34 @@ export function createVideosStore(): VideosStore {
       } catch (e) {
         this.error = e instanceof Error ? e.message : 'Failed to export videos';
       }
+    },
+
+    filterVideos(): void {
+      let result = [...this.videos];
+
+      // Search filter
+      if (this.videoSearch) {
+        const search = this.videoSearch.toLowerCase();
+        result = result.filter(
+          (v) =>
+            v.title.toLowerCase().includes(search) ||
+            v.slug.toLowerCase().includes(search) ||
+            (v.description && v.description.toLowerCase().includes(search))
+        );
+      }
+
+      // Status filter
+      if (this.videoStatusFilter) {
+        result = result.filter((v) => v.status === this.videoStatusFilter);
+      }
+
+      // Category filter
+      if (this.videoCategoryFilter) {
+        const categoryId = parseInt(this.videoCategoryFilter, 10);
+        result = result.filter((v) => v.category_id === categoryId);
+      }
+
+      this.filteredVideos = result;
     },
 
     // ===========================================================================

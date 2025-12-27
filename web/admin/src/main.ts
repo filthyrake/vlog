@@ -35,6 +35,10 @@ import { sseApi } from '@/api/endpoints/sse';
 // Import formatters for template use
 import * as formatters from '@/utils/formatters';
 
+// Import keyboard manager
+import { getKeyboardManager, destroyKeyboardManager } from '@/utils/keyboard';
+import type { KeyboardManager } from '@/utils/keyboard';
+
 // Declare global types
 declare global {
   interface Window {
@@ -60,6 +64,9 @@ declare global {
 
     // Formatters
     VLogFormatters: typeof formatters;
+
+    // Keyboard shortcuts
+    VLogKeyboard: KeyboardManager;
   }
 }
 
@@ -88,6 +95,14 @@ window.VLogApi = {
 
 // Export formatters
 window.VLogFormatters = formatters;
+
+// Initialize keyboard shortcuts
+window.VLogKeyboard = getKeyboardManager();
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+  destroyKeyboardManager();
+});
 
 // Start Alpine.js AFTER everything is set up
 // This ensures window.admin() is defined before Alpine processes x-data
