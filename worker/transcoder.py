@@ -165,8 +165,8 @@ async def get_transcoder_settings() -> Dict[str, Any]:
             ),
             "debounce_delay": await service.get("workers.debounce_delay", WORKER_DEBOUNCE_DELAY),
             # Streaming format settings (Issue #212)
-            "streaming_format": await service.get("streaming.default_format", "hls_ts"),
-            "streaming_codec": await service.get("streaming.default_codec", "h264"),
+            "streaming_format": await service.get("streaming.default_format", "cmaf"),
+            "streaming_codec": await service.get("streaming.default_codec", "av1"),
             "streaming_enable_dash": await service.get("streaming.enable_dash", True),
             "streaming_segment_duration": await service.get("streaming.segment_duration", 6),
         }
@@ -187,8 +187,8 @@ async def get_transcoder_settings() -> Dict[str, Any]:
             "fallback_poll_interval": WORKER_FALLBACK_POLL_INTERVAL,
             "debounce_delay": WORKER_DEBOUNCE_DELAY,
             # Streaming format defaults
-            "streaming_format": "hls_ts",
-            "streaming_codec": "h264",
+            "streaming_format": "cmaf",
+            "streaming_codec": "av1",
             "streaming_enable_dash": True,
             "streaming_segment_duration": 6,
         }
@@ -2084,8 +2084,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
         # Get streaming format from settings (Issue #222)
         transcoder_settings = await get_transcoder_settings()
-        streaming_format = transcoder_settings.get("streaming_format", "hls_ts")
-        print(f"  Output format: {streaming_format}")
+        streaming_format = transcoder_settings.get("streaming_format", "cmaf")
+        streaming_codec = transcoder_settings.get("streaming_codec", "av1")
+        print(f"  Output format: {streaming_format}, codec: {streaming_codec}")
 
         qualities = get_applicable_qualities(info["height"])
         if not qualities:
@@ -2295,6 +2296,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     progress_cb,
                     gpu_caps=state.gpu_caps,
                     streaming_format=streaming_format,
+                    preferred_codec=streaming_codec,
                 )
 
                 if success:
@@ -2475,6 +2477,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             None,
                             gpu_caps=state.gpu_caps,
                             streaming_format=streaming_format,
+                            preferred_codec=streaming_codec,
                         )
                         if success:
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
@@ -2540,13 +2543,17 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         if streaming_format == "cmaf":
             # Use CMAF-specific master playlist generator
             # Get codec from settings for CMAF manifest
-            primary_codec = transcoder_settings.get("streaming_codec", "h264")
+            primary_codec = transcoder_settings.get("streaming_codec", "av1")
             await generate_master_playlist_cmaf(output_dir, successful_qualities, primary_codec)
             # Also generate DASH manifest if enabled
             enable_dash = transcoder_settings.get("streaming_enable_dash", True)
             if enable_dash:
                 print("  Generating DASH manifest...")
-                await generate_dash_manifest(output_dir, successful_qualities, primary_codec)
+                # Convert codec string to VideoCodec enum for generate_dash_manifest
+                codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
+                    primary_codec.lower(), VideoCodec.AV1
+                )
+                await generate_dash_manifest(output_dir, successful_qualities, codec=codec_enum)
         else:
             await generate_master_playlist(output_dir, successful_qualities)
         await checkpoint(job_id)
@@ -2586,7 +2593,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         }
         # Set primary_codec for CMAF (from settings)
         if streaming_format == "cmaf":
-            video_updates["primary_codec"] = transcoder_settings.get("streaming_codec", "h264")
+            video_updates["primary_codec"] = transcoder_settings.get("streaming_codec", "av1")
         else:
             video_updates["primary_codec"] = "h264"  # HLS/TS always uses H.264
         if video_row and video_row["published_at"] is None:

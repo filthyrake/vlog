@@ -694,7 +694,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 # Also generate DASH manifest if enabled
                 if enable_dash:
                     print("  Generating DASH manifest...")
-                    await generate_dash_manifest(output_dir, master_qualities, codec=streaming_codec)
+                    # Convert codec string to VideoCodec enum for generate_dash_manifest
+                    codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
+                        streaming_codec.lower(), VideoCodec.AV1
+                    )
+                    await generate_dash_manifest(output_dir, master_qualities, codec=codec_enum)
             else:
                 await generate_master_playlist(output_dir, master_qualities)
 
