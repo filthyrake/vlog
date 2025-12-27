@@ -162,6 +162,40 @@
                 </div>
             </div>
 
+            <!-- Search and Filter Bar -->
+            <div class="flex flex-wrap gap-3 mb-4">
+                <vlog-search
+                    placeholder="Search videos..."
+                    :value="videoSearch"
+                    @search="videoSearch = $event.detail.value; filterVideos()"
+                    @clear="videoSearch = ''; filterVideos()"
+                    class="flex-1 min-w-[200px]"
+                ></vlog-search>
+                <vlog-filter
+                    label="Status"
+                    name="status"
+                    :value="videoStatusFilter"
+                    @change="videoStatusFilter = $event.detail.value; filterVideos()"
+                >
+                    <vlog-filter-option value="">All</vlog-filter-option>
+                    <vlog-filter-option value="ready">Ready</vlog-filter-option>
+                    <vlog-filter-option value="processing">Processing</vlog-filter-option>
+                    <vlog-filter-option value="pending">Pending</vlog-filter-option>
+                    <vlog-filter-option value="failed">Failed</vlog-filter-option>
+                </vlog-filter>
+                <vlog-filter
+                    label="Category"
+                    name="category"
+                    :value="videoCategoryFilter"
+                    @change="videoCategoryFilter = $event.detail.value; filterVideos()"
+                >
+                    <vlog-filter-option value="">All Categories</vlog-filter-option>
+                    <template x-for="cat in categories" :key="cat.id">
+                        <vlog-filter-option :value="cat.id.toString()" x-text="cat.name"></vlog-filter-option>
+                    </template>
+                </vlog-filter>
+            </div>
+
             <!-- Bulk Action Toolbar -->
             <div x-show="selectedVideos.length > 0" class="bg-dark-800 rounded-lg p-3 mb-4 flex items-center gap-4">
                 <span class="text-dark-300">
@@ -177,7 +211,8 @@
                 </div>
             </div>
 
-            <div class="bg-dark-900 rounded-xl overflow-hidden">
+            <!-- Desktop Table (hidden on mobile and during loading) -->
+            <div class="bg-dark-900 rounded-xl overflow-hidden hidden md:block" x-show="!loading && filteredVideos.length > 0">
                 <table class="w-full">
                     <thead class="bg-dark-800">
                         <tr>
@@ -198,7 +233,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-dark-800">
-                        <template x-for="video in videos" :key="video.id">
+                        <template x-for="video in filteredVideos" :key="video.id">
                             <tr class="hover:bg-dark-800/50" :class="{'bg-blue-900/20': selectedVideos.includes(video.id)}">
                                 <td class="px-4 py-3">
                                     <input
@@ -225,51 +260,17 @@
                                 <td class="px-4 py-3 text-dark-400" x-text="video.category_name || '-'"></td>
                                 <td class="px-4 py-3">
                                     <div class="space-y-1">
-                                        <span
-                                            :class="{
-                                                'bg-green-500/20 text-green-400': video.status === 'ready',
-                                                'bg-yellow-500/20 text-yellow-400': video.status === 'processing',
-                                                'bg-blue-500/20 text-blue-400': video.status === 'pending',
-                                                'bg-red-500/20 text-red-400': video.status === 'failed'
-                                            }"
-                                            class="px-2 py-1 rounded text-sm inline-flex items-center gap-1"
-                                            role="status"
-                                        >
-                                            <!-- Ready: checkmark icon -->
-                                            <svg x-show="video.status === 'ready'" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                                <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd" />
-                                            </svg>
-                                            <!-- Processing: spinner icon -->
-                                            <svg x-show="video.status === 'processing'" style="width: 20px; height: 20px;" class="animate-spin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                                <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clip-rule="evenodd" />
-                                            </svg>
-                                            <!-- Pending: clock icon -->
-                                            <svg x-show="video.status === 'pending'" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd" />
-                                            </svg>
-                                            <!-- Failed: X icon -->
-                                            <svg x-show="video.status === 'failed'" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
-                                            </svg>
-                                            <span x-text="video.status"></span>
-                                        </span>
-                                        <span
+                                        <vlog-badge
+                                            :variant="video.status === 'ready' ? 'success' : video.status === 'processing' ? 'processing' : video.status === 'pending' ? 'pending' : 'error'"
+                                            size="sm"
+                                            x-text="video.status"
+                                        ></vlog-badge>
+                                        <vlog-badge
                                             x-show="video.status === 'ready'"
-                                            :class="video.published_at ? 'bg-emerald-500/20 text-emerald-400' : 'bg-dark-600 text-dark-400'"
-                                            class="px-2 py-1 rounded text-sm inline-flex items-center gap-1"
-                                        >
-                                            <!-- Published: eye icon -->
-                                            <svg x-show="video.published_at" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                                <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
-                                                <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
-                                            </svg>
-                                            <!-- Draft: eye-slash icon -->
-                                            <svg x-show="!video.published_at" style="width: 20px; height: 20px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                                <path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd" />
-                                                <path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z" />
-                                            </svg>
-                                            <span x-text="video.published_at ? 'published' : 'draft'"></span>
-                                        </span>
+                                            :variant="video.published_at ? 'success' : 'neutral'"
+                                            size="sm"
+                                            x-text="video.published_at ? 'Published' : 'Draft'"
+                                        ></vlog-badge>
                                         <!-- Progress details for processing videos -->
                                         <template x-if="video.status === 'processing' && progressData[video.id]">
                                             <div class="text-xs space-y-1 mt-2">
@@ -345,15 +346,72 @@
                         </template>
                     </tbody>
                 </table>
+            </div>
 
-                <vlog-empty-state
-                    x-show="videos.length === 0"
-                    icon="video"
-                    title="No videos yet"
-                    description="Upload your first video to get started."
-                    action-text="Upload Video"
-                    @action="tab = 'upload'"
-                ></vlog-empty-state>
+            <!-- Skeleton loading state (desktop) -->
+            <div x-show="loading" class="bg-dark-900 rounded-xl overflow-hidden hidden md:block divide-y divide-dark-800">
+                <template x-for="i in 5" :key="i">
+                    <div class="flex items-center gap-4 p-4">
+                        <vlog-skeleton variant="thumbnail"></vlog-skeleton>
+                        <div class="flex-1 space-y-2">
+                            <vlog-skeleton variant="text" style="width: 60%"></vlog-skeleton>
+                            <vlog-skeleton variant="text" style="width: 40%"></vlog-skeleton>
+                        </div>
+                        <vlog-skeleton variant="button"></vlog-skeleton>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Skeleton loading state (mobile) -->
+            <div x-show="loading" class="md:hidden space-y-3">
+                <template x-for="i in 3" :key="i">
+                    <div class="bg-dark-900 rounded-xl p-4 space-y-3">
+                        <vlog-skeleton variant="thumbnail" class="w-full aspect-video"></vlog-skeleton>
+                        <vlog-skeleton variant="text" style="width: 70%"></vlog-skeleton>
+                        <vlog-skeleton variant="text" style="width: 40%"></vlog-skeleton>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Empty state when no videos match filter -->
+            <vlog-empty-state
+                x-show="!loading && filteredVideos.length === 0 && (videoSearch || videoStatusFilter || videoCategoryFilter)"
+                icon="search"
+                title="No videos found"
+                description="Try adjusting your search or filter criteria."
+                action-text="Clear Filters"
+                @action="videoSearch = ''; videoStatusFilter = ''; videoCategoryFilter = ''; filterVideos()"
+            ></vlog-empty-state>
+
+            <!-- Empty state when no videos exist (only show when no filters active) -->
+            <vlog-empty-state
+                x-show="!loading && videos.length === 0 && !videoSearch && !videoStatusFilter && !videoCategoryFilter"
+                icon="video"
+                title="No videos yet"
+                description="Upload your first video to get started."
+                action-text="Upload Video"
+                @action="tab = 'upload'"
+            ></vlog-empty-state>
+
+            <!-- Mobile Video Cards (hidden on desktop) -->
+            <div class="md:hidden space-y-3" x-show="!loading && filteredVideos.length > 0">
+                <template x-for="video in filteredVideos" :key="video.id">
+                    <vlog-video-card
+                        :title="video.title"
+                        :thumbnail="video.thumbnail_url"
+                        :status="video.status"
+                        :duration="formatDuration(video.duration)"
+                        @card-click="openEditModal(video)"
+                        always-visible
+                    >
+                        <div slot="meta">
+                            <span x-text="video.category_name || 'Uncategorized'"></span>
+                        </div>
+                        <div slot="actions">
+                            <vlog-button variant="ghost" size="sm" @click.stop="openEditModal(video)">Edit</vlog-button>
+                        </div>
+                    </vlog-video-card>
+                </template>
             </div>
         </div>
 

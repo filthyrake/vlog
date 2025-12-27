@@ -90,6 +90,7 @@ window.VLogApi = {
 window.VLogFormatters = formatters;
 
 // Start Alpine.js AFTER everything is set up
+// Note: Keyboard shortcuts are initialized in stores/index.ts when the admin store starts
 // This ensures window.admin() is defined before Alpine processes x-data
 Alpine.start();
 
