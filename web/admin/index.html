@@ -72,13 +72,15 @@
                 <form @submit.prevent="uploadVideo" class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium mb-2">Video File</label>
-                        <input
-                            type="file"
+                        <vlog-dropzone
                             accept="video/*"
-                            @change="uploadFile = $event.target.files[0]"
-                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
-                            required
+                            max-size="10737418240"
+                            @files-selected="if ($event.detail.files[0]?.file) setFile($event.detail.files[0].file)"
+                            @file-removed="uploadFile = null"
+                            :disabled="uploading"
                         >
+                            Drop video file here or click to browse
+                        </vlog-dropzone>
                     </div>
 
                     <div>
@@ -116,29 +118,36 @@
                     </div>
 
                     <!-- Upload Progress -->
-                    <div x-show="uploadProgress >= 0" class="space-y-2" role="status" aria-live="polite" aria-label="Upload progress">
+                    <div x-show="uploadProgress >= 0" class="space-y-2">
                         <div class="flex justify-between text-sm">
                             <span>Uploading...</span>
                             <span x-text="uploadProgress + '%'"></span>
                         </div>
-                        <div class="w-full bg-dark-700 rounded-full h-2" role="progressbar" :aria-valuenow="uploadProgress" aria-valuemin="0" aria-valuemax="100">
-                            <div
-                                class="bg-blue-500 h-2 rounded-full transition-all"
-                                :style="'width: ' + uploadProgress + '%'"
-                            ></div>
-                        </div>
+                        <vlog-progress
+                            type="linear"
+                            :value="uploadProgress"
+                            variant="primary"
+                            aria-label="Upload progress"
+                        ></vlog-progress>
                     </div>
 
-                    <div x-show="uploadMessage" :class="uploadError ? 'text-red-400' : 'text-green-400'" class="text-sm" x-text="uploadMessage" :role="uploadError ? 'alert' : 'status'" aria-live="polite"></div>
+                    <!-- Upload Message -->
+                    <vlog-alert
+                        x-show="uploadMessage"
+                        :variant="uploadError ? 'error' : 'success'"
+                        x-text="uploadMessage"
+                    ></vlog-alert>
 
-                    <button
+                    <vlog-button
                         type="submit"
+                        variant="primary"
+                        full-width
                         :disabled="uploading"
-                        class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 rounded-lg font-medium transition"
+                        :loading="uploading"
                     >
                         <span x-show="!uploading">Upload Video</span>
                         <span x-show="uploading">Uploading...</span>
-                    </button>
+                    </vlog-button>
                 </form>
             </div>
         </div>
@@ -147,9 +156,9 @@
         <div x-show="tab === 'videos'" x-cloak>
             <div class="flex justify-between items-center mb-6">
                 <h2 class="text-xl font-semibold">All Videos</h2>
-                <div class="flex gap-4 items-center">
-                    <button @click="exportVideos" class="text-green-400 hover:text-green-300">Export</button>
-                    <button @click="loadVideos" class="text-blue-400 hover:text-blue-300">Refresh</button>
+                <div class="flex gap-2 items-center">
+                    <vlog-button variant="ghost" size="sm" @click="exportVideos">Export</vlog-button>
+                    <vlog-button variant="ghost" size="sm" @click="loadVideos">Refresh</vlog-button>
                 </div>
             </div>
 
@@ -159,32 +168,12 @@
                     <span class="font-semibold text-white" x-text="selectedVideos.length"></span> video(s) selected
                 </span>
                 <div class="flex gap-2 ml-auto">
-                    <button
-                        @click="openBulkUpdateModal"
-                        class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition"
-                    >Update</button>
-                    <button
-                        @click="openBulkRetranscodeModal"
-                        class="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 rounded text-sm font-medium transition"
-                    >Re-transcode</button>
-                    <button
-                        @click="openBulkCustomFieldsModal"
-                        x-show="customFields.length > 0"
-                        class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 rounded text-sm font-medium transition"
-                    >Custom Fields</button>
-                    <button
-                        @click="bulkRestoreVideos"
-                        x-show="selectedVideos.some(id => videos.find(v => v.id === id)?.deleted_at)"
-                        class="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition"
-                    >Restore</button>
-                    <button
-                        @click="openBulkDeleteModal"
-                        class="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-sm font-medium transition"
-                    >Delete</button>
-                    <button
-                        @click="clearSelection"
-                        class="px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded text-sm font-medium transition"
-                    >Clear</button>
+                    <vlog-button variant="primary" size="sm" @click="openBulkUpdateModal">Update</vlog-button>
+                    <vlog-button variant="secondary" size="sm" @click="openBulkRetranscodeModal" class="!bg-cyan-600 hover:!bg-cyan-700">Re-transcode</vlog-button>
+                    <vlog-button variant="secondary" size="sm" @click="openBulkCustomFieldsModal" x-show="customFields.length > 0" class="!bg-purple-600 hover:!bg-purple-700">Custom Fields</vlog-button>
+                    <vlog-button variant="success" size="sm" @click="bulkRestoreVideos" x-show="selectedVideos.some(id => videos.find(v => v.id === id)?.deleted_at)">Restore</vlog-button>
+                    <vlog-button variant="danger" size="sm" @click="openBulkDeleteModal">Delete</vlog-button>
+                    <vlog-button variant="secondary" size="sm" @click="clearSelection">Clear</vlog-button>
                 </div>
             </div>
 
@@ -325,23 +314,12 @@
                                 </td>
                                 <td class="px-4 py-3 text-dark-400" x-text="formatDuration(video.duration)"></td>
                                 <td class="px-4 py-3">
-                                    <div class="flex gap-2 flex-wrap">
-                                        <button
-                                            @click="openEditModal(video)"
-                                            class="text-blue-400 hover:text-blue-300 text-sm"
-                                        >Edit</button>
-                                        <button
-                                            x-show="video.status !== 'processing'"
-                                            @click="openReuploadModal(video)"
-                                            class="text-purple-400 hover:text-purple-300 text-sm"
-                                        >Re-upload</button>
+                                    <div class="flex gap-1 flex-wrap">
+                                        <vlog-button variant="ghost" size="sm" @click="openEditModal(video)">Edit</vlog-button>
+                                        <vlog-button variant="ghost" size="sm" x-show="video.status !== 'processing'" @click="openReuploadModal(video)">Re-upload</vlog-button>
                                         <!-- Re-transcode dropdown -->
                                         <div class="relative" x-data="{ open: false }">
-                                            <button
-                                                @click="open = !open"
-                                                @click.away="open = false"
-                                                class="text-cyan-400 hover:text-cyan-300 text-sm"
-                                            >Re-transcode</button>
+                                            <vlog-button variant="ghost" size="sm" @click="open = !open" @click.away="open = false">Re-transcode</vlog-button>
                                             <div
                                                 x-show="open"
                                                 x-cloak
@@ -357,27 +335,10 @@
                                                 >Select Qualities...</button>
                                             </div>
                                         </div>
-                                        <button
-                                            x-show="video.status === 'failed'"
-                                            @click="retryVideo(video.id)"
-                                            class="text-yellow-400 hover:text-yellow-300 text-sm"
-                                        >Retry</button>
-                                        <button
-                                            x-show="video.status === 'ready'"
-                                            @click="togglePublish(video)"
-                                            :class="video.published_at ? 'text-orange-400 hover:text-orange-300' : 'text-emerald-400 hover:text-emerald-300'"
-                                            class="text-sm"
-                                            x-text="video.published_at ? 'Unpublish' : 'Publish'"
-                                        ></button>
-                                        <button
-                                            x-show="video.status === 'ready'"
-                                            @click="openThumbnailModal(video)"
-                                            class="text-green-400 hover:text-green-300 text-sm"
-                                        >Thumbnail</button>
-                                        <button
-                                            @click="deleteVideo(video.id)"
-                                            class="text-red-400 hover:text-red-300 text-sm"
-                                        >Delete</button>
+                                        <vlog-button variant="ghost" size="sm" x-show="video.status === 'failed'" @click="retryVideo(video.id)">Retry</vlog-button>
+                                        <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click="togglePublish(video)" x-text="video.published_at ? 'Unpublish' : 'Publish'"></vlog-button>
+                                        <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click="openThumbnailModal(video)">Thumbnail</vlog-button>
+                                        <vlog-button variant="ghost" size="sm" @click="deleteVideo(video.id)" class="text-red-400">Delete</vlog-button>
                                     </div>
                                 </td>
                             </tr>
@@ -385,9 +346,14 @@
                     </tbody>
                 </table>
 
-                <div x-show="videos.length === 0" class="text-center py-8 text-dark-400">
-                    No videos yet. Upload your first video!
-                </div>
+                <vlog-empty-state
+                    x-show="videos.length === 0"
+                    icon="video"
+                    title="No videos yet"
+                    description="Upload your first video to get started."
+                    action-text="Upload Video"
+                    @action="tab = 'upload'"
+                ></vlog-empty-state>
             </div>
         </div>
 
@@ -399,8 +365,8 @@
 
             <div class="grid md:grid-cols-2 gap-6">
                 <!-- Add Category -->
-                <div class="bg-dark-900 rounded-xl p-6">
-                    <h3 class="font-medium mb-4">Add Category</h3>
+                <vlog-card>
+                    <span slot="header">Add Category</span>
                     <form @submit.prevent="createCategory" class="space-y-4">
                         <div>
                             <label class="block text-sm font-medium mb-2">Name</label>
@@ -421,16 +387,13 @@
                                 placeholder="Optional description"
                             ></textarea>
                         </div>
-                        <button
-                            type="submit"
-                            class="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition"
-                        >Add Category</button>
+                        <vlog-button type="submit" variant="primary" full-width>Add Category</vlog-button>
                     </form>
-                </div>
+                </vlog-card>
 
                 <!-- Category List -->
-                <div class="bg-dark-900 rounded-xl p-6">
-                    <h3 class="font-medium mb-4">Existing Categories</h3>
+                <vlog-card>
+                    <span slot="header">Existing Categories</span>
                     <div class="space-y-2">
                         <template x-for="cat in categories" :key="cat.id">
                             <div class="flex justify-between items-center p-3 bg-dark-800 rounded-lg">
@@ -438,17 +401,18 @@
                                     <div class="font-medium" x-text="cat.name"></div>
                                     <div class="text-dark-300 text-sm" x-text="cat.video_count + ' videos'"></div>
                                 </div>
-                                <button
-                                    @click="deleteCategory(cat.id)"
-                                    class="text-red-400 hover:text-red-300 text-sm"
-                                >Delete</button>
+                                <vlog-button variant="ghost" size="sm" @click="deleteCategory(cat.id)" class="text-red-400">Delete</vlog-button>
                             </div>
                         </template>
-                        <div x-show="categories.length === 0" class="text-dark-400 text-center py-4">
-                            No categories yet.
-                        </div>
+                        <vlog-empty-state
+                            x-show="categories.length === 0"
+                            icon="folder"
+                            title="No categories yet"
+                            description="Create your first category to organize your videos."
+                            compact
+                        ></vlog-empty-state>
                     </div>
-                </div>
+                </vlog-card>
             </div>
         </div>
 
@@ -526,9 +490,13 @@
                         </template>
                     </tbody>
                 </table>
-                <div x-show="analyticsVideos.length === 0" class="text-center py-8 text-dark-400">
-                    No playback data yet. Views will appear here once videos are watched.
-                </div>
+                <vlog-empty-state
+                    x-show="analyticsVideos.length === 0"
+                    icon="chart"
+                    title="No playback data yet"
+                    description="Views will appear here once videos are watched."
+                    compact
+                ></vlog-empty-state>
             </div>
         </div>
 
@@ -562,14 +530,15 @@
             <div class="bg-dark-900 rounded-xl overflow-hidden mb-6">
                 <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
                     <h3 class="font-semibold">Workers</h3>
-                    <div class="flex gap-3">
-                        <button
+                    <div class="flex gap-2">
+                        <vlog-button
+                            variant="ghost"
+                            size="sm"
                             @click="restartAllWorkers"
                             x-show="workersList.filter(w => w.status !== 'offline' && w.status !== 'disabled').length > 0"
-                            class="text-purple-400 hover:text-purple-300 text-sm"
                             title="Restart all online workers (useful for deploying updates)"
-                        >Restart All</button>
-                        <button @click="loadWorkers" class="text-blue-400 hover:text-blue-300 text-sm">Refresh</button>
+                        >Restart All</vlog-button>
+                        <vlog-button variant="ghost" size="sm" @click="loadWorkers">Refresh</vlog-button>
                     </div>
                 </div>
 
@@ -731,9 +700,12 @@
                     </template>
                 </div>
 
-                <div x-show="workersList.length === 0" class="text-center py-8 text-dark-400">
-                    No workers registered. Use <code class="bg-dark-800 px-2 py-1 rounded">vlog worker register</code> to add workers.
-                </div>
+                <vlog-empty-state
+                    x-show="workersList.length === 0"
+                    icon="users"
+                    title="No workers registered"
+                    description="Use 'vlog worker register' to add workers to your transcoding pool."
+                ></vlog-empty-state>
             </div>
 
             <!-- Active Jobs -->
@@ -904,20 +876,9 @@
                     <h2 class="text-xl font-semibold">Settings</h2>
                     <!-- Import/Export buttons -->
                     <div class="flex gap-2">
-                        <button
-                            @click="exportSettings()"
-                            class="px-3 py-1.5 text-sm bg-dark-800 hover:bg-dark-700 border border-dark-700 rounded-lg transition flex items-center gap-2"
-                        >
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
-                            </svg>
-                            Export
-                        </button>
-                        <label class="px-3 py-1.5 text-sm bg-dark-800 hover:bg-dark-700 border border-dark-700 rounded-lg transition flex items-center gap-2 cursor-pointer">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                            </svg>
-                            Import
+                        <vlog-button variant="secondary" size="sm" @click="exportSettings()">Export</vlog-button>
+                        <label>
+                            <vlog-button variant="secondary" size="sm" style="pointer-events: none;">Import</vlog-button>
                             <input type="file" accept=".json" @change="importSettings($event)" class="hidden">
                         </label>
                     </div>
@@ -946,12 +907,14 @@
                 </div>
 
                 <!-- Global settings message -->
-                <div x-show="settingsMessage" class="mb-4">
-                    <div :class="settingsError ? 'bg-red-900/20 border-red-800 text-red-400' : 'bg-green-900/20 border-green-800 text-green-400'" class="border rounded-lg px-4 py-3 text-sm flex items-center justify-between">
-                        <span x-text="settingsMessage"></span>
-                        <button @click="settingsMessage = ''" class="text-dark-400 hover:text-white">&times;</button>
-                    </div>
-                </div>
+                <vlog-alert
+                    x-show="settingsMessage"
+                    :variant="settingsError ? 'error' : 'success'"
+                    dismissible
+                    @dismiss="settingsMessage = ''"
+                    x-text="settingsMessage"
+                    class="mb-4"
+                ></vlog-alert>
 
                 <!-- Watermark Settings (special case with file upload) -->
                 <div x-show="settingsTab === 'watermark'" class="bg-dark-900 rounded-xl p-6">
