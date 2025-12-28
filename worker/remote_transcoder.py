@@ -72,6 +72,9 @@ from worker.transcoder import (
     validate_hls_playlist,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Global shutdown flag
 shutdown_requested = False
 
@@ -186,7 +189,7 @@ async def check_claim_expiration(coro):
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     global shutdown_requested
-    print("Shutdown signal received, finishing current job...")
+    logger.info("Shutdown signal received, finishing current job...")
     shutdown_requested = True
 
 
@@ -202,11 +205,11 @@ async def heartbeat_loop(client: WorkerAPIClient, state: dict):
             if HEALTH_SERVER:
                 HEALTH_SERVER.set_heartbeat_status(True)
         except WorkerAPIError as e:
-            print(f"Heartbeat failed: {e.message}")
+            logger.error(f"Heartbeat failed: {e.message}")
             if HEALTH_SERVER:
                 HEALTH_SERVER.set_heartbeat_status(False)
         except Exception as e:
-            print(f"Heartbeat error: {e}")
+            logger.error(f"Heartbeat error: {e}")
             if HEALTH_SERVER:
                 HEALTH_SERVER.set_heartbeat_status(False)
         await asyncio.sleep(WORKER_HEARTBEAT_INTERVAL)
@@ -235,8 +238,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     streaming_codec = settings.get("streaming_codec", "av1")
     enable_dash = settings.get("streaming_enable_dash", True)
 
-    print(f"Processing video: {video_slug} (job={job_id})")
-    print(f"  Streaming format: {streaming_format}, codec: {streaming_codec}")
+    logger.info(f"Processing video: {video_slug} (job={job_id})")
+    logger.debug(f"  Streaming format: {streaming_format}, codec: {streaming_codec}")
 
     # Create work directories
     work_dir = WORKER_WORK_DIR / str(job_id)
@@ -252,19 +255,19 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
     try:
         # Download source file
-        print("  Downloading source file...")
+        logger.info("  Downloading source file...")
         await check_claim_expiration(client.update_progress(job_id, "download", 0))
         await check_claim_expiration(client.download_source(video_id, source_path))
         await check_claim_expiration(client.update_progress(job_id, "download", 5))
 
         # Probe video
-        print("  Probing video info...")
+        logger.info("  Probing video info...")
         await check_claim_expiration(client.update_progress(job_id, "probe", 5))
         info = await get_video_info(source_path)
         duration = info["duration"]
         source_width = info["width"]
         source_height = info["height"]
-        print(f"    Source: {source_width}x{source_height}, {duration:.1f}s, codec={info['codec']}")
+        logger.info(f"    Source: {source_width}x{source_height}, {duration:.1f}s, codec={info['codec']}")
 
         # Update video metadata immediately after probing to prevent data loss if worker crashes
         await check_claim_expiration(
@@ -279,7 +282,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         )
 
         # Generate thumbnail
-        print("  Generating thumbnail...")
+        logger.info("  Generating thumbnail...")
         await check_claim_expiration(client.update_progress(job_id, "thumbnail", 10))
         thumb_path = output_dir / "thumbnail.jpg"
         thumbnail_time = min(5.0, duration / 4)
@@ -294,10 +297,10 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Get existing qualities to skip (for selective re-transcode)
         existing_qualities = set(job.get("existing_qualities") or [])
         if existing_qualities:
-            print(f"  Skipping existing qualities: {sorted(existing_qualities)}")
+            logger.info(f"  Skipping existing qualities: {sorted(existing_qualities)}")
 
         quality_names = [q["name"] for q in qualities]
-        print(f"  Transcoding to: original + {quality_names}")
+        logger.info(f"  Transcoding to: original + {quality_names}")
         await check_claim_expiration(client.update_progress(job_id, "transcode", 15))
 
         successful_qualities: List[dict] = []
@@ -312,11 +315,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
         # Create original quality (remux) - skip if already exists
         if "original" in existing_qualities:
-            print("    original: Skipping (already exists)")
+            logger.info("    original: Skipping (already exists)")
             quality_progress_list[0] = {"name": "original", "status": "skipped", "progress": 100}
             # Don't process, don't add to successful_qualities - server already has it
         else:
-            print("    original: Remuxing...")
+            logger.info("    original: Remuxing...")
             quality_progress_list[0] = {"name": "original", "status": "in_progress", "progress": 0}
             await check_claim_expiration(client.update_progress(job_id, "transcode", 15, quality_progress_list))
 
@@ -332,18 +335,18 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "bitrate": bitrate_bps // 1000,  # Convert to kbps
                     }
                 )
-                print("    original: Done")
+                logger.info("    original: Done")
 
                 # Validate HLS playlist before upload (issue #166)
                 playlist_path = output_dir / "original.m3u8"
                 is_valid, validation_error = await validate_hls_playlist(playlist_path)
                 if not is_valid:
-                    print(f"    original: HLS validation failed - {validation_error}")
+                    logger.error(f"    original: HLS validation failed - {validation_error}")
                     quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
                     failed_qualities.append("original")
                 else:
                     # Upload original quality immediately
-                    print("    original: Uploading...")
+                    logger.info("    original: Uploading...")
                     try:
                         # Define progress callback to extend claim during upload (issue #266)
                         async def upload_progress_callback_original(bytes_sent: int, total_bytes: int):
@@ -362,7 +365,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                                 raise
                             except Exception as e:
                                 # Other errors are logged but don't abort the upload
-                                print(f"      Upload progress update failed: {e}")
+                                logger.error(f"      Upload progress update failed: {e}")
 
                         await check_claim_expiration(
                             client.upload_quality(
@@ -370,7 +373,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             )
                         )
                         quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
-                        print("    original: Uploaded")
+                        logger.info("    original: Uploaded")
 
                         # Delete local files to free disk space
                         playlist_file = output_dir / "original.m3u8"
@@ -378,20 +381,20 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             playlist_file.unlink()
                         for segment in output_dir.glob("original_*.ts"):
                             segment.unlink()
-                        print("    original: Local files cleaned up")
+                        logger.info("    original: Local files cleaned up")
                     except WorkerAPIError as e:
                         quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
-                        print(f"    original: Upload failed - {e.message}")
+                        logger.error(f"    original: Upload failed - {e.message}")
             else:
                 quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
                 failed_qualities.append("original")
-                print(f"    original: Failed - {error}")
+                logger.error(f"    original: Failed - {error}")
 
         # Transcode other qualities (with parallel batching)
         # Get parallel encoding count based on GPU capabilities
         parallel_count = get_recommended_parallel_sessions(GPU_CAPS)
         if parallel_count > 1:
-            print(f"  Using parallel encoding: {parallel_count} qualities at a time")
+            logger.info(f"  Using parallel encoding: {parallel_count} qualities at a time")
 
         # Filter out existing qualities and group for parallel processing
         qualities_to_transcode = [q for q in qualities if q["name"] not in existing_qualities]
@@ -399,7 +402,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Mark existing qualities as skipped
         for idx, quality in enumerate(qualities):
             if quality["name"] in existing_qualities:
-                print(f"    {quality['name']}: Skipping (already exists)")
+                logger.info(f"    {quality['name']}: Skipping (already exists)")
                 quality_progress_list[idx + 1] = {
                     "name": quality["name"],
                     "status": "skipped",
@@ -439,7 +442,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             quality_name = quality["name"]
             quality_idx = quality_to_idx[quality_name]
 
-            print(f"    {quality_name}: Transcoding...")
+            logger.info(f"    {quality_name}: Transcoding...")
             async with progress_list_lock:
                 quality_progress_list[quality_idx] = {
                     "name": quality_name,
@@ -480,11 +483,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         )
                     except ClaimExpiredError:
                         # Log claim expiration before propagating to abort job
-                        print(f"      {qname}: Claim expired - aborting job")
+                        logger.error(f"      {qname}: Claim expired - aborting job")
                         raise
                     except Exception as e:
                         # Other errors are logged but don't abort the job
-                        print(f"      {qname}: Progress update failed: {e}")
+                        logger.error(f"      {qname}: Progress update failed: {e}")
 
             success, error = await transcode_quality_with_progress(
                 source_path,
@@ -504,7 +507,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "status": "failed",
                         "progress": 0,
                     }
-                print(f"    {quality_name}: Failed - {error}")
+                logger.error(f"    {quality_name}: Failed - {error}")
                 return (None, quality_name)
 
             # Get actual dimensions from transcoded segment
@@ -527,7 +530,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 "height": actual_height,
                 "bitrate": int(quality["bitrate"].replace("k", "")),
             }
-            print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
+            logger.info(f"    {quality_name}: Done ({actual_width}x{actual_height})")
 
             # Validate HLS playlist before upload (issue #166)
             # CMAF uses subdirectory structure
@@ -537,7 +540,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 quality_playlist_path = output_dir / f"{quality_name}.m3u8"
             is_valid, validation_error = await validate_hls_playlist(quality_playlist_path)
             if not is_valid:
-                print(f"    {quality_name}: HLS validation failed - {validation_error}")
+                logger.warning(f"    {quality_name}: HLS validation failed - {validation_error}")
                 async with progress_list_lock:
                     quality_progress_list[quality_idx] = {
                         "name": quality_name,
@@ -547,7 +550,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 return (None, quality_name)
 
             # Upload this quality immediately to free disk space
-            print(f"    {quality_name}: Uploading...")
+            logger.info(f"    {quality_name}: Uploading...")
             try:
                 # Upload progress callback
                 async def upload_progress_callback(
@@ -572,7 +575,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         raise
                     except Exception as e:
                         # Other errors are logged but don't abort the upload
-                        print(f"      {qname}: Upload progress update failed: {e}")
+                        logger.error(f"      {qname}: Upload progress update failed: {e}")
 
                 await check_claim_expiration(
                     client.upload_quality(
@@ -585,7 +588,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "status": "uploaded",
                         "progress": 100,
                     }
-                print(f"    {quality_name}: Uploaded")
+                logger.info(f"    {quality_name}: Uploaded")
 
                 # Delete local files to free disk space
                 # Check for CMAF subdirectory structure first
@@ -600,7 +603,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         playlist_file.unlink()
                     for segment in output_dir.glob(f"{quality_name}_*.ts"):
                         segment.unlink()
-                print(f"    {quality_name}: Local files cleaned up")
+                logger.info(f"    {quality_name}: Local files cleaned up")
 
             except WorkerAPIError as e:
                 # Upload failed - keep files, mark as completed (not uploaded)
@@ -610,7 +613,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "status": "completed",
                         "progress": 100,
                     }
-                print(f"    {quality_name}: Upload failed - {e.message}")
+                logger.error(f"    {quality_name}: Upload failed - {e.message}")
 
             return (quality_info, None)
 
@@ -620,7 +623,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 raise Exception("Shutdown requested")
 
             if len(batch) > 1:
-                print(f"  Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
+                logger.debug(f"  Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
 
             # Run batch in parallel
             tasks = [transcode_and_upload_quality(q) for q in batch]
@@ -641,7 +644,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             "progress": 0,
                         }
                     failed_qualities.append(quality["name"])
-                    print(f"    {quality['name']}: Unexpected error - {result}")
+                    logger.error(f"    {quality['name']}: Unexpected error - {result}")
                 elif isinstance(result, tuple):
                     success_info, failed_name = result
                     if success_info is not None:
@@ -698,7 +701,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Always generate manifests for CMAF streaming format
         # Even for selective retranscode, we regenerate to ensure consistency
         if streaming_format == "cmaf" and all_qualities_for_manifest:
-            print("  Generating master playlist...")
+            logger.info("  Generating master playlist...")
             await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
 
             # Convert codec string to VideoCodec enum for manifest generators
@@ -710,7 +713,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             # ALWAYS generate DASH manifest for CMAF - this was the bug!
             # Previously this was conditional on enable_dash and skipped for selective retranscode
             if enable_dash:
-                print("  Generating DASH manifest...")
+                logger.info("  Generating DASH manifest...")
                 await generate_dash_manifest(output_dir, all_qualities_for_manifest, codec=codec_enum)
 
             # Validate master playlist before upload (issue #166)
@@ -730,13 +733,13 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     raise Exception("DASH manifest was not generated for CMAF streaming")
 
             # Upload finalize files (master.m3u8, manifest.mpd, thumbnail.jpg)
-            print("  Uploading master playlist, DASH manifest, and thumbnail...")
+            logger.info("  Uploading master playlist, DASH manifest, and thumbnail...")
             await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
             await check_claim_expiration(client.upload_finalize(video_id, output_dir))
 
         elif not all_skipped:
             # Non-CMAF (HLS/TS) streaming format
-            print("  Generating master playlist...")
+            logger.info("  Generating master playlist...")
             await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
             await generate_master_playlist(output_dir, all_qualities_for_manifest)
 
@@ -751,21 +754,21 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 raise Exception("Master playlist is malformed (no stream variants)")
 
             # Upload finalize files
-            print("  Uploading master playlist and thumbnail...")
+            logger.info("  Uploading master playlist and thumbnail...")
             await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
             await check_claim_expiration(client.upload_finalize(video_id, output_dir))
 
         else:
             # All qualities skipped - still need to upload thumbnail if regenerated
-            print("  All qualities already exist, uploading thumbnail only...")
+            logger.info("  All qualities already exist, uploading thumbnail only...")
             await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
             await check_claim_expiration(client.upload_finalize(video_id, output_dir, skip_master=True))
 
-        print("  Finalize files uploaded")
+        logger.info("  Finalize files uploaded")
 
         # Complete job with retry logic to ensure server-side completion is verified
         # before cleaning up local work files (issue #271)
-        print("  Marking job complete...")
+        logger.info("  Marking job complete...")
         for attempt in range(COMPLETE_JOB_MAX_RETRIES):
             try:
                 await check_claim_expiration(
@@ -788,23 +791,23 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 # Retry on other errors
                 if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
                     error_msg = e.message if isinstance(e, WorkerAPIError) else str(e)
-                    print(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}")
-                    print(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
+                    logger.error(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}")
+                    logger.error(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
                     await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
                 else:
                     # Final attempt failed - don't cleanup, report failure
                     raise
 
-        print(f"  Done! Video {video_slug} is ready.")
+        logger.info(f"  Done! Video {video_slug} is ready.")
 
         if failed_qualities:
-            print(f"  Note: Some qualities failed: {', '.join(failed_qualities)}")
+            logger.warning(f"  Note: Some qualities failed: {', '.join(failed_qualities)}")
 
         return True
 
     except ClaimExpiredError:
         # Claim expired - job may have been reassigned
-        print(f"  {CLAIM_EXPIRED_ERROR}")
+        logger.error(f"  {CLAIM_EXPIRED_ERROR}")
         # Don't report failure - the job may already be claimed by another worker
         # Safe to cleanup since we don't own this job anymore
         completion_verified = True  # Mark for cleanup
@@ -813,27 +816,27 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     except WorkerAPIError as e:
         # Other API errors - don't cleanup, files may be needed for manual recovery
         error_msg = f"API error: {e.message}"[:500]
-        print(f"  Error: {error_msg}")
+        logger.error(f"  Error: {error_msg}")
         try:
             await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
         except ClaimExpiredError:
             # Claim expired while trying to report failure - ignore since job is lost anyway
-            print("  Claim expired while reporting error (job may have been reassigned)")
+            logger.error("  Claim expired while reporting error (job may have been reassigned)")
         except Exception as fail_e:
-            print(f"  Failed to report error: {fail_e}")
+            logger.error(f"  Failed to report error: {fail_e}")
         return False
 
     except Exception as e:
         # General errors - don't cleanup, files may be needed for manual recovery
         error_msg = str(e)[:500]
-        print(f"  Error: {error_msg}")
+        logger.error(f"  Error: {error_msg}")
         try:
             await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
         except ClaimExpiredError:
             # Claim expired while trying to report failure - ignore since job is lost anyway
-            print("  Claim expired while reporting error (job may have been reassigned)")
+            logger.error("  Claim expired while reporting error (job may have been reassigned)")
         except Exception as fail_e:
-            print(f"  Failed to report error: {fail_e}")
+            logger.error(f"  Failed to report error: {fail_e}")
         return False
 
     finally:
@@ -844,7 +847,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         if completion_verified and work_dir.exists():
             shutil.rmtree(work_dir, ignore_errors=True)
         elif work_dir.exists():
-            print(f"  Note: Work directory preserved at {work_dir} (completion not verified)")
+            logger.info(f"  Note: Work directory preserved at {work_dir} (completion not verified)")
 
 
 # Codec map for re-encoding
@@ -879,7 +882,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
         target_codec_str = job.get("target_codec", "hevc")
         target_codec = REENCODE_CODEC_MAP.get(target_codec_str, VideoCodec.HEVC)
 
-        print(f"Re-encode job {job_id}: {slug} -> {target_codec_str}")
+        logger.info(f"Re-encode job {job_id}: {slug} -> {target_codec_str}")
 
         # Create work directory
         work_dir = WORKER_WORK_DIR / f"reencode_{job_id}"
@@ -891,7 +894,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
 
         try:
             # Download existing video files
-            print("  Downloading source files...")
+            logger.info("  Downloading source files...")
             download_path = work_dir / "source.tar.gz"
             await client.download_reencode_source(job_id, download_path)
 
@@ -905,7 +908,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
             if not source_path:
                 raise ValueError("No source found in downloaded files")
 
-            print(f"  Source: {source_path.name}")
+            logger.info(f"  Source: {source_path.name}")
 
             # Get video info for quality selection
             probe_info = await get_video_info(source_path)
@@ -919,7 +922,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
             completed_qualities = []
             for quality in qualities:
                 try:
-                    print(f"    Encoding {quality['name']}...")
+                    logger.info(f"    Encoding {quality['name']}...")
                     await reencode_quality(
                         source_path=source_path,
                         output_dir=output_dir,
@@ -929,9 +932,9 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
                         gpu_caps=gpu_caps,
                     )
                     completed_qualities.append(quality)
-                    print(f"    Completed: {quality['name']}")
+                    logger.info(f"    Completed: {quality['name']}")
                 except Exception as e:
-                    print(f"    Failed {quality['name']}: {e}")
+                    logger.error(f"    Failed {quality['name']}: {e}")
                     # Continue with other qualities
 
             if not completed_qualities:
@@ -949,7 +952,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
                     break
 
             # Package output as tar.gz
-            print("  Uploading re-encoded files...")
+            logger.info("  Uploading re-encoded files...")
             upload_path = work_dir / "output.tar.gz"
             with tarfile.open(upload_path, "w:gz") as tar:
                 for f in output_dir.iterdir():
@@ -962,10 +965,10 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
 
             # Upload result
             await client.upload_reencode_result(job_id, upload_path)
-            print(f"  Re-encode job {job_id} completed successfully")
+            logger.info(f"  Re-encode job {job_id} completed successfully")
 
         except Exception as e:
-            print(f"  Re-encode job {job_id} failed: {e}")
+            logger.error(f"  Re-encode job {job_id} failed: {e}")
             retry_count = job.get("retry_count", 0) + 1
             max_retries = 3
 
@@ -990,10 +993,10 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
         if e.status_code == 404:
             # No jobs available
             return False
-        print(f"API error claiming re-encode job: {e.message}")
+        logger.error(f"API error claiming re-encode job: {e.message}")
         return False
     except Exception as e:
-        print(f"Error processing re-encode job: {e}")
+        logger.error(f"Error processing re-encode job: {e}")
         return False
 
 
@@ -1156,8 +1159,8 @@ async def worker_loop():
 
     # Validate API key
     if not WORKER_API_KEY:
-        print("ERROR: VLOG_WORKER_API_KEY environment variable required")
-        print("Register a worker first: curl -X POST http://server:9002/api/worker/register")
+        logger.error("ERROR: VLOG_WORKER_API_KEY environment variable required")
+        logger.warning("Register a worker first: curl -X POST http://server:9002/api/worker/register")
         sys.exit(1)
 
     # Generate unique worker ID for Redis consumer
@@ -1176,41 +1179,41 @@ async def worker_loop():
     worker_settings = await get_remote_worker_settings()
     poll_interval = worker_settings["poll_interval"]
 
-    print("Remote transcoding worker starting...")
-    print(f"  API URL: {WORKER_API_URL}")
-    print(f"  Work dir: {WORKER_WORK_DIR}")
-    print(f"  Heartbeat interval: {WORKER_HEARTBEAT_INTERVAL}s")
-    print(f"  Poll interval: {poll_interval}s")
-    print(f"  Job queue mode: {JOB_QUEUE_MODE}")
+    logger.info("Remote transcoding worker starting...")
+    logger.info(f"  API URL: {WORKER_API_URL}")
+    logger.info(f"  Work dir: {WORKER_WORK_DIR}")
+    logger.info(f"  Heartbeat interval: {WORKER_HEARTBEAT_INTERVAL}s")
+    logger.info(f"  Poll interval: {poll_interval}s")
+    logger.info(f"  Job queue mode: {JOB_QUEUE_MODE}")
 
     # Initialize Redis job queue if enabled
     if JOB_QUEUE_MODE in ("redis", "hybrid"):
-        print("  Initializing Redis job queue...")
+        logger.info("  Initializing Redis job queue...")
         JOB_QUEUE = JobQueue()
         await JOB_QUEUE.initialize(consumer_name=f"worker-{WORKER_UUID}")
         if JOB_QUEUE.is_redis_enabled:
-            print("  Redis Streams enabled for instant job dispatch")
+            logger.info("  Redis Streams enabled for instant job dispatch")
         else:
-            print("  Redis unavailable, using database polling")
+            logger.info("  Redis unavailable, using database polling")
     else:
-        print("  Job queue mode: database (polling)")
+        logger.info("  Job queue mode: database (polling)")
 
     # Detect GPU capabilities
-    print("  Detecting GPU capabilities...")
+    logger.info("  Detecting GPU capabilities...")
     GPU_CAPS = await detect_gpu_capabilities()
     if GPU_CAPS:
-        print(f"  GPU detected: {GPU_CAPS.device_name}")
-        print(f"    Type: {GPU_CAPS.hwaccel_type.value}")
+        logger.info(f"  GPU detected: {GPU_CAPS.device_name}")
+        logger.info(f"    Type: {GPU_CAPS.hwaccel_type.value}")
         encoders = [e.name for codec_encoders in GPU_CAPS.encoders.values() for e in codec_encoders]
-        print(f"    Encoders: {encoders}")
-        print(f"    Max sessions: {GPU_CAPS.max_concurrent_sessions}")
+        logger.info(f"    Encoders: {encoders}")
+        logger.info(f"    Max sessions: {GPU_CAPS.max_concurrent_sessions}")
     else:
-        print("  No GPU acceleration available, using CPU encoding")
+        logger.info("  No GPU acceleration available, using CPU encoding")
 
     # Get worker capabilities for heartbeat
     worker_caps = await get_worker_capabilities(GPU_CAPS)
     deployment_type = detect_deployment_type()
-    print(f"  Deployment type: {deployment_type}")
+    logger.info(f"  Deployment type: {deployment_type}")
 
     # Verify connection with initial heartbeat (include capabilities and deployment type)
     try:
@@ -1218,12 +1221,12 @@ async def worker_loop():
             status="idle",
             metadata={"capabilities": worker_caps, "deployment_type": deployment_type},
         )
-        print("  Connected to Worker API")
+        logger.info("  Connected to Worker API")
         # Mark worker as ready after successful API connection
         HEALTH_SERVER.set_ready(True)
         HEALTH_SERVER.set_heartbeat_status(True)
     except WorkerAPIError as e:
-        print(f"ERROR: Failed to connect to Worker API: {e.message}")
+        logger.error(f"ERROR: Failed to connect to Worker API: {e.message}")
         sys.exit(1)
 
     # Create worker state for tracking job status
@@ -1239,9 +1242,9 @@ async def worker_loop():
     COMMAND_LISTENER = CommandListener(WORKER_UUID)
     command_listener_started = await COMMAND_LISTENER.start()
     if command_listener_started:
-        print("  Remote management enabled (listening for commands)")
+        logger.info("  Remote management enabled (listening for commands)")
     else:
-        print("  Remote management unavailable (Redis not configured)")
+        logger.warning("  Remote management unavailable (Redis not configured)")
 
     jobs_processed = 0
     jobs_failed = 0
@@ -1258,13 +1261,13 @@ async def worker_loop():
 
                     if redis_job:
                         # Got job from Redis, do targeted HTTP claim to verify and lock in DB
-                        print(f"Redis dispatched job {redis_job.job_id}, confirming with API...")
+                        logger.info(f"Redis dispatched job {redis_job.job_id}, confirming with API...")
                         result = await client.claim_job(job_id=redis_job.job_id)
 
                         if not result.get("job_id"):
                             # Job already claimed by another worker or no longer available
                             # Acknowledge the Redis message to remove it from the stream
-                            print(f"  Job {redis_job.job_id} no longer available, acknowledging Redis message")
+                            logger.warning(f"  Job {redis_job.job_id} no longer available, acknowledging Redis message")
                             await JOB_QUEUE.acknowledge_job(redis_job)
                             redis_job = None
                             result = None
@@ -1298,7 +1301,7 @@ async def worker_loop():
                     # Check for pending management commands after job completion
                     if COMMAND_LISTENER and COMMAND_LISTENER.has_pending_command():
                         cmd = COMMAND_LISTENER.get_pending_command()
-                        print(f"Executing pending management command: {cmd}")
+                        logger.info(f"Executing pending management command: {cmd}")
                         await COMMAND_LISTENER.execute_pending_command()
                         # Command handler will send SIGTERM, which triggers graceful shutdown
                         break
@@ -1317,13 +1320,13 @@ async def worker_loop():
                             await asyncio.sleep(worker_settings["poll_interval"])
 
             except WorkerAPIError as e:
-                print(f"API error in worker loop: {e.message}")
+                logger.error(f"API error in worker loop: {e.message}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
                 worker_settings = await get_remote_worker_settings()
                 await asyncio.sleep(worker_settings["poll_interval"])
             except Exception as e:
-                print(f"Error in worker loop: {e}")
+                logger.error(f"Error in worker loop: {e}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
                 worker_settings = await get_remote_worker_settings()
@@ -1348,7 +1351,7 @@ async def worker_loop():
         # Close HTTP client
         await client.close()
 
-        print(f"Worker stopped. Jobs processed: {jobs_processed}, failed: {jobs_failed}")
+        logger.info(f"Worker stopped. Jobs processed: {jobs_processed}, failed: {jobs_failed}")
 
 
 def main():
