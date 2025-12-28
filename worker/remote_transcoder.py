@@ -710,7 +710,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                     "name": q["name"],
                     "width": width,
                     "height": height,
-                    "bitrate": f"{q['bitrate']}k",
+                    "bitrate": q["bitrate"],  # Already in "NNNNk" format
                 }
                 all_qualities_for_manifest.append(mq)
 
