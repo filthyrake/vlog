@@ -7,7 +7,8 @@ from config import DATABASE_URL
 
 # Create database instance - works with PostgreSQL or SQLite
 # PostgreSQL is the default and recommended database
-database = Database(DATABASE_URL)
+# Connection pool limits prevent exhausting PostgreSQL's max_connections (Issue #429)
+database = Database(DATABASE_URL, min_size=5, max_size=20)
 metadata = sa.MetaData()
 
 

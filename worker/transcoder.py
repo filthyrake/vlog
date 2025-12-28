@@ -207,11 +207,16 @@ def reset_transcoder_settings_cache() -> None:
 
 def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) -> List[List[dict]]:
     """
-    Group qualities into batches for parallel encoding.
+    Group qualities into batches for parallel encoding with interleaved resolution.
 
-    Groups high-res qualities (>= 1080p) together and low-res (< 1080p) together,
-    then chunks each group by the parallel count. This keeps similar workloads
-    together for better memory usage.
+    Interleaves high-res (>= 1080p) and low-res (< 1080p) qualities to balance
+    memory usage during parallel encoding. This prevents running all high-res
+    encodes simultaneously which could exhaust memory (Issue #429).
+
+    Example with parallel_count=2 and qualities [4K, 1440p, 1080p, 720p, 480p, 360p]:
+    - High-res: [4K, 1440p, 1080p]
+    - Low-res: [720p, 480p, 360p]
+    - Interleaved batches: [[4K, 720p], [1440p, 480p], [1080p, 360p]]
 
     Args:
         qualities: List of quality preset dicts with 'name' and 'height' keys
@@ -230,12 +235,27 @@ def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) ->
 
     batches = []
 
-    # Create batches from high-res first, then low-res
-    for group in [high_res, low_res]:
-        for i in range(0, len(group), parallel_count):
-            batch = group[i : i + parallel_count]
-            if batch:
-                batches.append(batch)
+    # Interleave high-res and low-res to balance memory usage (Issue #429)
+    # This prevents all high-res encodes from running simultaneously
+    high_idx = 0
+    low_idx = 0
+
+    while high_idx < len(high_res) or low_idx < len(low_res):
+        batch = []
+
+        # Add qualities alternating between high and low res
+        for _ in range(parallel_count):
+            if high_idx < len(high_res) and (low_idx >= len(low_res) or len(batch) % 2 == 0):
+                batch.append(high_res[high_idx])
+                high_idx += 1
+            elif low_idx < len(low_res):
+                batch.append(low_res[low_idx])
+                low_idx += 1
+            else:
+                break
+
+        if batch:
+            batches.append(batch)
 
     return batches
 

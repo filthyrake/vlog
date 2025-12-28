@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
+from api.analytics_cache import AnalyticsCache
 from api.common import (
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
@@ -105,6 +106,10 @@ logger = logging.getLogger(__name__)
 _cached_watermark_settings: Dict[str, Any] = {}
 _cached_watermark_settings_time: float = 0
 _WATERMARK_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+# Video list cache for performance (Issue #429)
+# Caches video list query results for 30 seconds to reduce database load
+_video_list_cache = AnalyticsCache(ttl_seconds=30, enabled=True, max_size=500)
 
 
 async def get_watermark_settings() -> Dict[str, Any]:
@@ -512,6 +517,16 @@ async def list_videos(
     - relevance (default for text searches), date, duration, views, title
     - order: asc (ascending) or desc (descending)
     """
+    # Generate cache key from query parameters (Issue #429)
+    # Custom fields are excluded from cache key as they vary too much
+    cache_key = f"videos:{category}:{tag}:{search}:{duration}:{quality}:{date_from}:{date_to}:{has_transcription}:{sort}:{order}:{limit}:{offset}"
+
+    # Check cache first
+    cached_result = _video_list_cache.get(cache_key)
+    if cached_result is not None:
+        # Convert cached dicts back to response objects
+        return [VideoListResponse(**item) for item in cached_result]
+
     # Base query with view count for sorting
     query = (
         sa.select(
@@ -555,14 +570,16 @@ async def list_videos(
     if category:
         query = query.where(categories.c.slug == category)
 
-    # Tag filter
+    # Tag filter - use EXISTS for better performance with large datasets (Issue #429)
     if tag:
-        tag_subquery = (
-            sa.select(video_tags.c.video_id)
+        tag_exists = (
+            sa.select(sa.literal(1))
             .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
+            .where(video_tags.c.video_id == videos.c.id)
             .where(tags.c.slug == tag)
+            .exists()
         )
-        query = query.where(videos.c.id.in_(tag_subquery))
+        query = query.where(tag_exists)
 
     # Text search
     if search:
@@ -594,19 +611,20 @@ async def list_videos(
         if duration_conditions:
             query = query.where(sa.or_(*duration_conditions))
 
-    # Quality filter
+    # Quality filter - use EXISTS for better performance with large datasets (Issue #429)
     if quality:
         quality_filters = [q.strip().lower() for q in quality.split(",")]
         # Validate quality values against allowed qualities
         valid_quality_filters = [q for q in quality_filters if q in QUALITY_NAMES]
         if valid_quality_filters:
             # Video must have at least one of the requested qualities
-            quality_subquery = (
-                sa.select(video_qualities.c.video_id)
+            quality_exists = (
+                sa.select(sa.literal(1))
+                .where(video_qualities.c.video_id == videos.c.id)
                 .where(video_qualities.c.quality.in_(valid_quality_filters))
-                .distinct()
+                .exists()
             )
-            query = query.where(videos.c.id.in_(quality_subquery))
+            query = query.where(quality_exists)
 
     # Date range filter
     if date_from and date_to and date_from > date_to:
@@ -619,24 +637,20 @@ async def list_videos(
     if date_to:
         query = query.where(videos.c.published_at <= date_to)
 
-    # Transcription filter
+    # Transcription filter - use EXISTS for better performance with large datasets (Issue #429)
     if has_transcription is not None:
+        transcription_exists = (
+            sa.select(sa.literal(1))
+            .where(transcriptions.c.video_id == videos.c.id)
+            .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
+            .exists()
+        )
         if has_transcription:
             # Has completed transcription
-            transcription_subquery = (
-                sa.select(transcriptions.c.video_id)
-                .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
-                .distinct()
-            )
-            query = query.where(videos.c.id.in_(transcription_subquery))
+            query = query.where(transcription_exists)
         else:
             # Does not have completed transcription
-            transcription_subquery = (
-                sa.select(transcriptions.c.video_id)
-                .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
-                .distinct()
-            )
-            query = query.where(videos.c.id.notin_(transcription_subquery))
+            query = query.where(~transcription_exists)
 
     # Custom field filter (query params like "custom.difficulty=beginner")
     # Parse all query params starting with "custom."
@@ -661,6 +675,7 @@ async def list_videos(
         field_rows = await fetch_all_with_retry(field_query)
         fields_by_slug = {row["slug"]: row for row in field_rows}
 
+        # Use EXISTS for better performance with large datasets (Issue #429)
         for field_slug, filter_value in custom_filters.items():
             field_def = fields_by_slug.get(field_slug)
             if not field_def:
@@ -670,30 +685,34 @@ async def list_videos(
             field_id = field_def["id"]
             field_type = field_def["field_type"]
 
-            # Build the filter subquery
+            # Build the filter EXISTS clause
             # For multi_select, check if the JSON array contains the value
             # For other types, check for exact match
             if field_type == "multi_select":
                 # JSON array contains check - the value is stored as JSON array like ["a", "b"]
                 # We need to check if the filter value is in the array
-                custom_subquery = (
-                    sa.select(video_custom_fields.c.video_id)
+                custom_exists = (
+                    sa.select(sa.literal(1))
+                    .where(video_custom_fields.c.video_id == videos.c.id)
                     .where(video_custom_fields.c.field_id == field_id)
                     .where(
                         video_custom_fields.c.value.contains(f'"{filter_value}"')
                     )
+                    .exists()
                 )
             else:
                 # For other types, check exact JSON match
                 # Values are stored as JSON (e.g., "beginner" for text, 5 for number)
                 json_value = json.dumps(filter_value)
-                custom_subquery = (
-                    sa.select(video_custom_fields.c.video_id)
+                custom_exists = (
+                    sa.select(sa.literal(1))
+                    .where(video_custom_fields.c.video_id == videos.c.id)
                     .where(video_custom_fields.c.field_id == field_id)
                     .where(video_custom_fields.c.value == json_value)
+                    .exists()
                 )
 
-            query = query.where(videos.c.id.in_(custom_subquery))
+            query = query.where(custom_exists)
 
     # Sorting
     # Validate and convert sort parameter to enum
@@ -757,7 +776,7 @@ async def list_videos(
         source = row["thumbnail_source"] or "auto"
         return hash((row["id"], source)) % 1000000000
 
-    return [
+    result = [
         VideoListResponse(
             id=row["id"],
             title=row["title"],
@@ -776,6 +795,11 @@ async def list_videos(
         )
         for row in rows
     ]
+
+    # Cache the result as dicts for serialization (Issue #429)
+    _video_list_cache.set(cache_key, [item.model_dump() for item in result])
+
+    return result
 
 
 @app.get("/api/videos/{slug}")

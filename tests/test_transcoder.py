@@ -478,8 +478,8 @@ class TestGroupQualitiesByResolution:
         assert batches[1] == [{"name": "720p", "height": 720}]
         assert batches[2] == [{"name": "480p", "height": 480}]
 
-    def test_parallel_mode_groups_by_resolution(self):
-        """Test qualities are grouped by high-res vs low-res."""
+    def test_parallel_mode_interleaves_by_resolution(self):
+        """Test qualities are interleaved between high-res and low-res for memory balance."""
         from worker.transcoder import group_qualities_by_resolution
 
         # Mix of high-res and low-res
@@ -492,23 +492,26 @@ class TestGroupQualitiesByResolution:
             {"name": "360p", "height": 360},
         ]
 
-        batches = group_qualities_by_resolution(qualities, parallel_count=3)
+        batches = group_qualities_by_resolution(qualities, parallel_count=2)
 
-        # High-res (2160, 1440, 1080) should be in one batch
-        # Low-res (720, 480, 360) should be in another batch
-        assert len(batches) == 2
-        # First batch: high-res
-        assert all(q["height"] >= 1080 for q in batches[0])
-        assert len(batches[0]) == 3
-        # Second batch: low-res
-        assert all(q["height"] < 1080 for q in batches[1])
-        assert len(batches[1]) == 3
+        # With interleaving, batches should mix high and low res
+        # High-res: [2160p, 1440p, 1080p]
+        # Low-res: [720p, 480p, 360p]
+        # Expected interleaved batches (2 per batch):
+        # [[2160p, 720p], [1440p, 480p], [1080p, 360p]]
+        assert len(batches) == 3
+        # Each batch should have one high-res and one low-res
+        for batch in batches:
+            assert len(batch) == 2
+            heights = [q["height"] for q in batch]
+            assert any(h >= 1080 for h in heights)  # Has high-res
+            assert any(h < 1080 for h in heights)   # Has low-res
 
-    def test_parallel_mode_chunks_large_groups(self):
-        """Test large groups are chunked by parallel_count."""
+    def test_parallel_mode_interleaves_uneven_groups(self):
+        """Test uneven high-res/low-res groups are interleaved correctly."""
         from worker.transcoder import group_qualities_by_resolution
 
-        # 4 high-res qualities with parallel_count=2
+        # 3 high-res, 1 low-res with parallel_count=2
         qualities = [
             {"name": "2160p", "height": 2160},
             {"name": "1440p", "height": 1440},
@@ -518,14 +521,19 @@ class TestGroupQualitiesByResolution:
 
         batches = group_qualities_by_resolution(qualities, parallel_count=2)
 
-        # Should produce:
-        # Batch 1: [2160p, 1440p] (high-res, first 2)
-        # Batch 2: [1080p] (high-res, remaining 1)
-        # Batch 3: [720p] (low-res, 1)
-        assert len(batches) == 3
-        assert batches[0] == [{"name": "2160p", "height": 2160}, {"name": "1440p", "height": 1440}]
-        assert batches[1] == [{"name": "1080p", "height": 1080}]
-        assert batches[2] == [{"name": "720p", "height": 720}]
+        # With interleaving (3 high-res, 1 low-res):
+        # High-res: [2160p, 1440p, 1080p]
+        # Low-res: [720p]
+        # Expected: [[2160p, 720p], [1440p, 1080p]]
+        # (first batch interleaves, second has remaining high-res)
+        assert len(batches) == 2
+        # First batch should have one high-res and one low-res
+        assert len(batches[0]) == 2
+        # Second batch should have remaining high-res qualities
+        assert len(batches[1]) == 2
+        # Total should be 4 qualities
+        total_qualities = sum(len(b) for b in batches)
+        assert total_qualities == 4
 
     def test_empty_qualities(self):
         """Test empty input produces empty output."""
