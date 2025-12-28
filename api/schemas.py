@@ -958,3 +958,117 @@ class BulkCustomFieldsResponse(BaseModel):
     updated: int
     failed: int
     results: List[BulkOperationResult]
+
+
+# ============ Playlist Models ============
+
+# Valid visibility options for playlists
+PLAYLIST_VISIBILITY_OPTIONS = {"public", "private", "unlisted"}
+
+# Valid playlist types
+PLAYLIST_TYPE_OPTIONS = {"playlist", "collection", "series", "course"}
+
+
+class PlaylistCreate(BaseModel):
+    """Request to create a new playlist."""
+
+    title: str = Field(..., min_length=1, max_length=255, description="Playlist title")
+    description: Optional[str] = Field(default=None, max_length=5000, description="Playlist description")
+    visibility: str = Field(default="public", description="Visibility: public, private, unlisted")
+    playlist_type: str = Field(default="playlist", description="Type: playlist, collection, series, course")
+    is_featured: bool = Field(default=False, description="Whether to feature this playlist")
+
+    @field_validator("visibility")
+    @classmethod
+    def validate_visibility(cls, v: str) -> str:
+        if v not in PLAYLIST_VISIBILITY_OPTIONS:
+            opts = ", ".join(sorted(PLAYLIST_VISIBILITY_OPTIONS))
+            raise ValueError(f"Invalid visibility '{v}'. Valid options: {opts}")
+        return v
+
+    @field_validator("playlist_type")
+    @classmethod
+    def validate_playlist_type(cls, v: str) -> str:
+        if v not in PLAYLIST_TYPE_OPTIONS:
+            raise ValueError(f"Invalid playlist_type '{v}'. Valid options: {', '.join(sorted(PLAYLIST_TYPE_OPTIONS))}")
+        return v
+
+
+class PlaylistUpdate(BaseModel):
+    """Request to update a playlist."""
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=5000)
+    visibility: Optional[str] = None
+    playlist_type: Optional[str] = None
+    is_featured: Optional[bool] = None
+
+    @field_validator("visibility")
+    @classmethod
+    def validate_visibility(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in PLAYLIST_VISIBILITY_OPTIONS:
+            opts = ", ".join(sorted(PLAYLIST_VISIBILITY_OPTIONS))
+            raise ValueError(f"Invalid visibility '{v}'. Valid options: {opts}")
+        return v
+
+    @field_validator("playlist_type")
+    @classmethod
+    def validate_playlist_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in PLAYLIST_TYPE_OPTIONS:
+            raise ValueError(f"Invalid playlist_type '{v}'. Valid options: {', '.join(sorted(PLAYLIST_TYPE_OPTIONS))}")
+        return v
+
+
+class PlaylistVideoInfo(BaseModel):
+    """Video info included in playlist responses."""
+
+    id: int
+    title: str
+    slug: str
+    thumbnail_url: Optional[str] = None
+    duration: float = 0
+    position: int
+    status: str = "ready"
+
+
+class PlaylistResponse(BaseModel):
+    """Response for a single playlist."""
+
+    id: int
+    title: str
+    slug: str
+    description: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    visibility: str
+    playlist_type: str
+    is_featured: bool
+    video_count: int = 0
+    total_duration: float = 0  # Sum of all video durations in seconds
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class PlaylistDetailResponse(PlaylistResponse):
+    """Response for playlist with videos included."""
+
+    videos: List[PlaylistVideoInfo] = []
+
+
+class PlaylistListResponse(BaseModel):
+    """Response for playlist listing."""
+
+    playlists: List[PlaylistResponse]
+    total_count: int
+
+
+class AddVideoToPlaylistRequest(BaseModel):
+    """Request to add a video to a playlist."""
+
+    video_id: int = Field(..., description="ID of the video to add")
+    position: Optional[int] = Field(default=None, ge=0, description="Position in playlist (append if not specified)")
+
+
+class ReorderPlaylistRequest(BaseModel):
+    """Request to reorder videos in a playlist."""
+
+    video_ids: List[int] = Field(..., min_length=1, description="Video IDs in new order")

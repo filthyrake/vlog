@@ -49,6 +49,8 @@ from api.database import (
     custom_field_definitions,
     database,
     playback_sessions,
+    playlist_items,
+    playlists,
     quality_progress,
     reencode_queue,
     tags,
@@ -78,6 +80,7 @@ from api.redis_client import is_redis_available
 from api.schemas import (
     ActiveJobsResponse,
     ActiveJobWithWorker,
+    AddVideoToPlaylistRequest,
     AnalyticsOverview,
     BulkCustomFieldsResponse,
     BulkCustomFieldsUpdate,
@@ -97,8 +100,15 @@ from api.schemas import (
     CustomFieldResponse,
     CustomFieldUpdate,
     DailyViews,
+    PlaylistCreate,
+    PlaylistDetailResponse,
+    PlaylistListResponse,
+    PlaylistResponse,
+    PlaylistUpdate,
+    PlaylistVideoInfo,
     QualityBreakdown,
     QualityProgressResponse,
+    ReorderPlaylistRequest,
     RetranscodeRequest,
     RetranscodeResponse,
     SettingCreate,
@@ -688,7 +698,9 @@ async def create_or_reset_transcoding_job(
         # create or reset the job in a single statement
         await db_execute_with_retry(
             sa.text("""
-                INSERT INTO transcoding_jobs (video_id, current_step, progress_percent, attempt_number, max_attempts, retranscode_metadata)
+                INSERT INTO transcoding_jobs
+                    (video_id, current_step, progress_percent, attempt_number,
+                     max_attempts, retranscode_metadata)
                 VALUES (:video_id, 'pending', 0, 1, 3, :retranscode_metadata)
                 ON CONFLICT (video_id) DO UPDATE SET
                     current_step = 'pending',
@@ -6069,7 +6081,10 @@ async def queue_videos_for_reencode(
 
         # Check if already queued and pending
         existing = await fetch_one_with_retry(
-            sa.text("SELECT id FROM reencode_queue WHERE video_id = :video_id AND status = 'pending'").bindparams(video_id=video_id)
+            sa.text(
+                "SELECT id FROM reencode_queue "
+                "WHERE video_id = :video_id AND status = 'pending'"
+            ).bindparams(video_id=video_id)
         )
 
         if existing:
@@ -7282,6 +7297,560 @@ async def bulk_update_custom_fields(
         failed=failed,
         results=results,
     )
+
+
+# ============ Playlists ============
+
+
+def _build_playlist_response(row: dict, video_count: int = 0, total_duration: float = 0) -> PlaylistResponse:
+    """Build a PlaylistResponse from a database row."""
+    thumbnail_url = None
+    if row.get("thumbnail_path"):
+        thumbnail_url = f"{get_video_url_prefix()}/{row['thumbnail_path']}"
+
+    return PlaylistResponse(
+        id=row["id"],
+        title=row["title"],
+        slug=row["slug"],
+        description=row.get("description"),
+        thumbnail_url=thumbnail_url,
+        visibility=row["visibility"],
+        playlist_type=row["playlist_type"],
+        is_featured=row["is_featured"],
+        video_count=video_count,
+        total_duration=total_duration,
+        created_at=row["created_at"],
+        updated_at=row.get("updated_at"),
+    )
+
+
+@app.get("/api/playlists")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_playlists(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> PlaylistListResponse:
+    """List all playlists with video counts (with pagination)."""
+    # Get total count
+    count_query = sa.text("""
+        SELECT COUNT(*) FROM playlists WHERE deleted_at IS NULL
+    """)
+    total_count = await fetch_val_with_retry(count_query)
+
+    # Get playlists with pagination
+    query = sa.text("""
+        SELECT
+            p.*,
+            COUNT(DISTINCT pi.video_id) as video_count,
+            COALESCE(SUM(v.duration), 0) as total_duration
+        FROM playlists p
+        LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
+        LEFT JOIN videos v ON v.id = pi.video_id AND v.deleted_at IS NULL
+        WHERE p.deleted_at IS NULL
+        GROUP BY p.id
+        ORDER BY p.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    rows = await fetch_all_with_retry(query, {"limit": limit, "offset": offset})
+
+    playlist_list = [
+        _build_playlist_response(row, row["video_count"], row["total_duration"])
+        for row in rows
+    ]
+
+    return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
+
+
+@app.post("/api/playlists")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_playlist(request: Request, data: PlaylistCreate) -> PlaylistResponse:
+    """Create a new playlist."""
+    slug = slugify(data.title)
+
+    # Check for duplicate slug
+    existing = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.slug == slug).where(playlists.c.deleted_at.is_(None))
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Playlist with this title already exists")
+
+    now = datetime.now(timezone.utc)
+    query = playlists.insert().values(
+        title=data.title,
+        slug=slug,
+        description=data.description,
+        visibility=data.visibility,
+        playlist_type=data.playlist_type,
+        is_featured=data.is_featured,
+        created_at=now,
+        updated_at=now,
+    )
+    playlist_id = await db_execute_with_retry(query)
+
+    # Audit log
+    log_audit(
+        AuditAction.PLAYLIST_CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="playlist",
+        resource_id=playlist_id,
+        resource_name=slug,
+        details={
+            "title": data.title,
+            "visibility": data.visibility,
+            "playlist_type": data.playlist_type,
+        },
+    )
+
+    return PlaylistResponse(
+        id=playlist_id,
+        title=data.title,
+        slug=slug,
+        description=data.description,
+        thumbnail_url=None,
+        visibility=data.visibility,
+        playlist_type=data.playlist_type,
+        is_featured=data.is_featured,
+        video_count=0,
+        total_duration=0,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@app.get("/api/playlists/{playlist_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_playlist(request: Request, playlist_id: int) -> PlaylistDetailResponse:
+    """Get a playlist with its videos."""
+    # Get playlist
+    playlist = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.id == playlist_id).where(playlists.c.deleted_at.is_(None))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get videos in playlist
+    video_query = sa.text("""
+        SELECT
+            v.id, v.title, v.slug, v.duration, v.status,
+            pi.position
+        FROM playlist_items pi
+        JOIN videos v ON v.id = pi.video_id
+        WHERE pi.playlist_id = :playlist_id AND v.deleted_at IS NULL
+        ORDER BY pi.position ASC
+    """)
+    video_rows = await fetch_all_with_retry(video_query, {"playlist_id": playlist_id})
+
+    # Build video list
+    video_list = []
+    total_duration = 0.0
+    for vrow in video_rows:
+        thumbnail_url = f"{get_video_url_prefix()}/videos/{vrow['slug']}/thumbnail.jpg"
+        video_list.append(PlaylistVideoInfo(
+            id=vrow["id"],
+            title=vrow["title"],
+            slug=vrow["slug"],
+            thumbnail_url=thumbnail_url,
+            duration=vrow["duration"] or 0,
+            position=vrow["position"],
+            status=vrow["status"],
+        ))
+        total_duration += vrow["duration"] or 0
+
+    # Build thumbnail URL
+    thumbnail_url = None
+    if playlist.get("thumbnail_path"):
+        thumbnail_url = f"{get_video_url_prefix()}/{playlist['thumbnail_path']}"
+
+    return PlaylistDetailResponse(
+        id=playlist["id"],
+        title=playlist["title"],
+        slug=playlist["slug"],
+        description=playlist.get("description"),
+        thumbnail_url=thumbnail_url,
+        visibility=playlist["visibility"],
+        playlist_type=playlist["playlist_type"],
+        is_featured=playlist["is_featured"],
+        video_count=len(video_list),
+        total_duration=total_duration,
+        created_at=playlist["created_at"],
+        updated_at=playlist.get("updated_at"),
+        videos=video_list,
+    )
+
+
+@app.put("/api/playlists/{playlist_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_playlist(request: Request, playlist_id: int, data: PlaylistUpdate) -> PlaylistResponse:
+    """Update a playlist."""
+    # Verify playlist exists
+    existing = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.id == playlist_id).where(playlists.c.deleted_at.is_(None))
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Build update values
+    update_values = {"updated_at": datetime.now(timezone.utc)}
+    changes = {}
+
+    if data.title is not None:
+        new_slug = slugify(data.title)
+        # Check for duplicate slug
+        duplicate = await fetch_one_with_retry(
+            playlists.select()
+            .where(playlists.c.slug == new_slug)
+            .where(playlists.c.id != playlist_id)
+            .where(playlists.c.deleted_at.is_(None))
+        )
+        if duplicate:
+            raise HTTPException(status_code=400, detail="Playlist with this title already exists")
+        update_values["title"] = data.title
+        update_values["slug"] = new_slug
+        changes["title"] = {"old": existing["title"], "new": data.title}
+
+    if data.description is not None:
+        update_values["description"] = data.description
+        changes["description"] = "updated"
+
+    if data.visibility is not None:
+        update_values["visibility"] = data.visibility
+        changes["visibility"] = {"old": existing["visibility"], "new": data.visibility}
+
+    if data.playlist_type is not None:
+        update_values["playlist_type"] = data.playlist_type
+        changes["playlist_type"] = {"old": existing["playlist_type"], "new": data.playlist_type}
+
+    if data.is_featured is not None:
+        update_values["is_featured"] = data.is_featured
+        changes["is_featured"] = {"old": existing["is_featured"], "new": data.is_featured}
+
+    await db_execute_with_retry(
+        playlists.update().where(playlists.c.id == playlist_id).values(**update_values)
+    )
+
+    # Get video count and total duration
+    count_query = sa.text("""
+        SELECT COUNT(*) as count, COALESCE(SUM(v.duration), 0) as duration
+        FROM playlist_items pi
+        JOIN videos v ON v.id = pi.video_id AND v.deleted_at IS NULL
+        WHERE pi.playlist_id = :playlist_id
+    """)
+    stats = await fetch_one_with_retry(count_query, {"playlist_id": playlist_id})
+
+    # Audit log
+    log_audit(
+        AuditAction.PLAYLIST_UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="playlist",
+        resource_id=playlist_id,
+        resource_name=update_values.get("slug", existing["slug"]),
+        details=changes,
+    )
+
+    # Build response
+    thumbnail_url = None
+    if existing.get("thumbnail_path"):
+        thumbnail_url = f"{get_video_url_prefix()}/{existing['thumbnail_path']}"
+
+    return PlaylistResponse(
+        id=playlist_id,
+        title=update_values.get("title", existing["title"]),
+        slug=update_values.get("slug", existing["slug"]),
+        description=update_values.get("description", existing.get("description")),
+        thumbnail_url=thumbnail_url,
+        visibility=update_values.get("visibility", existing["visibility"]),
+        playlist_type=update_values.get("playlist_type", existing["playlist_type"]),
+        is_featured=update_values.get("is_featured", existing["is_featured"]),
+        video_count=stats["count"] if stats else 0,
+        total_duration=stats["duration"] if stats else 0,
+        created_at=existing["created_at"],
+        updated_at=update_values["updated_at"],
+    )
+
+
+@app.delete("/api/playlists/{playlist_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_playlist(request: Request, playlist_id: int):
+    """Soft delete a playlist."""
+    # Verify playlist exists
+    existing = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.id == playlist_id).where(playlists.c.deleted_at.is_(None))
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Soft delete
+    await db_execute_with_retry(
+        playlists.update()
+        .where(playlists.c.id == playlist_id)
+        .values(deleted_at=datetime.now(timezone.utc))
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.PLAYLIST_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="playlist",
+        resource_id=playlist_id,
+        resource_name=existing["slug"],
+        details={"title": existing["title"]},
+    )
+
+    return {"status": "ok"}
+
+
+@app.get("/api/playlists/{playlist_id}/videos")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_playlist_videos(request: Request, playlist_id: int) -> List[PlaylistVideoInfo]:
+    """Get all videos in a playlist ordered by position."""
+    # Verify playlist exists
+    playlist = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.id == playlist_id).where(playlists.c.deleted_at.is_(None))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get videos
+    query = sa.text("""
+        SELECT
+            v.id, v.title, v.slug, v.duration, v.status,
+            pi.position
+        FROM playlist_items pi
+        JOIN videos v ON v.id = pi.video_id
+        WHERE pi.playlist_id = :playlist_id AND v.deleted_at IS NULL
+        ORDER BY pi.position ASC
+    """)
+    rows = await fetch_all_with_retry(query, {"playlist_id": playlist_id})
+
+    return [
+        PlaylistVideoInfo(
+            id=row["id"],
+            title=row["title"],
+            slug=row["slug"],
+            thumbnail_url=f"{get_video_url_prefix()}/videos/{row['slug']}/thumbnail.jpg",
+            duration=row["duration"] or 0,
+            position=row["position"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+
+
+@app.post("/api/playlists/{playlist_id}/videos")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def add_video_to_playlist(request: Request, playlist_id: int, data: AddVideoToPlaylistRequest):
+    """Add a video to a playlist."""
+    # Verify playlist exists
+    playlist = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.id == playlist_id).where(playlists.c.deleted_at.is_(None))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Verify video exists
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == data.video_id).where(videos.c.deleted_at.is_(None))
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Check if video already in playlist
+    existing = await fetch_one_with_retry(
+        playlist_items.select()
+        .where(playlist_items.c.playlist_id == playlist_id)
+        .where(playlist_items.c.video_id == data.video_id)
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Video already in playlist")
+
+    # Use transaction to ensure atomicity and prevent race conditions
+    position = data.position
+    async with database.transaction():
+        if position is None:
+            # Get max position with FOR UPDATE to lock rows and prevent race condition
+            max_pos_result = await database.fetch_one(
+                sa.text("""
+                    SELECT COALESCE(MAX(position), -1) as max_pos
+                    FROM playlist_items
+                    WHERE playlist_id = :playlist_id
+                    FOR UPDATE
+                """),
+                {"playlist_id": playlist_id}
+            )
+            position = (max_pos_result["max_pos"] if max_pos_result else -1) + 1
+        else:
+            # Shift existing items down
+            await database.execute(
+                sa.text("""
+                    UPDATE playlist_items
+                    SET position = position + 1
+                    WHERE playlist_id = :playlist_id AND position >= :position
+                """),
+                {"playlist_id": playlist_id, "position": position}
+            )
+
+        # Insert the item
+        await database.execute(
+            playlist_items.insert().values(
+                playlist_id=playlist_id,
+                video_id=data.video_id,
+                position=position,
+                added_at=datetime.now(timezone.utc),
+            )
+        )
+
+        # Update playlist updated_at
+        await database.execute(
+            playlists.update()
+            .where(playlists.c.id == playlist_id)
+            .values(updated_at=datetime.now(timezone.utc))
+        )
+
+    # Audit log
+    log_audit(
+        AuditAction.PLAYLIST_VIDEO_ADD,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="playlist",
+        resource_id=playlist_id,
+        resource_name=playlist["slug"],
+        details={"video_id": data.video_id, "video_slug": video["slug"], "position": position},
+    )
+
+    return {"status": "ok", "position": position}
+
+
+@app.delete("/api/playlists/{playlist_id}/videos/{video_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def remove_video_from_playlist(request: Request, playlist_id: int, video_id: int):
+    """Remove a video from a playlist."""
+    # Verify playlist exists
+    playlist = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.id == playlist_id).where(playlists.c.deleted_at.is_(None))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get the item to remove
+    item = await fetch_one_with_retry(
+        playlist_items.select()
+        .where(playlist_items.c.playlist_id == playlist_id)
+        .where(playlist_items.c.video_id == video_id)
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Video not in playlist")
+
+    removed_position = item["position"]
+
+    async with database.transaction():
+        # Delete the item
+        await database.execute(
+            playlist_items.delete()
+            .where(playlist_items.c.playlist_id == playlist_id)
+            .where(playlist_items.c.video_id == video_id)
+        )
+        # Reorder remaining items
+        await database.execute(
+            sa.text("""
+                UPDATE playlist_items
+                SET position = position - 1
+                WHERE playlist_id = :playlist_id AND position > :removed_position
+            """),
+            {"playlist_id": playlist_id, "removed_position": removed_position}
+        )
+
+    # Update playlist updated_at
+    await db_execute_with_retry(
+        playlists.update().where(playlists.c.id == playlist_id).values(updated_at=datetime.now(timezone.utc))
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.PLAYLIST_VIDEO_REMOVE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="playlist",
+        resource_id=playlist_id,
+        resource_name=playlist["slug"],
+        details={"video_id": video_id},
+    )
+
+    return {"status": "ok"}
+
+
+@app.post("/api/playlists/{playlist_id}/reorder")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def reorder_playlist(request: Request, playlist_id: int, data: ReorderPlaylistRequest):
+    """Reorder videos in a playlist."""
+    # Verify playlist exists
+    playlist = await fetch_one_with_retry(
+        playlists.select().where(playlists.c.id == playlist_id).where(playlists.c.deleted_at.is_(None))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get current items
+    current_items = await fetch_all_with_retry(
+        playlist_items.select().where(playlist_items.c.playlist_id == playlist_id)
+    )
+    current_video_ids = {item["video_id"] for item in current_items}
+
+    # Validate all video IDs are in the playlist
+    requested_ids = set(data.video_ids)
+    if requested_ids != current_video_ids:
+        missing = current_video_ids - requested_ids
+        extra = requested_ids - current_video_ids
+        errors = []
+        if missing:
+            errors.append(f"Missing video IDs: {sorted(missing)}")
+        if extra:
+            errors.append(f"Unknown video IDs: {sorted(extra)}")
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    # Update positions using batch update to avoid N+1 queries
+    # Uses PostgreSQL's unnest to update all positions in a single query
+    async with database.transaction():
+        await database.execute(
+            sa.text("""
+                UPDATE playlist_items pi
+                SET position = batch.new_position
+                FROM (
+                    SELECT unnest(:video_ids::integer[]) as video_id,
+                           generate_series(0, :count - 1) as new_position
+                ) batch
+                WHERE pi.playlist_id = :playlist_id
+                  AND pi.video_id = batch.video_id
+            """),
+            {
+                "playlist_id": playlist_id,
+                "video_ids": data.video_ids,
+                "count": len(data.video_ids),
+            }
+        )
+
+        # Update playlist updated_at
+        await database.execute(
+            playlists.update()
+            .where(playlists.c.id == playlist_id)
+            .values(updated_at=datetime.now(timezone.utc))
+        )
+
+    # Audit log
+    log_audit(
+        AuditAction.PLAYLIST_REORDER,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="playlist",
+        resource_id=playlist_id,
+        resource_name=playlist["slug"],
+        details={"new_order": data.video_ids},
+    )
+
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

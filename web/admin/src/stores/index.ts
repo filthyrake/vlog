@@ -7,6 +7,7 @@ import { createAuthStore, type AuthStore } from './auth.store';
 import { createUIStore, type UIStore } from './ui.store';
 import { createVideosStore, type VideosStore } from './videos.store';
 import { createCategoriesStore, type CategoriesStore } from './categories.store';
+import { createPlaylistsStore, type PlaylistsStore } from './playlists.store';
 import { createUploadStore, type UploadStore } from './upload.store';
 import { createWorkersStore, type WorkersStore } from './workers.store';
 import { createAnalyticsStore, type AnalyticsStore } from './analytics.store';
@@ -24,6 +25,7 @@ export type AdminStore = AuthStore &
   UIStore &
   VideosStore &
   CategoriesStore &
+  PlaylistsStore &
   UploadStore &
   WorkersStore &
   AnalyticsStore &
@@ -45,6 +47,7 @@ export function createAdminStore(): AdminStore {
   const uiStore = createUIStore();
   const videosStore = createVideosStore();
   const categoriesStore = createCategoriesStore();
+  const playlistsStore = createPlaylistsStore();
   const uploadStore = createUploadStore();
   const workersStore = createWorkersStore();
   const analyticsStore = createAnalyticsStore();
@@ -59,6 +62,7 @@ export function createAdminStore(): AdminStore {
     ...uiStore,
     ...videosStore,
     ...categoriesStore,
+    ...playlistsStore,
     ...uploadStore,
     ...workersStore,
     ...analyticsStore,
@@ -131,6 +135,7 @@ export function createAdminStore(): AdminStore {
       await Promise.all([
         this.loadVideos(),
         this.loadCategories(),
+        this.loadPlaylists(),
       ]);
 
       // Set up SSE event handlers
@@ -219,6 +224,7 @@ export { createAuthStore, type AuthStore } from './auth.store';
 export { createUIStore, type UIStore } from './ui.store';
 export { createVideosStore, type VideosStore } from './videos.store';
 export { createCategoriesStore, type CategoriesStore } from './categories.store';
+export { createPlaylistsStore, type PlaylistsStore } from './playlists.store';
 export { createUploadStore, type UploadStore } from './upload.store';
 export { createWorkersStore, type WorkersStore } from './workers.store';
 export { createAnalyticsStore, type AnalyticsStore } from './analytics.store';

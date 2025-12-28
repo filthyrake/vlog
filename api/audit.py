@@ -89,6 +89,14 @@ class AuditAction(str, Enum):
     # Settings actions
     SETTINGS_CHANGE = "settings_change"
 
+    # Playlist actions
+    PLAYLIST_CREATE = "playlist_create"
+    PLAYLIST_UPDATE = "playlist_update"
+    PLAYLIST_DELETE = "playlist_delete"
+    PLAYLIST_VIDEO_ADD = "playlist_video_add"
+    PLAYLIST_VIDEO_REMOVE = "playlist_video_remove"
+    PLAYLIST_REORDER = "playlist_reorder"
+
 
 class AuditLogger:
     """

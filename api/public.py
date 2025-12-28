@@ -36,6 +36,7 @@ from api.database import (
     custom_field_definitions,
     database,
     playback_sessions,
+    playlists,
     quality_progress,
     tags,
     transcoding_jobs,
@@ -61,6 +62,10 @@ from api.schemas import (
     PlaybackHeartbeat,
     PlaybackSessionCreate,
     PlaybackSessionResponse,
+    PlaylistDetailResponse,
+    PlaylistListResponse,
+    PlaylistResponse,
+    PlaylistVideoInfo,
     QualityProgressResponse,
     TagResponse,
     TranscodingProgressResponse,
@@ -1118,6 +1123,220 @@ async def get_tag(request: Request, slug: str) -> TagResponse:
         created_at=row["created_at"],
         video_count=count or 0,
     )
+
+
+# ============================================================================
+# Playlists
+# ============================================================================
+
+
+def _get_video_url_prefix() -> str:
+    """Get the URL prefix for video assets."""
+    return f"http://{NAS_STORAGE}/vlog-storage"
+
+
+# Valid playlist types for filtering
+VALID_PLAYLIST_TYPES = {"playlist", "collection", "series", "course"}
+
+
+@app.get("/api/playlists")
+@limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
+async def list_public_playlists(
+    request: Request,
+    playlist_type: Optional[str] = Query(default=None, description="Filter by type"),
+    featured: Optional[bool] = Query(default=None, description="Filter by featured status"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> PlaylistListResponse:
+    """List public playlists with video counts."""
+    # Validate playlist_type if provided
+    if playlist_type and playlist_type not in VALID_PLAYLIST_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid playlist type. Valid options: {', '.join(sorted(VALID_PLAYLIST_TYPES))}"
+        )
+
+    # Build WHERE conditions
+    conditions = ["p.deleted_at IS NULL", "p.visibility = 'public'"]
+    params = {"limit": limit, "offset": offset}
+
+    if playlist_type:
+        conditions.append("p.playlist_type = :playlist_type")
+        params["playlist_type"] = playlist_type
+
+    if featured is not None:
+        conditions.append("p.is_featured = :is_featured")
+        params["is_featured"] = featured
+
+    where_clause = " AND ".join(conditions)
+
+    # Count total
+    count_query = sa.text(f"""
+        SELECT COUNT(*) FROM playlists p WHERE {where_clause}
+    """)
+    total_count = await fetch_val_with_retry(count_query, params)
+
+    # Get playlists with video counts
+    query = sa.text(f"""
+        SELECT
+            p.*,
+            COUNT(DISTINCT CASE
+                WHEN v.status = 'ready' AND v.deleted_at IS NULL
+                AND v.published_at IS NOT NULL THEN pi.video_id
+            END) as video_count,
+            COALESCE(SUM(CASE
+                WHEN v.status = 'ready' AND v.deleted_at IS NULL
+                AND v.published_at IS NOT NULL THEN v.duration
+            END), 0) as total_duration
+        FROM playlists p
+        LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
+        LEFT JOIN videos v ON v.id = pi.video_id
+        WHERE {where_clause}
+        GROUP BY p.id
+        ORDER BY p.is_featured DESC, p.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    rows = await fetch_all_with_retry(query, params)
+
+    playlist_list = []
+    for row in rows:
+        thumbnail_url = None
+        if row.get("thumbnail_path"):
+            thumbnail_url = f"{_get_video_url_prefix()}/{row['thumbnail_path']}"
+
+        playlist_list.append(PlaylistResponse(
+            id=row["id"],
+            title=row["title"],
+            slug=row["slug"],
+            description=row.get("description"),
+            thumbnail_url=thumbnail_url,
+            visibility=row["visibility"],
+            playlist_type=row["playlist_type"],
+            is_featured=row["is_featured"],
+            video_count=row["video_count"] or 0,
+            total_duration=row["total_duration"] or 0,
+            created_at=row["created_at"],
+            updated_at=row.get("updated_at"),
+        ))
+
+    return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
+
+
+@app.get("/api/playlists/{slug}")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResponse:
+    """Get a public playlist by slug with its videos."""
+    # Validate slug
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+
+    # Get playlist (only public or unlisted)
+    playlist = await fetch_one_with_retry(
+        playlists.select()
+        .where(playlists.c.slug == slug)
+        .where(playlists.c.deleted_at.is_(None))
+        .where(playlists.c.visibility.in_(["public", "unlisted"]))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get videos (only ready, published, non-deleted)
+    video_query = sa.text("""
+        SELECT
+            v.id, v.title, v.slug, v.duration, v.status,
+            pi.position
+        FROM playlist_items pi
+        JOIN videos v ON v.id = pi.video_id
+        WHERE pi.playlist_id = :playlist_id
+          AND v.status = 'ready'
+          AND v.deleted_at IS NULL
+          AND v.published_at IS NOT NULL
+        ORDER BY pi.position ASC
+    """)
+    video_rows = await fetch_all_with_retry(video_query, {"playlist_id": playlist["id"]})
+
+    video_list = []
+    total_duration = 0.0
+    for vrow in video_rows:
+        thumbnail_url = f"{_get_video_url_prefix()}/videos/{vrow['slug']}/thumbnail.jpg"
+        video_list.append(PlaylistVideoInfo(
+            id=vrow["id"],
+            title=vrow["title"],
+            slug=vrow["slug"],
+            thumbnail_url=thumbnail_url,
+            duration=vrow["duration"] or 0,
+            position=vrow["position"],
+            status=vrow["status"],
+        ))
+        total_duration += vrow["duration"] or 0
+
+    # Build thumbnail URL
+    thumbnail_url = None
+    if playlist.get("thumbnail_path"):
+        thumbnail_url = f"{_get_video_url_prefix()}/{playlist['thumbnail_path']}"
+
+    return PlaylistDetailResponse(
+        id=playlist["id"],
+        title=playlist["title"],
+        slug=playlist["slug"],
+        description=playlist.get("description"),
+        thumbnail_url=thumbnail_url,
+        visibility=playlist["visibility"],
+        playlist_type=playlist["playlist_type"],
+        is_featured=playlist["is_featured"],
+        video_count=len(video_list),
+        total_duration=total_duration,
+        created_at=playlist["created_at"],
+        updated_at=playlist.get("updated_at"),
+        videos=video_list,
+    )
+
+
+@app.get("/api/playlists/{slug}/videos")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_playlist_videos(request: Request, slug: str) -> List[PlaylistVideoInfo]:
+    """Get videos in a public playlist."""
+    # Validate slug
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+
+    # Get playlist (only public or unlisted)
+    playlist = await fetch_one_with_retry(
+        playlists.select()
+        .where(playlists.c.slug == slug)
+        .where(playlists.c.deleted_at.is_(None))
+        .where(playlists.c.visibility.in_(["public", "unlisted"]))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get videos
+    query = sa.text("""
+        SELECT
+            v.id, v.title, v.slug, v.duration, v.status,
+            pi.position
+        FROM playlist_items pi
+        JOIN videos v ON v.id = pi.video_id
+        WHERE pi.playlist_id = :playlist_id
+          AND v.status = 'ready'
+          AND v.deleted_at IS NULL
+          AND v.published_at IS NOT NULL
+        ORDER BY pi.position ASC
+    """)
+    rows = await fetch_all_with_retry(query, {"playlist_id": playlist["id"]})
+
+    return [
+        PlaylistVideoInfo(
+            id=row["id"],
+            title=row["title"],
+            slug=row["slug"],
+            thumbnail_url=f"{_get_video_url_prefix()}/videos/{row['slug']}/thumbnail.jpg",
+            duration=row["duration"] or 0,
+            position=row["position"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
 
 
 # ============================================================================

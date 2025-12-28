@@ -44,7 +44,7 @@ export interface BaseStore {
 /**
  * Tab identifiers for the admin UI
  */
-export type AdminTab = 'videos' | 'categories' | 'upload' | 'workers' | 'analytics' | 'settings';
+export type AdminTab = 'videos' | 'categories' | 'playlists' | 'upload' | 'workers' | 'analytics' | 'settings';
 
 /**
  * Settings sub-tabs

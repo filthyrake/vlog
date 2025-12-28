@@ -679,6 +679,88 @@ settings = sa.Table(
     sa.Index("ix_settings_category", "category"),
 )
 
+# Playlists for organizing videos into ordered collections
+# Supports playlists, collections, series, and courses
+#
+# VISIBILITY:
+# -----------
+# - public: Anyone can view
+# - private: Only admin can view (future: owner)
+# - unlisted: Viewable with direct link, not in listings
+#
+# PLAYLIST TYPES:
+# ---------------
+# - playlist: General purpose ordered list
+# - collection: Curated featured content
+# - series: Multi-part video series (episodes)
+# - course: Educational content with ordered lessons
+#
+# See: https://github.com/filthyrake/vlog/issues/223
+playlists = sa.Table(
+    "playlists",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("title", sa.String(255), nullable=False),
+    sa.Column("slug", sa.String(255), unique=True, nullable=False),
+    sa.Column("description", sa.Text, nullable=True),
+    sa.Column("thumbnail_path", sa.String(500), nullable=True),
+    sa.Column(
+        "visibility",
+        sa.String(20),
+        sa.CheckConstraint(
+            "visibility IN ('public', 'private', 'unlisted')",
+            name="ck_playlists_visibility",
+        ),
+        default="public",
+    ),
+    sa.Column(
+        "playlist_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "playlist_type IN ('playlist', 'collection', 'series', 'course')",
+            name="ck_playlists_type",
+        ),
+        default="playlist",
+    ),
+    sa.Column("is_featured", sa.Boolean, default=False),
+    sa.Column("user_id", sa.String(100), nullable=True),  # Future: user playlists
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    sa.Index("ix_playlists_slug", "slug"),
+    sa.Index("ix_playlists_visibility", "visibility"),
+    sa.Index("ix_playlists_is_featured", "is_featured"),
+    sa.Index("ix_playlists_deleted_at", "deleted_at"),
+    sa.Index("ix_playlists_playlist_type", "playlist_type"),
+)
+
+# Many-to-many relationship between playlists and videos with ordering
+playlist_items = sa.Table(
+    "playlist_items",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "playlist_id",
+        sa.Integer,
+        sa.ForeignKey("playlists.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("position", sa.Integer, default=0, nullable=False),
+    sa.Column("added_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("playlist_id", "video_id", name="uq_playlist_video"),
+    sa.Index("ix_playlist_items_playlist_id", "playlist_id"),
+    sa.Index("ix_playlist_items_video_id", "video_id"),
+    sa.Index("ix_playlist_items_position", "position"),
+    # Composite index for efficient ordered retrieval: WHERE playlist_id = ? ORDER BY position
+    sa.Index("ix_playlist_items_playlist_position", "playlist_id", "position"),
+)
+
 # Re-encode queue for background conversion to CMAF format
 reencode_queue = sa.Table(
     "reencode_queue",
