@@ -583,7 +583,7 @@ async def list_videos(
     # Tag filter - use EXISTS for better performance with large datasets (Issue #429)
     if tag:
         tag_exists = (
-            sa.select(sa.literal(1))
+            sa.select(sa.literal_column("1"))
             .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
             .where(video_tags.c.video_id == videos.c.id)
             .where(tags.c.slug == tag)
@@ -629,7 +629,7 @@ async def list_videos(
         if valid_quality_filters:
             # Video must have at least one of the requested qualities
             quality_exists = (
-                sa.select(sa.literal(1))
+                sa.select(sa.literal_column("1"))
                 .where(video_qualities.c.video_id == videos.c.id)
                 .where(video_qualities.c.quality.in_(valid_quality_filters))
                 .exists()
@@ -650,7 +650,7 @@ async def list_videos(
     # Transcription filter - use EXISTS for better performance with large datasets (Issue #429)
     if has_transcription is not None:
         transcription_exists = (
-            sa.select(sa.literal(1))
+            sa.select(sa.literal_column("1"))
             .where(transcriptions.c.video_id == videos.c.id)
             .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
             .exists()
@@ -694,7 +694,7 @@ async def list_videos(
                 # JSON array contains check - the value is stored as JSON array like ["a", "b"]
                 # We need to check if the filter value is in the array
                 custom_exists = (
-                    sa.select(sa.literal(1))
+                    sa.select(sa.literal_column("1"))
                     .where(video_custom_fields.c.video_id == videos.c.id)
                     .where(video_custom_fields.c.field_id == field_id)
                     .where(
@@ -707,7 +707,7 @@ async def list_videos(
                 # Values are stored as JSON (e.g., "beginner" for text, 5 for number)
                 json_value = json.dumps(filter_value)
                 custom_exists = (
-                    sa.select(sa.literal(1))
+                    sa.select(sa.literal_column("1"))
                     .where(video_custom_fields.c.video_id == videos.c.id)
                     .where(video_custom_fields.c.field_id == field_id)
                     .where(video_custom_fields.c.value == json_value)
