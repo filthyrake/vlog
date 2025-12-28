@@ -45,7 +45,7 @@ include = ["api", "worker", "cli"]
 where = ["."]
 
 [tool.setuptools]
-py-modules = ["config"]
+py-modules = ["config", "code_version"]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
