@@ -24,8 +24,8 @@ Environment variables:
 """
 
 import asyncio
-import shutil
 import logging
+import shutil
 import signal
 import sys
 import time
@@ -1238,7 +1238,7 @@ async def worker_loop():
     # Verify connection with initial heartbeat (include capabilities and deployment type)
     logger.info(f"  Code version: {CODE_VERSION}")
     try:
-        response = await client.heartbeat(
+        await client.heartbeat(
             status="idle",
             metadata={"capabilities": worker_caps, "deployment_type": deployment_type},
             code_version=CODE_VERSION,
