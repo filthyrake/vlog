@@ -25,6 +25,7 @@ Environment variables:
 
 import asyncio
 import shutil
+import logging
 import signal
 import sys
 import time
@@ -72,7 +73,6 @@ from worker.transcoder import (
     validate_hls_playlist,
 )
 
-import logging
 logger = logging.getLogger(__name__)
 
 # Global shutdown flag
@@ -540,7 +540,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 quality_playlist_path = output_dir / f"{quality_name}.m3u8"
             is_valid, validation_error = await validate_hls_playlist(quality_playlist_path)
             if not is_valid:
-                logger.warning(f"    {quality_name}: HLS validation failed - {validation_error}")
+                logger.error(f"    {quality_name}: HLS validation failed - {validation_error}")
                 async with progress_list_lock:
                     quality_progress_list[quality_idx] = {
                         "name": quality_name,
@@ -791,8 +791,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 # Retry on other errors
                 if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
                     error_msg = e.message if isinstance(e, WorkerAPIError) else str(e)
-                    logger.error(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}")
-                    logger.error(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
+                    logger.warning(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}")
+                    logger.warning(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
                     await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
                 else:
                     # Final attempt failed - don't cleanup, report failure
@@ -816,7 +816,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     except WorkerAPIError as e:
         # Other API errors - don't cleanup, files may be needed for manual recovery
         error_msg = f"API error: {e.message}"[:500]
-        logger.error(f"  Error: {error_msg}")
+        logger.error(f"{error_msg}")
         try:
             await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
         except ClaimExpiredError:
@@ -829,7 +829,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     except Exception as e:
         # General errors - don't cleanup, files may be needed for manual recovery
         error_msg = str(e)[:500]
-        logger.error(f"  Error: {error_msg}")
+        logger.error(f"{error_msg}")
         try:
             await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
         except ClaimExpiredError:
@@ -1159,8 +1159,8 @@ async def worker_loop():
 
     # Validate API key
     if not WORKER_API_KEY:
-        logger.error("ERROR: VLOG_WORKER_API_KEY environment variable required")
-        logger.warning("Register a worker first: curl -X POST http://server:9002/api/worker/register")
+        logger.error("VLOG_WORKER_API_KEY environment variable required")
+        logger.info("Register a worker first: curl -X POST http://server:9002/api/worker/register")
         sys.exit(1)
 
     # Generate unique worker ID for Redis consumer
@@ -1226,7 +1226,7 @@ async def worker_loop():
         HEALTH_SERVER.set_ready(True)
         HEALTH_SERVER.set_heartbeat_status(True)
     except WorkerAPIError as e:
-        logger.error(f"ERROR: Failed to connect to Worker API: {e.message}")
+        logger.error(f"Failed to connect to Worker API: {e.message}")
         sys.exit(1)
 
     # Create worker state for tracking job status
