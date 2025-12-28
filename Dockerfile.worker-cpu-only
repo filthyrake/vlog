@@ -1,20 +1,22 @@
 # VLog Remote Transcoding Worker (CPU-only)
 # Containerized worker for distributed video transcoding
 #
-# Build: docker build -f Dockerfile.worker-cpu-only -t vlog-worker --build-arg VERSION=$(git rev-parse --short=8 HEAD) .
+# Build: docker build -f Dockerfile.worker-cpu-only -t vlog-worker --build-arg CODE_VERSION=$(git rev-parse --short HEAD) .
 # Run: docker run -e VLOG_WORKER_API_KEY=<key> -e VLOG_WORKER_API_URL=http://host:9002 vlog-worker
 
 # Pin base image version for reproducible builds
 # python:3.12-slim-bookworm is Debian Bookworm (12) based
 ARG PYTHON_VERSION=3.12-slim-bookworm
 
+# Code version for worker compatibility checking
+# Set this during build: docker build --build-arg CODE_VERSION=$(git rev-parse --short HEAD) ...
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
+
 # =============================================================================
 # Stage 1: Builder - Install Python dependencies
 # =============================================================================
 FROM python:${PYTHON_VERSION} AS builder
-
-# Version arg - pass git commit hash at build time
-ARG VERSION=unknown
 
 WORKDIR /build
 
@@ -40,14 +42,12 @@ RUN pip install --no-cache-dir --prefix=/install \
 
 # Copy source code and install the package
 COPY config.py ./
+COPY code_version.py ./
 COPY api/ api/
 COPY worker/ worker/
 COPY cli/ cli/
 
 RUN pip install --no-cache-dir --prefix=/install .
-
-# Write version file
-RUN echo "$VERSION" > /build/VERSION
 
 # =============================================================================
 # Stage 2: Runtime - Minimal production image
@@ -68,15 +68,17 @@ WORKDIR /app
 # Copy installed Python packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy version file
-COPY --from=builder /build/VERSION ./
-
 # Copy source code
 COPY --chown=vlog:vlog pyproject.toml ./
 COPY --chown=vlog:vlog config.py ./
+COPY --chown=vlog:vlog code_version.py ./
 COPY --chown=vlog:vlog api/ api/
 COPY --chown=vlog:vlog worker/ worker/
 COPY --chown=vlog:vlog cli/ cli/
+
+# Re-declare build args for use in this stage (args don't persist across stages)
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
 
 # Switch to non-root user
 USER vlog
@@ -85,10 +87,13 @@ USER vlog
 RUN mkdir -p /tmp/vlog-worker
 
 # Environment variables with defaults
+# VLOG_CODE_VERSION and VLOG_BUILD_TIMESTAMP are used for worker compatibility checking
 ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     VLOG_WORKER_WORK_DIR=/tmp/vlog-worker \
     VLOG_WORKER_HEARTBEAT_INTERVAL=30 \
     VLOG_WORKER_POLL_INTERVAL=10 \
+    VLOG_CODE_VERSION=${CODE_VERSION} \
+    VLOG_BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
     PYTHONUNBUFFERED=1
 
 # Health check - verify worker's health server is responding

@@ -33,6 +33,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from api.job_queue import JobDispatch, JobQueue
+
+# Import code version for compatibility checking
+from code_version import CODE_VERSION
 from config import (
     JOB_QUEUE_MODE,
     QUALITY_PRESETS,
@@ -192,15 +195,31 @@ def signal_handler(sig, frame):
 
 async def heartbeat_loop(client: WorkerAPIClient, state: dict):
     """Background task to send periodic heartbeats."""
-    global HEALTH_SERVER
+    global HEALTH_SERVER, shutdown_requested
     while not shutdown_requested:
         # Determine status based on whether we're processing a job
         status = "busy" if state.get("processing_job") else "idle"
         try:
-            await client.heartbeat(status=status)
+            response = await client.heartbeat(status=status, code_version=CODE_VERSION)
             # Update health server heartbeat status on success
             if HEALTH_SERVER:
                 HEALTH_SERVER.set_heartbeat_status(True)
+
+            # Check for version mismatch - if server says our version is wrong,
+            # we should exit and let the orchestrator restart us with new image
+            if response.get("version_ok") is False:
+                required = response.get("required_version", "unknown")
+                print("CRITICAL: Code version mismatch detected!")
+                print(f"  Worker version: {CODE_VERSION}")
+                print(f"  Required version: {required}")
+                print("  Worker will exit after current job completes to allow restart with updated image.")
+                # Signal shutdown so we don't start new jobs
+                # The current job (if any) will complete first
+                shutdown_requested = True
+                # If not processing a job, exit immediately
+                if not state.get("processing_job"):
+                    print("  No job in progress - exiting immediately.")
+                    sys.exit(1)
         except WorkerAPIError as e:
             print(f"Heartbeat failed: {e.message}")
             if HEALTH_SERVER:
@@ -1213,12 +1232,24 @@ async def worker_loop():
     print(f"  Deployment type: {deployment_type}")
 
     # Verify connection with initial heartbeat (include capabilities and deployment type)
+    print(f"  Code version: {CODE_VERSION}")
     try:
-        await client.heartbeat(
+        response = await client.heartbeat(
             status="idle",
             metadata={"capabilities": worker_caps, "deployment_type": deployment_type},
+            code_version=CODE_VERSION,
         )
         print("  Connected to Worker API")
+
+        # Check for version mismatch at startup - fail fast if outdated
+        if response.get("version_ok") is False:
+            required = response.get("required_version", "unknown")
+            print("FATAL: Code version mismatch!")
+            print(f"  Worker version: {CODE_VERSION}")
+            print(f"  Required version: {required}")
+            print("  Worker cannot start - please rebuild with latest code.")
+            sys.exit(1)
+
         # Mark worker as ready after successful API connection
         HEALTH_SERVER.set_ready(True)
         HEALTH_SERVER.set_heartbeat_status(True)
