@@ -34,8 +34,8 @@ jobs:
       - name: Generate version tag
         id: version
         run: |
-          # Use git short SHA for unique versioning
-          SHA=$(git rev-parse --short=8 HEAD)
+          # Use git short SHA for unique versioning (7 chars, matching git default)
+          SHA=$(git rev-parse --short HEAD)
           echo "sha=${SHA}" >> $GITHUB_OUTPUT
           echo "full_tag=${BASE_TAG}-${SHA}" >> $GITHUB_OUTPUT
           echo "Generated tag: ${BASE_TAG}-${SHA}"
