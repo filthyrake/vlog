@@ -1135,6 +1135,10 @@ def _get_video_url_prefix() -> str:
     return f"http://{NAS_STORAGE}/vlog-storage"
 
 
+# Valid playlist types for filtering
+VALID_PLAYLIST_TYPES = {"playlist", "collection", "series", "course"}
+
+
 @app.get("/api/playlists")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_public_playlists(
@@ -1145,6 +1149,13 @@ async def list_public_playlists(
     offset: int = Query(default=0, ge=0),
 ) -> PlaylistListResponse:
     """List public playlists with video counts."""
+    # Validate playlist_type if provided
+    if playlist_type and playlist_type not in VALID_PLAYLIST_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid playlist type. Valid options: {', '.join(sorted(VALID_PLAYLIST_TYPES))}"
+        )
+
     # Build WHERE conditions
     conditions = ["p.deleted_at IS NULL", "p.visibility = 'public'"]
     params = {"limit": limit, "offset": offset}

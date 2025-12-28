@@ -55,7 +55,7 @@ def upgrade() -> None:
         ),
         sa.Column("is_featured", sa.Boolean, default=False, nullable=False),
         sa.Column("user_id", sa.String(100), nullable=True),  # Future: user playlists
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
     )
@@ -88,10 +88,17 @@ def upgrade() -> None:
     op.create_index("ix_playlist_items_playlist_id", "playlist_items", ["playlist_id"])
     op.create_index("ix_playlist_items_video_id", "playlist_items", ["video_id"])
     op.create_index("ix_playlist_items_position", "playlist_items", ["position"])
+    # Composite index for efficient ordered retrieval: WHERE playlist_id = ? ORDER BY position
+    op.create_index(
+        "ix_playlist_items_playlist_position",
+        "playlist_items",
+        ["playlist_id", "position"]
+    )
 
 
 def downgrade() -> None:
     """Remove playlists and playlist_items tables."""
+    op.drop_index("ix_playlist_items_playlist_position", table_name="playlist_items")
     op.drop_index("ix_playlist_items_position", table_name="playlist_items")
     op.drop_index("ix_playlist_items_video_id", table_name="playlist_items")
     op.drop_index("ix_playlist_items_playlist_id", table_name="playlist_items")

@@ -7326,8 +7326,19 @@ def _build_playlist_response(row: dict, video_count: int = 0, total_duration: fl
 
 @app.get("/api/playlists")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def list_playlists(request: Request) -> PlaylistListResponse:
-    """List all playlists with video counts."""
+async def list_playlists(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> PlaylistListResponse:
+    """List all playlists with video counts (with pagination)."""
+    # Get total count
+    count_query = sa.text("""
+        SELECT COUNT(*) FROM playlists WHERE deleted_at IS NULL
+    """)
+    total_count = await fetch_val_with_retry(count_query)
+
+    # Get playlists with pagination
     query = sa.text("""
         SELECT
             p.*,
@@ -7339,15 +7350,16 @@ async def list_playlists(request: Request) -> PlaylistListResponse:
         WHERE p.deleted_at IS NULL
         GROUP BY p.id
         ORDER BY p.created_at DESC
+        LIMIT :limit OFFSET :offset
     """)
-    rows = await fetch_all_with_retry(query)
+    rows = await fetch_all_with_retry(query, {"limit": limit, "offset": offset})
 
     playlist_list = [
         _build_playlist_response(row, row["video_count"], row["total_duration"])
         for row in rows
     ]
 
-    return PlaylistListResponse(playlists=playlist_list, total_count=len(playlist_list))
+    return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
 
 
 @app.post("/api/playlists")
@@ -7655,39 +7667,48 @@ async def add_video_to_playlist(request: Request, playlist_id: int, data: AddVid
     if existing:
         raise HTTPException(status_code=400, detail="Video already in playlist")
 
-    # Get position (append to end if not specified)
+    # Use transaction to ensure atomicity and prevent race conditions
     position = data.position
-    if position is None:
-        max_pos_query = sa.select(sa.func.coalesce(sa.func.max(playlist_items.c.position), -1)).where(
-            playlist_items.c.playlist_id == playlist_id
-        )
-        max_pos = await fetch_val_with_retry(max_pos_query)
-        position = (max_pos or -1) + 1
-    else:
-        # Shift existing items down
-        await db_execute_with_retry(
-            sa.text("""
-                UPDATE playlist_items
-                SET position = position + 1
-                WHERE playlist_id = :playlist_id AND position >= :position
-            """),
-            {"playlist_id": playlist_id, "position": position}
+    async with database.transaction():
+        if position is None:
+            # Get max position with FOR UPDATE to lock rows and prevent race condition
+            max_pos_result = await database.fetch_one(
+                sa.text("""
+                    SELECT COALESCE(MAX(position), -1) as max_pos
+                    FROM playlist_items
+                    WHERE playlist_id = :playlist_id
+                    FOR UPDATE
+                """),
+                {"playlist_id": playlist_id}
+            )
+            position = (max_pos_result["max_pos"] if max_pos_result else -1) + 1
+        else:
+            # Shift existing items down
+            await database.execute(
+                sa.text("""
+                    UPDATE playlist_items
+                    SET position = position + 1
+                    WHERE playlist_id = :playlist_id AND position >= :position
+                """),
+                {"playlist_id": playlist_id, "position": position}
+            )
+
+        # Insert the item
+        await database.execute(
+            playlist_items.insert().values(
+                playlist_id=playlist_id,
+                video_id=data.video_id,
+                position=position,
+                added_at=datetime.now(timezone.utc),
+            )
         )
 
-    # Insert the item
-    await db_execute_with_retry(
-        playlist_items.insert().values(
-            playlist_id=playlist_id,
-            video_id=data.video_id,
-            position=position,
-            added_at=datetime.now(timezone.utc),
+        # Update playlist updated_at
+        await database.execute(
+            playlists.update()
+            .where(playlists.c.id == playlist_id)
+            .values(updated_at=datetime.now(timezone.utc))
         )
-    )
-
-    # Update playlist updated_at
-    await db_execute_with_retry(
-        playlists.update().where(playlists.c.id == playlist_id).values(updated_at=datetime.now(timezone.utc))
-    )
 
     # Audit log
     log_audit(
@@ -7790,20 +7811,33 @@ async def reorder_playlist(request: Request, playlist_id: int, data: ReorderPlay
             errors.append(f"Unknown video IDs: {sorted(extra)}")
         raise HTTPException(status_code=400, detail="; ".join(errors))
 
-    # Update positions
+    # Update positions using batch update to avoid N+1 queries
+    # Uses PostgreSQL's unnest to update all positions in a single query
     async with database.transaction():
-        for position, video_id in enumerate(data.video_ids):
-            await database.execute(
-                playlist_items.update()
-                .where(playlist_items.c.playlist_id == playlist_id)
-                .where(playlist_items.c.video_id == video_id)
-                .values(position=position)
-            )
+        await database.execute(
+            sa.text("""
+                UPDATE playlist_items pi
+                SET position = batch.new_position
+                FROM (
+                    SELECT unnest(:video_ids::integer[]) as video_id,
+                           generate_series(0, :count - 1) as new_position
+                ) batch
+                WHERE pi.playlist_id = :playlist_id
+                  AND pi.video_id = batch.video_id
+            """),
+            {
+                "playlist_id": playlist_id,
+                "video_ids": data.video_ids,
+                "count": len(data.video_ids),
+            }
+        )
 
-    # Update playlist updated_at
-    await db_execute_with_retry(
-        playlists.update().where(playlists.c.id == playlist_id).values(updated_at=datetime.now(timezone.utc))
-    )
+        # Update playlist updated_at
+        await database.execute(
+            playlists.update()
+            .where(playlists.c.id == playlist_id)
+            .values(updated_at=datetime.now(timezone.utc))
+        )
 
     # Audit log
     log_audit(

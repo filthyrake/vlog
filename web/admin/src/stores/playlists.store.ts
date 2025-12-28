@@ -12,6 +12,14 @@ import type {
   Video,
 } from '@/api/types';
 
+/**
+ * Context interface for accessing VideosStore properties when stores are combined.
+ * This is used for type-safe cross-store access in Alpine.js where stores are merged.
+ */
+interface CombinedStoreContext {
+  videos: Video[];
+}
+
 export interface PlaylistsState {
   // Data
   playlists: Playlist[];
@@ -330,13 +338,17 @@ export function createPlaylistsStore(): PlaylistsStore {
     },
 
     /**
-     * Drop a video at a new position
+     * Drop a video at a new position.
+     * Optimized to skip API call if order doesn't actually change.
      */
     dropVideo(targetVideoId: number): void {
       if (!this.editingPlaylist || !this.draggingVideoId || this.draggingVideoId === targetVideoId) {
         this.draggingVideoId = null;
         return;
       }
+
+      // Store original order for comparison
+      const originalIds = this.editingPlaylist.videos.map((v) => v.id);
 
       const videos = [...this.editingPlaylist.videos];
       const dragIndex = videos.findIndex((v) => v.id === this.draggingVideoId);
@@ -357,23 +369,34 @@ export function createPlaylistsStore(): PlaylistsStore {
       videos.splice(dragIndex, 1);
       videos.splice(dropIndex, 0, draggedVideo);
 
+      // Check if order actually changed
+      const newIds = videos.map((v) => v.id);
+      const orderChanged = originalIds.some((id, idx) => id !== newIds[idx]);
+
+      if (!orderChanged) {
+        // Order didn't change, skip API call
+        this.draggingVideoId = null;
+        return;
+      }
+
       // Update local state
       this.editingPlaylist.videos = videos;
 
       // Send to server
-      const videoIds = videos.map((v) => v.id);
-      this.reorderPlaylistVideos(videoIds);
+      this.reorderPlaylistVideos(newIds);
 
       this.draggingVideoId = null;
     },
 
     /**
-     * Get filtered videos that can be added to the playlist
-     * Uses the videos array from VideosStore (accessed via 'this' in Alpine context)
+     * Get filtered videos that can be added to the playlist.
+     * Uses the videos array from VideosStore (accessed via 'this' in Alpine context
+     * where all stores are merged into a single object).
      */
     getFilteredVideosForAdd(): Video[] {
-      // Note: In Alpine.js context, 'this.videos' will be available from VideosStore
-      const videos = (this as any).videos || [];
+      // Access videos from the combined store context (VideosStore merged with this store)
+      const combinedStore = this as unknown as CombinedStoreContext;
+      const videos = combinedStore.videos || [];
       const currentVideoIds = new Set(this.editingPlaylist?.videos.map((v) => v.id) || []);
 
       const availableVideos = videos.filter(

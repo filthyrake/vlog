@@ -1068,12 +1068,6 @@ class AddVideoToPlaylistRequest(BaseModel):
     position: Optional[int] = Field(default=None, ge=0, description="Position in playlist (append if not specified)")
 
 
-class RemoveVideoFromPlaylistRequest(BaseModel):
-    """Request to remove a video from a playlist."""
-
-    video_id: int = Field(..., description="ID of the video to remove")
-
-
 class ReorderPlaylistRequest(BaseModel):
     """Request to reorder videos in a playlist."""
 

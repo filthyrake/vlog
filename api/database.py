@@ -757,6 +757,8 @@ playlist_items = sa.Table(
     sa.Index("ix_playlist_items_playlist_id", "playlist_id"),
     sa.Index("ix_playlist_items_video_id", "video_id"),
     sa.Index("ix_playlist_items_position", "position"),
+    # Composite index for efficient ordered retrieval: WHERE playlist_id = ? ORDER BY position
+    sa.Index("ix_playlist_items_playlist_position", "playlist_id", "position"),
 )
 
 # Re-encode queue for background conversion to CMAF format
