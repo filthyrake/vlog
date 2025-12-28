@@ -46,6 +46,8 @@ jobs:
             -f Dockerfile.worker.gpu \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }} \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BASE_TAG }}-latest \
+            --build-arg CODE_VERSION=${{ steps.version.outputs.sha }} \
+            --build-arg BUILD_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
             .
