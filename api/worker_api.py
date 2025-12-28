@@ -716,17 +716,25 @@ async def worker_heartbeat(
     await database.execute(workers.update().where(workers.c.id == worker["id"]).values(**update_values))
 
     # Check code version compatibility
-    # Get setting for whether to enforce version matching
+    # Get settings for version enforcement
     from api.settings_service import get_settings_service
 
     settings = get_settings_service()
     require_version_match = await settings.get("workers.require_version_match", True)
+    require_version_field = await settings.get("workers.require_version_field", False)
 
     # Determine if version is ok
     version_ok = True
     required_version = CODE_VERSION
 
-    if require_version_match and data.code_version:
+    # Check if version field is required but missing
+    if require_version_field and not data.code_version:
+        version_ok = False
+        logger.warning(
+            f"Worker '{worker_name}' did not send code_version field. "
+            f"workers.require_version_field is enabled - worker must be updated."
+        )
+    elif require_version_match and data.code_version:
         # Version mismatch - worker should exit and be restarted with new image
         if data.code_version != CODE_VERSION:
             version_ok = False
@@ -841,24 +849,39 @@ async def claim_job(
     # Check code version before allowing job claim (defense in depth)
     settings = get_settings_service()
     require_version_match = await settings.get("workers.require_version_match", True)
+    require_version_field = await settings.get("workers.require_version_field", False)
 
-    if require_version_match:
-        # Get worker's code version from metadata
-        worker_metadata = worker.get("metadata")
-        if worker_metadata:
-            try:
-                metadata = json.loads(worker_metadata) if isinstance(worker_metadata, str) else worker_metadata
-                worker_version = metadata.get("code_version")
-                if worker_version and worker_version != CODE_VERSION:
-                    logger.warning(
-                        f"Rejecting job claim from worker '{worker.get('worker_name', worker['worker_id'][:8])}' "
-                        f"due to version mismatch: {worker_version} != {CODE_VERSION}"
-                    )
-                    return ClaimJobResponse(
-                        message=f"Version mismatch: worker has {worker_version}, server requires {CODE_VERSION}"
-                    )
-            except (json.JSONDecodeError, TypeError):
-                pass  # No metadata or invalid format - allow claim (backwards compatibility)
+    # Get worker's code version from metadata
+    worker_metadata = worker.get("metadata")
+    worker_version = None
+    if worker_metadata:
+        try:
+            metadata = json.loads(worker_metadata) if isinstance(worker_metadata, str) else worker_metadata
+            worker_version = metadata.get("code_version")
+        except (json.JSONDecodeError, TypeError):
+            pass  # No metadata or invalid format
+
+    worker_name = worker.get("worker_name") or worker["worker_id"][:8]
+
+    # Check if version field is required but missing
+    if require_version_field and not worker_version:
+        logger.warning(
+            f"Rejecting job claim from worker '{worker_name}' - "
+            f"no code_version in metadata (workers.require_version_field is enabled)"
+        )
+        return ClaimJobResponse(
+            message="Version field required: worker must send code_version in heartbeat"
+        )
+
+    # Check for version mismatch
+    if require_version_match and worker_version and worker_version != CODE_VERSION:
+        logger.warning(
+            f"Rejecting job claim from worker '{worker_name}' "
+            f"due to version mismatch: {worker_version} != {CODE_VERSION}"
+        )
+        return ClaimJobResponse(
+            message=f"Version mismatch: worker has {worker_version}, server requires {CODE_VERSION}"
+        )
 
     now = datetime.now(timezone.utc)
     claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)

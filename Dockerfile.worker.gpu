@@ -65,6 +65,7 @@ RUN pip3 install --no-cache-dir --prefix=/install \
 
 # Copy source code and install the package
 COPY config.py ./
+COPY code_version.py ./
 COPY api/ api/
 COPY worker/ worker/
 COPY cli/ cli/
