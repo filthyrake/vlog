@@ -1389,6 +1389,12 @@ async def worker_loop():
 
 def main():
     """Entry point for the remote transcoder."""
+    # Configure logging to output to stdout
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
     asyncio.run(worker_loop())
 
 
