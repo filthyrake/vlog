@@ -270,21 +270,97 @@ PostgreSQL provides concurrent read/write support, making it suitable for multi-
 /mnt/nas/vlog-storage/
 ├── uploads/           # Temporary upload storage
 │   └── {video_id}.mp4
-├── videos/            # HLS output
+├── videos/            # Transcoded output
 │   └── {slug}/
-│       ├── master.m3u8      # Adaptive bitrate playlist
-│       ├── 2160p.m3u8       # Quality-specific playlist
-│       ├── 2160p_0000.ts    # Video segments
-│       ├── 2160p_0001.ts
-│       ├── 1080p.m3u8
-│       ├── 1080p_0000.ts
+│       ├── master.m3u8      # HLS adaptive bitrate playlist
+│       ├── manifest.mpd     # DASH manifest (CMAF format)
+│       ├── 1080p/           # CMAF quality directory
+│       │   ├── init.mp4         # Initialization segment
+│       │   ├── segment_0.m4s    # Media segments
+│       │   └── ...
+│       ├── 1080p.m3u8       # Legacy HLS playlist
+│       ├── 1080p_0000.ts    # Legacy HLS segments
 │       ├── thumbnail.jpg
 │       └── captions.vtt     # WebVTT subtitles
-└── archive/           # Soft-deleted videos
-    └── {slug}/        # Same structure as videos/
+├── archive/           # Soft-deleted videos
+│   └── {slug}/
+└── backups/           # PostgreSQL database backups
+    └── vlog-*.dump
 ```
 
 **Soft-Delete Flow:** When a video is deleted, its files are moved from `videos/` to `archive/`. Archived videos can be restored via the API. Permanent deletion occurs after the configured retention period.
+
+### 10. Streaming Formats
+
+VLog supports two streaming formats:
+
+| Format | Container | Manifests | Player | Codecs |
+|--------|-----------|-----------|--------|--------|
+| **CMAF** (new) | fMP4 (.m4s) | HLS + DASH | Shaka Player | H.264, HEVC, AV1 |
+| **HLS/TS** (legacy) | MPEG-TS (.ts) | HLS only | hls.js | H.264 |
+
+**CMAF (Common Media Application Format):**
+- Modern fragmented MP4 container
+- Supports both HLS (`master.m3u8`) and DASH (`manifest.mpd`) delivery
+- Better codec support (HEVC, AV1)
+- More efficient seeking
+- Uses Shaka Player for playback
+
+**HLS/TS (Legacy):**
+- Traditional MPEG-TS container
+- HLS-only delivery
+- Maximum compatibility with older devices
+- Uses hls.js for playback
+
+The public player auto-detects the format and uses the appropriate player.
+
+### 11. Re-encode Queue
+
+The re-encode queue enables batch conversion of legacy HLS/TS videos to modern CMAF format.
+
+**Use Cases:**
+- Upgrade codec from H.264 to HEVC or AV1
+- Convert container from MPEG-TS to fMP4
+- Re-process videos with new quality settings
+
+**Flow:**
+```
+Admin queues video → Re-encode worker claims job →
+Download source (via Worker API) → Re-transcode to CMAF →
+Generate new manifests → Upload result → Update database
+```
+
+**Priority Levels:** high, normal, low
+
+**Related Endpoints:**
+- `POST /api/reencode/queue` - Queue specific videos
+- `POST /api/reencode/queue-all` - Queue all legacy videos
+- `GET /api/reencode/status` - Queue statistics
+
+### 12. Observability
+
+**Prometheus Metrics:**
+
+VLog exposes comprehensive metrics at `/metrics` (Admin API) and `/api/metrics` (Worker API):
+
+| Category | Examples |
+|----------|----------|
+| HTTP | Request count, latency, error rates |
+| Videos | Total by status, uploads, views |
+| Transcoding | Jobs active, queue size, duration |
+| Workers | Online count, heartbeats |
+| Database | Connections, query latency, retries |
+| Redis | Operations, circuit breaker state |
+
+**Health Checks:**
+- `/health` - Basic health status
+- `/ready` (workers) - Readiness with FFmpeg and API checks
+
+**Audit Logging:**
+- Security-relevant operations logged
+- Rotating file handler with configurable retention
+
+See [MONITORING.md](MONITORING.md) for complete metrics documentation.
 
 ## Data Flow
 

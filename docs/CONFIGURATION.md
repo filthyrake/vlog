@@ -679,6 +679,49 @@ Run 'vlog settings migrate-from-env' to migrate all settings.
 
 ---
 
+---
+
+## Streaming Format Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_STREAMING_FORMAT` | `cmaf` | Default streaming format: cmaf or hls_ts |
+| `VLOG_STREAMING_CODEC` | `hevc` | Default codec: h264, hevc, av1 |
+| `VLOG_STREAMING_ENABLE_DASH` | `true` | Generate DASH manifest for CMAF videos |
+
+**Format Comparison:**
+
+| Setting | CMAF (default) | HLS/TS (legacy) |
+|---------|----------------|-----------------|
+| Container | fMP4 (.m4s) | MPEG-TS (.ts) |
+| Manifests | HLS + DASH | HLS only |
+| Codecs | H.264, HEVC, AV1 | H.264 |
+| Player | Shaka Player | hls.js |
+
+---
+
+## CDN Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_CDN_ENABLED` | `false` | Enable CDN for video URLs |
+| `VLOG_CDN_BASE_URL` | (none) | CDN base URL (e.g., https://cdn.example.com) |
+
+When enabled, video URLs in API responses use the CDN base URL instead of the origin server.
+
+---
+
+## Audit Log Rotation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_AUDIT_LOG_MAX_BYTES` | `10485760` | Max size per log file (10 MB) |
+| `VLOG_AUDIT_LOG_BACKUP_COUNT` | `5` | Number of backup files to keep |
+
+Audit logs automatically rotate when reaching the max size. Old backups are deleted when the count exceeds the limit.
+
+---
+
 ## Test Mode
 
 Set `VLOG_TEST_MODE=1` to:

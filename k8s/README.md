@@ -391,3 +391,187 @@ GPU workers are less CPU-intensive. Adjust resources in `worker-deployment-nvidi
 The work directory (`emptyDir`) should be sized to hold source + output:
 - Small: 10GB
 - Large/4K: 50GB+
+
+---
+
+## Automated Database Backups
+
+VLog provides a CronJob for automated PostgreSQL backups.
+
+### Prerequisites
+
+Create the backup credentials secret:
+
+```bash
+kubectl create secret generic postgres-backup-credentials \
+  --namespace vlog \
+  --from-literal=PGHOST=your-postgres-host \
+  --from-literal=PGPORT=5432 \
+  --from-literal=PGDATABASE=vlog \
+  --from-literal=PGUSER=vlog \
+  --from-literal=PGPASSWORD=your-password
+```
+
+### Deploy Backup CronJob
+
+```bash
+kubectl apply -f k8s/backup-cronjob.yaml
+```
+
+### Backup Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Schedule | `0 2 * * *` | Daily at 2:00 AM UTC |
+| Retention | 7 days | Backups older than this are deleted |
+| Format | Custom (pg_dump -Fc) | Compressed, supports selective restore |
+| Storage | `/mnt/nas/vlog-storage/backups/` | NAS-mounted backup directory |
+
+### Backup Verification
+
+The CronJob automatically verifies each backup using `pg_restore --list`. Failed verifications are logged and the corrupt file is removed.
+
+### Manual Backup
+
+```bash
+# Trigger a backup job immediately
+kubectl create job --from=cronjob/postgres-backup manual-backup-$(date +%s) -n vlog
+
+# Check backup job status
+kubectl get jobs -n vlog -l component=backup
+
+# View backup logs
+kubectl logs -n vlog -l component=backup --tail=100
+```
+
+### Restore from Backup
+
+```bash
+# List available backups
+ls /mnt/nas/vlog-storage/backups/
+
+# Restore a specific backup
+pg_restore -U vlog -d vlog --clean /mnt/nas/vlog-storage/backups/vlog-2025-12-27-020000.dump
+```
+
+---
+
+## Security Hardening
+
+VLog Kubernetes deployments include several security features.
+
+### Container Security
+
+All worker containers run with restricted security contexts:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop:
+      - ALL
+```
+
+### Pod Security
+
+Pod-level security is enforced:
+
+- **runAsNonRoot:** Containers cannot run as root
+- **seccompProfile:** Uses RuntimeDefault seccomp profile
+- **fsGroup:** Ensures correct file permissions
+
+### Image Security
+
+- **Pinned image tags:** Use specific versions, not `latest`
+- **Image pull policy:** `IfNotPresent` prevents unexpected updates
+- **Multi-stage builds:** Production images contain only runtime dependencies
+
+### Network Security
+
+The `networkpolicy.yaml` restricts worker pod network access:
+
+**Allowed Egress:**
+- Worker API (port 9002)
+- DNS (port 53)
+- Redis (port 6379, if enabled)
+
+**Denied:**
+- All ingress
+- All other egress
+
+### Security Scanning
+
+VLog's CI/CD pipeline includes security scanning:
+
+- **Trivy:** Container image vulnerability scanning
+- **pip-audit:** Python dependency vulnerability scanning
+- **Bandit:** Python static security analysis
+
+### Best Practices
+
+1. **Secrets Management:**
+   - Never commit secrets to git
+   - Use kubectl to create secrets
+   - Consider Sealed Secrets or External Secrets Operator for GitOps
+
+2. **RBAC:**
+   - Workers use minimal RBAC permissions
+   - No cluster-wide permissions required
+
+3. **Resource Limits:**
+   - All pods have memory and CPU limits
+   - Prevents resource exhaustion attacks
+
+4. **Audit Logging:**
+   - Enable Kubernetes audit logging
+   - VLog application audit logs complement cluster logs
+
+---
+
+## Prometheus Metrics
+
+Worker pods expose metrics for monitoring.
+
+### Scrape Configuration
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: vlog-workers
+  namespace: vlog
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vlog-worker
+  podMetricsEndpoints:
+  - port: health
+    path: /metrics
+    interval: 30s
+```
+
+Or with static Prometheus configuration:
+
+```yaml
+scrape_configs:
+  - job_name: 'vlog-workers'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['vlog']
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: vlog-worker
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: health
+        action: keep
+```
+
+See [MONITORING.md](../docs/MONITORING.md) for available metrics and alerting rules

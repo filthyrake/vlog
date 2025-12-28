@@ -6,22 +6,40 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 
 ## Features
 
+### Video Processing
 - **4K Video Support** - Transcode to 2160p, 1440p, 1080p, 720p, 480p, 360p (YouTube-style quality ladder)
-- **HLS Streaming** - Adaptive bitrate for smooth playback on any connection
+- **HLS + DASH Streaming** - Adaptive bitrate with both HLS and DASH (CMAF/fMP4) support
+- **Modern Codecs** - H.264, HEVC (H.265), and AV1 encoding with GPU acceleration
 - **Distributed Transcoding** - Containerized workers in Kubernetes with automatic job distribution
+- **Re-encode Queue** - Batch convert legacy videos to modern CMAF format with HEVC/AV1
 - **Auto-Transcription** - Automatic subtitles using faster-whisper (WebVTT captions)
 - **Event-Driven Processing** - Instant video detection via inotify (no polling delay)
 - **Crash Recovery** - Checkpoint-based resumable transcoding
-- **Soft-Delete** - Deleted videos go to archive with configurable retention period
-- **Rate Limiting** - Configurable per-endpoint rate limits (memory or Redis storage)
-- **Modern UI** - Clean, responsive Alpine.js + Tailwind CSS frontend
-- **Playback Analytics** - Track views, watch time, completion rates
+
+### Content Management
+- **Custom Metadata Fields** - Define custom fields per category (text, number, date, select, URL)
 - **Custom Thumbnails** - Select from video frames or upload custom images
-- **Client-Side Watermarks** - Configurable image or text overlays on playback
-- **CLI + Web Upload** - Upload via command line or web interface
+- **Soft-Delete** - Deleted videos go to archive with configurable retention period
 - **YouTube Migration** - Download and import videos directly from YouTube
-- **Admin Authentication** - Secure admin API with API keys and HTTP-only cookie sessions
+
+### Streaming & Delivery
+- **CDN Support** - Configure external CDN for video delivery
+- **Shaka Player + hls.js** - Dual player support for DASH and HLS formats
+- **Client-Side Watermarks** - Configurable image or text overlays on playback
+
+### Admin & Operations
+- **Modern Admin UI** - TypeScript-based admin interface with mobile support
+- **Prometheus Metrics** - Full observability with `/metrics` endpoints
+- **Automated Backups** - Kubernetes CronJob for PostgreSQL backups
+- **Audit Logging** - Security event logging with rotation
 - **Database-Backed Settings** - Runtime configuration via Admin UI or CLI
+- **CLI + Web Upload** - Upload via command line or web interface
+
+### Security & Infrastructure
+- **Admin Authentication** - Secure admin API with API keys and HTTP-only cookie sessions
+- **Rate Limiting** - Configurable per-endpoint rate limits (memory or Redis storage)
+- **Playback Analytics** - Track views, watch time, completion rates
+- **Kubernetes Security** - NetworkPolicy, PodDisruptionBudgets, seccomp profiles
 
 ## Requirements
 
@@ -99,6 +117,10 @@ vlog settings list                                        # List all settings
 vlog settings get transcoding.hls_segment_duration        # Get a setting
 vlog settings set transcoding.hls_segment_duration 10     # Update a setting
 vlog settings migrate-from-env                            # Migrate env vars to database
+
+# Manifest management (for CMAF videos)
+vlog manifests regenerate --all                           # Regenerate all CMAF manifests
+vlog manifests regenerate --slug my-video                 # Regenerate specific video
 ```
 
 ## Directory Structure
@@ -140,16 +162,27 @@ vlog/
 /mnt/nas/vlog-storage/
 ├── uploads/              # Temporary upload storage
 │   └── {video_id}.mp4
-├── videos/               # HLS output
+├── videos/               # Transcoded output
 │   └── {slug}/
-│       ├── master.m3u8   # Adaptive bitrate playlist
-│       ├── 1080p.m3u8    # Quality-specific playlist
-│       ├── 1080p_0000.ts # Video segments
+│       ├── master.m3u8   # HLS adaptive bitrate playlist
+│       ├── manifest.mpd  # DASH manifest (CMAF format)
+│       ├── 1080p/        # CMAF quality (fMP4 segments)
+│       │   ├── init.mp4      # Initialization segment
+│       │   ├── segment_0.m4s # Media segments
+│       │   └── ...
+│       ├── 1080p.m3u8    # Legacy HLS quality playlist
+│       ├── 1080p_0000.ts # Legacy HLS segments (MPEG-TS)
 │       ├── thumbnail.jpg
 │       └── captions.vtt  # WebVTT subtitles
-└── archive/              # Soft-deleted videos (moved here)
-    └── {slug}/           # Same structure as videos/
+├── archive/              # Soft-deleted videos
+│   └── {slug}/
+└── backups/              # PostgreSQL database backups
+    └── vlog-YYYY-MM-DD.dump
 ```
+
+**Streaming Formats:**
+- **CMAF (new):** Modern fMP4 segments with both HLS and DASH manifests. Uses Shaka Player.
+- **HLS/TS (legacy):** Traditional MPEG-TS segments with HLS only. Uses hls.js.
 
 ## Quality Presets
 
@@ -213,6 +246,10 @@ See [k8s/README.md](k8s/README.md) for detailed Kubernetes deployment instructio
 | [DATABASE.md](docs/DATABASE.md) | Database schema documentation |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Configuration options |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment guide |
+| [MONITORING.md](docs/MONITORING.md) | Prometheus metrics and observability |
+| [ADMIN_UI_GUIDE.md](docs/ADMIN_UI_GUIDE.md) | Admin interface user guide |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and solutions |
+| [UPGRADING.md](docs/UPGRADING.md) | Version upgrade procedures |
 | [TRANSCODING_ARCHITECTURE.md](docs/TRANSCODING_ARCHITECTURE.md) | Job lifecycle and state machine |
 | [EXCEPTION_HANDLING.md](docs/EXCEPTION_HANDLING.md) | Error handling patterns |
 
@@ -350,8 +387,9 @@ See [TESTING.md](TESTING.md) for detailed testing guide.
 - **Transcription:** faster-whisper
 - **File Monitoring:** watchdog (inotify)
 - **Rate Limiting:** slowapi (memory or Redis)
-- **Frontend:** Alpine.js + Tailwind CSS v4
-- **Video Player:** hls.js
+- **Metrics:** prometheus-client (Prometheus text format)
+- **Frontend:** Alpine.js + Tailwind CSS v4, TypeScript (Admin UI)
+- **Video Player:** Shaka Player (DASH/CMAF), hls.js (HLS/TS legacy)
 - **Process Management:** systemd
 - **Container Orchestration:** Kubernetes (k3s)
 
