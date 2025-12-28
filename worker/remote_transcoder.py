@@ -697,12 +697,19 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             all_qualities_for_manifest.append(mq)
 
         # Add existing qualities (from the qualities list which has full info)
+        # Note: QUALITY_PRESETS don't have 'width', so we calculate it from height
+        # assuming 16:9 aspect ratio (this is a fallback - actual dimensions may vary)
         for q in qualities:
             if q["name"] in existing_qualities:
+                # Calculate width from height (16:9 aspect ratio, rounded to even)
+                height = q["height"]
+                width = q.get("width") or int(height * 16 / 9)
+                if width % 2 != 0:
+                    width += 1
                 mq = {
                     "name": q["name"],
-                    "width": q["width"],
-                    "height": q["height"],
+                    "width": width,
+                    "height": height,
                     "bitrate": f"{q['bitrate']}k",
                 }
                 all_qualities_for_manifest.append(mq)

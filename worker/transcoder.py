@@ -1230,6 +1230,7 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
         completed_qualities: List of quality dicts with name, width, height, bitrate fields
     """
     # Verify actual dimensions from first segment of each quality
+    # If segment exists, extract actual dimensions; otherwise calculate from height
     for quality in completed_qualities:
         first_segment = output_dir / f"{quality['name']}_0000.ts"
         if first_segment.exists():
@@ -1237,6 +1238,13 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
             if actual_width > 0 and actual_height > 0:
                 quality["width"] = actual_width
                 quality["height"] = actual_height
+        # Ensure width is set even if segment wasn't found (calculate from height)
+        if "width" not in quality and "height" in quality:
+            height = quality["height"]
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
+            quality["width"] = width
 
     master_content = "#EXTM3U\n#EXT-X-VERSION:3\n\n"
 
@@ -1244,8 +1252,13 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
     qualities_with_bandwidth = []
     for quality in completed_qualities:
         name = quality["name"]
-        width = quality["width"]
-        height = quality["height"]
+        height = quality.get("height", 0)
+        width = quality.get("width", 0)
+        # Fallback: calculate width from height if missing
+        if not width and height:
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
 
         # Handle original quality (has bitrate_bps) vs transcoded (has bitrate string)
         if quality.get("is_original") and quality.get("bitrate_bps"):
@@ -1306,6 +1319,7 @@ async def generate_master_playlist_cmaf(
         original_audio_codec: Audio codec of original quality (e.g., 'aac', 'ac3', 'eac3')
     """
     # Verify actual dimensions from init segment of each quality
+    # If init.mp4 exists, extract actual dimensions; otherwise calculate from height
     for quality in completed_qualities:
         quality_dir = output_dir / quality["name"]
         init_segment = quality_dir / "init.mp4"
@@ -1314,6 +1328,13 @@ async def generate_master_playlist_cmaf(
             if actual_width > 0 and actual_height > 0:
                 quality["width"] = actual_width
                 quality["height"] = actual_height
+        # Ensure width is set even if init.mp4 wasn't found (calculate from height)
+        if "width" not in quality and "height" in quality:
+            height = quality["height"]
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
+            quality["width"] = width
 
     # HLS version 7 required for fMP4 segments
     master_content = "#EXTM3U\n#EXT-X-VERSION:7\n\n"
@@ -1322,8 +1343,13 @@ async def generate_master_playlist_cmaf(
     qualities_with_bandwidth = []
     for quality in completed_qualities:
         name = quality["name"]
-        width = quality["width"]
-        height = quality["height"]
+        height = quality.get("height", 0)
+        width = quality.get("width", 0)
+        # Fallback: calculate width from height if missing
+        if not width and height:
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
 
         # Handle original quality (has bitrate_bps) vs transcoded (has bitrate string)
         if quality.get("is_original") and quality.get("bitrate_bps"):
@@ -1488,8 +1514,14 @@ async def generate_dash_manifest(
 
     for i, quality in enumerate(sorted_qualities):
         name = quality["name"]
-        width = quality["width"]
-        height = quality["height"]
+        height = quality.get("height", 0)
+        # Ensure width is available (calculate from height if not present)
+        width = quality.get("width")
+        if width is None and height > 0:
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
+        width = width or 0
         bandwidth = quality.get("bitrate_bps", int(quality.get("bitrate", "0").replace("k", "")) * 1000)
 
         # Use extracted codec string if available, otherwise use default
