@@ -2,7 +2,6 @@
 import sys
 from unittest.mock import MagicMock
 
-
 mock_db_module = MagicMock()
 mock_db_module.database = MagicMock()
 mock_db_module.worker_api_keys = MagicMock()
