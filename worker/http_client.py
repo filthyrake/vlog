@@ -158,6 +158,7 @@ class WorkerAPIClient:
         self,
         status: str = "active",
         metadata: Optional[dict] = None,
+        code_version: Optional[str] = None,
     ) -> dict:
         """
         Send heartbeat to server.
@@ -165,13 +166,16 @@ class WorkerAPIClient:
         Args:
             status: Worker status (active, busy, idle)
             metadata: Optional metadata to update
+            code_version: Worker's code version for compatibility checking
 
         Returns:
-            Server response with server_time
+            Server response with server_time, required_version, version_ok
         """
         data = {"status": status}
         if metadata:
             data["metadata"] = metadata
+        if code_version:
+            data["code_version"] = code_version
         return await self._request(
             "POST",
             "/api/worker/heartbeat",

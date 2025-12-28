@@ -162,6 +162,11 @@ class WorkerRegisterResponse(BaseModel):
 # Heartbeat
 class HeartbeatRequest(BaseModel):
     status: str = Field(default="active", pattern="^(active|busy|idle)$")
+    code_version: Optional[str] = Field(
+        default=None,
+        description="Worker's code version (git commit hash). Used for version compatibility checks.",
+        max_length=40,
+    )
     metadata: Optional[Dict] = Field(
         default=None, description="Optional metadata dict containing 'capabilities' key with WorkerCapabilities"
     )
@@ -197,6 +202,14 @@ class HeartbeatRequest(BaseModel):
 class HeartbeatResponse(BaseModel):
     status: str
     server_time: datetime
+    required_version: Optional[str] = Field(
+        default=None,
+        description="Required code version. If set and doesn't match worker's version, worker should exit.",
+    )
+    version_ok: bool = Field(
+        default=True,
+        description="True if worker's code version matches required version. False means worker should exit.",
+    )
 
 
 # Job claiming

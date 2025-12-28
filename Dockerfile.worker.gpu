@@ -15,6 +15,11 @@
 # Update this periodically and test before deploying
 ARG ROCKY_VERSION=10
 
+# Code version for worker compatibility checking
+# Set this during build: docker build --build-arg CODE_VERSION=$(git rev-parse --short HEAD) ...
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
+
 # =============================================================================
 # Stage 1: Builder - Install build dependencies and Python packages
 # =============================================================================
@@ -60,6 +65,7 @@ RUN pip3 install --no-cache-dir --prefix=/install \
 
 # Copy source code and install the package
 COPY config.py ./
+COPY code_version.py ./
 COPY api/ api/
 COPY worker/ worker/
 COPY cli/ cli/
@@ -112,10 +118,15 @@ COPY --from=builder /install /usr/local
 
 # Copy source code
 COPY --chown=vlog:vlog config.py ./
+COPY --chown=vlog:vlog code_version.py ./
 COPY --chown=vlog:vlog api/ api/
 COPY --chown=vlog:vlog worker/ worker/
 COPY --chown=vlog:vlog cli/ cli/
 COPY --chown=vlog:vlog pyproject.toml ./
+
+# Re-declare build args for use in this stage (args don't persist across stages)
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
 
 # Switch to non-root user
 USER vlog
@@ -124,10 +135,14 @@ USER vlog
 RUN mkdir -p /tmp/vlog-worker
 
 # Environment variables
+# VLOG_CODE_VERSION and VLOG_BUILD_TIMESTAMP are used for worker compatibility checking
 ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     VLOG_WORKER_WORK_DIR=/tmp/vlog-worker \
     VLOG_WORKER_HEARTBEAT_INTERVAL=30 \
     VLOG_WORKER_POLL_INTERVAL=10 \
+    # Code version for compatibility checking
+    VLOG_CODE_VERSION=${CODE_VERSION} \
+    VLOG_BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
     # GPU detection (auto-detect by default)
     VLOG_HWACCEL_TYPE=auto \
     VLOG_HWACCEL_PREFERRED_CODEC=h264 \

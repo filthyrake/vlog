@@ -685,7 +685,14 @@ async def worker_heartbeat(
 
     If the worker was previously offline, this heartbeat will bring it back online
     and log the recovery for debugging connectivity issues.
+
+    Also performs code version checking:
+    - If workers.require_version_match is enabled, compares worker's code_version
+      against the server's CODE_VERSION
+    - Returns version_ok=False if mismatch, signaling worker should exit
     """
+    from code_version import CODE_VERSION
+
     now = datetime.now(timezone.utc)
     worker_name = worker["worker_name"] or worker["worker_id"][:8]
     was_offline = worker["status"] == "offline"
@@ -696,13 +703,46 @@ async def worker_heartbeat(
     }
 
     # Validate and serialize metadata with size limit
-    if data.metadata:
-        metadata_json = json.dumps(data.metadata)
+    # Include worker's reported code_version in metadata for tracking
+    metadata = data.metadata or {}
+    if data.code_version:
+        metadata["code_version"] = data.code_version
+    if metadata:
+        metadata_json = json.dumps(metadata)
         if len(metadata_json) > 10000:  # 10KB limit
             raise HTTPException(status_code=400, detail="Metadata JSON too large (max 10KB)")
         update_values["metadata"] = metadata_json
 
     await database.execute(workers.update().where(workers.c.id == worker["id"]).values(**update_values))
+
+    # Check code version compatibility
+    # Get settings for version enforcement
+    from api.settings_service import get_settings_service
+
+    settings = get_settings_service()
+    require_version_match = await settings.get("workers.require_version_match", True)
+    require_version_field = await settings.get("workers.require_version_field", False)
+
+    # Determine if version is ok
+    version_ok = True
+    required_version = CODE_VERSION
+
+    # Check if version field is required but missing
+    if require_version_field and not data.code_version:
+        version_ok = False
+        logger.warning(
+            f"Worker '{worker_name}' did not send code_version field. "
+            f"workers.require_version_field is enabled - worker must be updated."
+        )
+    elif require_version_match and data.code_version:
+        # Version mismatch - worker should exit and be restarted with new image
+        if data.code_version != CODE_VERSION:
+            version_ok = False
+            logger.warning(
+                f"Worker '{worker_name}' has outdated code version: "
+                f"{data.code_version} (required: {CODE_VERSION}). "
+                f"Worker should exit and update."
+            )
 
     # Log recovery from offline status for debugging
     if was_offline:
@@ -738,7 +778,12 @@ async def worker_heartbeat(
         hwaccel_type=hwaccel_type,
     )
 
-    return HeartbeatResponse(status="ok", server_time=now)
+    return HeartbeatResponse(
+        status="ok",
+        server_time=now,
+        required_version=required_version,
+        version_ok=version_ok,
+    )
 
 
 # =============================================================================
@@ -794,7 +839,50 @@ async def claim_job(
 
     GPU workers have priority over CPU workers. If a CPU worker requests a job
     but idle GPU workers are available, the CPU worker will be told to wait.
+
+    Also enforces code version matching if workers.require_version_match is enabled.
+    Workers with outdated code will be rejected from claiming jobs.
     """
+    from api.settings_service import get_settings_service
+    from code_version import CODE_VERSION
+
+    # Check code version before allowing job claim (defense in depth)
+    settings = get_settings_service()
+    require_version_match = await settings.get("workers.require_version_match", True)
+    require_version_field = await settings.get("workers.require_version_field", False)
+
+    # Get worker's code version from metadata
+    worker_metadata = worker.get("metadata")
+    worker_version = None
+    if worker_metadata:
+        try:
+            metadata = json.loads(worker_metadata) if isinstance(worker_metadata, str) else worker_metadata
+            worker_version = metadata.get("code_version")
+        except (json.JSONDecodeError, TypeError):
+            pass  # No metadata or invalid format
+
+    worker_name = worker.get("worker_name") or worker["worker_id"][:8]
+
+    # Check if version field is required but missing
+    if require_version_field and not worker_version:
+        logger.warning(
+            f"Rejecting job claim from worker '{worker_name}' - "
+            f"no code_version in metadata (workers.require_version_field is enabled)"
+        )
+        return ClaimJobResponse(
+            message="Version field required: worker must send code_version in heartbeat"
+        )
+
+    # Check for version mismatch
+    if require_version_match and worker_version and worker_version != CODE_VERSION:
+        logger.warning(
+            f"Rejecting job claim from worker '{worker_name}' "
+            f"due to version mismatch: {worker_version} != {CODE_VERSION}"
+        )
+        return ClaimJobResponse(
+            message=f"Version mismatch: worker has {worker_version}, server requires {CODE_VERSION}"
+        )
+
     now = datetime.now(timezone.utc)
     claim_duration = timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
     expires_at = now + claim_duration
