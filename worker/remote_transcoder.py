@@ -741,7 +741,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             # Previously this was conditional on enable_dash and skipped for selective retranscode
             if enable_dash:
                 logger.info("  Generating DASH manifest...")
-                await generate_dash_manifest(output_dir, all_qualities_for_manifest, codec=codec_enum)
+                await generate_dash_manifest(
+                    output_dir, all_qualities_for_manifest, codec=codec_enum, total_duration=duration
+                )
 
             # Validate master playlist before upload (issue #166)
             master_playlist_path = output_dir / "master.m3u8"
@@ -969,7 +971,9 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
 
             # Generate manifests
             await generate_master_playlist_cmaf(output_dir, completed_qualities, target_codec)
-            await generate_dash_manifest(output_dir, completed_qualities, segment_duration=6, codec=target_codec)
+            await generate_dash_manifest(
+                output_dir, completed_qualities, segment_duration=6, codec=target_codec, total_duration=duration
+            )
 
             # Copy thumbnail if it exists in source
             for thumb_name in ["thumbnail.jpg", "thumbnail.png"]:

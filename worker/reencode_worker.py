@@ -215,6 +215,7 @@ class ReencodeWorker:
                 completed_qualities,
                 segment_duration=6,
                 codec=target_codec,
+                total_duration=duration,
             )
 
             # Copy thumbnail if it exists

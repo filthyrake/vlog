@@ -1428,6 +1428,7 @@ async def generate_dash_manifest(
     completed_qualities: List[dict],
     segment_duration: int = 6,
     codec: VideoCodec = VideoCodec.H264,
+    total_duration: Optional[float] = None,
 ):
     """
     Generate DASH MPD manifest for CMAF segments.
@@ -1443,6 +1444,7 @@ async def generate_dash_manifest(
         completed_qualities: List of quality dicts with name, width, height, bitrate fields
         segment_duration: Segment duration in seconds
         codec: Video codec used for encoding
+        total_duration: Video duration in seconds (if None, calculated from playlists)
     """
     # Filter out "original" quality - it uses TS segments, not CMAF/fMP4
     # DASH manifest only supports fMP4 segments (init.mp4 + seg_*.m4s)
@@ -1453,27 +1455,28 @@ async def generate_dash_manifest(
         print("    No CMAF qualities for DASH manifest, skipping...")
         return
 
-    # Calculate total duration from first quality's playlist
-    total_duration = 0
-    segment_count = 0
-    for quality in cmaf_qualities:
-        quality_dir = output_dir / quality["name"]
-        playlist = quality_dir / "stream.m3u8"
-        if playlist.exists():
-            content = playlist.read_text()
-            # Count segments and calculate duration
-            for line in content.split("\n"):
-                if line.startswith("#EXTINF:"):
-                    try:
-                        duration = float(line.split(":")[1].rstrip(","))
-                        total_duration += duration
-                        segment_count += 1
-                    except (ValueError, IndexError):
-                        pass
-            break  # Only need to check one quality
+    # Use provided duration, or calculate from first quality's playlist
+    if total_duration is None:
+        total_duration = 0
+        segment_count = 0
+        for quality in cmaf_qualities:
+            quality_dir = output_dir / quality["name"]
+            playlist = quality_dir / "stream.m3u8"
+            if playlist.exists():
+                content = playlist.read_text()
+                # Count segments and calculate duration
+                for line in content.split("\n"):
+                    if line.startswith("#EXTINF:"):
+                        try:
+                            duration = float(line.split(":")[1].rstrip(","))
+                            total_duration += duration
+                            segment_count += 1
+                        except (ValueError, IndexError):
+                            pass
+                break  # Only need to check one quality
 
-    if total_duration == 0:
-        total_duration = segment_count * segment_duration
+        if total_duration == 0:
+            total_duration = segment_count * segment_duration
 
     # Format duration as ISO 8601
     hours = int(total_duration // 3600)
