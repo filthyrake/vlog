@@ -552,6 +552,86 @@ class TestGroupQualitiesByResolution:
         assert len(batches) == 1
         assert batches[0] == [{"name": "720p", "height": 720}]
 
+    def test_all_high_res_only(self):
+        """Test all high-res qualities are batched correctly."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        # Only high-res qualities (>= 1080p)
+        qualities = [
+            {"name": "2160p", "height": 2160},
+            {"name": "1440p", "height": 1440},
+            {"name": "1080p", "height": 1080},
+        ]
+
+        batches = group_qualities_by_resolution(qualities, parallel_count=2)
+
+        # With no low-res to interleave, should batch high-res sequentially
+        assert len(batches) == 2
+        # First batch: 2 high-res
+        assert len(batches[0]) == 2
+        # Second batch: 1 high-res
+        assert len(batches[1]) == 1
+        # All should be high-res
+        all_heights = [q["height"] for batch in batches for q in batch]
+        assert all(h >= 1080 for h in all_heights)
+        # Total should be 3 qualities
+        assert sum(len(b) for b in batches) == 3
+
+    def test_all_low_res_only(self):
+        """Test all low-res qualities are batched correctly."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        # Only low-res qualities (< 1080p)
+        qualities = [
+            {"name": "720p", "height": 720},
+            {"name": "480p", "height": 480},
+            {"name": "360p", "height": 360},
+        ]
+
+        batches = group_qualities_by_resolution(qualities, parallel_count=2)
+
+        # With no high-res to interleave, should batch low-res sequentially
+        assert len(batches) == 2
+        # First batch: 2 low-res
+        assert len(batches[0]) == 2
+        # Second batch: 1 low-res
+        assert len(batches[1]) == 1
+        # All should be low-res
+        all_heights = [q["height"] for batch in batches for q in batch]
+        assert all(h < 1080 for h in all_heights)
+        # Total should be 3 qualities
+        assert sum(len(b) for b in batches) == 3
+
+    def test_parallel_count_three(self):
+        """Test interleaving with parallel_count=3."""
+        from worker.transcoder import group_qualities_by_resolution
+
+        qualities = [
+            {"name": "2160p", "height": 2160},
+            {"name": "1440p", "height": 1440},
+            {"name": "1080p", "height": 1080},
+            {"name": "720p", "height": 720},
+            {"name": "480p", "height": 480},
+            {"name": "360p", "height": 360},
+        ]
+
+        batches = group_qualities_by_resolution(qualities, parallel_count=3)
+
+        # With 3 high-res and 3 low-res, parallel_count=3 should create 2 batches
+        # Each batch should have a mix of high and low res
+        assert len(batches) == 2
+        assert len(batches[0]) == 3
+        assert len(batches[1]) == 3
+
+        # Each batch should have both high-res and low-res
+        for batch in batches:
+            heights = [q["height"] for q in batch]
+            assert any(h >= 1080 for h in heights), "Batch should have high-res"
+            assert any(h < 1080 for h in heights), "Batch should have low-res"
+
+        # Total should be 6 qualities
+        assert sum(len(b) for b in batches) == 6
+
 
 class TestGetRecommendedParallelSessions:
     """Tests for parallel session recommendation."""

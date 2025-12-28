@@ -517,9 +517,19 @@ async def list_videos(
     - relevance (default for text searches), date, duration, views, title
     - order: asc (ascending) or desc (descending)
     """
-    # Generate cache key from query parameters (Issue #429)
-    # Custom fields are excluded from cache key as they vary too much
-    cache_key = f"videos:{category}:{tag}:{search}:{duration}:{quality}:{date_from}:{date_to}:{has_transcription}:{sort}:{order}:{limit}:{offset}"
+    # Parse custom field filters early for cache key inclusion (Issue #429)
+    # Custom fields are query params like "custom.difficulty=beginner"
+    custom_filters = {}
+    for key, value in request.query_params.items():
+        if key.startswith("custom."):
+            field_slug = key[7:]  # Remove "custom." prefix
+            if field_slug:
+                custom_filters[field_slug] = value
+
+    # Generate cache key from ALL query parameters including custom fields
+    # Sort custom filters by key for consistent cache keys
+    custom_filters_key = ":".join(f"{k}={v}" for k, v in sorted(custom_filters.items()))
+    cache_key = f"videos:{category}:{tag}:{search}:{duration}:{quality}:{date_from}:{date_to}:{has_transcription}:{sort}:{order}:{limit}:{offset}:{custom_filters_key}"
 
     # Check cache first
     cached_result = _video_list_cache.get(cache_key)
@@ -652,15 +662,7 @@ async def list_videos(
             # Does not have completed transcription
             query = query.where(~transcription_exists)
 
-    # Custom field filter (query params like "custom.difficulty=beginner")
-    # Parse all query params starting with "custom."
-    custom_filters = {}
-    for key, value in request.query_params.items():
-        if key.startswith("custom."):
-            field_slug = key[7:]  # Remove "custom." prefix
-            if field_slug:
-                custom_filters[field_slug] = value
-
+    # Custom field filter - custom_filters already parsed above for cache key
     if custom_filters:
         # Look up field definitions for these slugs
         field_slugs = list(custom_filters.keys())
