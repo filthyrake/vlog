@@ -372,3 +372,69 @@ export interface SettingsExportResponse {
   exported_at: string;
   settings: Record<string, SettingDefinition[]>;
 }
+
+// =============================================================================
+// Playlist Types
+// =============================================================================
+
+export type PlaylistVisibility = 'public' | 'private' | 'unlisted';
+export type PlaylistType = 'playlist' | 'collection' | 'series' | 'course';
+
+export interface PlaylistVideoInfo {
+  id: number;
+  title: string;
+  slug: string;
+  thumbnail_url?: string;
+  duration: number;
+  position: number;
+  status: string;
+}
+
+export interface Playlist {
+  id: number;
+  title: string;
+  slug: string;
+  description?: string;
+  thumbnail_url?: string;
+  visibility: PlaylistVisibility;
+  playlist_type: PlaylistType;
+  is_featured: boolean;
+  video_count: number;
+  total_duration: number;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface PlaylistDetail extends Playlist {
+  videos: PlaylistVideoInfo[];
+}
+
+export interface PlaylistListResponse {
+  playlists: Playlist[];
+  total_count: number;
+}
+
+export interface PlaylistCreateRequest {
+  title: string;
+  description?: string;
+  visibility?: PlaylistVisibility;
+  playlist_type?: PlaylistType;
+  is_featured?: boolean;
+}
+
+export interface PlaylistUpdateRequest {
+  title?: string;
+  description?: string;
+  visibility?: PlaylistVisibility;
+  playlist_type?: PlaylistType;
+  is_featured?: boolean;
+}
+
+export interface AddVideoToPlaylistRequest {
+  video_id: number;
+  position?: number;
+}
+
+export interface ReorderPlaylistRequest {
+  video_ids: number[];
+}
