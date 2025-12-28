@@ -61,7 +61,7 @@ jobs:
         run: |
           # Update the deployment to use the new image
           kubectl -n vlog set image deployment/vlog-worker-intel \
-            vlog-worker=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}
+            worker=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}
 
           # Wait for rollout
           kubectl -n vlog rollout status deployment/vlog-worker-intel --timeout=300s
