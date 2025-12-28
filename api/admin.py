@@ -7351,8 +7351,8 @@ async def list_playlists(
         GROUP BY p.id
         ORDER BY p.created_at DESC
         LIMIT :limit OFFSET :offset
-    """)
-    rows = await fetch_all_with_retry(query, {"limit": limit, "offset": offset})
+    """).bindparams(limit=limit, offset=offset)
+    rows = await fetch_all_with_retry(query)
 
     playlist_list = [
         _build_playlist_response(row, row["video_count"], row["total_duration"])
@@ -7439,8 +7439,8 @@ async def get_playlist(request: Request, playlist_id: int) -> PlaylistDetailResp
         JOIN videos v ON v.id = pi.video_id
         WHERE pi.playlist_id = :playlist_id AND v.deleted_at IS NULL
         ORDER BY pi.position ASC
-    """)
-    video_rows = await fetch_all_with_retry(video_query, {"playlist_id": playlist_id})
+    """).bindparams(playlist_id=playlist_id)
+    video_rows = await fetch_all_with_retry(video_query)
 
     # Build video list
     video_list = []
@@ -7623,8 +7623,8 @@ async def get_playlist_videos(request: Request, playlist_id: int) -> List[Playli
         JOIN videos v ON v.id = pi.video_id
         WHERE pi.playlist_id = :playlist_id AND v.deleted_at IS NULL
         ORDER BY pi.position ASC
-    """)
-    rows = await fetch_all_with_retry(query, {"playlist_id": playlist_id})
+    """).bindparams(playlist_id=playlist_id)
+    rows = await fetch_all_with_retry(query)
 
     return [
         PlaylistVideoInfo(

@@ -1158,25 +1158,28 @@ async def list_public_playlists(
 
     # Build WHERE conditions
     conditions = ["p.deleted_at IS NULL", "p.visibility = 'public'"]
-    params = {"limit": limit, "offset": offset}
+    filter_params: dict = {}
 
     if playlist_type:
         conditions.append("p.playlist_type = :playlist_type")
-        params["playlist_type"] = playlist_type
+        filter_params["playlist_type"] = playlist_type
 
     if featured is not None:
         conditions.append("p.is_featured = :is_featured")
-        params["is_featured"] = featured
+        filter_params["is_featured"] = featured
 
     where_clause = " AND ".join(conditions)
 
-    # Count total
+    # Count total (only uses filter params)
     count_query = sa.text(f"""
         SELECT COUNT(*) FROM playlists p WHERE {where_clause}
     """)
-    total_count = await fetch_val_with_retry(count_query, params)
+    if filter_params:
+        count_query = count_query.bindparams(**filter_params)
+    total_count = await fetch_val_with_retry(count_query)
 
-    # Get playlists with video counts
+    # Get playlists with video counts (uses filter + pagination params)
+    all_params = {**filter_params, "limit": limit, "offset": offset}
     query = sa.text(f"""
         SELECT
             p.*,
@@ -1195,8 +1198,8 @@ async def list_public_playlists(
         GROUP BY p.id
         ORDER BY p.is_featured DESC, p.created_at DESC
         LIMIT :limit OFFSET :offset
-    """)
-    rows = await fetch_all_with_retry(query, params)
+    """).bindparams(**all_params)
+    rows = await fetch_all_with_retry(query)
 
     playlist_list = []
     for row in rows:
@@ -1252,8 +1255,8 @@ async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResp
           AND v.deleted_at IS NULL
           AND v.published_at IS NOT NULL
         ORDER BY pi.position ASC
-    """)
-    video_rows = await fetch_all_with_retry(video_query, {"playlist_id": playlist["id"]})
+    """).bindparams(playlist_id=playlist["id"])
+    video_rows = await fetch_all_with_retry(video_query)
 
     video_list = []
     total_duration = 0.0
@@ -1322,8 +1325,8 @@ async def get_public_playlist_videos(request: Request, slug: str) -> List[Playli
           AND v.deleted_at IS NULL
           AND v.published_at IS NOT NULL
         ORDER BY pi.position ASC
-    """)
-    rows = await fetch_all_with_retry(query, {"playlist_id": playlist["id"]})
+    """).bindparams(playlist_id=playlist["id"])
+    rows = await fetch_all_with_retry(query)
 
     return [
         PlaylistVideoInfo(
