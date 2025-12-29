@@ -638,7 +638,7 @@ async def cleanup_orphaned_jobs() -> int:
 
 
 def build_retranscode_metadata(
-    video_dir: Path,
+    video_output_dir: Path,
     qualities_to_delete: List[str],
     retranscode_all: bool,
 ) -> str:
@@ -660,7 +660,7 @@ def build_retranscode_metadata(
         "retranscode_all": retranscode_all,
         "qualities_to_delete": qualities_to_delete,
         "delete_transcription": retranscode_all,
-        "video_dir": str(video_dir),
+        "video_dir": str(video_output_dir),
     })
 
 
@@ -3599,8 +3599,8 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
 async def analytics_videos(
     request: Request,
     response: Response,
-    limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
-    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
+    limit_per_page: int = Query(default=50, ge=1, le=100, description="Max items per page"),
+    items_skipped: int = Query(default=0, ge=0, description="Number of items to skip"),
     sort_by: str = "views",
     period: str = "all",
 ) -> VideoAnalyticsListResponse:
@@ -3609,7 +3609,7 @@ async def analytics_videos(
     cache_max_age = await get_analytics_client_cache_max_age()
 
     # Try to get from cache first
-    cache_key = f"analytics_videos:{limit}:{offset}:{sort_by}:{period}"
+    cache_key = f"analytics_videos:{limit_per_page}:{items_skipped}:{sort_by}:{period}"
     cached_data = analytics_cache.get(cache_key)
 
     if cached_data is not None:
@@ -3664,7 +3664,7 @@ async def analytics_videos(
         LIMIT :limit OFFSET :offset
     """
 
-    params = {"limit": limit, "offset": offset}
+    params = {"limit": limit_per_page, "offset": items_skipped}
     if period_filter:
         params["period_filter"] = period_filter.isoformat()
 
@@ -3899,7 +3899,7 @@ async def export_videos(
     status: Optional[str] = Query(None, description="Filter by status (pending, processing, ready, failed)"),
     category_id: Optional[int] = Query(None, description="Filter by category ID"),
     include_deleted: bool = Query(False, description="Include soft-deleted videos"),
-    limit: int = Query(10000, ge=1, le=10000, description="Maximum number of videos to export"),
+    max_export: int = Query(10000, ge=1, le=10000, description="Maximum number of videos to export"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
 ) -> VideoExportResponse:
     """
@@ -3934,7 +3934,7 @@ async def export_videos(
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .order_by(videos.c.created_at.desc())
-        .limit(limit)
+        .limit(max_export)
         .offset(offset)
     )
 
@@ -4830,7 +4830,7 @@ async def list_deployment_events(
     request: Request,
     worker_id: Optional[str] = Query(None, description="Filter by worker UUID"),
     event_type: Optional[str] = Query(None, description="Filter by event type"),
-    limit: int = Query(default=50, ge=1, le=200, description="Number of events to return"),
+    no_of_events: int = Query(default=50, ge=1, le=200, description="Number of events to return"),
 ):
     """
     List recent deployment events.
@@ -4839,7 +4839,7 @@ async def list_deployment_events(
     """
     from api.database import deployment_events
 
-    query = deployment_events.select().order_by(deployment_events.c.created_at.desc()).limit(limit)
+    query = deployment_events.select().order_by(deployment_events.c.created_at.desc()).limit(no_of_events)
 
     if worker_id:
         query = query.where(deployment_events.c.worker_id == worker_id)
@@ -6047,7 +6047,7 @@ async def queue_videos_for_reencode(
     request: Request,
     video_ids: List[int] = Query(..., description="Video IDs to queue"),
     priority: str = Query("normal", regex="^(high|normal|low)$"),
-    target_format: str = Query("cmaf", regex="^(hls_ts|cmaf)$"),
+    target_streaming_format: str = Query("cmaf", regex="^(hls_ts|cmaf)$"),
     target_codec: str = Query("hevc", regex="^(h264|hevc|av1)$"),
 ):
     """
@@ -6096,7 +6096,7 @@ async def queue_videos_for_reencode(
             database,
             reencode_queue.insert().values(
                 video_id=video_id,
-                target_format=target_format,
+                target_format=target_streaming_format,
                 target_codec=target_codec,
                 priority=priority,
                 status="pending",
@@ -6117,7 +6117,7 @@ async def queue_videos_for_reencode(
 async def queue_all_legacy_videos(
     request: Request,
     priority: str = Query("low", regex="^(high|normal|low)$"),
-    target_format: str = Query("cmaf", regex="^(hls_ts|cmaf)$"),
+    target_streaming_format: str = Query("cmaf", regex="^(hls_ts|cmaf)$"),
     target_codec: str = Query("hevc", regex="^(h264|hevc|av1)$"),
     batch_size: int = Query(100, ge=1, le=1000),
 ):
@@ -6157,7 +6157,7 @@ async def queue_all_legacy_videos(
         await db_execute_with_retry(
             reencode_queue.insert().values(
                 video_id=row["id"],
-                target_format=target_format,
+                target_format=target_streaming_format,
                 target_codec=target_codec,
                 priority=priority,
                 status="pending",

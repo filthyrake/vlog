@@ -390,7 +390,7 @@ class ReencodeWorker:
             cmd,
             duration,
             progress_callback=None,  # No callback for re-encode worker
-            timeout=timeout,
+            wait_time=timeout,
         )
 
     def _build_concat_cmaf_command(
