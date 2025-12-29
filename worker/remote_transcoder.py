@@ -1461,6 +1461,8 @@ async def worker_loop():
                             await asyncio.sleep(worker_settings["poll_interval"])
 
             except WorkerAPIError as e:
+                import random
+
                 logger.error(f"API error in worker loop: {e.message}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
@@ -1470,11 +1472,16 @@ async def worker_loop():
                 worker_settings = await get_remote_worker_settings()
                 base_interval = worker_settings["poll_interval"]
                 backoff = min(MAX_BACKOFF_SECONDS, base_interval * (2**consecutive_api_failures))
+                # Add jitter (±20%) to prevent thundering herd when API recovers
+                jitter = backoff * 0.2 * (2 * random.random() - 1)
+                backoff = max(base_interval, backoff + jitter)
                 logger.warning(
                     f"Backing off for {backoff:.1f}s after {consecutive_api_failures} consecutive API failures"
                 )
                 await asyncio.sleep(backoff)
             except Exception as e:
+                import random
+
                 logger.error(f"Error in worker loop: {e}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
@@ -1484,6 +1491,9 @@ async def worker_loop():
                 worker_settings = await get_remote_worker_settings()
                 base_interval = worker_settings["poll_interval"]
                 backoff = min(MAX_BACKOFF_SECONDS, base_interval * (2**consecutive_api_failures))
+                # Add jitter (±20%) to prevent thundering herd when API recovers
+                jitter = backoff * 0.2 * (2 * random.random() - 1)
+                backoff = max(base_interval, backoff + jitter)
                 logger.warning(f"Backing off for {backoff:.1f}s after {consecutive_api_failures} consecutive failures")
                 await asyncio.sleep(backoff)
 
