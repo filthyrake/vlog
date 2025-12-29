@@ -462,6 +462,21 @@ ANALYTICS_CLIENT_CACHE_MAX_AGE = get_int_env("VLOG_ANALYTICS_CLIENT_CACHE_MAX_AG
 # Reduced from 5 to 2 for faster failure detection on stale NFS mounts
 STORAGE_CHECK_TIMEOUT = get_int_env("VLOG_STORAGE_CHECK_TIMEOUT", 2, min_val=1)
 
+# TAR Extraction Timeout (Issue #451)
+# Timeout for tar extraction operations in seconds
+# NAS I/O can hang indefinitely on stale mounts - this prevents thread pool exhaustion
+# Default: 600 seconds (10 minutes) - sufficient for large quality archives on slow NAS
+TAR_EXTRACTION_TIMEOUT = get_int_env("VLOG_TAR_EXTRACTION_TIMEOUT", 600, min_val=60)
+
+# Orphaned Quality File Cleanup (Issue #450)
+# Enable/disable automatic cleanup of orphaned quality directories
+ORPHAN_CLEANUP_ENABLED = os.getenv("VLOG_ORPHAN_CLEANUP_ENABLED", "true").lower() in ("true", "1", "yes")
+# How often to run orphan cleanup check (seconds, default: 1 hour)
+ORPHAN_CLEANUP_INTERVAL = get_int_env("VLOG_ORPHAN_CLEANUP_INTERVAL", 3600, min_val=300)
+# Minimum age before a directory is considered orphaned (seconds, default: 24 hours)
+# Directories younger than this are not cleaned up - allows time for job completion
+ORPHAN_CLEANUP_MIN_AGE = get_int_env("VLOG_ORPHAN_CLEANUP_MIN_AGE", 86400, min_val=3600)
+
 # Audit Logging Configuration
 AUDIT_LOG_ENABLED = os.getenv("VLOG_AUDIT_LOG_ENABLED", "true").lower() not in ("false", "0", "no")
 AUDIT_LOG_PATH = Path(os.getenv("VLOG_AUDIT_LOG_PATH", "/var/log/vlog/audit.log"))
