@@ -217,6 +217,42 @@ class TestCircuitBreaker:
         client._check_circuit_breaker()
 
         assert client._circuit_open is False  # Half-open allows probe
+        assert client._half_open is True  # Should be in half-open state
+
+    def test_half_open_success_closes_circuit(self):
+        """Test that successful probe in half-open state closes circuit."""
+        client = WorkerAPIClient("http://test.example.com", "test-api-key")
+
+        # Put circuit in half-open state
+        client._half_open = True
+        client._consecutive_failures = 5
+        client._circuit_open_count = 2
+
+        # Record success
+        client._record_success()
+
+        assert client._half_open is False
+        assert client._circuit_open is False
+        assert client._consecutive_failures == 0
+        assert client._circuit_open_count == 0
+
+    def test_half_open_failure_reopens_circuit_immediately(self):
+        """Test that failure in half-open state immediately re-opens circuit."""
+        client = WorkerAPIClient("http://test.example.com", "test-api-key")
+
+        # Put circuit in half-open state (simulating after timeout)
+        client._half_open = True
+        client._circuit_open = False
+        client._circuit_open_count = 1  # Previously opened once
+
+        # Record a single failure
+        client._record_failure()
+
+        # Circuit should immediately re-open (not wait for threshold)
+        assert client._circuit_open is True
+        assert client._half_open is False
+        assert client._circuit_open_count == 2  # Incremented
+        assert client._circuit_open_until is not None
 
     def test_exponential_backoff_for_reset_time(self):
         """Test that reset time doubles each time circuit opens."""
