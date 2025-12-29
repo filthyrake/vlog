@@ -2164,7 +2164,7 @@ async def upload_reencode_result(
             await extract_tar_async(
                 tmp_path,
                 temp_dir,
-                allowed_extensions=(".m3u8", ".ts", ".m4s", ".mp4", ".mpd", ".jpg", ".vtt"),
+                allowed_extensions=(".m3u8", ".ts", ".m4s", ".mp4", ".mpd", ".jpg", ".png", ".vtt"),
                 max_files=MAX_HLS_ARCHIVE_FILES,
                 max_size=MAX_HLS_ARCHIVE_SIZE,
                 max_single_file=MAX_HLS_SINGLE_FILE_SIZE,

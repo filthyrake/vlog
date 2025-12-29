@@ -108,6 +108,94 @@ _cached_remote_settings: Dict = {}
 _cached_remote_settings_time: float = 0
 _REMOTE_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
 
+# Allowed extensions for secure tar extraction (source files + streaming output)
+ALLOWED_TAR_EXTENSIONS = (
+    # Source video files
+    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v",
+    # HLS/CMAF streaming files
+    ".m3u8", ".ts", ".m4s", ".mpd",
+    # Thumbnails and subtitles
+    ".jpg", ".png", ".vtt",
+)
+
+# Limits for tar extraction (matching API limits)
+MAX_TAR_FILES = 2000
+MAX_TAR_SIZE = 50 * 1024 * 1024 * 1024  # 50GB
+MAX_TAR_SINGLE_FILE = 10 * 1024 * 1024 * 1024  # 10GB
+
+
+def extract_tar_secure(tar_path: Path, output_dir: Path) -> None:
+    """
+    Securely extract a tar.gz archive with path traversal and symlink protection.
+
+    This prevents CVE-2007-4559 (Python tarfile vulnerability) by:
+    - Rejecting symlinks and hardlinks
+    - Validating extracted paths stay within output_dir
+    - Checking file extensions against an allowlist
+    - Enforcing size limits
+
+    Args:
+        tar_path: Path to the tar.gz file
+        output_dir: Directory to extract to
+
+    Raises:
+        ValueError: If validation fails (malicious archive detected)
+    """
+    import tarfile
+
+    output_dir_resolved = output_dir.resolve()
+    extracted_count = 0
+    extracted_size = 0
+
+    with tarfile.open(tar_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            extracted_count += 1
+            if extracted_count > MAX_TAR_FILES:
+                raise ValueError(f"Archive contains too many files (limit: {MAX_TAR_FILES})")
+
+            if member.isfile() and member.size > MAX_TAR_SINGLE_FILE:
+                raise ValueError(f"File too large: {member.name} ({member.size} bytes)")
+
+            extracted_size += member.size
+            if extracted_size > MAX_TAR_SIZE:
+                raise ValueError(f"Archive too large (limit: {MAX_TAR_SIZE} bytes)")
+
+            # Reject symlinks and hardlinks (path traversal vector)
+            if member.issym() or member.islnk():
+                raise ValueError(f"Invalid archive: symlinks not allowed ({member.name})")
+
+            # Only allow regular files and directories
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(f"Invalid archive: unsupported file type ({member.name})")
+
+            # Check file extension
+            if member.isfile():
+                if not any(member.name.endswith(ext) for ext in ALLOWED_TAR_EXTENSIONS):
+                    raise ValueError(f"Invalid file type: {member.name}")
+
+            # Validate path traversal
+            member_path = output_dir / member.name
+            try:
+                if member_path.exists():
+                    dest_resolved = member_path.resolve()
+                else:
+                    dest_resolved = member_path.parent.resolve() / member_path.name
+            except (ValueError, OSError) as e:
+                raise ValueError(f"Invalid path {member.name}: {e}")
+
+            try:
+                dest_resolved.relative_to(output_dir_resolved)
+            except ValueError:
+                raise ValueError(f"Path traversal detected ({member.name})")
+
+            # Extract and fix permissions
+            tar.extract(member, output_dir)
+            extracted_path = output_dir / member.name
+            if extracted_path.is_file():
+                extracted_path.chmod(0o644)
+            elif extracted_path.is_dir():
+                extracted_path.chmod(0o755)
+
 
 async def get_remote_worker_settings() -> Dict:
     """
@@ -927,9 +1015,8 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
             download_path = work_dir / "source.tar.gz"
             await client.download_reencode_source(job_id, download_path)
 
-            # Extract source files
-            with tarfile.open(download_path, "r:gz") as tar:
-                tar.extractall(source_dir)
+            # Extract source files securely (prevents path traversal/symlink attacks)
+            extract_tar_secure(download_path, source_dir)
             download_path.unlink(missing_ok=True)
 
             # Find source to re-encode from
