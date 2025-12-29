@@ -116,7 +116,6 @@ jobs:
           # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
           # Last reviewed: 2025-12-27
           pip-audit --ignore-vuln PYSEC-2024-87 --ignore-vuln GHSA-34jh-p97f-mpxf
-        continue-on-error: true
 
   security-summary:
     name: Security Scan Summary

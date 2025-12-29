@@ -1368,6 +1368,9 @@ async def worker_loop():
 
     jobs_processed = 0
     jobs_failed = 0
+    # Track consecutive failures for exponential backoff (Issue #454)
+    consecutive_failures = 0
+    MAX_BACKOFF_SECONDS = 300  # Cap backoff at 5 minutes
 
     try:
         while not shutdown_requested:
@@ -1411,6 +1414,7 @@ async def worker_loop():
 
                     if success:
                         jobs_processed += 1
+                        consecutive_failures = 0  # Reset on success (Issue #454)
                     else:
                         jobs_failed += 1
                         # On failure, acknowledge Redis job so database retry logic can handle retries
@@ -1443,14 +1447,32 @@ async def worker_loop():
                 logger.error(f"API error in worker loop: {e.message}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
+                # Exponential backoff on consecutive failures (Issue #454)
+                consecutive_failures += 1
                 worker_settings = await get_remote_worker_settings()
-                await asyncio.sleep(worker_settings["poll_interval"])
+                backoff = min(
+                    MAX_BACKOFF_SECONDS,
+                    worker_settings["poll_interval"] * (2 ** consecutive_failures)
+                )
+                logger.warning(
+                    f"Backing off for {backoff:.1f}s after {consecutive_failures} consecutive failures"
+                )
+                await asyncio.sleep(backoff)
             except Exception as e:
                 logger.error(f"Error in worker loop: {e}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
+                # Exponential backoff on consecutive failures (Issue #454)
+                consecutive_failures += 1
                 worker_settings = await get_remote_worker_settings()
-                await asyncio.sleep(worker_settings["poll_interval"])
+                backoff = min(
+                    MAX_BACKOFF_SECONDS,
+                    worker_settings["poll_interval"] * (2 ** consecutive_failures)
+                )
+                logger.warning(
+                    f"Backing off for {backoff:.1f}s after {consecutive_failures} consecutive failures"
+                )
+                await asyncio.sleep(backoff)
 
     finally:
         # Cancel heartbeat task
