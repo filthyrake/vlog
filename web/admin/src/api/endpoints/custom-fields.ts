@@ -31,7 +31,7 @@ export const customFieldsApi = {
    */
   async list(): Promise<CustomField[]> {
     const response = await apiClient.fetch<CustomFieldListResponse>('/api/custom-fields');
-    return response.fields;
+    return response.fields ?? [];
   },
 
   /**
