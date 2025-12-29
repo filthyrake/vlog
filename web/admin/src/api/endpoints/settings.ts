@@ -9,6 +9,16 @@ import type {
   SettingsExportResponse,
 } from '../types';
 
+// Response types matching backend schemas
+interface SettingsByCategoryResponse {
+  categories: Record<string, SettingDefinition[]>;
+}
+
+interface SettingsCategoryResponse {
+  category: string;
+  settings: SettingDefinition[];
+}
+
 export const settingsApi = {
   // ===========================================================================
   // General Settings
@@ -18,7 +28,8 @@ export const settingsApi = {
    * Get all settings
    */
   async getAll(): Promise<Record<string, SettingDefinition[]>> {
-    return apiClient.fetch<Record<string, SettingDefinition[]>>('/api/settings');
+    const response = await apiClient.fetch<SettingsByCategoryResponse>('/api/settings');
+    return response.categories ?? {};
   },
 
   /**
@@ -32,7 +43,8 @@ export const settingsApi = {
    * Get settings for a specific category
    */
   async getCategory(category: string): Promise<SettingDefinition[]> {
-    return apiClient.fetch<SettingDefinition[]>(`/api/settings/category/${category}`);
+    const response = await apiClient.fetch<SettingsCategoryResponse>(`/api/settings/category/${category}`);
+    return response.settings ?? [];
   },
 
   /**
