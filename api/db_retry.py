@@ -103,6 +103,38 @@ def is_retryable_database_error(exc: Exception) -> bool:
 is_database_locked_error = is_retryable_database_error
 
 
+def is_deadlock_error(exc: Exception) -> bool:
+    """
+    Check if an exception is specifically a deadlock error.
+
+    Deadlocks require special handling because chronic deadlocks indicate
+    a deeper problem that retries won't solve. (Issue #460)
+    """
+    error_str = str(exc).lower()
+
+    # PostgreSQL deadlock pattern
+    if "deadlock detected" in error_str:
+        return True
+
+    # Check for PostgreSQL error code 40P01 (deadlock_detected)
+    if hasattr(exc, "sqlstate"):
+        sqlstate = getattr(exc, "sqlstate", "")
+        if sqlstate == "40P01":
+            return True
+
+    # Check wrapped exceptions
+    if hasattr(exc, "__cause__") and exc.__cause__ is not None:
+        return is_deadlock_error(exc.__cause__)
+
+    return False
+
+
+class DeadlockError(DatabaseRetryableError):
+    """Raised when too many deadlocks occur, indicating a chronic problem."""
+
+    pass
+
+
 async def execute_with_retry(
     func: Callable,
     *args,
@@ -115,6 +147,7 @@ async def execute_with_retry(
     Execute an async function with retry logic for transient database errors.
 
     Uses exponential backoff with jitter to reduce contention.
+    Deadlocks have a separate, lower retry limit to detect chronic issues early.
 
     Args:
         func: Async function to execute
@@ -128,12 +161,17 @@ async def execute_with_retry(
         Result of the function
 
     Raises:
+        DeadlockError: If too many deadlocks occur (indicates chronic problem)
         DatabaseRetryableError: If all retries are exhausted
         Other exceptions: Non-retryable errors are re-raised immediately
     """
     import random
 
     last_exception: Optional[Exception] = None
+
+    # Track deadlocks separately - chronic deadlocks indicate deeper problems (Issue #460)
+    MAX_DEADLOCK_RETRIES = 3
+    deadlock_count = 0
 
     for attempt in range(max_retries + 1):
         try:
@@ -143,6 +181,16 @@ async def execute_with_retry(
                 raise
 
             last_exception = e
+
+            # Check for deadlock specifically (Issue #460)
+            if is_deadlock_error(e):
+                deadlock_count += 1
+                if deadlock_count >= 2:
+                    # Log at ERROR level after 2 consecutive deadlocks
+                    func_name = getattr(func, "__name__", str(func))
+                    logger.error(f"Chronic deadlock detected in {func_name} ({deadlock_count} consecutive deadlocks)")
+                if deadlock_count >= MAX_DEADLOCK_RETRIES:
+                    raise DeadlockError(f"Too many deadlocks ({deadlock_count}) in database operation, aborting") from e
 
             if attempt < max_retries:
                 # Calculate delay with exponential backoff and jitter

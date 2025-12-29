@@ -111,11 +111,21 @@ _REMOTE_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
 # Allowed extensions for secure tar extraction (source files + streaming output)
 ALLOWED_TAR_EXTENSIONS = (
     # Source video files
-    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v",
+    ".mp4",
+    ".mkv",
+    ".mov",
+    ".avi",
+    ".webm",
+    ".m4v",
     # HLS/CMAF streaming files
-    ".m3u8", ".ts", ".m4s", ".mpd",
+    ".m3u8",
+    ".ts",
+    ".m4s",
+    ".mpd",
     # Thumbnails and subtitles
-    ".jpg", ".png", ".vtt",
+    ".jpg",
+    ".png",
+    ".vtt",
 )
 
 # Limits for tar extraction (matching API limits)
@@ -805,13 +815,15 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Also check for existing "original" quality
         if "original" in existing_qualities:
             # Original uses source dimensions
-            all_qualities_for_manifest.append({
-                "name": "original",
-                "width": source_width,
-                "height": source_height,
-                "bitrate": "0k",
-                "is_original": True,
-            })
+            all_qualities_for_manifest.append(
+                {
+                    "name": "original",
+                    "width": source_width,
+                    "height": source_height,
+                    "bitrate": "0k",
+                    "is_original": True,
+                }
+            )
 
         # Always generate manifests for CMAF streaming format
         # Even for selective retranscode, we regenerate to ensure consistency
@@ -908,7 +920,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 # Retry on other errors
                 if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
                     error_msg = e.message if isinstance(e, WorkerAPIError) else str(e)
-                    logger.warning(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}")
+                    logger.warning(
+                        f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}"
+                    )
                     logger.warning(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
                     await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
                 else:
@@ -1369,6 +1383,10 @@ async def worker_loop():
     jobs_processed = 0
     jobs_failed = 0
 
+    # Track consecutive API failures for exponential backoff (Issue #454)
+    consecutive_api_failures = 0
+    MAX_BACKOFF_SECONDS = 300  # 5 minutes max
+
     try:
         while not shutdown_requested:
             try:
@@ -1397,6 +1415,9 @@ async def worker_loop():
                     result = await client.claim_job()
 
                 if result.get("job_id"):
+                    # Reset API failure counter on successful job claim
+                    consecutive_api_failures = 0
+
                     # Mark that we're processing a job
                     worker_state["processing_job"] = result.get("job_id")
 
@@ -1443,14 +1464,28 @@ async def worker_loop():
                 logger.error(f"API error in worker loop: {e.message}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
+
+                # Exponential backoff on API failures (Issue #454)
+                consecutive_api_failures = min(consecutive_api_failures + 1, 10)
                 worker_settings = await get_remote_worker_settings()
-                await asyncio.sleep(worker_settings["poll_interval"])
+                base_interval = worker_settings["poll_interval"]
+                backoff = min(MAX_BACKOFF_SECONDS, base_interval * (2**consecutive_api_failures))
+                logger.warning(
+                    f"Backing off for {backoff:.1f}s after {consecutive_api_failures} consecutive API failures"
+                )
+                await asyncio.sleep(backoff)
             except Exception as e:
                 logger.error(f"Error in worker loop: {e}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
+
+                # Exponential backoff on errors (Issue #454)
+                consecutive_api_failures = min(consecutive_api_failures + 1, 10)
                 worker_settings = await get_remote_worker_settings()
-                await asyncio.sleep(worker_settings["poll_interval"])
+                base_interval = worker_settings["poll_interval"]
+                backoff = min(MAX_BACKOFF_SECONDS, base_interval * (2**consecutive_api_failures))
+                logger.warning(f"Backing off for {backoff:.1f}s after {consecutive_api_failures} consecutive failures")
+                await asyncio.sleep(backoff)
 
     finally:
         # Cancel heartbeat task
