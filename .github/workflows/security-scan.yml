@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -30,7 +30,7 @@ jobs:
           format: 'table'
 
       - name: Run Trivy filesystem scan (SARIF)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         if: always()
         with:
           scan-type: 'fs'
@@ -60,7 +60,7 @@ jobs:
           docker build -f Dockerfile.worker.gpu -t vlog-worker:scan .
 
       - name: Run Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           image-ref: 'vlog-worker:scan'
           severity: 'CRITICAL,HIGH'
@@ -68,7 +68,7 @@ jobs:
           format: 'table'
 
       - name: Run Trivy image scan (SARIF)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         if: always()
         with:
           image-ref: 'vlog-worker:scan'
