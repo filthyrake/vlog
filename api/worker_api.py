@@ -2129,7 +2129,6 @@ async def upload_reencode_result(
 
     Performs atomic swap of old files with new ones.
     """
-    import tarfile
     import tempfile
 
     # Verify worker owns this job
@@ -2158,11 +2157,22 @@ async def upload_reencode_result(
             content = await file.read()
             tmp.write(content)
 
-        # Extract to temp directory
+        # Extract to temp directory using secure async extraction
+        # This validates file types, prevents path traversal, and handles symlinks
         temp_dir.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(tmp_path, "r:gz") as tar:
-            tar.extractall(temp_dir)
-        tmp_path.unlink(missing_ok=True)
+        try:
+            await extract_tar_async(
+                tmp_path,
+                temp_dir,
+                allowed_extensions=(".m3u8", ".ts", ".m4s", ".mp4", ".mpd", ".jpg", ".vtt"),
+                max_files=MAX_HLS_ARCHIVE_FILES,
+                max_size=MAX_HLS_ARCHIVE_SIZE,
+                max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
         # Atomic swap
         if video_dir.exists():
