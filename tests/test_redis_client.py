@@ -75,17 +75,21 @@ class TestRedisClientCircuitBreaker:
         assert third_backoff > second_backoff
 
     def test_circuit_breaker_backoff_capped_at_300s(self, redis_client_instance):
-        """Circuit breaker backoff should be capped at 300 seconds."""
+        """Circuit breaker backoff should be capped at ~300 seconds (with jitter)."""
         client = redis_client_instance
 
         # Record many failures to hit the cap
         for _ in range(10):
             client._record_failure()
 
-        # Calculate expected backoff (should be capped at 300)
+        # Calculate expected backoff (base capped at 300, with ±20% jitter = max 360s)
         now = datetime.now(timezone.utc)
-        max_expected = now + timedelta(seconds=300 + 1)  # +1 for timing tolerance
+        # Max backoff is 300s base + 20% jitter = 360s, plus timing tolerance
+        max_expected = now + timedelta(seconds=360 + 1)
+        # Min backoff is 30s (enforced minimum in _record_failure)
+        min_expected = now + timedelta(seconds=30 - 1)
         assert client._circuit_open_until <= max_expected
+        assert client._circuit_open_until >= min_expected
 
     def test_success_resets_circuit_breaker(self, redis_client_instance):
         """Successful operation should reset circuit breaker."""
