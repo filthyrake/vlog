@@ -1,17 +1,29 @@
 name: Tests
 
 on:
+  # Run automatically when merged to main/dev
   push:
     branches: [main, dev]
-  pull_request:
-    branches: [main, dev]
+  # Manual trigger - use "Run workflow" button in GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Test type to run'
+        required: true
+        default: 'quick'
+        type: choice
+        options:
+          - quick
+          - full
 
 jobs:
   # Quick tests for dev branch - faster feedback
   test-quick:
     name: Quick Tests
     runs-on: self-hosted
-    if: github.base_ref == 'dev' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+      (github.event_name == 'workflow_dispatch' && inputs.test_type == 'quick')
 
     services:
       postgres:
@@ -84,7 +96,9 @@ jobs:
   test-full:
     name: Full Tests (PostgreSQL)
     runs-on: self-hosted
-    if: github.base_ref == 'main' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.test_type == 'full')
 
     services:
       postgres:
