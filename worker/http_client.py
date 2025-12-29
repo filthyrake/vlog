@@ -1,15 +1,19 @@
 """HTTP client for worker-to-API communication."""
 
 import asyncio
+import logging
 import random
 import tarfile
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable, List, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerAPIError(Exception):
@@ -19,6 +23,14 @@ class WorkerAPIError(Exception):
         self.status_code = status_code
         self.message = message
         super().__init__(f"API error {status_code}: {message}")
+
+
+class CircuitBreakerOpen(WorkerAPIError):
+    """Exception raised when circuit breaker is open."""
+
+    def __init__(self, retry_after: float):
+        self.retry_after = retry_after
+        super().__init__(0, f"Circuit breaker open - API unavailable, retry after {retry_after:.1f}s")
 
 
 # Retry configuration
@@ -32,6 +44,12 @@ TIMEOUT_CLAIM = 30.0  # Moderate timeout for claim
 TIMEOUT_PROGRESS = 15.0  # Short timeout for progress updates
 TIMEOUT_DEFAULT = 60.0  # Default for most operations
 TIMEOUT_FILE_TRANSFER = 300.0  # Long timeout for file transfers
+
+# Circuit breaker configuration (Issue #453)
+# Opens circuit after consecutive failures, preventing wasted retry time
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3  # Open circuit after 3 consecutive failures
+CIRCUIT_BREAKER_BASE_RESET_SECONDS = 30.0  # Base reset time (doubles each time)
+CIRCUIT_BREAKER_MAX_RESET_SECONDS = 300.0  # Max reset time (5 minutes)
 
 
 class WorkerAPIClient:
@@ -59,6 +77,59 @@ class WorkerAPIClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self._client: Optional[httpx.AsyncClient] = None
+
+        # Circuit breaker state (Issue #453)
+        # Prevents wasting time on retries when API is down
+        self._circuit_open = False
+        self._circuit_open_until: Optional[datetime] = None
+        self._consecutive_failures = 0
+        self._circuit_open_count = 0  # Track how many times circuit has opened
+
+    def _check_circuit_breaker(self) -> None:
+        """Check if circuit breaker is open and raise if so.
+
+        Raises:
+            CircuitBreakerOpen: If circuit is open and reset time hasn't passed
+        """
+        if not self._circuit_open:
+            return
+
+        now = datetime.now()
+        if self._circuit_open_until and now < self._circuit_open_until:
+            retry_after = (self._circuit_open_until - now).total_seconds()
+            raise CircuitBreakerOpen(retry_after)
+
+        # Reset time has passed, try half-open state (allow one request through)
+        logger.info("Circuit breaker entering half-open state, allowing probe request")
+        self._circuit_open = False
+
+    def _record_success(self) -> None:
+        """Record a successful request, resetting circuit breaker."""
+        if self._consecutive_failures > 0:
+            logger.info(f"API request succeeded after {self._consecutive_failures} failures, resetting circuit breaker")
+        self._consecutive_failures = 0
+        self._circuit_open = False
+        self._circuit_open_count = 0
+
+    def _record_failure(self) -> None:
+        """Record a failed request, potentially opening circuit breaker."""
+        self._consecutive_failures += 1
+
+        if self._consecutive_failures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+            self._circuit_open = True
+            self._circuit_open_count += 1
+
+            # Exponential backoff for reset time (doubles each time circuit opens)
+            reset_seconds = min(
+                CIRCUIT_BREAKER_BASE_RESET_SECONDS * (2 ** (self._circuit_open_count - 1)),
+                CIRCUIT_BREAKER_MAX_RESET_SECONDS,
+            )
+            self._circuit_open_until = datetime.now() + timedelta(seconds=reset_seconds)
+
+            logger.warning(
+                f"Circuit breaker opened after {self._consecutive_failures} consecutive failures. "
+                f"Will retry after {reset_seconds:.1f}s (open count: {self._circuit_open_count})"
+            )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with connection pooling."""
@@ -99,7 +170,10 @@ class WorkerAPIClient:
         max_retries: Optional[int] = None,
         **kwargs,
     ) -> dict:
-        """Make an API request with retry logic for transient errors."""
+        """Make an API request with retry logic and circuit breaker (Issue #453)."""
+        # Check circuit breaker before attempting request
+        self._check_circuit_breaker()
+
         client = await self._get_client()
         url = f"{self.base_url}{path}"
         retries = max_retries if max_retries is not None else self.max_retries
@@ -118,11 +192,14 @@ class WorkerAPIClient:
                     **kwargs,
                 )
                 resp.raise_for_status()
+                # Success - reset circuit breaker
+                self._record_success()
                 return resp.json()
             except httpx.HTTPStatusError as e:
                 last_error = e
                 # Don't retry 4xx errors (except 429 rate limit)
                 if e.response.status_code < 500 and e.response.status_code != 429:
+                    # Client error - don't count against circuit breaker
                     try:
                         detail = e.response.json().get("detail", str(e))
                     except Exception:
@@ -144,7 +221,8 @@ class WorkerAPIClient:
                 delay = delay * (0.75 + random.random() * 0.5)
                 await asyncio.sleep(delay)
 
-        # All retries exhausted
+        # All retries exhausted - record failure for circuit breaker
+        self._record_failure()
         if isinstance(last_error, httpx.HTTPStatusError):
             try:
                 detail = last_error.response.json().get("detail", str(last_error))
