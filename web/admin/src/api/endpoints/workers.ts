@@ -152,7 +152,10 @@ export const workersApi = {
      * Get deployment history
      */
     async getDeployments(limit: number = 50): Promise<DeploymentEvent[]> {
-      return apiClient.fetch<DeploymentEvent[]>(`/api/admin/deployments?limit=${limit}`);
+      const response = await apiClient.fetch<{ events: DeploymentEvent[]; count: number }>(
+        `/api/admin/deployments?limit=${limit}`
+      );
+      return response.events;
     },
   },
 };
