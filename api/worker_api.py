@@ -125,6 +125,9 @@ from config import (
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
+    ORPHAN_CLEANUP_ENABLED,
+    ORPHAN_CLEANUP_INTERVAL,
+    ORPHAN_CLEANUP_MIN_AGE,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
     RATE_LIMIT_WORKER_DEFAULT,
@@ -132,6 +135,7 @@ from config import (
     RATE_LIMIT_WORKER_REGISTER,
     STALE_JOB_CHECK_INTERVAL,
     SUPPORTED_VIDEO_EXTENSIONS,
+    TAR_EXTRACTION_TIMEOUT,
     UPLOADS_DIR,
     VIDEOS_DIR,
     WORKER_ADMIN_SECRET,
@@ -237,28 +241,61 @@ async def extract_tar_async(
     max_size: int,
     max_single_file: int,
     strict_filenames: Optional[tuple] = None,
+    timeout: Optional[float] = None,
 ) -> None:
     """
-    Async wrapper for tar extraction - runs in thread pool.
+    Async wrapper for tar extraction - runs in thread pool with timeout.
 
     This is critical for reliability: tar extraction to NAS can take minutes
     when NAS is slow. Running it synchronously blocks the entire event loop,
     preventing heartbeat processing and causing workers to go offline.
+
+    The timeout prevents thread pool exhaustion when NAS hangs indefinitely
+    (Issue #451). Without it, 4 simultaneous slow extractions exhaust the
+    thread pool and block all new uploads.
+
+    Args:
+        tmp_path: Path to tar.gz file
+        output_dir: Directory to extract to
+        allowed_extensions: Allowed file extensions
+        max_files: Max files allowed
+        max_size: Max total extracted size
+        max_single_file: Max size per file
+        strict_filenames: If set, only allow these exact filenames
+        timeout: Extraction timeout in seconds (default: TAR_EXTRACTION_TIMEOUT)
+
+    Raises:
+        ValueError: If validation fails or extraction times out
     """
+    if timeout is None:
+        timeout = TAR_EXTRACTION_TIMEOUT
+
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        _io_executor,
-        functools.partial(
-            _extract_tar_sync,
-            tmp_path,
-            output_dir,
-            allowed_extensions,
-            max_files,
-            max_size,
-            max_single_file,
-            strict_filenames,
-        ),
-    )
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(
+                _io_executor,
+                functools.partial(
+                    _extract_tar_sync,
+                    tmp_path,
+                    output_dir,
+                    allowed_extensions,
+                    max_files,
+                    max_size,
+                    max_single_file,
+                    strict_filenames,
+                ),
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            f"Tar extraction timed out after {timeout}s - possible stale NFS mount. "
+            f"Source: {tmp_path}, Target: {output_dir}"
+        )
+        raise ValueError(
+            f"Tar extraction timed out after {timeout}s - storage may be unresponsive"
+        )
 
 
 # Initialize rate limiter
@@ -469,6 +506,160 @@ async def check_stale_jobs():
     logger.info("Stale job checker stopped")
 
 
+# Known quality directory names that may contain transcoded content
+QUALITY_DIRECTORY_NAMES = {"2160p", "1440p", "1080p", "720p", "480p", "360p", "original"}
+
+
+async def _cleanup_orphaned_quality_directories() -> int:
+    """
+    Scan video directories and remove orphaned quality directories.
+
+    A quality directory is considered orphaned if:
+    1. It matches a known quality name (1080p, 720p, etc.)
+    2. There's no corresponding record in the video_qualities table
+    3. The directory is older than ORPHAN_CLEANUP_MIN_AGE
+
+    This handles the case where a worker uploads partial qualities before
+    abandoning a job (Issue #450). Without cleanup, these directories
+    accumulate and waste disk space.
+
+    Returns:
+        Number of orphaned directories cleaned up
+    """
+    global _api_start_time
+
+    # Skip during startup grace period (same as stale job checker)
+    now = datetime.now(timezone.utc)
+    if _api_start_time:
+        time_since_startup = (now - _api_start_time).total_seconds()
+        if time_since_startup < STALE_CHECK_STARTUP_GRACE_PERIOD:
+            return 0
+
+    cleaned_count = 0
+    min_age_seconds = ORPHAN_CLEANUP_MIN_AGE
+
+    try:
+        # Get all videos with their quality records
+        videos_with_qualities = await database.fetch_all(
+            sa.select(
+                videos.c.id,
+                videos.c.slug,
+                videos.c.status,
+            ).where(videos.c.deleted_at.is_(None))
+        )
+
+        # Build a lookup of video_id -> set of quality names
+        quality_lookup: dict[int, set[str]] = {}
+        all_qualities = await database.fetch_all(video_qualities.select())
+        for q in all_qualities:
+            vid = q["video_id"]
+            if vid not in quality_lookup:
+                quality_lookup[vid] = set()
+            quality_lookup[vid].add(q["quality"])
+
+        # Also check for active transcoding jobs - don't cleanup while job is running
+        active_jobs = await database.fetch_all(
+            transcoding_jobs.select()
+            .where(transcoding_jobs.c.completed_at.is_(None))
+        )
+        active_video_ids = {job["video_id"] for job in active_jobs}
+
+        for video in videos_with_qualities:
+            video_id = video["id"]
+            video_slug = video["slug"]
+            video_dir = VIDEOS_DIR / video_slug
+
+            # Skip videos with active transcoding jobs
+            if video_id in active_video_ids:
+                continue
+
+            if not video_dir.exists() or not video_dir.is_dir():
+                continue
+
+            # Check each subdirectory
+            registered_qualities = quality_lookup.get(video_id, set())
+
+            for subdir in video_dir.iterdir():
+                if not subdir.is_dir():
+                    continue
+
+                # Only process known quality directory names
+                if subdir.name not in QUALITY_DIRECTORY_NAMES:
+                    continue
+
+                # Check if this quality is registered in the database
+                if subdir.name in registered_qualities:
+                    continue
+
+                # This quality directory has no database record - check age
+                try:
+                    dir_mtime = subdir.stat().st_mtime
+                    age_seconds = now.timestamp() - dir_mtime
+                except OSError:
+                    continue
+
+                if age_seconds < min_age_seconds:
+                    # Too new - might still be in progress
+                    logger.debug(
+                        f"Orphaned quality dir {subdir} is only {age_seconds/3600:.1f}h old, "
+                        f"threshold is {min_age_seconds/3600:.1f}h - skipping"
+                    )
+                    continue
+
+                # Old enough and no database record - delete it
+                logger.info(
+                    f"Cleaning orphaned quality directory: {subdir} "
+                    f"(age: {age_seconds/3600:.1f}h, no database record)"
+                )
+                try:
+                    shutil.rmtree(subdir)
+                    cleaned_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to remove orphaned directory {subdir}: {e}")
+
+    except Exception as e:
+        logger.exception(f"Error during orphan cleanup scan: {e}")
+
+    return cleaned_count
+
+
+async def cleanup_orphaned_files():
+    """
+    Background task to clean up orphaned quality directories (Issue #450).
+
+    Runs periodically to detect and remove quality directories that were
+    uploaded during transcoding but never had their job completed.
+    This prevents disk space leaks from abandoned partial uploads.
+    """
+    global _shutdown_event
+
+    if not ORPHAN_CLEANUP_ENABLED:
+        logger.info("Orphan cleanup is disabled (VLOG_ORPHAN_CLEANUP_ENABLED=false)")
+        return
+
+    logger.info(
+        f"Orphan cleanup started (interval: {ORPHAN_CLEANUP_INTERVAL}s, "
+        f"min_age: {ORPHAN_CLEANUP_MIN_AGE/3600:.1f}h)"
+    )
+
+    while not _shutdown_event.is_set():
+        try:
+            cleaned = await _cleanup_orphaned_quality_directories()
+            if cleaned > 0:
+                logger.info(f"Orphan cleanup removed {cleaned} orphaned quality directories")
+        except Exception as e:
+            logger.exception(f"Error in orphan cleanup: {e}")
+
+        # Wait for the next check interval or shutdown
+        try:
+            await asyncio.wait_for(_shutdown_event.wait(), timeout=ORPHAN_CLEANUP_INTERVAL)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+    logger.info("Orphan cleanup stopped")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage database connection lifecycle and graceful shutdown."""
@@ -483,13 +674,16 @@ async def lifespan(app: FastAPI):
         f"Worker API started - database connected. Stale check grace period: {STALE_CHECK_STARTUP_GRACE_PERIOD}s"
     )
 
-    # Start background task for stale job detection
+    # Start background tasks
     stale_job_task = asyncio.create_task(check_stale_jobs())
+    orphan_cleanup_task = asyncio.create_task(cleanup_orphaned_files())
 
     yield
 
-    # Signal background task to stop
+    # Signal background tasks to stop
     _shutdown_event.set()
+
+    # Wait for stale job checker
     try:
         await asyncio.wait_for(stale_job_task, timeout=5.0)
     except asyncio.TimeoutError:
@@ -497,6 +691,17 @@ async def lifespan(app: FastAPI):
         stale_job_task.cancel()
         try:
             await stale_job_task
+        except asyncio.CancelledError:
+            pass  # Expected when cancelling
+
+    # Wait for orphan cleanup task
+    try:
+        await asyncio.wait_for(orphan_cleanup_task, timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.warning("Orphan cleanup did not stop in time, cancelling...")
+        orphan_cleanup_task.cancel()
+        try:
+            await orphan_cleanup_task
         except asyncio.CancelledError:
             pass  # Expected when cancelling
 
