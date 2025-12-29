@@ -20,12 +20,18 @@ export interface UpdateCustomFieldRequest extends Partial<CreateCustomFieldReque
   id: number;
 }
 
+interface CustomFieldListResponse {
+  fields: CustomField[];
+  total_count: number;
+}
+
 export const customFieldsApi = {
   /**
    * List all custom field definitions
    */
   async list(): Promise<CustomField[]> {
-    return apiClient.fetch<CustomField[]>('/api/custom-fields');
+    const response = await apiClient.fetch<CustomFieldListResponse>('/api/custom-fields');
+    return response.fields ?? [];
   },
 
   /**
