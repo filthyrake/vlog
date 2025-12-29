@@ -18,9 +18,13 @@ PostgreSQL errors:
 import asyncio
 import functools
 import logging
+import time
 from typing import Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# Slow query threshold in seconds (Issue #429)
+SLOW_QUERY_THRESHOLD = 1.0
 
 # Type variable for return type preservation
 T = TypeVar("T")
@@ -224,7 +228,14 @@ async def fetch_one_with_retry(
     from api.database import database
 
     async def _fetch():
-        return await database.fetch_one(query)
+        start_time = time.monotonic()
+        result = await database.fetch_one(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _fetch,
@@ -258,7 +269,14 @@ async def fetch_all_with_retry(
     from api.database import database
 
     async def _fetch():
-        return await database.fetch_all(query)
+        start_time = time.monotonic()
+        result = await database.fetch_all(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _fetch,
@@ -292,7 +310,14 @@ async def fetch_val_with_retry(
     from api.database import database
 
     async def _fetch():
-        return await database.fetch_val(query)
+        start_time = time.monotonic()
+        result = await database.fetch_val(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _fetch,
@@ -328,9 +353,17 @@ async def db_execute_with_retry(
     from api.database import database
 
     async def _execute():
+        start_time = time.monotonic()
         if values is not None:
-            return await database.execute(query, values)
-        return await database.execute(query)
+            result = await database.execute(query, values)
+        else:
+            result = await database.execute(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _execute,
