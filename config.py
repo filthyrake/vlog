@@ -196,7 +196,14 @@ UPLOADS_DIR = NAS_STORAGE / os.getenv("VLOG_UPLOADS_SUBDIR", "uploads")
 ARCHIVE_DIR = NAS_STORAGE / os.getenv("VLOG_ARCHIVE_SUBDIR", "archive")
 # Database configuration - PostgreSQL is the default
 # Set VLOG_DATABASE_URL to override (e.g., for SQLite: sqlite:///./vlog.db)
-DATABASE_URL = os.getenv("VLOG_DATABASE_URL", "postgresql://vlog:vlog_password@localhost/vlog")
+# IMPORTANT: Always set VLOG_DATABASE_URL in production with a secure password
+_default_db_url = "postgresql://vlog@localhost/vlog"
+DATABASE_URL = os.getenv("VLOG_DATABASE_URL", _default_db_url)
+if DATABASE_URL == _default_db_url and not os.environ.get("VLOG_TEST_MODE"):
+    logger.warning(
+        "VLOG_DATABASE_URL not set - using default without password. "
+        "Set VLOG_DATABASE_URL with credentials for production use."
+    )
 
 # Legacy SQLite path (kept for migration scripts)
 DATABASE_PATH = Path(os.getenv("VLOG_DATABASE_PATH", str(BASE_DIR / "vlog.db")))

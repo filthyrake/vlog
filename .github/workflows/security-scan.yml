@@ -100,7 +100,7 @@ jobs:
         run: |
           python3 -m venv .venv
           source .venv/bin/activate
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools
 
       - name: Install pip-audit
         run: |
@@ -114,9 +114,9 @@ jobs:
           # Ignored vulnerabilities (review quarterly):
           # - PYSEC-2024-87: Jinja2 sandbox escape - not exploitable in our use case (no user templates)
           # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
-          # Last reviewed: 2025-12-27
-          pip-audit --ignore-vuln PYSEC-2024-87 --ignore-vuln GHSA-34jh-p97f-mpxf
-        continue-on-error: true
+          # - GHSA-w853-jp5j-5j7f: filelock race condition - fix version 3.20.1 not yet released (latest: 3.19.1)
+          # Last reviewed: 2025-12-29
+          pip-audit --ignore-vuln PYSEC-2024-87 --ignore-vuln GHSA-34jh-p97f-mpxf --ignore-vuln GHSA-w853-jp5j-5j7f
 
   security-summary:
     name: Security Scan Summary
