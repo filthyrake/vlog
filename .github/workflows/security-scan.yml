@@ -112,7 +112,7 @@ jobs:
           source .venv/bin/activate
           pip install -r requirements.txt
           # Upgrade transitive dependencies with known vulnerabilities
-          pip install --upgrade filelock
+          pip install "filelock>=3.20.1"
           # Ignored vulnerabilities (review quarterly):
           # - PYSEC-2024-87: Jinja2 sandbox escape - not exploitable in our use case (no user templates)
           # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
