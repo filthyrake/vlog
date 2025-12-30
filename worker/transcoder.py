@@ -376,7 +376,7 @@ class ProgressTracker:
             self.last_job_progress = progress
 
 
-def calculate_ffmpeg_timeout(duration: float, height: int = 1080) -> float:
+def calculate_ffmpeg_timeout(duration_of_video: float, target_height: int = 1080) -> float:
     """
     Calculate appropriate timeout for ffmpeg transcoding based on video duration and resolution.
 
@@ -390,13 +390,13 @@ def calculate_ffmpeg_timeout(duration: float, height: int = 1080) -> float:
         Timeout in seconds, clamped between min and max values
     """
     # Get resolution multiplier (default to 2.0 for unknown resolutions)
-    resolution_multiplier = FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS.get(height, 2.0)
+    resolution_multiplier = FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS.get(target_height, 2.0)
     effective_multiplier = FFMPEG_TIMEOUT_BASE_MULTIPLIER * resolution_multiplier
-    timeout = duration * effective_multiplier
+    timeout = duration_of_video * effective_multiplier
     return max(FFMPEG_TIMEOUT_MINIMUM, min(timeout, FFMPEG_TIMEOUT_MAXIMUM))
 
 
-async def cleanup_ffmpeg_process(process: asyncio.subprocess.Process, context: str = "FFmpeg") -> None:
+async def cleanup_ffmpeg_process(target_subprocess: asyncio.subprocess.Process, logging_description: str = "FFmpeg") -> None:
     """
     Clean up an FFmpeg subprocess, handling race conditions where the process
     may exit between checking returncode and calling kill().
@@ -405,24 +405,24 @@ async def cleanup_ffmpeg_process(process: asyncio.subprocess.Process, context: s
         process: The asyncio subprocess to clean up
         context: Description for logging (e.g., "FFmpeg", "FFmpeg remux")
     """
-    if process.returncode is None:
+    if target_subprocess.returncode is None:
         try:
-            process.kill()
+            target_subprocess.kill()
         except (ProcessLookupError, OSError):
             # Process already terminated - this is expected in race conditions
             pass
         try:
-            await asyncio.wait_for(process.wait(), timeout=5)
+            await asyncio.wait_for(target_subprocess.wait(), timeout=5)
         except asyncio.TimeoutError:
-            print(f"  WARNING: {context} process did not terminate after kill")
+            print(f"  WARNING: {logging_description} process did not terminate after kill")
 
 
 async def run_ffmpeg_with_progress(
     cmd: List[str],
-    duration: float,
+    video_duration: float,
     timeout: float,
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
-    context: str = "FFmpeg",
+    logging_description: str = "FFmpeg",
 ) -> Tuple[bool, Optional[str]]:
     """
     Run an FFmpeg command with timeout and progress tracking.
@@ -470,8 +470,8 @@ async def run_ffmpeg_with_progress(
                 try:
                     time_ms = int(line_str.split("=")[1])
                     current_seconds = time_ms / 1000000.0
-                    if duration > 0:
-                        progress = min(100, int(current_seconds / duration * 100))
+                    if video_duration > 0:
+                        progress = min(100, int(current_seconds / video_duration * 100))
                         # Only update if progress changed significantly
                         if progress > last_progress_update:
                             last_progress_update = progress
@@ -492,7 +492,7 @@ async def run_ffmpeg_with_progress(
         await asyncio.sleep(timeout)
         timed_out = True
         elapsed = asyncio.get_running_loop().time() - start_time
-        print(f"  TIMEOUT: {context} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
+        print(f"  TIMEOUT: {logging_description} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
         try:
             process.kill()
         except ProcessLookupError:
@@ -506,7 +506,7 @@ async def run_ffmpeg_with_progress(
         await drain_and_wait()
     except Exception as e:
         # Log unexpected exceptions before cleanup
-        print(f"  ERROR: Unexpected exception during {context}: {e}")
+        print(f"  ERROR: Unexpected exception during {logging_description}: {e}")
         raise
     finally:
         # Cancel the timeout task
@@ -517,14 +517,14 @@ async def run_ffmpeg_with_progress(
             pass
 
         # Ensure FFmpeg process is cleaned up on any exception or early exit
-        await cleanup_ffmpeg_process(process, context)
+        await cleanup_ffmpeg_process(process, logging_description)
 
     if timed_out:
         elapsed = asyncio.get_running_loop().time() - start_time
-        return False, f"{context} timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
+        return False, f"{logging_description} timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
 
     if process.returncode != 0:
-        error_msg = f"{context} exited with code {process.returncode}"
+        error_msg = f"{logging_description} exited with code {process.returncode}"
         print(f"  ERROR: {error_msg}")
         return False, error_msg
 
@@ -539,7 +539,7 @@ def signal_handler(sig, frame):
     state.request_shutdown()
 
 
-def validate_duration(duration: Any) -> float:
+def validate_duration(duration_ffprobe: Any) -> float:
     """
     Validate and normalize video duration from ffprobe.
 
@@ -552,27 +552,27 @@ def validate_duration(duration: Any) -> float:
     Raises:
         ValueError: If duration is invalid, missing, or out of acceptable range
     """
-    if duration is None:
+    if duration_ffprobe is None:
         raise ValueError("Could not determine video duration")
 
     # Convert to float if possible
-    if not isinstance(duration, (int, float)):
+    if not isinstance(duration_ffprobe, (int, float)):
         try:
-            duration = float(duration)
+            duration_ffprobe = float(duration_ffprobe)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"Could not convert duration to float: {type(duration).__name__}") from e
+            raise ValueError(f"Could not convert duration to float: {type(duration_ffprobe).__name__}") from e
 
-    if math.isnan(duration) or math.isinf(duration):
-        raise ValueError(f"Invalid duration value: {duration}")
+    if math.isnan(duration_ffprobe) or math.isinf(duration_ffprobe):
+        raise ValueError(f"Invalid duration value: {duration_ffprobe}")
 
-    if duration <= 0:
-        raise ValueError(f"Invalid duration: {duration} seconds (must be positive)")
+    if duration_ffprobe <= 0:
+        raise ValueError(f"Invalid duration: {duration_ffprobe} seconds (must be positive)")
 
     # Prevent potential memory issues and catch corrupted metadata
-    if duration > MAX_DURATION_SECONDS:
-        raise ValueError(f"Duration too long: {duration} seconds (max {MAX_DURATION_SECONDS})")
+    if duration_ffprobe > MAX_DURATION_SECONDS:
+        raise ValueError(f"Duration too long: {duration_ffprobe} seconds (max {MAX_DURATION_SECONDS})")
 
-    return float(duration)
+    return float(duration_ffprobe)
 
 
 # ============================================================================
@@ -651,7 +651,7 @@ class UploadEventHandler(FileSystemEventHandler):
 
 
 def start_filesystem_watcher(
-    loop: asyncio.AbstractEventLoop,
+    event_loop: asyncio.AbstractEventLoop,
     event: asyncio.Event,
     debounce_delay: float = WORKER_DEBOUNCE_DELAY,
 ) -> Optional[Observer]:
@@ -670,7 +670,7 @@ def start_filesystem_watcher(
         return None
 
     try:
-        handler = UploadEventHandler(loop, event, debounce_delay=debounce_delay)
+        handler = UploadEventHandler(event_loop, event, debounce_delay=debounce_delay)
         observer = Observer()
         observer.schedule(handler, str(UPLOADS_DIR), recursive=False)
         observer.start()
@@ -980,7 +980,7 @@ async def transcode_quality_with_progress(
     input_path: Path,
     output_dir: Path,
     quality: dict,
-    duration: float,
+    video_duration: float,
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     gpu_caps: Optional["GPUCapabilities"] = None,
     streaming_format: str = "hls_ts",
@@ -1011,7 +1011,7 @@ async def transcode_quality_with_progress(
     use_cmaf = streaming_format == "cmaf"
 
     # Calculate timeout based on video duration and resolution
-    timeout = calculate_ffmpeg_timeout(duration, height)
+    timeout = calculate_ffmpeg_timeout(video_duration, height)
     print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for {name}")
     if use_cmaf:
         print("      Output format: CMAF (fMP4)")
@@ -1152,10 +1152,10 @@ async def transcode_quality_with_progress(
     # Use shared helper for running FFmpeg with progress and timeout
     success, error_msg = await run_ffmpeg_with_progress(
         cmd=cmd,
-        duration=duration,
+        video_duration=video_duration,
         timeout=timeout,
         progress_callback=progress_callback,
-        context=f"FFmpeg transcode {name}",
+        logging_description=f"FFmpeg transcode {name}",
     )
 
     if not success and error_msg:
@@ -1212,10 +1212,10 @@ async def create_original_quality(
     # Use shared helper for running FFmpeg with progress and timeout
     success, error_msg = await run_ffmpeg_with_progress(
         cmd=cmd,
-        duration=duration,
+        video_duration=duration,
         timeout=timeout,
         progress_callback=progress_callback,
-        context="FFmpeg remux original",
+        logging_description="FFmpeg remux original",
     )
 
     if not success:
@@ -2823,7 +2823,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         return False
 
 
-async def check_stale_jobs(state: Optional[WorkerState] = None):
+async def check_stale_jobs(worker_state: Optional[WorkerState] = None):
     """
     Periodic check for stale jobs that might need recovery.
     Called periodically during the worker loop.
@@ -2832,8 +2832,8 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
         state: Optional WorkerState instance. If not provided, uses/creates the
                default global state.
     """
-    if state is None:
-        state = get_worker_state()
+    if worker_state is None:
+        worker_state = get_worker_state()
 
     # Get stale timeout from settings service
     settings = await get_transcoder_settings()
@@ -2846,7 +2846,7 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
             transcoding_jobs.c.completed_at.is_(None)
             & transcoding_jobs.c.last_checkpoint.isnot(None)
             & (transcoding_jobs.c.last_checkpoint < stale_threshold)
-            & (transcoding_jobs.c.worker_id != state.worker_id)  # Not our own jobs
+            & (transcoding_jobs.c.worker_id != worker_state.worker_id)  # Not our own jobs
         )
     )
 

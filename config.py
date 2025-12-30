@@ -93,8 +93,8 @@ def check_deprecated_env_vars() -> None:
 
 
 def get_int_env(
-    name: str,
-    default: int,
+    env_var_name: str,
+    default_value: int,
     min_val: Optional[int] = None,
     max_val: Optional[int] = None,
 ) -> int:
@@ -109,35 +109,35 @@ def get_int_env(
     Returns:
         Parsed integer value, or default if parsing fails or value is out of range
     """
-    value = os.getenv(name)
+    value = os.getenv(env_var_name)
     if value is None:
         # Environment variable not set; use default without validation
-        return default
+        return default_value
 
     try:
         result = int(value)
     except ValueError:
-        logger.warning(f"Invalid {name}='{value}', using default {default}")
-        return default
+        logger.warning(f"Invalid {env_var_name}='{value}', using default {default_value}")
+        return default_value
 
     # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
         logger.warning(
-            f"{name}={result} is below minimum {min_val}, using default {default}"
+            f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}"
         )
-        return default
+        return default_value
     if max_val is not None and result > max_val:
         logger.warning(
-            f"{name}={result} is above maximum {max_val}, using default {default}"
+            f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}"
         )
-        return default
+        return default_value
 
     return result
 
 
 def get_float_env(
-    name: str,
-    default: float,
+    env_var_name: str,
+    default_value: float,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
 ) -> float:
@@ -154,33 +154,33 @@ def get_float_env(
     """
     import math
 
-    value = os.getenv(name)
+    value = os.getenv(env_var_name)
     if value is None:
         # Environment variable not set; use default without validation
-        return default
+        return default_value
 
     try:
         result = float(value)
     except ValueError:
-        logger.warning(f"Invalid {name}='{value}', using default {default}")
-        return default
+        logger.warning(f"Invalid {env_var_name}='{value}', using default {default_value}")
+        return default_value
 
     # Reject special float values (inf, -inf, nan)
     if math.isinf(result) or math.isnan(result):
-        logger.warning(f"Invalid {name}='{value}' (special float), using default {default}")
-        return default
+        logger.warning(f"Invalid {env_var_name}='{value}' (special float), using default {default_value}")
+        return default_value
 
     # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
         logger.warning(
-            f"{name}={result} is below minimum {min_val}, using default {default}"
+            f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}"
         )
-        return default
+        return default_value
     if max_val is not None and result > max_val:
         logger.warning(
-            f"{name}={result} is above maximum {max_val}, using default {default}"
+            f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}"
         )
-        return default
+        return default_value
 
     return result
 

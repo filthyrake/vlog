@@ -638,7 +638,7 @@ async def cleanup_orphaned_jobs() -> int:
 
 
 def build_retranscode_metadata(
-    video_dir: Path,
+    video_output_dir: Path,
     qualities_to_delete: List[str],
     retranscode_all: bool,
 ) -> str:
@@ -660,7 +660,7 @@ def build_retranscode_metadata(
         "retranscode_all": retranscode_all,
         "qualities_to_delete": qualities_to_delete,
         "delete_transcription": retranscode_all,
-        "video_dir": str(video_dir),
+        "video_dir": str(video_output_dir),
     })
 
 
