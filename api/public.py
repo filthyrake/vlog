@@ -474,6 +474,394 @@ async def get_video_tags(video_ids: List[int]) -> dict:
     return result
 
 
+# =============================================================================
+# Video List Query Helpers (Issue #437)
+# =============================================================================
+
+
+def build_base_videos_query() -> sa.Select:
+    """
+    Build the base query for listing videos with necessary joins.
+
+    Returns a query that selects video fields, category name, and view count,
+    filtered to only show published, non-deleted, ready videos.
+    """
+    return (
+        sa.select(
+            videos.c.id,
+            videos.c.title,
+            videos.c.slug,
+            videos.c.description,
+            videos.c.category_id,
+            videos.c.duration,
+            videos.c.status,
+            videos.c.created_at,
+            videos.c.published_at,
+            videos.c.thumbnail_source,
+            videos.c.thumbnail_timestamp,
+            categories.c.name.label("category_name"),
+            sa.func.count(sa.distinct(playback_sessions.c.id)).label("view_count"),
+        )
+        .select_from(
+            videos.outerjoin(categories, videos.c.category_id == categories.c.id).outerjoin(
+                playback_sessions, videos.c.id == playback_sessions.c.video_id
+            )
+        )
+        .where(videos.c.status == VideoStatus.READY)
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+        .group_by(
+            videos.c.id,
+            videos.c.title,
+            videos.c.slug,
+            videos.c.description,
+            videos.c.category_id,
+            videos.c.duration,
+            videos.c.status,
+            videos.c.created_at,
+            videos.c.published_at,
+            categories.c.name,
+        )
+    )
+
+
+def apply_category_filter(query: sa.Select, category: Optional[str]) -> sa.Select:
+    """Apply category slug filter to the query."""
+    if not category:
+        return query
+    return query.where(categories.c.slug == category)
+
+
+def apply_tag_filter(query: sa.Select, tag: Optional[str]) -> sa.Select:
+    """Apply tag slug filter using EXISTS for better performance."""
+    if not tag:
+        return query
+    tag_exists = (
+        sa.select(sa.literal_column("1"))
+        .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
+        .where(video_tags.c.video_id == videos.c.id)
+        .where(tags.c.slug == tag)
+        .exists()
+    )
+    return query.where(tag_exists)
+
+
+def apply_search_filter(query: sa.Select, search: Optional[str]) -> sa.Select:
+    """Apply text search filter on title and description."""
+    if not search:
+        return query
+    search_term = f"%{search}%"
+    return query.where(
+        sa.or_(
+            videos.c.title.ilike(search_term),
+            videos.c.description.ilike(search_term),
+        )
+    )
+
+
+def apply_duration_filter(query: sa.Select, duration: Optional[str]) -> sa.Select:
+    """
+    Apply duration filter to the query.
+
+    Args:
+        query: The current query
+        duration: Comma-separated duration values (short, medium, long)
+
+    Returns:
+        Query with duration filter applied
+
+    Raises:
+        HTTPException: If invalid duration value is provided
+    """
+    if not duration:
+        return query
+
+    duration_filters = [d.strip().lower() for d in duration.split(",")]
+    duration_conditions = []
+    valid_durations = {DurationFilter.SHORT.value, DurationFilter.MEDIUM.value, DurationFilter.LONG.value}
+
+    for df in duration_filters:
+        if df not in valid_durations:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
+            )
+        if df == DurationFilter.SHORT.value:
+            duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
+        elif df == DurationFilter.MEDIUM.value:
+            duration_conditions.append(sa.and_(videos.c.duration >= 300, videos.c.duration <= 1200))  # 5-20 minutes
+        elif df == DurationFilter.LONG.value:
+            duration_conditions.append(videos.c.duration > 1200)  # > 20 minutes
+
+    if duration_conditions:
+        query = query.where(sa.or_(*duration_conditions))
+    return query
+
+
+def apply_quality_filter(query: sa.Select, quality: Optional[str]) -> sa.Select:
+    """Apply quality filter using EXISTS for better performance."""
+    if not quality:
+        return query
+
+    quality_filters = [q.strip().lower() for q in quality.split(",")]
+    valid_quality_filters = [q for q in quality_filters if q in QUALITY_NAMES]
+
+    if not valid_quality_filters:
+        return query
+
+    quality_exists = (
+        sa.select(sa.literal_column("1"))
+        .where(video_qualities.c.video_id == videos.c.id)
+        .where(video_qualities.c.quality.in_(valid_quality_filters))
+        .exists()
+    )
+    return query.where(quality_exists)
+
+
+def apply_date_range_filter(
+    query: sa.Select,
+    date_from: Optional[datetime],
+    date_to: Optional[datetime]
+) -> sa.Select:
+    """
+    Apply date range filter to the query.
+
+    Raises:
+        HTTPException: If date_from is after date_to
+    """
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid date range: date_from must be before or equal to date_to"
+        )
+    if date_from:
+        query = query.where(videos.c.published_at >= date_from)
+    if date_to:
+        query = query.where(videos.c.published_at <= date_to)
+    return query
+
+
+def apply_transcription_filter(query: sa.Select, has_transcription: Optional[bool]) -> sa.Select:
+    """Apply transcription availability filter using EXISTS for better performance."""
+    if has_transcription is None:
+        return query
+
+    transcription_exists = (
+        sa.select(sa.literal_column("1"))
+        .where(transcriptions.c.video_id == videos.c.id)
+        .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
+        .exists()
+    )
+
+    if has_transcription:
+        return query.where(transcription_exists)
+    else:
+        return query.where(~transcription_exists)
+
+
+async def apply_custom_field_filters(
+    query: sa.Select,
+    custom_filters: Dict[str, str]
+) -> sa.Select:
+    """
+    Apply custom field filters to the query using EXISTS for better performance.
+
+    This function uses guard clauses to handle edge cases early and keep
+    the main logic flat (Issue #441).
+
+    Args:
+        query: The current query
+        custom_filters: Dict mapping field slugs to filter values
+
+    Returns:
+        Query with custom field filters applied
+    """
+    if not custom_filters:
+        return query
+
+    # Fetch field definitions for all requested slugs in one query
+    field_slugs = list(custom_filters.keys())
+    field_query = (
+        sa.select(
+            custom_field_definitions.c.id,
+            custom_field_definitions.c.slug,
+            custom_field_definitions.c.field_type,
+        )
+        .where(custom_field_definitions.c.slug.in_(field_slugs))
+    )
+    field_rows = await fetch_all_with_retry(field_query)
+    fields_by_slug = {row["slug"]: row for row in field_rows}
+
+    # Apply filter for each custom field
+    for field_slug, filter_value in custom_filters.items():
+        # Guard clause: skip unknown field slugs
+        field_def = fields_by_slug.get(field_slug)
+        if not field_def:
+            continue
+
+        exists_clause = _build_custom_field_exists_clause(field_def, filter_value)
+        query = query.where(exists_clause)
+
+    return query
+
+
+def _build_custom_field_exists_clause(
+    field_def: Dict[str, Any],
+    filter_value: str
+) -> sa.Exists:
+    """
+    Build an EXISTS clause for a single custom field filter.
+
+    Args:
+        field_def: Field definition with id, slug, and field_type
+        filter_value: The value to filter by
+
+    Returns:
+        SQLAlchemy EXISTS clause for the filter
+    """
+    field_id = field_def["id"]
+    field_type = field_def["field_type"]
+
+    # Multi-select fields store JSON arrays - check if value is in the array
+    if field_type == "multi_select":
+        return (
+            sa.select(sa.literal_column("1"))
+            .where(video_custom_fields.c.video_id == videos.c.id)
+            .where(video_custom_fields.c.field_id == field_id)
+            .where(video_custom_fields.c.value.contains(f'"{filter_value}"'))
+            .exists()
+        )
+
+    # Other types use exact JSON match
+    json_value = json.dumps(filter_value)
+    return (
+        sa.select(sa.literal_column("1"))
+        .where(video_custom_fields.c.video_id == videos.c.id)
+        .where(video_custom_fields.c.field_id == field_id)
+        .where(video_custom_fields.c.value == json_value)
+        .exists()
+    )
+
+
+def parse_sort_parameters(
+    sort: Optional[str],
+    order: Optional[str],
+    has_search: bool
+) -> tuple[SortBy, SortOrder]:
+    """
+    Parse and validate sort parameters.
+
+    Args:
+        sort: Sort field (relevance, date, duration, views, title)
+        order: Sort order (asc, desc)
+        has_search: Whether a search term is present (affects default sort)
+
+    Returns:
+        Tuple of (SortBy enum, SortOrder enum)
+
+    Raises:
+        HTTPException: If invalid sort or order value is provided
+    """
+    # Parse sort field
+    if sort:
+        try:
+            sort_by = SortBy(sort.lower())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid sort value: '{sort}'. Valid values are: relevance, date, duration, views, title"
+            )
+    else:
+        sort_by = SortBy.RELEVANCE if has_search else SortBy.DATE
+
+    # Parse sort order
+    order_lower = (order or "desc").lower()
+    if order_lower not in ("asc", "desc"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid order value: '{order}'. Valid values are: asc, desc"
+        )
+    sort_order = SortOrder.DESC if order_lower == "desc" else SortOrder.ASC
+
+    return sort_by, sort_order
+
+
+def apply_sorting(query: sa.Select, sort_by: SortBy, sort_order: SortOrder) -> sa.Select:
+    """
+    Apply sorting to the query.
+
+    Args:
+        query: The current query
+        sort_by: The field to sort by
+        sort_order: The sort direction
+
+    Returns:
+        Query with sorting applied
+    """
+    if sort_by == SortBy.DATE:
+        order_col = videos.c.published_at.desc() if sort_order == SortOrder.DESC else videos.c.published_at.asc()
+        return query.order_by(order_col)
+
+    if sort_by == SortBy.DURATION:
+        order_col = videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc()
+        return query.order_by(order_col)
+
+    if sort_by == SortBy.VIEWS:
+        view_count_col = sa.literal_column("view_count")
+        order_col = view_count_col.desc() if sort_order == SortOrder.DESC else view_count_col.asc()
+        return query.order_by(order_col)
+
+    if sort_by == SortBy.TITLE:
+        title_lower = sa.func.lower(videos.c.title)
+        order_col = title_lower.asc() if sort_order == SortOrder.ASC else title_lower.desc()
+        return query.order_by(order_col)
+
+    # SortBy.RELEVANCE and default: use published date descending
+    return query.order_by(videos.c.published_at.desc())
+
+
+def build_video_list_response(
+    rows: List[Dict[str, Any]],
+    video_tags_map: Dict[int, List[VideoTagInfo]]
+) -> List[VideoListResponse]:
+    """
+    Build VideoListResponse objects from database rows.
+
+    Args:
+        rows: Database result rows
+        video_tags_map: Map of video_id to list of tags
+
+    Returns:
+        List of VideoListResponse objects
+    """
+    def get_thumbnail_version(row: Dict[str, Any]) -> int:
+        """Generate cache-busting version for thumbnail URL."""
+        if row["thumbnail_timestamp"]:
+            return int(row["thumbnail_timestamp"] * 1000)
+        source = row["thumbnail_source"] or "auto"
+        return hash((row["id"], source)) % 1000000000
+
+    return [
+        VideoListResponse(
+            id=row["id"],
+            title=row["title"],
+            slug=row["slug"],
+            description=row["description"],
+            category_id=row["category_id"],
+            category_name=row["category_name"],
+            duration=row["duration"],
+            status=row["status"],
+            created_at=row["created_at"],
+            published_at=row["published_at"],
+            thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg?v={get_thumbnail_version(row)}",
+            thumbnail_source=row["thumbnail_source"] or "auto",
+            thumbnail_timestamp=row["thumbnail_timestamp"],
+            tags=video_tags_map.get(row["id"], []),
+        )
+        for row in rows
+    ]
+
+
 @app.get("/api/videos")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_videos(
@@ -537,266 +925,29 @@ async def list_videos(
         # Convert cached dicts back to response objects
         return [VideoListResponse(**item) for item in cached_result]
 
-    # Base query with view count for sorting
-    query = (
-        sa.select(
-            videos.c.id,
-            videos.c.title,
-            videos.c.slug,
-            videos.c.description,
-            videos.c.category_id,
-            videos.c.duration,
-            videos.c.status,
-            videos.c.created_at,
-            videos.c.published_at,
-            videos.c.thumbnail_source,
-            videos.c.thumbnail_timestamp,
-            categories.c.name.label("category_name"),
-            sa.func.count(sa.distinct(playback_sessions.c.id)).label("view_count"),
-        )
-        .select_from(
-            videos.outerjoin(categories, videos.c.category_id == categories.c.id).outerjoin(
-                playback_sessions, videos.c.id == playback_sessions.c.video_id
-            )
-        )
-        .where(videos.c.status == VideoStatus.READY)
-        .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
-        .where(videos.c.published_at.is_not(None))  # Only show published videos
-        .group_by(
-            videos.c.id,
-            videos.c.title,
-            videos.c.slug,
-            videos.c.description,
-            videos.c.category_id,
-            videos.c.duration,
-            videos.c.status,
-            videos.c.created_at,
-            videos.c.published_at,
-            categories.c.name,
-        )
-    )
+    # Build base query and apply all filters
+    query = build_base_videos_query()
+    query = apply_category_filter(query, category)
+    query = apply_tag_filter(query, tag)
+    query = apply_search_filter(query, search)
+    query = apply_duration_filter(query, duration)
+    query = apply_quality_filter(query, quality)
+    query = apply_date_range_filter(query, date_from, date_to)
+    query = apply_transcription_filter(query, has_transcription)
+    query = await apply_custom_field_filters(query, custom_filters)
 
-    # Category filter
-    if category:
-        query = query.where(categories.c.slug == category)
+    # Apply sorting
+    sort_by, sort_order = parse_sort_parameters(sort, order, has_search=bool(search))
+    query = apply_sorting(query, sort_by, sort_order)
 
-    # Tag filter - use EXISTS for better performance with large datasets (Issue #429)
-    if tag:
-        tag_exists = (
-            sa.select(sa.literal_column("1"))
-            .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
-            .where(video_tags.c.video_id == videos.c.id)
-            .where(tags.c.slug == tag)
-            .exists()
-        )
-        query = query.where(tag_exists)
-
-    # Text search
-    if search:
-        search_term = f"%{search}%"
-        query = query.where(
-            sa.or_(
-                videos.c.title.ilike(search_term),
-                videos.c.description.ilike(search_term),
-            )
-        )
-
-    # Duration filter
-    if duration:
-        duration_filters = [d.strip().lower() for d in duration.split(",")]
-        duration_conditions = []
-        valid_durations = {DurationFilter.SHORT.value, DurationFilter.MEDIUM.value, DurationFilter.LONG.value}
-        for df in duration_filters:
-            if df not in valid_durations:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
-                )
-            if df == DurationFilter.SHORT.value:
-                duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
-            elif df == DurationFilter.MEDIUM.value:
-                duration_conditions.append(sa.and_(videos.c.duration >= 300, videos.c.duration <= 1200))  # 5-20 minutes
-            elif df == DurationFilter.LONG.value:
-                duration_conditions.append(videos.c.duration > 1200)  # > 20 minutes
-        if duration_conditions:
-            query = query.where(sa.or_(*duration_conditions))
-
-    # Quality filter - use EXISTS for better performance with large datasets (Issue #429)
-    if quality:
-        quality_filters = [q.strip().lower() for q in quality.split(",")]
-        # Validate quality values against allowed qualities
-        valid_quality_filters = [q for q in quality_filters if q in QUALITY_NAMES]
-        if valid_quality_filters:
-            # Video must have at least one of the requested qualities
-            quality_exists = (
-                sa.select(sa.literal_column("1"))
-                .where(video_qualities.c.video_id == videos.c.id)
-                .where(video_qualities.c.quality.in_(valid_quality_filters))
-                .exists()
-            )
-            query = query.where(quality_exists)
-
-    # Date range filter
-    if date_from and date_to and date_from > date_to:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid date range: date_from must be before or equal to date_to"
-        )
-    if date_from:
-        query = query.where(videos.c.published_at >= date_from)
-    if date_to:
-        query = query.where(videos.c.published_at <= date_to)
-
-    # Transcription filter - use EXISTS for better performance with large datasets (Issue #429)
-    if has_transcription is not None:
-        transcription_exists = (
-            sa.select(sa.literal_column("1"))
-            .where(transcriptions.c.video_id == videos.c.id)
-            .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
-            .exists()
-        )
-        if has_transcription:
-            # Has completed transcription
-            query = query.where(transcription_exists)
-        else:
-            # Does not have completed transcription
-            query = query.where(~transcription_exists)
-
-    # Custom field filter - custom_filters already parsed above for cache key
-    if custom_filters:
-        # Look up field definitions for these slugs
-        field_slugs = list(custom_filters.keys())
-        field_query = (
-            sa.select(
-                custom_field_definitions.c.id,
-                custom_field_definitions.c.slug,
-                custom_field_definitions.c.field_type,
-            )
-            .where(custom_field_definitions.c.slug.in_(field_slugs))
-        )
-        field_rows = await fetch_all_with_retry(field_query)
-        fields_by_slug = {row["slug"]: row for row in field_rows}
-
-        # Use EXISTS for better performance with large datasets (Issue #429)
-        for field_slug, filter_value in custom_filters.items():
-            field_def = fields_by_slug.get(field_slug)
-            if not field_def:
-                # Unknown field slug - skip silently
-                continue
-
-            field_id = field_def["id"]
-            field_type = field_def["field_type"]
-
-            # Build the filter EXISTS clause
-            # For multi_select, check if the JSON array contains the value
-            # For other types, check for exact match
-            if field_type == "multi_select":
-                # JSON array contains check - the value is stored as JSON array like ["a", "b"]
-                # We need to check if the filter value is in the array
-                custom_exists = (
-                    sa.select(sa.literal_column("1"))
-                    .where(video_custom_fields.c.video_id == videos.c.id)
-                    .where(video_custom_fields.c.field_id == field_id)
-                    .where(
-                        video_custom_fields.c.value.contains(f'"{filter_value}"')
-                    )
-                    .exists()
-                )
-            else:
-                # For other types, check exact JSON match
-                # Values are stored as JSON (e.g., "beginner" for text, 5 for number)
-                json_value = json.dumps(filter_value)
-                custom_exists = (
-                    sa.select(sa.literal_column("1"))
-                    .where(video_custom_fields.c.video_id == videos.c.id)
-                    .where(video_custom_fields.c.field_id == field_id)
-                    .where(video_custom_fields.c.value == json_value)
-                    .exists()
-                )
-
-            query = query.where(custom_exists)
-
-    # Sorting
-    # Validate and convert sort parameter to enum
-    if sort:
-        try:
-            sort_by = SortBy(sort.lower())
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid sort value: '{sort}'. Valid values are: relevance, date, duration, views, title"
-            )
-    else:
-        sort_by = SortBy.RELEVANCE if search else SortBy.DATE
-
-    # Validate order parameter
-    order_lower = order.lower()
-    if order_lower not in ("asc", "desc"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid order value: '{order}'. Valid values are: asc, desc"
-        )
-    sort_order = SortOrder.DESC if order_lower == "desc" else SortOrder.ASC
-
-    if sort_by == SortBy.DATE:
-        order_col = videos.c.published_at.desc() if sort_order == SortOrder.DESC else videos.c.published_at.asc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.DURATION:
-        order_col = videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.VIEWS:
-        # Use column label with desc()/asc() for type safety
-        view_count_col = sa.literal_column("view_count")
-        order_col = view_count_col.desc() if sort_order == SortOrder.DESC else view_count_col.asc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.TITLE:
-        # Case-insensitive sorting for better alphabetical ordering
-        title_lower = sa.func.lower(videos.c.title)
-        order_col = title_lower.asc() if sort_order == SortOrder.ASC else title_lower.desc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.RELEVANCE:
-        # For relevance, use published date as fallback (most recent first)
-        query = query.order_by(videos.c.published_at.desc())
-    else:
-        # Default to date descending
-        query = query.order_by(videos.c.published_at.desc())
-
-    # Apply pagination after sorting
+    # Apply pagination
     query = query.limit(limit).offset(offset)
 
+    # Execute query and build response
     rows = await fetch_all_with_retry(query)
-
-    # Get tags for all videos in one query
     video_ids = [row["id"] for row in rows]
     video_tags_map = await get_video_tags(video_ids)
-
-    def get_thumbnail_version(row):
-        """Generate cache-busting version for thumbnail URL."""
-        if row["thumbnail_timestamp"]:
-            return int(row["thumbnail_timestamp"] * 1000)
-        # Use hash of id + source for non-timestamp thumbnails
-        source = row["thumbnail_source"] or "auto"
-        return hash((row["id"], source)) % 1000000000
-
-    result = [
-        VideoListResponse(
-            id=row["id"],
-            title=row["title"],
-            slug=row["slug"],
-            description=row["description"],
-            category_id=row["category_id"],
-            category_name=row["category_name"],
-            duration=row["duration"],
-            status=row["status"],
-            created_at=row["created_at"],
-            published_at=row["published_at"],
-            thumbnail_url=f"/videos/{row['slug']}/thumbnail.jpg?v={get_thumbnail_version(row)}",
-            thumbnail_source=row["thumbnail_source"] or "auto",
-            thumbnail_timestamp=row["thumbnail_timestamp"],
-            tags=video_tags_map.get(row["id"], []),
-        )
-        for row in rows
-    ]
+    result = build_video_list_response(rows, video_tags_map)
 
     # Cache the result as dicts for serialization (Issue #429)
     _video_list_cache.set(cache_key, [item.model_dump() for item in result])

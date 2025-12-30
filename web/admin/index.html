@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; form-action 'self'; frame-ancestors 'none';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; form-action 'self';">
     <title>VLog Admin</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <script src="/static/js/utils.js"></script>
@@ -2042,7 +2042,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 <h4 class="text-sm font-medium mb-2 text-dark-300">Current Thumbnail</h4>
                 <div class="flex items-center gap-4">
                     <div class="w-40 aspect-video bg-dark-800 rounded overflow-hidden">
-                        <img :src="'/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + thumbnailCacheBust"
+                        <img x-show="thumbnailVideoSlug"
+                             :src="thumbnailVideoSlug ? '/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + thumbnailCacheBust : ''"
                              :alt="'Current thumbnail for ' + thumbnailVideoTitle"
                              class="w-full h-full object-cover"
                              @error="$el.style.display='none'">
