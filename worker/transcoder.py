@@ -420,7 +420,7 @@ async def cleanup_ffmpeg_process(target_subprocess: asyncio.subprocess.Process, 
 async def run_ffmpeg_with_progress(
     cmd: List[str],
     video_duration: float,
-    wait_time: float,
+    timeout: float,
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     logging_description: str = "FFmpeg",
 ) -> Tuple[bool, Optional[str]]:
@@ -489,10 +489,10 @@ async def run_ffmpeg_with_progress(
     async def timeout_killer():
         """Kill process after timeout."""
         nonlocal timed_out
-        await asyncio.sleep(wait_time)
+        await asyncio.sleep(timeout)
         timed_out = True
         elapsed = asyncio.get_running_loop().time() - start_time
-        print(f"  TIMEOUT: {logging_description} exceeded {wait_time:.0f}s limit (ran for {elapsed:.0f}s)")
+        print(f"  TIMEOUT: {logging_description} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
         try:
             process.kill()
         except ProcessLookupError:
@@ -521,7 +521,7 @@ async def run_ffmpeg_with_progress(
 
     if timed_out:
         elapsed = asyncio.get_running_loop().time() - start_time
-        return False, f"{logging_description} timed out after {elapsed:.0f} seconds (limit: {wait_time:.0f}s)"
+        return False, f"{logging_description} timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
 
     if process.returncode != 0:
         error_msg = f"{logging_description} exited with code {process.returncode}"
@@ -756,7 +756,7 @@ def get_applicable_qualities(source_height: int) -> list:
     return [q for q in QUALITY_PRESETS if q["height"] <= source_height]
 
 
-async def get_output_dimensions(segment_path: Path, wait_time: float = 10.0) -> Tuple[int, int]:
+async def get_output_dimensions(segment_path: Path, timeout: float = 10.0) -> Tuple[int, int]:
     """Get actual dimensions from a transcoded segment file (async with timeout).
 
     Args:
@@ -784,7 +784,7 @@ async def get_output_dimensions(segment_path: Path, wait_time: float = 10.0) -> 
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
 
-        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=wait_time)
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
 
         if process.returncode != 0:
             logger.warning(f"ffprobe failed for {segment_path.name} (exit code {process.returncode})")
@@ -800,7 +800,7 @@ async def get_output_dimensions(segment_path: Path, wait_time: float = 10.0) -> 
         height = int(stream.get("height", 0))
         return (width, height)
     except asyncio.TimeoutError:
-        logger.warning(f"ffprobe timed out for {segment_path.name} after {wait_time}s")
+        logger.warning(f"ffprobe timed out for {segment_path.name} after {timeout}s")
         return (0, 0)
     except (json.JSONDecodeError, ValueError, KeyError) as e:
         logger.warning(f"Failed to parse dimensions from {segment_path.name}: {e}")
@@ -1153,7 +1153,7 @@ async def transcode_quality_with_progress(
     success, error_msg = await run_ffmpeg_with_progress(
         cmd=cmd,
         video_duration=video_duration,
-        wait_time=timeout,
+        timeout=timeout,
         progress_callback=progress_callback,
         logging_description=f"FFmpeg transcode {name}",
     )
@@ -1213,7 +1213,7 @@ async def create_original_quality(
     success, error_msg = await run_ffmpeg_with_progress(
         cmd=cmd,
         video_duration=duration,
-        wait_time=timeout,
+        timeout=timeout,
         progress_callback=progress_callback,
         logging_description="FFmpeg remux original",
     )

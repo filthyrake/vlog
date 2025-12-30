@@ -61,7 +61,7 @@ def handle_api_exceptions(
 
 
 def log_and_raise_http_exception(
-    http_exception: Exception,
+    exception: Exception,
     status_code: int,
     detail: str,
     operation_name: Optional[str] = None,
@@ -85,9 +85,9 @@ def log_and_raise_http_exception(
                 e, 500, "Database error occurred", "save_video"
             )
     """
-    log_msg = f"Error in {operation_name}: {http_exception}" if operation_name else str(http_exception)
+    log_msg = f"Error in {operation_name}: {exception}" if operation_name else str(exception)
 
     log_func = getattr(logger, log_level, logger.error)
     log_func(log_msg)
 
-    raise HTTPException(status_code=status_code, detail=detail) from http_exception
+    raise HTTPException(status_code=status_code, detail=detail) from exception

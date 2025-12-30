@@ -1211,7 +1211,7 @@ async def reencode_quality(
         cmd,
         duration,
         progress_callback=None,
-        wait_time=timeout,
+        timeout=timeout,
     )
 
 
