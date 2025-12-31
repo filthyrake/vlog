@@ -1,0 +1,256 @@
+# Issue #478: Streaming Segment Upload - Progress Tracker
+
+## Overview
+Eliminate tar.gz blocking during large video transcoding by uploading segments individually as FFmpeg writes them.
+
+**Branch:** `feature/478-streaming-segment-upload`
+**Issue:** https://github.com/filthyrake/vlog/issues/478
+
+---
+
+## Phase Checklist
+
+### Phase 1: Server-Side Segment Upload Endpoint
+- [x] Add `SegmentQuality` enum for quality validation
+- [x] Implement filename validation (reject null bytes, `..`, `/`, `\`, Unicode tricks)
+- [x] Add magic byte validation for `.ts` (0x47) and `.m4s` (ftyp/moof/styp)
+- [x] Implement atomic write (temp file + fsync + rename)
+- [x] Add claim verification with DB lock (`FOR UPDATE`)
+- [x] Implement `POST /api/worker/upload/{video_id}/segment/{quality}/{filename}`
+- [x] Implement `GET /api/worker/upload/{video_id}/segments/status`
+- [x] Implement `POST /api/worker/upload/{video_id}/segment/finalize`
+- [x] Add idempotency handling (same segment uploaded twice = no error)
+- [x] Track uploaded segments via quality_progress table
+- [x] Add `VLOG_WORKER_STREAMING_UPLOAD` feature flag to `config.py`
+- [ ] Unit tests for endpoint (deferred - will test with integration tests)
+
+### Phase 2: Worker Segment Watcher
+- [x] Create `worker/segment_watcher.py`
+- [x] Implement 1000ms polling interval
+- [x] Track file sizes across 2 consecutive polls
+- [x] Handle HLS/TS (`.ts`) and CMAF (`.m4s`, `init.mp4`) formats
+- [x] Implement bounded queue (maxsize=10)
+- [x] Detect FFmpeg crashes (monitor process exit)
+- [ ] Unit tests for segment watcher
+
+### Phase 3: Upload Client Method
+- [x] Add `upload_segment()` to `WorkerAPIClient`
+- [x] Implement SHA256 checksum computation (caller computes, sent in header)
+- [x] Add `X-Content-SHA256` header
+- [x] Add 60s timeout
+- [x] Implement exponential backoff retry (3 attempts)
+- [x] Add `get_segments_status()` method
+- [x] Add `finalize_quality_upload()` method
+- [x] Handle HTTP 409 (claim expired)
+- [ ] Unit tests for client methods
+
+### Phase 4: Integrate into Transcoding Flow
+- [x] Create `streaming_transcode_and_upload_quality()` function
+- [x] Implement producer-consumer model
+- [x] Start segment watcher task during transcode
+- [x] Start upload worker task (`SegmentUploadWorker`)
+- [x] Delete local files only after server confirms checksum
+- [x] Extend claim with each upload (server-side)
+- [x] Wait for upload queue to drain after transcode
+- [x] Upload final playlist
+- [x] Call finalize endpoint
+- [ ] Integration tests
+- [ ] Wire into `remote_transcoder.py` with feature flag check
+
+### Phase 5: Progress Tracking
+- [ ] Extend `QualityProgressUpdate` schema with `segments_total`, `segments_completed`
+- [ ] Update progress reporting to include segment counts
+- [ ] Verify no DB migration needed
+
+### Phase 6: Error Handling & Resume
+- [x] Implement transient error retry (3x with exponential backoff) - in client
+- [x] Handle claim expired (409) - stop immediately (ClaimExpiredError)
+- [ ] Persist upload state to disk
+- [ ] On worker restart, query server for received segments
+- [ ] Resume upload from last missing segment
+
+### Phase 7: Migration Path
+- [x] Add `VLOG_WORKER_STREAMING_UPLOAD` feature flag to `config.py`
+- [ ] Add setting to `api/settings.py` (optional, for dynamic toggle)
+- [x] Ensure backward compatibility (new endpoints don't affect existing flow)
+- [ ] Documentation for rollout
+
+---
+
+## Implementation Notes
+
+### Session 1 - 2025-12-31
+- Created branch `feature/478-streaming-segment-upload`
+- Created this progress tracking document
+- **Completed Phase 1: Server-Side Segment Upload Endpoint**
+  - Added `SegmentQuality` class with enum-like validation (no regex per Bruce)
+  - Added `SegmentUploadResponse`, `SegmentStatusResponse`, `SegmentFinalizeRequest`, `SegmentFinalizeResponse` schemas
+  - Added helper functions:
+    - `validate_segment_filename()` - security validation for filenames
+    - `validate_segment_magic_bytes()` - validates .ts, .m4s, .mp4 magic bytes
+    - `write_segment_atomic()` - atomic write with fsync for durability
+  - Added three new endpoints:
+    - `POST /api/worker/upload/{video_id}/segment/{quality}/{filename}` - upload single segment
+    - `GET /api/worker/upload/{video_id}/segments/status` - get uploaded segments for resume
+    - `POST /api/worker/upload/{video_id}/segment/finalize` - finalize quality upload
+  - Added `VLOG_WORKER_STREAMING_UPLOAD` feature flag (default: false)
+  - All code passes linter and imports successfully
+
+- **Completed Phase 2: Worker Segment Watcher**
+  - Created `worker/segment_watcher.py` with `SegmentWatcher` class
+  - 1000ms polling interval (Ada's recommendation)
+  - Tracks file sizes across 2 consecutive polls for stability detection
+  - Handles both HLS/TS and CMAF formats
+  - Bounded queue (maxsize=10) for backpressure
+  - FFmpeg crash detection via `notify_ffmpeg_crashed()`
+  - `flush_remaining()` method for final segment capture
+
+- **Completed Phase 3: Upload Client Method**
+  - Added to `WorkerAPIClient` in `worker/http_client.py`:
+    - `upload_segment()` - upload single segment with checksum verification
+    - `get_segments_status()` - query received segments for resume
+    - `finalize_quality_upload()` - finalize quality upload
+  - 60s timeout for segment uploads
+  - Exponential backoff retry with circuit breaker support
+
+- **Completed Phase 4: Streaming Upload Worker** (partial)
+  - Created `worker/streaming_upload.py` with:
+    - `ClaimExpiredError` exception class
+    - `SegmentUploadWorker` class (consumer)
+    - `streaming_transcode_and_upload_quality()` orchestration function
+  - Producer-consumer model with asyncio.Queue
+  - Deletes local files after server confirms checksum
+  - Immediate abort on claim expiration (409)
+  - Still need to wire into `remote_transcoder.py`
+
+---
+
+## Files Modified
+
+| File | Phase | Status |
+|------|-------|--------|
+| `api/worker_api.py` | 1 | **Complete** |
+| `api/worker_schemas.py` | 1, 5 | **Complete** (Phase 1 items) |
+| `config.py` | 1, 7 | **Complete** (feature flag added) |
+| `worker/segment_watcher.py` | 2 | **Complete** (NEW) |
+| `worker/http_client.py` | 3 | **Complete** |
+| `worker/streaming_upload.py` | 4 | **Complete** (NEW) |
+| `worker/remote_transcoder.py` | 4 | Pending (integration) |
+
+---
+
+## API Endpoints Added (Phase 1)
+
+### Upload Segment
+```
+POST /api/worker/upload/{video_id}/segment/{quality}/{filename}
+
+Headers:
+  X-Worker-API-Key: <key>
+  Content-Type: application/octet-stream
+  X-Content-SHA256: <sha256_hex>
+
+Body: Raw segment bytes
+
+Response 200:
+{
+  "status": "ok",
+  "written": true,
+  "bytes_written": 4521984,
+  "checksum_verified": true
+}
+Response 400: Invalid filename / magic bytes validation failed
+Response 403: Not your job
+Response 409: Claim expired
+```
+
+### Get Segments Status
+```
+GET /api/worker/upload/{video_id}/segments/status?quality=1080p
+
+Response 200:
+{
+  "quality": "1080p",
+  "received_segments": ["init.mp4", "seg_0000.m4s", ...],
+  "total_size_bytes": 1234567890
+}
+```
+
+### Finalize Quality
+```
+POST /api/worker/upload/{video_id}/segment/finalize
+
+Body:
+{
+  "quality": "1080p",
+  "segment_count": 226,
+  "manifest_checksum": "sha256:abc123..."
+}
+
+Response 200:
+{
+  "status": "ok",
+  "complete": true,
+  "missing_segments": []
+}
+Response 409: Missing segments - returns list of missing filenames
+```
+
+---
+
+## Worker Components Added (Phases 2-4)
+
+### SegmentWatcher (producer)
+```python
+from worker.segment_watcher import SegmentWatcher, SegmentInfo
+
+watcher = SegmentWatcher(
+    output_dir=Path("/tmp/transcode/video-slug"),
+    quality_name="1080p",
+    streaming_format="cmaf",
+    upload_queue=asyncio.Queue(maxsize=10),
+)
+
+# Start watching
+watcher_task = asyncio.create_task(watcher.watch())
+
+# ... FFmpeg runs ...
+
+# Stop and flush
+await watcher.stop()
+remaining = await watcher.flush_remaining()
+```
+
+### SegmentUploadWorker (consumer)
+```python
+from worker.streaming_upload import SegmentUploadWorker
+
+worker = SegmentUploadWorker(
+    client=api_client,
+    video_id=123,
+    upload_queue=queue,
+)
+
+upload_task = asyncio.create_task(worker.run())
+# ... segments flow through queue ...
+await worker.stop()
+```
+
+---
+
+## Next Steps
+
+1. **Wire into remote_transcoder.py**: Add conditional check for `WORKER_STREAMING_UPLOAD` to use new streaming path
+2. **Phase 5**: Add segment progress to `QualityProgressUpdate` schema
+3. **Phase 6**: Add resume support with disk-persisted state
+4. **Testing**: Manual test with actual videos
+
+---
+
+## Testing
+
+- [ ] Manual test with small video (feature flag on)
+- [ ] Manual test with large video (28GB+)
+- [ ] Verify heartbeats stay alive
+- [ ] Verify resume after simulated worker restart
+- [ ] Load test with multiple concurrent uploads

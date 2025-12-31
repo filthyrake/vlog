@@ -316,3 +316,68 @@ class WorkerListResponse(BaseModel):
 class StatusResponse(BaseModel):
     status: str
     message: Optional[str] = None
+
+
+# =============================================================================
+# Streaming Segment Upload Schemas (Issue #478)
+# =============================================================================
+
+
+class SegmentQuality(str):
+    """Valid quality names for segment uploads.
+
+    Using an enum-like validation instead of regex for security (Bruce's recommendation).
+    """
+
+    VALID_QUALITIES = frozenset(
+        ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original"]
+    )
+
+    @classmethod
+    def validate(cls, value: str) -> str:
+        """Validate quality is one of the allowed values."""
+        if value not in cls.VALID_QUALITIES:
+            raise ValueError(f"Invalid quality '{value}'. Must be one of: {sorted(cls.VALID_QUALITIES)}")
+        return value
+
+
+class SegmentUploadResponse(BaseModel):
+    """Response from segment upload endpoint."""
+
+    status: str
+    written: bool
+    bytes_written: int
+    checksum_verified: bool
+
+
+class SegmentStatusResponse(BaseModel):
+    """Response from segments status endpoint."""
+
+    quality: str
+    received_segments: List[str]
+    total_size_bytes: int
+
+
+class SegmentFinalizeRequest(BaseModel):
+    """Request to finalize a quality upload."""
+
+    quality: str
+    segment_count: int
+    manifest_checksum: Optional[str] = Field(
+        default=None,
+        description="SHA256 checksum of the manifest file (e.g., 'sha256:abc123...')",
+    )
+
+    @field_validator("quality")
+    @classmethod
+    def validate_quality(cls, v):
+        """Ensure quality is valid."""
+        return SegmentQuality.validate(v)
+
+
+class SegmentFinalizeResponse(BaseModel):
+    """Response from finalize endpoint."""
+
+    status: str
+    complete: bool
+    missing_segments: List[str] = Field(default_factory=list)
