@@ -55,12 +55,12 @@ Eliminate tar.gz blocking during large video transcoding by uploading segments i
 - [x] Upload final playlist
 - [x] Call finalize endpoint
 - [ ] Integration tests
-- [ ] Wire into `remote_transcoder.py` with feature flag check
+- [x] Wire into `remote_transcoder.py` with feature flag check
 
 ### Phase 5: Progress Tracking
-- [ ] Extend `QualityProgressUpdate` schema with `segments_total`, `segments_completed`
-- [ ] Update progress reporting to include segment counts
-- [ ] Verify no DB migration needed
+- [x] Extend `QualityProgressUpdate` schema with `segments_total`, `segments_completed`
+- [x] Update progress reporting to include segment counts
+- [x] Verify no DB migration needed (uses existing quality_progress table)
 
 ### Phase 6: Error Handling & Resume
 - [x] Implement transient error retry (3x with exponential backoff) - in client
@@ -139,12 +139,12 @@ Eliminate tar.gz blocking during large video transcoding by uploading segments i
 | File | Phase | Status |
 |------|-------|--------|
 | `api/worker_api.py` | 1 | **Complete** |
-| `api/worker_schemas.py` | 1, 5 | **Complete** (Phase 1 items) |
+| `api/worker_schemas.py` | 1, 5 | **Complete** |
 | `config.py` | 1, 7 | **Complete** (feature flag added) |
 | `worker/segment_watcher.py` | 2 | **Complete** (NEW) |
 | `worker/http_client.py` | 3 | **Complete** |
 | `worker/streaming_upload.py` | 4 | **Complete** (NEW) |
-| `worker/remote_transcoder.py` | 4 | Pending (integration) |
+| `worker/remote_transcoder.py` | 4 | **Complete** (integrated with feature flag) |
 
 ---
 
@@ -249,10 +249,32 @@ await worker.stop()
 
 ## Next Steps
 
-1. **Wire into remote_transcoder.py**: Add conditional check for `WORKER_STREAMING_UPLOAD` to use new streaming path
-2. **Phase 5**: Add segment progress to `QualityProgressUpdate` schema
-3. **Phase 6**: Add resume support with disk-persisted state
-4. **Testing**: Manual test with actual videos
+1. ~~**Wire into remote_transcoder.py**: Add conditional check for `WORKER_STREAMING_UPLOAD` to use new streaming path~~ ✅ Done
+2. ~~**Phase 5**: Add segment progress to `QualityProgressUpdate` schema~~ ✅ Done
+3. ~~**Phase 5**: Update progress reporting to include segment counts in streaming upload path~~ ✅ Done
+4. **Phase 6**: Add resume support with disk-persisted state
+5. **Testing**: Manual test with actual videos
+
+---
+
+### Session 2 - 2025-12-31
+- **Wired streaming upload into remote_transcoder.py**:
+  - Added conditional import for `streaming_transcode_and_upload_quality` when `WORKER_STREAMING_UPLOAD` is True
+  - Added streaming upload path in `transcode_and_upload_quality()` inner function
+  - Feature flag check: `if WORKER_STREAMING_UPLOAD and streaming_format == "cmaf"`
+  - Streaming path handles: transcode coroutine creation, dimension extraction, quality_info building
+  - Proper error handling for `StreamingClaimExpiredError`
+- **Extended QualityProgressUpdate schema**:
+  - Added `segments_total: Optional[int]` field
+  - Added `segments_completed: Optional[int]` field
+  - No DB migration needed (fields are optional and stored in JSON column)
+- **Implemented segment progress reporting (Phase 5)**:
+  - Added `on_segment_progress` callback parameter to `streaming_transcode_and_upload_quality()`
+  - Callback receives `(segments_completed, bytes_uploaded)` after each segment upload
+  - Wired callback in `remote_transcoder.py` to update `quality_progress_list` with segment counts
+  - Rate-limited updates (every 2 seconds) to avoid API flooding
+  - Uses `asyncio.create_task()` to schedule async updates from sync callback
+  - Final status includes `segments_completed` and `segments_total`
 
 ---
 

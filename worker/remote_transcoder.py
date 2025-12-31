@@ -46,6 +46,7 @@ from config import (
     WORKER_HEALTH_PORT,
     WORKER_HEARTBEAT_INTERVAL,
     WORKER_POLL_INTERVAL,
+    WORKER_STREAMING_UPLOAD,
     WORKER_WORK_DIR,
 )
 from worker.health_server import HealthServer
@@ -75,6 +76,16 @@ from worker.transcoder import (
     transcode_quality_with_progress,
     validate_hls_playlist,
 )
+
+# Streaming segment upload (Issue #478) - imported conditionally to avoid
+# circular imports and only load when feature is enabled
+if WORKER_STREAMING_UPLOAD:
+    from worker.streaming_upload import (
+        ClaimExpiredError as StreamingClaimExpiredError,
+    )
+    from worker.streaming_upload import (
+        streaming_transcode_and_upload_quality,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -607,6 +618,113 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         # Other errors are logged but don't abort the job
                         logger.error(f"      {qname}: Progress update failed: {e}")
 
+            # Use streaming segment upload if enabled (Issue #478)
+            # This eliminates blocking tar.gz creation for large videos
+            if WORKER_STREAMING_UPLOAD and streaming_format == "cmaf":
+                logger.info(f"    {quality_name}: Using streaming segment upload")
+                try:
+                    # Create transcode coroutine (unawaited - will be run by streaming_transcode_and_upload_quality)
+                    transcode_coro = transcode_quality_with_progress(
+                        source_path,
+                        output_dir,
+                        quality,
+                        duration,
+                        update_quality_progress,
+                        gpu_caps=GPU_CAPS,
+                        streaming_format=streaming_format,
+                        preferred_codec=streaming_codec,
+                    )
+
+                    # Track segment upload progress (Issue #478 Phase 5)
+                    # This callback is called from sync context, so we use create_task for async updates
+                    segment_progress_state = {"count": 0, "bytes": 0, "last_update": 0.0}
+
+                    def on_segment_progress(segments_completed: int, bytes_uploaded: int) -> None:
+                        """Callback for segment upload progress - updates quality_progress_list."""
+                        segment_progress_state["count"] = segments_completed
+                        segment_progress_state["bytes"] = bytes_uploaded
+                        # Rate limit updates to avoid flooding (update at most every 2 seconds)
+                        now = time.time()
+                        if now - segment_progress_state["last_update"] < 2.0:
+                            return
+                        segment_progress_state["last_update"] = now
+
+                        # Schedule async update (callback is sync, so we use create_task)
+                        async def update_segment_progress():
+                            async with progress_list_lock:
+                                quality_progress_list[quality_idx] = {
+                                    "name": quality_name,
+                                    "status": "uploading",
+                                    "progress": quality_progress_list[quality_idx].get("progress", 0),
+                                    "segments_completed": segments_completed,
+                                }
+                            try:
+                                await check_claim_expiration(
+                                    client.update_progress(job_id, "transcode", 90, quality_progress_list)
+                                )
+                            except Exception as e:
+                                logger.debug(f"Segment progress update failed: {e}")
+
+                        asyncio.create_task(update_segment_progress())
+
+                    # Run transcode with streaming upload
+                    success, error, segment_count = await streaming_transcode_and_upload_quality(
+                        client=client,
+                        video_id=video_id,
+                        output_dir=output_dir,
+                        quality_name=quality_name,
+                        streaming_format=streaming_format,
+                        transcode_coro=transcode_coro,
+                        on_segment_progress=on_segment_progress,
+                    )
+
+                    if not success:
+                        async with progress_list_lock:
+                            quality_progress_list[quality_idx] = {
+                                "name": quality_name,
+                                "status": "failed",
+                                "progress": 0,
+                            }
+                        logger.error(f"    {quality_name}: Streaming upload failed - {error}")
+                        return (None, quality_name)
+
+                    # Get actual dimensions from init.mp4 (segments already uploaded but we need dimensions)
+                    init_mp4 = output_dir / quality_name / "init.mp4"
+                    if init_mp4.exists():
+                        actual_width, actual_height = await get_output_dimensions(init_mp4)
+                    else:
+                        # Estimate based on aspect ratio
+                        actual_height = quality["height"]
+                        actual_width = int(actual_height * source_width / source_height)
+                        actual_width = actual_width + (actual_width % 2)
+
+                    quality_info = {
+                        "name": quality_name,
+                        "width": actual_width,
+                        "height": actual_height,
+                        "bitrate": int(quality["bitrate"].replace("k", "")),
+                    }
+
+                    async with progress_list_lock:
+                        quality_progress_list[quality_idx] = {
+                            "name": quality_name,
+                            "status": "uploaded",
+                            "progress": 100,
+                            "segments_completed": segment_count,
+                            "segments_total": segment_count,
+                        }
+
+                    logger.info(
+                        f"    {quality_name}: Streaming upload complete "
+                        f"({segment_count} segments, {actual_width}x{actual_height})"
+                    )
+                    return (quality_info, None)
+
+                except StreamingClaimExpiredError as e:
+                    # Streaming upload detected claim expiration
+                    raise ClaimExpiredError(str(e))
+
+            # Standard tar.gz upload path (when streaming upload is disabled or non-CMAF)
             success, error = await transcode_quality_with_progress(
                 source_path,
                 output_dir,

@@ -231,6 +231,9 @@ class QualityProgressUpdate(BaseModel):
     name: str
     status: str = Field(pattern="^(pending|in_progress|uploading|completed|uploaded|failed|skipped)$")
     progress: int = Field(ge=0, le=100)
+    # Segment tracking for streaming upload (Issue #478)
+    segments_total: Optional[int] = Field(default=None, ge=0, description="Total segments expected")
+    segments_completed: Optional[int] = Field(default=None, ge=0, description="Segments uploaded so far")
 
 
 class ProgressUpdateRequest(BaseModel):

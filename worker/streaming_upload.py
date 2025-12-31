@@ -301,6 +301,7 @@ async def streaming_transcode_and_upload_quality(
     quality_name: str,
     streaming_format: str,
     transcode_coro: Awaitable[Tuple[bool, Optional[str]]],
+    on_segment_progress: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[bool, Optional[str], int]:
     """
     Transcode a quality with streaming segment upload (Issue #478).
@@ -320,6 +321,8 @@ async def streaming_transcode_and_upload_quality(
         quality_name: Quality name (e.g., "1080p")
         streaming_format: Format ("cmaf" or "hls_ts")
         transcode_coro: Coroutine that performs the actual transcoding
+        on_segment_progress: Optional callback(segments_completed, bytes_uploaded)
+                            called after each segment upload for progress tracking
 
     Returns:
         Tuple of (success, error_message, segment_count)
@@ -335,11 +338,27 @@ async def streaming_transcode_and_upload_quality(
         upload_queue=upload_queue,
     )
 
+    # Wrapper callback to report segment progress
+    # The SegmentUploadWorker callback receives (filename, bytes) but we want to
+    # report (segments_completed, total_bytes) for progress tracking
+    segments_uploaded = [0]  # Use list to allow mutation in nested function
+    total_bytes = [0]
+
+    def segment_uploaded_callback(filename: str, bytes_uploaded: int) -> None:
+        segments_uploaded[0] += 1
+        total_bytes[0] += bytes_uploaded
+        if on_segment_progress:
+            try:
+                on_segment_progress(segments_uploaded[0], total_bytes[0])
+            except Exception as e:
+                logger.warning(f"Segment progress callback failed: {e}")
+
     # Create upload worker
     upload_worker = SegmentUploadWorker(
         client=client,
         video_id=video_id,
         upload_queue=upload_queue,
+        on_segment_uploaded=segment_uploaded_callback,
     )
 
     # Start watcher and upload worker tasks
