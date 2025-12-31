@@ -972,6 +972,14 @@ KNOWN_SETTINGS = [
         "Videos with more views than this get high priority re-encoding",
         {"min": 0, "max": 100000},
     ),
+    # Streaming segment upload settings (Issue #478)
+    (
+        "workers.streaming_upload",
+        "workers",
+        "boolean",
+        "Upload segments individually during transcoding (eliminates tar.gz blocking)",
+        None,
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1024,6 +1032,8 @@ SETTING_TO_ENV_MAP = {
     "reencode.batch_size": "VLOG_REENCODE_BATCH_SIZE",
     "reencode.enabled": "VLOG_REENCODE_ENABLED",
     "reencode.priority_threshold_views": "VLOG_REENCODE_PRIORITY_THRESHOLD",
+    # Streaming segment upload (Issue #478)
+    "workers.streaming_upload": "VLOG_WORKER_STREAMING_UPLOAD",
 }
 
 

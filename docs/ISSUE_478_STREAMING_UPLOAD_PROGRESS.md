@@ -71,9 +71,9 @@ Eliminate tar.gz blocking during large video transcoding by uploading segments i
 
 ### Phase 7: Migration Path
 - [x] Add `VLOG_WORKER_STREAMING_UPLOAD` feature flag to `config.py`
-- [ ] Add setting to `api/settings.py` (optional, for dynamic toggle)
+- [x] Add setting to `api/settings_service.py` (for admin UI visibility)
 - [x] Ensure backward compatibility (new endpoints don't affect existing flow)
-- [ ] Documentation for rollout
+- [x] Documentation for rollout (see Rollout Guide section below)
 
 ---
 
@@ -253,7 +253,7 @@ await worker.stop()
 2. ~~**Phase 5**: Add segment progress to `QualityProgressUpdate` schema~~ ✅ Done
 3. ~~**Phase 5**: Update progress reporting to include segment counts in streaming upload path~~ ✅ Done
 4. ~~**Phase 6**: Add resume support with disk-persisted state~~ ✅ Done
-5. **Phase 7**: Documentation for rollout
+5. ~~**Phase 7**: Documentation for rollout~~ ✅ Done
 6. **Testing**: Manual test with actual videos
 
 ---
@@ -308,3 +308,165 @@ await worker.stop()
 - [ ] Verify heartbeats stay alive
 - [ ] Verify resume after simulated worker restart
 - [ ] Load test with multiple concurrent uploads
+
+---
+
+## Rollout Guide
+
+### Overview
+
+Streaming segment upload eliminates the blocking tar.gz creation step that caused heartbeat failures during large video transcoding. Instead of waiting for all qualities to complete and then creating a single archive, workers now upload segments individually as FFmpeg writes them.
+
+### Prerequisites
+
+1. **Server version**: Deploy the API server with streaming upload endpoints (this branch)
+2. **Worker version**: Update workers to include streaming upload code (this branch)
+3. **CMAF format**: Feature only works with CMAF streaming format (`VLOG_STREAMING_FORMAT=cmaf`)
+
+### Rollout Steps
+
+#### Step 1: Deploy Server Updates
+
+Deploy the API server with the new endpoints. These are backward-compatible:
+- `POST /api/worker/upload/{video_id}/segment/{quality}/{filename}` - Upload single segment
+- `GET /api/worker/upload/{video_id}/segments/status` - Query uploaded segments
+- `POST /api/worker/upload/{video_id}/segment/finalize` - Finalize quality upload
+
+No migration required - endpoints use existing database tables.
+
+#### Step 2: Enable on Test Worker
+
+Enable streaming upload on a single worker for testing:
+
+```bash
+# Kubernetes deployment
+kubectl set env deployment/vlog-worker-test VLOG_WORKER_STREAMING_UPLOAD=true
+
+# Or Docker/systemd
+export VLOG_WORKER_STREAMING_UPLOAD=true
+```
+
+#### Step 3: Monitor Test Transcodes
+
+Watch for successful transcodes with the new upload path:
+
+```bash
+# Check worker logs for streaming upload activity
+kubectl logs -f deployment/vlog-worker-test | grep -E "(streaming_upload|segment|finalize)"
+
+# Expected log patterns:
+# "Starting streaming segment upload for video X quality 1080p"
+# "Segment uploaded: seg_0001.m4s (2.1 MB)"
+# "Quality finalized: 1080p (226 segments, 2.1 GB total)"
+```
+
+#### Step 4: Verify Segment Integrity
+
+After a video completes transcoding with streaming upload:
+
+1. Check video plays correctly in web player
+2. Verify all quality levels work
+3. Check segment counts match expected values:
+
+```bash
+# Count segments in video directory
+ls -la /mnt/nas/vlog-storage/videos/<slug>/1080p/*.m4s | wc -l
+```
+
+#### Step 5: Test Resume Functionality
+
+Simulate worker restart during transcoding:
+
+1. Start a large video transcode
+2. Kill the worker mid-transcode: `kubectl delete pod <worker-pod>`
+3. Watch the worker restart and resume
+4. Verify in logs: "Resuming from X segments already uploaded"
+
+#### Step 6: Roll Out to All Workers
+
+Once verified, enable on all workers:
+
+```bash
+# Kubernetes - update all worker deployments
+kubectl set env deployment/vlog-worker VLOG_WORKER_STREAMING_UPLOAD=true
+kubectl set env deployment/vlog-worker-gpu VLOG_WORKER_STREAMING_UPLOAD=true
+
+# Or update ConfigMap/values.yaml and redeploy
+```
+
+### Configuration Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_WORKER_STREAMING_UPLOAD` | `false` | Enable streaming segment upload |
+| `VLOG_STREAMING_FORMAT` | `cmaf` | Must be `cmaf` for streaming upload |
+
+### Database Settings
+
+The feature is also available as a database-backed setting for visibility in the admin UI:
+
+- **Key**: `workers.streaming_upload`
+- **Category**: `workers`
+- **Type**: boolean
+
+Note: Workers read from environment variables at startup. Database setting provides visibility but workers must be restarted to pick up changes.
+
+### Rollback
+
+If issues occur, disable the feature:
+
+```bash
+kubectl set env deployment/vlog-worker VLOG_WORKER_STREAMING_UPLOAD=false
+```
+
+Workers will fall back to the original tar.gz upload path. In-progress streaming uploads will fail and be retried with the legacy path.
+
+### Monitoring
+
+Key metrics to watch during rollout:
+
+1. **Heartbeat health**: Workers should no longer go offline during large transcodes
+2. **Claim expirations**: Should decrease significantly
+3. **Upload failures**: Check for 409 (claim expired) or 400 (validation) errors
+4. **Disk usage**: Segments are deleted after upload, reducing local disk pressure
+
+### Troubleshooting
+
+#### Segments not uploading
+
+Check worker logs for upload errors:
+```bash
+kubectl logs deployment/vlog-worker | grep -i "error\|failed\|upload"
+```
+
+Common issues:
+- Network connectivity to API server
+- API key misconfigured
+- Claim expired (job reassigned to another worker)
+
+#### Resume not working
+
+Verify state file is being created:
+```bash
+ls -la /tmp/vlog-worker/<video-slug>/.upload_state.json
+```
+
+If missing, check disk permissions or space.
+
+#### Videos missing segments
+
+Use the segments status endpoint to check:
+```bash
+curl -H "X-Worker-API-Key: $KEY" \
+  "$API_URL/api/worker/upload/$VIDEO_ID/segments/status?quality=1080p"
+```
+
+---
+
+### Session 4 - 2025-12-31
+- **Completed Phase 7: Migration Path**
+  - Added `workers.streaming_upload` setting to `api/settings_service.py`:
+    - Added to `KNOWN_SETTINGS` list with category "workers" and type "boolean"
+    - Added env var mapping `VLOG_WORKER_STREAMING_UPLOAD` to `SETTING_TO_ENV_MAP`
+  - Created comprehensive rollout documentation (this section)
+  - Feature flag already existed in `config.py` from Phase 1
