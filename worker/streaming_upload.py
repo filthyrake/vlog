@@ -25,7 +25,7 @@ import asyncio
 import hashlib
 import logging
 from pathlib import Path
-from typing import Callable, Optional, Set
+from typing import Awaitable, Callable, List, Optional, Set, Tuple
 
 from worker.http_client import WorkerAPIClient, WorkerAPIError
 from worker.segment_watcher import SegmentInfo, SegmentWatcher
@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Queue size for segment uploads (Ada's recommendation)
 UPLOAD_QUEUE_SIZE = 10
+
+# Maximum retries for failed segment uploads (code review fix)
+MAX_SEGMENT_RETRIES = 3
 
 
 class ClaimExpiredError(Exception):
@@ -79,6 +82,7 @@ class SegmentUploadWorker:
 
         # Tracking
         self._uploaded_segments: Set[str] = set()
+        self._failed_segments: List[SegmentInfo] = []  # For retry mechanism
         self._total_bytes_uploaded = 0
         self._running = False
         self._stop_event = asyncio.Event()
@@ -90,6 +94,7 @@ class SegmentUploadWorker:
 
         This coroutine runs until stop() is called and the queue is empty.
         It will block on queue.get() when waiting for new segments.
+        Failed segments are retried up to MAX_SEGMENT_RETRIES times.
 
         Raises:
             ClaimExpiredError: If server returns 409 (claim expired)
@@ -97,10 +102,27 @@ class SegmentUploadWorker:
         self._running = True
         logger.info(f"Segment upload worker started for video {self.video_id}")
 
+        # Track retry counts per segment
+        retry_counts: dict[str, int] = {}
+
         try:
             while True:
-                # Check for stop signal with empty queue
+                # Check for stop signal with empty queue and no pending retries
                 if self._stop_event.is_set() and self.upload_queue.empty():
+                    # Process any failed segments that need retry
+                    if self._failed_segments:
+                        logger.info(f"Processing {len(self._failed_segments)} failed segments for retry")
+                        segments_to_retry = self._failed_segments.copy()
+                        self._failed_segments.clear()
+
+                        for segment in segments_to_retry:
+                            retry_count = retry_counts.get(segment.filename, 0) + 1
+                            retry_counts[segment.filename] = retry_count
+                            await self._upload_segment(segment, retry_count)
+
+                        # If there are still failed segments after retry, loop again
+                        if self._failed_segments:
+                            continue
                     break
 
                 # Try to get a segment with timeout
@@ -114,7 +136,8 @@ class SegmentUploadWorker:
                     continue
 
                 try:
-                    await self._upload_segment(segment)
+                    retry_count = retry_counts.get(segment.filename, 0)
+                    await self._upload_segment(segment, retry_count)
                 finally:
                     self.upload_queue.task_done()
 
@@ -124,32 +147,59 @@ class SegmentUploadWorker:
             raise
         finally:
             self._running = False
+            failed_count = len(self._failed_segments)
             logger.info(
                 f"Segment upload worker stopped for video {self.video_id} "
-                f"({len(self._uploaded_segments)} segments, {self._total_bytes_uploaded} bytes)"
+                f"({len(self._uploaded_segments)} uploaded, {failed_count} failed, "
+                f"{self._total_bytes_uploaded} bytes)"
             )
 
-    async def _upload_segment(self, segment: SegmentInfo) -> None:
+    async def _upload_segment(self, segment: SegmentInfo, retry_count: int = 0) -> bool:
         """
         Upload a single segment to the server.
 
+        Uses asyncio.to_thread for file I/O to avoid blocking the event loop.
+        Verifies file size hasn't changed since stability check (race condition fix).
+
         Args:
             segment: SegmentInfo object with filepath, quality, filename, size
+            retry_count: Current retry attempt (for re-queued segments)
+
+        Returns:
+            True if upload succeeded, False if should retry
 
         Raises:
             ClaimExpiredError: If server returns 409 (claim expired)
         """
-        # Read file content
+        # Read file content using thread pool to avoid blocking event loop
         try:
-            data = segment.filepath.read_bytes()
+            # Verify file size hasn't changed (race condition fix from code review)
+            current_size = await asyncio.to_thread(lambda: segment.filepath.stat().st_size)
+            if current_size != segment.size:
+                logger.warning(
+                    f"Segment {segment.filename} size changed ({segment.size} -> {current_size}), "
+                    "re-queuing with updated size"
+                )
+                # Re-queue with updated size for next stability check
+                self._failed_segments.append(SegmentInfo(
+                    filepath=segment.filepath,
+                    quality=segment.quality,
+                    filename=segment.filename,
+                    size=current_size,
+                ))
+                return False
+
+            data = await asyncio.to_thread(segment.filepath.read_bytes)
         except FileNotFoundError:
             logger.warning(f"Segment file disappeared before upload: {segment.filename}")
-            return
+            return True  # Don't retry - file is gone
         except Exception as e:
             logger.error(f"Failed to read segment {segment.filename}: {e}")
-            return
+            if retry_count < MAX_SEGMENT_RETRIES:
+                self._failed_segments.append(segment)
+            return False
 
-        # Compute checksum
+        # Compute checksum (CPU-bound but fast for typical segment sizes)
         checksum = hashlib.sha256(data).hexdigest()
 
         # Upload to server
@@ -164,9 +214,9 @@ class SegmentUploadWorker:
 
             # Verify server confirmed checksum
             if result.get("checksum_verified"):
-                # Safe to delete local file (Ada's requirement)
+                # Safe to delete local file using thread pool (Ada's requirement)
                 try:
-                    segment.filepath.unlink()
+                    await asyncio.to_thread(segment.filepath.unlink)
                     logger.debug(f"Deleted local segment: {segment.filename}")
                 except Exception as e:
                     logger.warning(f"Failed to delete local segment {segment.filename}: {e}")
@@ -186,10 +236,14 @@ class SegmentUploadWorker:
                     f"Uploaded segment: {segment.quality}/{segment.filename} "
                     f"({len(data)} bytes)"
                 )
+                return True
             else:
                 logger.warning(
-                    f"Server did not verify checksum for {segment.filename}, keeping local file"
+                    f"Server did not verify checksum for {segment.filename}, will retry"
                 )
+                if retry_count < MAX_SEGMENT_RETRIES:
+                    self._failed_segments.append(segment)
+                return False
 
         except WorkerAPIError as e:
             if e.status_code == 409:
@@ -197,9 +251,13 @@ class SegmentUploadWorker:
                 logger.error(f"Claim expired during segment upload: {e.message}")
                 raise ClaimExpiredError(e.message)
             else:
-                # Other errors - log and continue (retry logic is in client)
+                # Other errors - queue for retry if under limit
                 logger.error(f"Failed to upload segment {segment.filename}: {e.message}")
-                # Don't raise - let other segments continue uploading
+                if retry_count < MAX_SEGMENT_RETRIES:
+                    self._failed_segments.append(segment)
+                else:
+                    logger.error(f"Segment {segment.filename} failed after {MAX_SEGMENT_RETRIES} retries, giving up")
+                return False
 
     async def stop(self) -> None:
         """
@@ -230,6 +288,11 @@ class SegmentUploadWorker:
         """Return any error that occurred during upload."""
         return self._error
 
+    @property
+    def failed_count(self) -> int:
+        """Return the number of segments that failed to upload after retries."""
+        return len(self._failed_segments)
+
 
 async def streaming_transcode_and_upload_quality(
     client: WorkerAPIClient,
@@ -237,8 +300,8 @@ async def streaming_transcode_and_upload_quality(
     output_dir: Path,
     quality_name: str,
     streaming_format: str,
-    transcode_coro: asyncio.coroutine,
-) -> tuple[bool, Optional[str], int]:
+    transcode_coro: Awaitable[Tuple[bool, Optional[str]]],
+) -> Tuple[bool, Optional[str], int]:
     """
     Transcode a quality with streaming segment upload (Issue #478).
 
@@ -315,14 +378,15 @@ async def streaming_transcode_and_upload_quality(
         if upload_worker.error:
             return False, str(upload_worker.error), upload_worker.uploaded_count
 
-        # Upload the final playlist
+        # Upload the final playlist (use thread pool to avoid blocking)
         if streaming_format == "cmaf":
             playlist_path = output_dir / quality_name / "stream.m3u8"
         else:
             playlist_path = output_dir / f"{quality_name}.m3u8"
 
-        if playlist_path.exists():
-            playlist_data = playlist_path.read_bytes()
+        playlist_exists = await asyncio.to_thread(playlist_path.exists)
+        if playlist_exists:
+            playlist_data = await asyncio.to_thread(playlist_path.read_bytes)
             playlist_checksum = hashlib.sha256(playlist_data).hexdigest()
 
             await client.upload_segment(
@@ -334,13 +398,23 @@ async def streaming_transcode_and_upload_quality(
             )
 
             # Count segments (init.mp4 + *.m4s for CMAF, *.ts for HLS)
+            # Use thread pool to avoid blocking on filesystem operations
             if streaming_format == "cmaf":
                 quality_dir = output_dir / quality_name
-                segment_count = len(list(quality_dir.glob("*.m4s")))
-                if (quality_dir / "init.mp4").exists():
-                    segment_count += 1
+
+                def count_cmaf_segments():
+                    count = len(list(quality_dir.glob("*.m4s")))
+                    if (quality_dir / "init.mp4").exists():
+                        count += 1
+                    return count
+
+                segment_count = await asyncio.to_thread(count_cmaf_segments)
             else:
-                segment_count = len(list(output_dir.glob(f"{quality_name}_*.ts")))
+
+                def count_hls_segments():
+                    return len(list(output_dir.glob(f"{quality_name}_*.ts")))
+
+                segment_count = await asyncio.to_thread(count_hls_segments)
 
             # Finalize the quality upload
             result = await client.finalize_quality_upload(

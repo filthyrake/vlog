@@ -362,7 +362,11 @@ class SegmentFinalizeRequest(BaseModel):
     """Request to finalize a quality upload."""
 
     quality: str
-    segment_count: int
+    segment_count: int = Field(
+        ge=0,
+        le=100000,  # Reasonable upper bound (code review fix)
+        description="Expected number of segment files (init.mp4 + *.m4s or *.ts)",
+    )
     manifest_checksum: Optional[str] = Field(
         default=None,
         description="SHA256 checksum of the manifest file (e.g., 'sha256:abc123...')",

@@ -272,7 +272,7 @@ def validate_segment_magic_bytes(data: bytes, filename: str) -> bool:
     return False
 
 
-async def write_segment_atomic(
+def _write_segment_sync(
     data: bytes,
     dest_path: Path,
     checksum: str,
@@ -280,6 +280,7 @@ async def write_segment_atomic(
     """
     Write segment file atomically with fsync (Margo's reliability requirements).
 
+    This is the synchronous version that runs in a thread pool.
     Uses temp file + fsync + rename pattern for durability guarantee.
     Only returns success if data is safely on disk.
 
@@ -329,6 +330,33 @@ async def write_segment_atomic(
         # Clean up temp file on failure
         temp_path.unlink(missing_ok=True)
         raise
+
+
+async def write_segment_atomic(
+    data: bytes,
+    dest_path: Path,
+    checksum: str,
+) -> tuple[bool, int, bool]:
+    """
+    Async wrapper for atomic segment write - runs in thread pool.
+
+    This is critical for reliability: writing large segments to NAS can take
+    seconds. Running it synchronously blocks the entire event loop, preventing
+    heartbeat processing. (Code review fix for Issue #478)
+
+    Args:
+        data: The segment file data
+        dest_path: Final destination path
+        checksum: Expected SHA256 checksum (hex string, without 'sha256:' prefix)
+
+    Returns:
+        Tuple of (written, bytes_written, checksum_verified)
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _io_executor,
+        functools.partial(_write_segment_sync, data, dest_path, checksum),
+    )
 
 
 def _extract_tar_sync(
@@ -2346,8 +2374,14 @@ async def upload_segment(
 
     # Check for idempotency (Margo's recommendation)
     # If file already exists with same content, return success
-    if dest_path.exists():
-        existing_checksum = hashlib.sha256(dest_path.read_bytes()).hexdigest()
+    # Use thread pool to avoid blocking event loop on NAS (code review fix)
+    loop = asyncio.get_event_loop()
+    dest_exists = await loop.run_in_executor(_io_executor, dest_path.exists)
+    if dest_exists:
+        existing_checksum = await loop.run_in_executor(
+            _io_executor,
+            lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()
+        )
         if existing_checksum == checksum:
             logger.debug(f"Segment {filename} already exists with matching checksum")
             return SegmentUploadResponse(
@@ -2435,16 +2469,29 @@ async def get_segments_status(
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Scan quality directory for segments
-    quality_dir = VIDEOS_DIR / video["slug"] / quality
-    received_segments = []
-    total_size = 0
+    # Build and validate path (code review fix - defense in depth)
+    quality_dir = (VIDEOS_DIR / video["slug"] / quality).resolve()
 
-    if quality_dir.exists():
-        for f in quality_dir.iterdir():
-            if f.is_file() and f.suffix in (".m4s", ".ts", ".mp4", ".m3u8"):
-                received_segments.append(f.name)
-                total_size += f.stat().st_size
+    # Verify path is within allowed directory (prevent path traversal)
+    try:
+        quality_dir.relative_to(VIDEOS_DIR.resolve())
+    except ValueError:
+        logger.warning(f"Path traversal attempt blocked in get_segments_status: {quality_dir}")
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # Scan quality directory for segments using thread pool (code review fix)
+    def scan_segments():
+        segments = []
+        size = 0
+        if quality_dir.exists():
+            for f in quality_dir.iterdir():
+                if f.is_file() and f.suffix in (".m4s", ".ts", ".mp4", ".m3u8"):
+                    segments.append(f.name)
+                    size += f.stat().st_size
+        return segments, size
+
+    loop = asyncio.get_event_loop()
+    received_segments, total_size = await loop.run_in_executor(_io_executor, scan_segments)
 
     return SegmentStatusResponse(
         quality=quality,
@@ -2502,26 +2549,56 @@ async def finalize_segment_upload(
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Count segments in quality directory
-    quality_dir = VIDEOS_DIR / video["slug"] / quality
-    if not quality_dir.exists():
+    # Build and validate path (code review fix - defense in depth)
+    quality_dir = (VIDEOS_DIR / video["slug"] / quality).resolve()
+
+    # Verify path is within allowed directory (prevent path traversal)
+    try:
+        quality_dir.relative_to(VIDEOS_DIR.resolve())
+    except ValueError:
+        logger.warning(f"Path traversal attempt blocked in finalize: {quality_dir}")
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # Count segments and verify manifest using thread pool (code review fix)
+    def check_segments_and_manifest():
+        if not quality_dir.exists():
+            return None, None, "directory_not_found"
+
+        # Count actual segment files (init.mp4 + *.m4s for CMAF, *.ts for HLS)
+        segment_files = []
+        for f in quality_dir.iterdir():
+            if f.is_file() and f.suffix in (".m4s", ".ts", ".mp4"):
+                segment_files.append(f.name)
+
+        # Verify manifest checksum if provided
+        manifest_checksum = None
+        if data.manifest_checksum:
+            # Try CMAF naming first (more common with this feature), then quality-based
+            manifest_path = quality_dir / "stream.m3u8"
+            if not manifest_path.exists():
+                manifest_path = quality_dir / f"{quality}.m3u8"
+
+            if manifest_path.exists():
+                manifest_checksum = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+        return segment_files, manifest_checksum, None
+
+    loop = asyncio.get_event_loop()
+    segment_files, actual_manifest_checksum, error = await loop.run_in_executor(
+        _io_executor, check_segments_and_manifest
+    )
+
+    if error == "directory_not_found":
         return SegmentFinalizeResponse(
             status="incomplete",
             complete=False,
             missing_segments=["<quality directory not found>"],
         )
 
-    # Count actual segment files (init.mp4 + *.m4s for CMAF, *.ts for HLS)
-    segment_files = []
-    for f in quality_dir.iterdir():
-        if f.is_file() and f.suffix in (".m4s", ".ts", ".mp4"):
-            segment_files.append(f.name)
-
     actual_count = len(segment_files)
     expected_count = data.segment_count
 
     if actual_count < expected_count:
-        # Determine missing segments (we can't know exact names, but report count)
         return SegmentFinalizeResponse(
             status="incomplete",
             complete=False,
@@ -2529,53 +2606,44 @@ async def finalize_segment_upload(
         )
 
     # Verify manifest checksum if provided
-    if data.manifest_checksum:
-        manifest_path = quality_dir / f"{quality}.m3u8"
-        if not manifest_path.exists():
-            # Try CMAF naming convention
-            manifest_path = quality_dir / "stream.m3u8"
+    if data.manifest_checksum and actual_manifest_checksum:
+        expected_checksum = data.manifest_checksum.removeprefix("sha256:")
+        if actual_manifest_checksum != expected_checksum:
+            return SegmentFinalizeResponse(
+                status="incomplete",
+                complete=False,
+                missing_segments=["Manifest checksum mismatch"],
+            )
 
-        if manifest_path.exists():
-            actual_checksum = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-            expected_checksum = data.manifest_checksum
-            if expected_checksum.startswith("sha256:"):
-                expected_checksum = expected_checksum[7:]
-
-            if actual_checksum != expected_checksum:
-                return SegmentFinalizeResponse(
-                    status="incomplete",
-                    complete=False,
-                    missing_segments=["Manifest checksum mismatch"],
-                )
-
-    # Update quality_progress to mark as uploaded
+    # Update quality_progress and extend claim in a transaction (code review fix)
     db_url = str(database.url)
     is_postgresql = db_url.startswith("postgresql")
 
-    if is_postgresql:
-        await database.execute(
-            sa.text("""
-                INSERT INTO quality_progress (job_id, quality, status, progress_percent)
-                VALUES (:job_id, :quality, 'uploaded', 100)
-                ON CONFLICT (job_id, quality) DO UPDATE
-                SET status = 'uploaded', progress_percent = 100
-            """).bindparams(job_id=job["id"], quality=quality)
-        )
-    else:
-        await database.execute(
-            sa.text("""
-                INSERT OR REPLACE INTO quality_progress (job_id, quality, status, progress_percent)
-                VALUES (:job_id, :quality, 'uploaded', 100)
-            """).bindparams(job_id=job["id"], quality=quality)
-        )
+    async with database.transaction():
+        if is_postgresql:
+            await database.execute(
+                sa.text("""
+                    INSERT INTO quality_progress (job_id, quality, status, progress_percent)
+                    VALUES (:job_id, :quality, 'uploaded', 100)
+                    ON CONFLICT (job_id, quality) DO UPDATE
+                    SET status = 'uploaded', progress_percent = 100
+                """).bindparams(job_id=job["id"], quality=quality)
+            )
+        else:
+            await database.execute(
+                sa.text("""
+                    INSERT OR REPLACE INTO quality_progress (job_id, quality, status, progress_percent)
+                    VALUES (:job_id, :quality, 'uploaded', 100)
+                """).bindparams(job_id=job["id"], quality=quality)
+            )
 
-    # Extend claim
-    new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
-    await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job["id"])
-        .values(claim_expires_at=new_expiry)
-    )
+        # Extend claim
+        new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job["id"])
+            .values(claim_expires_at=new_expiry)
+        )
 
     logger.info(f"Quality {quality} finalized for video {video['slug']} ({actual_count} segments)")
     return SegmentFinalizeResponse(
