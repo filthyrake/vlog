@@ -96,14 +96,15 @@ spec:
 
         # Liveness probe - worker process is alive
         # Checks /health endpoint on built-in health server (port 8080)
+        # Note: Increased timeouts to handle CPU saturation during heavy 4K transcoding
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
           initialDelaySeconds: 30
           periodSeconds: 60
-          timeoutSeconds: 5
-          failureThreshold: 3
+          timeoutSeconds: 30
+          failureThreshold: 5
 
         # Readiness probe - worker can accept jobs
         # Checks /ready endpoint which verifies API connection and FFmpeg availability
@@ -113,8 +114,8 @@ spec:
             port: 8080
           initialDelaySeconds: 15
           periodSeconds: 30
-          timeoutSeconds: 5
-          failureThreshold: 3
+          timeoutSeconds: 30
+          failureThreshold: 5
 
         # Security context
         securityContext:

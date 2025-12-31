@@ -357,18 +357,26 @@ class Subscriber:
     async def close(self) -> None:
         """Close the subscription and clean up."""
         if self._pubsub:
+            pubsub = self._pubsub
+            channels = list(self._subscribed_channels)
+            patterns = list(self._subscribed_patterns)
+            # Clear state first to prevent re-entry
+            self._pubsub = None
+            self._subscribed_channels.clear()
+            self._subscribed_patterns.clear()
             try:
-                if self._subscribed_channels:
-                    await self._pubsub.unsubscribe(*self._subscribed_channels)
-                if self._subscribed_patterns:
-                    await self._pubsub.punsubscribe(*self._subscribed_patterns)
-                await self._pubsub.close()
+                # Try graceful unsubscribe first (non-critical)
+                try:
+                    if channels:
+                        await pubsub.unsubscribe(*channels)
+                    if patterns:
+                        await pubsub.punsubscribe(*patterns)
+                except Exception as e:
+                    logger.debug(f"Error unsubscribing pub/sub (non-critical): {e}")
+                # Always close the connection to prevent pool leaks
+                await pubsub.close()
             except Exception as e:
                 logger.debug(f"Error closing pub/sub: {e}")
-            finally:
-                self._pubsub = None
-                self._subscribed_channels.clear()
-                self._subscribed_patterns.clear()
 
     @property
     def is_active(self) -> bool:
