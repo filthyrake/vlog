@@ -123,6 +123,15 @@ Eliminate tar.gz blocking during large video transcoding by uploading segments i
   - Immediate abort on claim expiration (409)
   - Still need to wire into `remote_transcoder.py`
 
+- **Code Review Fixes Applied:**
+  - **Critical: Blocking I/O** - All file operations now use `asyncio.to_thread()` or thread pool executor
+  - **Critical: Race condition** - Verify file size hasn't changed before upload
+  - **Important: Retry mechanism** - Failed segments re-queued up to 3 times
+  - **Important: Validation bounds** - `segment_count` limited to 0-100000
+  - **Important: Path validation** - All endpoints use `resolve()` + `relative_to()`
+  - **Important: Database transaction** - Finalize endpoint wraps DB ops in transaction
+  - **Other: Type hints** - Fixed deprecated `asyncio.coroutine` to `Awaitable`
+
 ---
 
 ## Files Modified
