@@ -668,6 +668,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         asyncio.create_task(update_segment_progress())
 
                     # Run transcode with streaming upload
+                    # Pass job_id for Phase 6 resume support
                     success, error, segment_count = await streaming_transcode_and_upload_quality(
                         client=client,
                         video_id=video_id,
@@ -676,6 +677,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         streaming_format=streaming_format,
                         transcode_coro=transcode_coro,
                         on_segment_progress=on_segment_progress,
+                        job_id=job_id,
                     )
 
                     if not success:

@@ -65,9 +65,9 @@ Eliminate tar.gz blocking during large video transcoding by uploading segments i
 ### Phase 6: Error Handling & Resume
 - [x] Implement transient error retry (3x with exponential backoff) - in client
 - [x] Handle claim expired (409) - stop immediately (ClaimExpiredError)
-- [ ] Persist upload state to disk
-- [ ] On worker restart, query server for received segments
-- [ ] Resume upload from last missing segment
+- [x] Persist upload state to disk (`UploadStateManager`)
+- [x] On worker restart, query server for received segments (`reconcile_with_server()`)
+- [x] Resume upload from last missing segment (skip already-uploaded segments)
 
 ### Phase 7: Migration Path
 - [x] Add `VLOG_WORKER_STREAMING_UPLOAD` feature flag to `config.py`
@@ -143,8 +143,8 @@ Eliminate tar.gz blocking during large video transcoding by uploading segments i
 | `config.py` | 1, 7 | **Complete** (feature flag added) |
 | `worker/segment_watcher.py` | 2 | **Complete** (NEW) |
 | `worker/http_client.py` | 3 | **Complete** |
-| `worker/streaming_upload.py` | 4 | **Complete** (NEW) |
-| `worker/remote_transcoder.py` | 4 | **Complete** (integrated with feature flag) |
+| `worker/streaming_upload.py` | 4, 6 | **Complete** (NEW - added `UploadStateManager`) |
+| `worker/remote_transcoder.py` | 4, 6 | **Complete** (integrated with feature flag + job_id) |
 
 ---
 
@@ -252,8 +252,9 @@ await worker.stop()
 1. ~~**Wire into remote_transcoder.py**: Add conditional check for `WORKER_STREAMING_UPLOAD` to use new streaming path~~ ✅ Done
 2. ~~**Phase 5**: Add segment progress to `QualityProgressUpdate` schema~~ ✅ Done
 3. ~~**Phase 5**: Update progress reporting to include segment counts in streaming upload path~~ ✅ Done
-4. **Phase 6**: Add resume support with disk-persisted state
-5. **Testing**: Manual test with actual videos
+4. ~~**Phase 6**: Add resume support with disk-persisted state~~ ✅ Done
+5. **Phase 7**: Documentation for rollout
+6. **Testing**: Manual test with actual videos
 
 ---
 
@@ -275,6 +276,28 @@ await worker.stop()
   - Rate-limited updates (every 2 seconds) to avoid API flooding
   - Uses `asyncio.create_task()` to schedule async updates from sync callback
   - Final status includes `segments_completed` and `segments_total`
+
+### Session 3 - 2025-12-31
+- **Completed Phase 6: Error Handling & Resume**
+  - Added `UploadStateManager` class in `worker/streaming_upload.py`:
+    - Persists upload state to JSON file: `{output_dir}/.upload_state.json`
+    - Atomic writes with fsync for durability (per Margo's requirements)
+    - Tracks uploaded segments per quality with timestamps
+    - `reconcile_with_server()` method queries server to confirm what's actually uploaded
+    - Handles discrepancies between local state and server state
+  - Updated `SegmentUploadWorker` to support resume:
+    - New parameters: `state_manager`, `already_uploaded`, `quality_name`
+    - Skips segments already confirmed by server
+    - Persists state after each successful upload
+    - New `skipped_count` property for tracking resumed segments
+  - Updated `streaming_transcode_and_upload_quality()`:
+    - New parameters: `job_id` (required for state persistence), `enable_resume`
+    - Loads existing state and reconciles with server on resume
+    - Passes state manager and already_uploaded set to upload worker
+    - Deletes state file on successful completion
+    - Progress tracking starts from already_uploaded count when resuming
+  - Updated `remote_transcoder.py`:
+    - Passes `job_id` to `streaming_transcode_and_upload_quality()`
 
 ---
 
