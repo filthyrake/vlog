@@ -28,6 +28,7 @@ dependencies = [
     "redis>=4.0.0",  # Required for job queue and pub/sub
     "sse-starlette>=1.6.0",  # Server-Sent Events support
     "prometheus-client>=0.19.0",  # Prometheus metrics
+    "psutil>=5.9.0",  # System resource monitoring for sprite worker
 ]
 
 [project.optional-dependencies]

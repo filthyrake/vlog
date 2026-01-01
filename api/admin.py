@@ -82,6 +82,7 @@ from api.public import get_video_url_prefix, get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
 from api.schemas import (
+    MAX_CHAPTERS_PER_VIDEO,
     ActiveJobsResponse,
     ActiveJobWithWorker,
     AddVideoToPlaylistRequest,
@@ -117,7 +118,6 @@ from api.schemas import (
     PlaylistVideoInfo,
     QualityBreakdown,
     QualityProgressResponse,
-    MAX_CHAPTERS_PER_VIDEO,
     ReorderChaptersRequest,
     ReorderPlaylistRequest,
     RetranscodeRequest,
@@ -8139,6 +8139,13 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def reorder_chapters(request: Request, video_id: int, data: ReorderChaptersRequest):
     """Reorder chapters in a video."""
+    # Validate no duplicate IDs in request (prevents position corruption)
+    if len(data.chapter_ids) != len(set(data.chapter_ids)):
+        raise HTTPException(
+            status_code=400,
+            detail="Duplicate chapter IDs provided in reorder request",
+        )
+
     # Verify video exists
     video = await fetch_one_with_retry(
         videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
@@ -8288,22 +8295,20 @@ async def queue_sprite_generation(
 
     # Queue the video
     job_id = await db_execute_with_retry(
-        database,
         sprite_queue.insert().values(
             video_id=video_id,
             priority=data.priority,
             status="pending",
             created_at=datetime.now(timezone.utc),
-        ),
+        )
     )
 
     # Update video sprite status to pending
     await db_execute_with_retry(
-        database,
         videos.update().where(videos.c.id == video_id).values(
             sprite_sheet_status="pending",
             sprite_sheet_error=None,
-        ),
+        )
     )
 
     # Audit log
@@ -8350,20 +8355,18 @@ async def queue_all_for_sprites(
     queued_count = 0
     for row in rows:
         await db_execute_with_retry(
-            database,
             sprite_queue.insert().values(
                 video_id=row["id"],
                 priority=priority,
                 status="pending",
                 created_at=datetime.now(timezone.utc),
-            ),
+            )
         )
         await db_execute_with_retry(
-            database,
             videos.update().where(videos.c.id == row["id"]).values(
                 sprite_sheet_status="pending",
                 sprite_sheet_error=None,
-            ),
+            )
         )
         queued_count += 1
 
@@ -8507,17 +8510,15 @@ async def cancel_sprite_job(request: Request, job_id: int) -> dict:
         raise HTTPException(status_code=400, detail=f"Cannot cancel job with status '{job['status']}'")
 
     await db_execute_with_retry(
-        database,
-        sprite_queue.update().where(sprite_queue.c.id == job_id).values(status="cancelled"),
+        sprite_queue.update().where(sprite_queue.c.id == job_id).values(status="cancelled")
     )
 
     # Reset video sprite status
     await db_execute_with_retry(
-        database,
         videos.update().where(videos.c.id == job["video_id"]).values(
             sprite_sheet_status=None,
             sprite_sheet_error=None,
-        ),
+        )
     )
 
     return {"status": "ok", "message": f"Job {job_id} cancelled"}

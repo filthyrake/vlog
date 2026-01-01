@@ -109,6 +109,14 @@ def upgrade() -> None:
         "sprite_queue",
         ["priority", "created_at"],
     )
+    # Partial index for pending jobs - optimizes worker job claim query (per Brendan's review)
+    op.execute(
+        """
+        CREATE INDEX ix_sprite_queue_pending_priority
+        ON sprite_queue (priority, created_at)
+        WHERE status = 'pending'
+        """
+    )
     op.create_index(
         "ix_videos_sprite_sheet_status",
         "videos",
@@ -119,6 +127,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Drop indexes
     op.drop_index("ix_videos_sprite_sheet_status", table_name="videos")
+    op.execute("DROP INDEX IF EXISTS ix_sprite_queue_pending_priority")
     op.drop_index("ix_sprite_queue_priority_created", table_name="sprite_queue")
     op.drop_index("ix_sprite_queue_video_id", table_name="sprite_queue")
     op.drop_index("ix_sprite_queue_status", table_name="sprite_queue")

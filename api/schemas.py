@@ -1107,6 +1107,14 @@ class ChapterCreate(BaseModel):
     start_time: float = Field(..., ge=0, description="Start time in seconds")
     end_time: Optional[float] = Field(default=None, description="Optional end time in seconds")
 
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_finite(cls, v: Optional[float]) -> Optional[float]:
+        """Ensure time values are finite (not NaN, Infinity, or -Infinity)."""
+        if v is not None and not math.isfinite(v):
+            raise ValueError("Time value must be a finite number")
+        return v
+
     @field_validator("end_time")
     @classmethod
     def validate_end_time(cls, v: Optional[float], info) -> Optional[float]:
@@ -1125,6 +1133,14 @@ class ChapterUpdate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=1000)
     start_time: Optional[float] = Field(default=None, ge=0)
     end_time: Optional[float] = None
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_finite(cls, v: Optional[float]) -> Optional[float]:
+        """Ensure time values are finite (not NaN, Infinity, or -Infinity)."""
+        if v is not None and not math.isfinite(v):
+            raise ValueError("Time value must be a finite number")
+        return v
 
     @field_validator("end_time")
     @classmethod
@@ -1171,7 +1187,12 @@ class ChapterInfo(BaseModel):
 class ReorderChaptersRequest(BaseModel):
     """Request to reorder chapters."""
 
-    chapter_ids: List[int] = Field(..., min_length=1, description="Chapter IDs in new order")
+    chapter_ids: List[int] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_CHAPTERS_PER_VIDEO,
+        description="Chapter IDs in new order",
+    )
 
 
 # ============ Sprite Sheet Models (Issue #413 Phase 7B) ============

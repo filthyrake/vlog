@@ -570,3 +570,15 @@ SPRITE_SHEET_TIMEOUT_MAXIMUM = get_int_env("VLOG_SPRITE_SHEET_TIMEOUT_MAXIMUM", 
 
 # Auto-generate sprites after successful transcode (set to false to only generate on-demand)
 SPRITE_SHEET_AUTO_GENERATE = os.getenv("VLOG_SPRITE_SHEET_AUTO_GENERATE", "false").lower() in ("true", "1", "yes")
+
+# Memory threshold for sprite generation (percentage of available memory)
+# Worker will skip job if available memory is below this percentage
+SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT = get_int_env(
+    "VLOG_SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT", 20, min_val=5, max_val=50
+)
+
+# Maximum video duration (in seconds) that the sprite worker will process
+# Videos longer than this will be skipped to prevent OOM (default: 4 hours)
+SPRITE_SHEET_MAX_VIDEO_DURATION = get_int_env(
+    "VLOG_SPRITE_SHEET_MAX_VIDEO_DURATION", 14400, min_val=600
+)

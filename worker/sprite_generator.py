@@ -12,6 +12,10 @@ Features:
 - Atomic generation (temp dir → rename)
 - Configurable frame interval, tile size, quality
 - Timeout protection with min/max bounds
+- Stale job recovery for crashed workers
+- Graceful FFmpeg shutdown on SIGTERM
+- Memory threshold check before claiming jobs (OOM prevention)
+- Video duration limit (skip extremely long videos)
 """
 
 import asyncio
@@ -19,12 +23,19 @@ import logging
 import shutil
 import signal
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import asyncpg
+import psutil
 
 import config
+
+# Stale job threshold - jobs processing for longer than this are considered stale
+STALE_JOB_THRESHOLD_HOURS = 2
+# How often to check for stale jobs (seconds)
+STALE_JOB_CHECK_INTERVAL = 300  # 5 minutes
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +45,29 @@ logging.basicConfig(
 logger = logging.getLogger("sprite_generator")
 
 
+def check_memory_available() -> bool:
+    """Check if there's enough memory available to process a sprite job.
+
+    Returns True if available memory is above the configured threshold.
+    """
+    try:
+        mem = psutil.virtual_memory()
+        available_percent = mem.available * 100 / mem.total
+        threshold = config.SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT
+
+        if available_percent < threshold:
+            logger.warning(
+                f"Low memory: {available_percent:.1f}% available "
+                f"(threshold: {threshold}%)"
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error checking memory: {e}")
+        # Fail open - allow processing if we can't check memory
+        return True
+
+
 class SpriteGenerator:
     """Sprite sheet generator worker."""
 
@@ -41,6 +75,8 @@ class SpriteGenerator:
         self.running = False
         self.db_pool: Optional[asyncpg.Pool] = None
         self.current_job_id: Optional[int] = None
+        self.current_process: Optional[asyncio.subprocess.Process] = None
+        self._last_stale_check: float = 0
 
     async def start(self):
         """Start the sprite generator worker."""
@@ -65,6 +101,15 @@ class SpriteGenerator:
         # Main processing loop
         while self.running:
             try:
+                # Periodically check for stale jobs
+                await self._maybe_recover_stale_jobs()
+
+                # Check memory before claiming a job to prevent OOM
+                if not check_memory_available():
+                    logger.info("Waiting for memory to become available...")
+                    await asyncio.sleep(30)
+                    continue
+
                 job = await self._claim_next_job()
                 if job:
                     await self._process_job(job)
@@ -88,10 +133,68 @@ class SpriteGenerator:
         """Clean up resources."""
         logger.info("Shutting down sprite generator...")
 
+        # Gracefully terminate any running FFmpeg process
+        if self.current_process:
+            logger.info("Terminating FFmpeg process...")
+            try:
+                self.current_process.terminate()
+                try:
+                    await asyncio.wait_for(self.current_process.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("FFmpeg did not terminate gracefully, killing...")
+                    self.current_process.kill()
+                    await self.current_process.wait()
+            except Exception as e:
+                logger.error(f"Error stopping FFmpeg process: {e}")
+
         if self.db_pool:
             await self.db_pool.close()
 
         logger.info("Sprite generator stopped")
+
+    async def _maybe_recover_stale_jobs(self):
+        """Periodically check for and recover stale jobs."""
+        import time
+
+        now = time.time()
+        if now - self._last_stale_check < STALE_JOB_CHECK_INTERVAL:
+            return
+
+        self._last_stale_check = now
+
+        try:
+            await self._recover_stale_jobs()
+        except Exception as e:
+            logger.error(f"Error recovering stale jobs: {e}", exc_info=True)
+
+    async def _recover_stale_jobs(self):
+        """Recover jobs stuck in processing state from crashed workers."""
+        stale_threshold = datetime.now(timezone.utc) - timedelta(hours=STALE_JOB_THRESHOLD_HOURS)
+
+        async with self.db_pool.acquire() as conn:
+            stale_jobs = await conn.fetch(
+                """
+                UPDATE sprite_queue
+                SET status = 'pending',
+                    started_at = NULL
+                WHERE status = 'processing'
+                  AND started_at < $1
+                RETURNING id, video_id
+                """,
+                stale_threshold,
+            )
+
+            for job in stale_jobs:
+                logger.warning(f"Recovered stale sprite job {job['id']} for video {job['video_id']}")
+                # Reset video status too
+                await conn.execute(
+                    """
+                    UPDATE videos
+                    SET sprite_sheet_status = 'pending'
+                    WHERE id = $1
+                    """,
+                    job["video_id"],
+                )
 
     async def _claim_next_job(self) -> Optional[dict]:
         """Claim the next pending job from the queue."""
@@ -145,6 +248,15 @@ class SpriteGenerator:
 
             if not video:
                 raise ValueError(f"Video {video_id} not found or not ready")
+
+            # Check video duration limit to prevent OOM on very long videos
+            duration = video["duration"] or 0
+            max_duration = config.SPRITE_SHEET_MAX_VIDEO_DURATION
+            if duration > max_duration:
+                raise ValueError(
+                    f"Video duration ({duration}s) exceeds maximum "
+                    f"({max_duration}s) for sprite generation"
+                )
 
             # Update video sprite status to generating
             await self._update_video_sprite_status(video_id, "generating")
@@ -266,17 +378,24 @@ class SpriteGenerator:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                _, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=timeout,
-                )
+                # Track process for graceful shutdown
+                self.current_process = process
+                try:
+                    _, stderr = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=timeout,
+                    )
+                finally:
+                    self.current_process = None
 
                 if process.returncode != 0:
                     error = stderr.decode()[-500:] if stderr else "Unknown error"
                     raise RuntimeError(f"FFmpeg failed: {error}")
 
             except asyncio.TimeoutError:
+                self.current_process = None
                 process.kill()
+                await process.wait()  # Ensure process is cleaned up
                 raise RuntimeError(f"Sprite generation timed out after {timeout}s")
 
             # Count generated sprite sheets
