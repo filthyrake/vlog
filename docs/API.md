@@ -1565,3 +1565,432 @@ vlog_worker_heartbeat_total{worker_id="uuid-1",result="success"} 1000
 ```
 
 See [MONITORING.md](MONITORING.md) for complete metrics documentation.
+
+---
+
+## Playlists API
+
+Playlists provide a way to organize videos into curated collections, series, or courses.
+
+### Public Playlist Endpoints
+
+#### List Public Playlists
+```
+GET /api/playlists
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| type | string | null | Filter by type: playlist, collection, series, course |
+| featured | bool | null | Filter by featured status |
+| limit | int | 50 | Max items (1-100) |
+| offset | int | 0 | Pagination offset |
+
+Response: `PlaylistListResponse`
+```json
+{
+  "playlists": [
+    {
+      "id": 1,
+      "title": "Getting Started Series",
+      "slug": "getting-started-series",
+      "description": "Introduction tutorials",
+      "thumbnail_url": "/videos/intro-video/thumbnail.jpg",
+      "visibility": "public",
+      "playlist_type": "series",
+      "is_featured": true,
+      "video_count": 5,
+      "total_duration": 1800.5,
+      "created_at": "2024-01-15T10:00:00",
+      "updated_at": "2024-01-20T12:00:00"
+    }
+  ],
+  "total_count": 10
+}
+```
+
+#### Get Playlist Details
+```
+GET /api/playlists/{slug}
+```
+
+Response: `PlaylistDetailResponse`
+```json
+{
+  "id": 1,
+  "title": "Getting Started Series",
+  "slug": "getting-started-series",
+  "description": "Introduction tutorials",
+  "thumbnail_url": "/videos/intro-video/thumbnail.jpg",
+  "visibility": "public",
+  "playlist_type": "series",
+  "is_featured": true,
+  "video_count": 3,
+  "total_duration": 1800.5,
+  "created_at": "2024-01-15T10:00:00",
+  "updated_at": "2024-01-20T12:00:00",
+  "videos": [
+    {
+      "id": 1,
+      "title": "Introduction",
+      "slug": "introduction",
+      "thumbnail_url": "/videos/introduction/thumbnail.jpg",
+      "duration": 300.5,
+      "position": 0,
+      "status": "ready"
+    }
+  ]
+}
+```
+
+#### Get Playlist Videos
+```
+GET /api/playlists/{slug}/videos
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| limit | int | 50 | Max items (1-100) |
+| offset | int | 0 | Pagination offset |
+
+Returns paginated list of videos in the playlist.
+
+### Admin Playlist Endpoints
+
+#### List All Playlists (Admin)
+```
+GET /api/playlists
+```
+
+Returns all playlists including private and unlisted ones.
+
+#### Create Playlist
+```
+POST /api/playlists
+```
+
+Request body:
+```json
+{
+  "title": "My Playlist",
+  "description": "Optional description",
+  "visibility": "public",
+  "playlist_type": "playlist",
+  "is_featured": false
+}
+```
+
+**Visibility Options:**
+- `public` - Visible to everyone
+- `private` - Only visible to admins
+- `unlisted` - Accessible by direct link only
+
+**Playlist Types:**
+- `playlist` - General purpose playlist
+- `collection` - Curated collection
+- `series` - Sequential series (numbered order)
+- `course` - Educational course
+
+Response:
+```json
+{
+  "id": 1,
+  "title": "My Playlist",
+  "slug": "my-playlist",
+  "visibility": "public",
+  "playlist_type": "playlist",
+  "is_featured": false,
+  "created_at": "2024-01-15T10:00:00"
+}
+```
+
+#### Get Playlist (Admin)
+```
+GET /api/playlists/{playlist_id}
+```
+
+Returns playlist details including videos.
+
+#### Update Playlist
+```
+PUT /api/playlists/{playlist_id}
+```
+
+Request body:
+```json
+{
+  "title": "Updated Title",
+  "description": "Updated description",
+  "visibility": "unlisted",
+  "is_featured": true
+}
+```
+
+#### Delete Playlist
+```
+DELETE /api/playlists/{playlist_id}
+```
+
+Soft-deletes the playlist. Videos are not affected.
+
+#### Get Playlist Videos (Admin)
+```
+GET /api/playlists/{playlist_id}/videos
+```
+
+#### Add Video to Playlist
+```
+POST /api/playlists/{playlist_id}/videos
+```
+
+Request body:
+```json
+{
+  "video_id": 123
+}
+```
+
+Adds video at the end of the playlist.
+
+#### Remove Video from Playlist
+```
+DELETE /api/playlists/{playlist_id}/videos/{video_id}
+```
+
+#### Reorder Playlist Videos
+```
+POST /api/playlists/{playlist_id}/reorder
+```
+
+Request body:
+```json
+{
+  "video_ids": [3, 1, 2]
+}
+```
+
+Sets the order of videos in the playlist.
+
+---
+
+## Chapters API
+
+Chapters allow marking sections within a video for timeline navigation.
+
+### Get Video Chapters
+```
+GET /api/videos/{video_id}/chapters
+```
+
+Response: `ChapterListResponse`
+```json
+{
+  "chapters": [
+    {
+      "id": 1,
+      "video_id": 123,
+      "title": "Introduction",
+      "description": "Overview of the topic",
+      "start_time": 0,
+      "end_time": 60.5,
+      "position": 0,
+      "created_at": "2024-01-15T10:00:00"
+    },
+    {
+      "id": 2,
+      "video_id": 123,
+      "title": "Main Content",
+      "start_time": 60.5,
+      "end_time": 300,
+      "position": 1,
+      "created_at": "2024-01-15T10:00:00"
+    }
+  ],
+  "video_id": 123,
+  "total_count": 2
+}
+```
+
+### Create Chapter
+```
+POST /api/videos/{video_id}/chapters
+```
+
+Request body:
+```json
+{
+  "title": "Introduction",
+  "description": "Optional description",
+  "start_time": 0,
+  "end_time": 60.5
+}
+```
+
+**Notes:**
+- `start_time` must be >= 0
+- `end_time` must be > `start_time` if provided
+- Maximum 50 chapters per video
+
+### Update Chapter
+```
+PUT /api/videos/{video_id}/chapters/{chapter_id}
+```
+
+Request body:
+```json
+{
+  "title": "Updated Title",
+  "start_time": 0,
+  "end_time": 65
+}
+```
+
+### Delete Chapter
+```
+DELETE /api/videos/{video_id}/chapters/{chapter_id}
+```
+
+### Reorder Chapters
+```
+POST /api/videos/{video_id}/chapters/reorder
+```
+
+Request body:
+```json
+{
+  "chapter_ids": [2, 1, 3]
+}
+```
+
+---
+
+## Sprite Sheets API
+
+Sprite sheets provide thumbnail preview strips for timeline scrubbing.
+
+### Get Sprite Sheet Status
+```
+GET /api/videos/{video_id}/sprites
+```
+
+Response: `SpriteStatusResponse`
+```json
+{
+  "video_id": 123,
+  "status": "ready",
+  "error": null,
+  "count": 3,
+  "interval": 10,
+  "tile_size": 10,
+  "frame_width": 160,
+  "frame_height": 90
+}
+```
+
+**Status Values:**
+- `null` - Never requested
+- `pending` - Queued for generation
+- `generating` - Currently being generated
+- `ready` - Available for use
+- `failed` - Generation failed
+
+### Queue Sprite Generation
+```
+POST /api/videos/{video_id}/sprites
+```
+
+Request body:
+```json
+{
+  "priority": "normal"
+}
+```
+
+Priority options: `high`, `normal`, `low`
+
+### Sprite Queue Status
+```
+GET /api/sprites/status
+```
+
+Response: `SpriteQueueStatusResponse`
+```json
+{
+  "pending": 5,
+  "processing": 1,
+  "completed": 100,
+  "failed": 2,
+  "total": 108
+}
+```
+
+### List Sprite Queue Jobs
+```
+GET /api/sprites/jobs
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| status | string | null | Filter by status |
+| limit | int | 50 | Max items (1-100) |
+| offset | int | 0 | Pagination offset |
+
+### Cancel Sprite Job
+```
+DELETE /api/sprites/jobs/{job_id}
+```
+
+Only pending jobs can be cancelled.
+
+---
+
+## Display Configuration
+
+Public UI display settings.
+
+### Get Display Configuration
+```
+GET /api/config/display
+```
+
+Response:
+```json
+{
+  "show_view_counts": true,
+  "show_tagline": true,
+  "tagline": "Your video platform"
+}
+```
+
+Settings are cached for 60 seconds.
+
+---
+
+## Featured Videos
+
+Filter videos by featured status.
+
+### List Featured Videos
+```
+GET /api/videos?featured=true
+```
+
+The `featured` query parameter filters videos by their featured status:
+- `true` - Only featured videos
+- `false` - Only non-featured videos
+- Not specified - All videos
+
+Featured videos appear first in default sorting.
+
+### Set Featured Status (Admin)
+```
+PUT /api/videos/{video_id}
+```
+
+Form field:
+| Field | Type | Description |
+|-------|------|-------------|
+| is_featured | bool | Featured status |

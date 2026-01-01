@@ -722,6 +722,119 @@ Audit logs automatically rotate when reaching the max size. Old backups are dele
 
 ---
 
+## Display Settings
+
+Configure public UI appearance.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_DISPLAY_SHOW_VIEW_COUNTS` | `true` | Show view counts on video cards |
+| `VLOG_DISPLAY_SHOW_TAGLINE` | `true` | Show site tagline on homepage |
+| `VLOG_DISPLAY_TAGLINE` | (empty) | Site tagline text |
+
+These can also be configured via the Admin UI Settings tab or database:
+
+```bash
+vlog settings set display.show_view_counts false
+vlog settings set display.show_tagline true
+vlog settings set display.tagline "Your video platform"
+```
+
+---
+
+## Circuit Breaker Settings
+
+The worker HTTP client uses a circuit breaker pattern to prevent cascading failures.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_HTTP_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `5` | Failures before opening circuit |
+| `VLOG_HTTP_CIRCUIT_BREAKER_RECOVERY_TIMEOUT` | `30` | Seconds before attempting recovery |
+| `VLOG_HTTP_CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | `2` | Successes needed to close circuit |
+
+**Circuit States:**
+- **Closed:** Normal operation, all requests proceed
+- **Open:** All requests fail immediately (circuit broken)
+- **Half-Open:** Testing if service recovered
+
+**Behavior:**
+- After `FAILURE_THRESHOLD` consecutive failures, circuit opens
+- Circuit stays open for `RECOVERY_TIMEOUT` seconds
+- During recovery, limited requests test the service
+- After `SUCCESS_THRESHOLD` successes, circuit closes
+
+---
+
+## Streaming Segment Upload Settings
+
+Workers can upload segments as they complete rather than waiting for all transcoding to finish.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_WORKER_STREAMING_UPLOAD` | `false` | Enable streaming segment upload |
+| `VLOG_WORKER_SEGMENT_BATCH_SIZE` | `10` | Segments to batch before upload |
+| `VLOG_WORKER_UPLOAD_RETRY_ATTEMPTS` | `3` | Retry attempts for segment upload |
+| `VLOG_WORKER_UPLOAD_RETRY_DELAY` | `5` | Seconds between retry attempts |
+
+**Benefits:**
+- Faster availability of initial quality levels
+- Reduced peak bandwidth requirements
+- Progress visible on server during transcoding
+- Smaller memory footprint on worker
+
+**Comparison:**
+
+| Mode | Archive Upload | Streaming Upload |
+|------|---------------|------------------|
+| Transfer | Single tar.gz at end | Progressive segments |
+| First playable | After all complete | After first quality |
+| Bandwidth | Peak at end | Spread over time |
+| Server storage | All at once | Incremental |
+
+---
+
+## Sprite Sheet Settings
+
+Configure thumbnail sprite sheet generation for timeline previews.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_SPRITE_INTERVAL` | `10` | Seconds between sprite frames |
+| `VLOG_SPRITE_TILE_SIZE` | `10` | Grid size (10 = 10x10 = 100 frames per sheet) |
+| `VLOG_SPRITE_FRAME_WIDTH` | `160` | Thumbnail frame width in pixels |
+| `VLOG_SPRITE_FRAME_HEIGHT` | `90` | Thumbnail frame height (auto if 0) |
+| `VLOG_SPRITE_JPEG_QUALITY` | `80` | JPEG quality for sprite sheets (1-100) |
+
+**Example:**
+- 30 minute video with 10-second interval = 180 frames
+- 10x10 tile size = 100 frames per sheet
+- Results in 2 sprite sheets
+
+---
+
+## Worker Code Version Settings
+
+Prevent workers running outdated code from processing jobs.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_REQUIRED_WORKER_VERSION` | (none) | Minimum required worker code version |
+| `VLOG_WORKER_VERSION_CHECK_ENABLED` | `false` | Enable version checking |
+
+When enabled, workers must report a version >= `REQUIRED_WORKER_VERSION` or jobs will be rejected. This prevents stale containers from processing jobs after deployments.
+
+---
+
+## TAR Extraction Timeout Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_TAR_EXTRACTION_TIMEOUT` | `300` | Timeout for tar extraction in seconds |
+
+Prevents hung tar extraction operations from blocking the worker API.
+
+---
+
 ## Test Mode
 
 Set `VLOG_TEST_MODE=1` to:

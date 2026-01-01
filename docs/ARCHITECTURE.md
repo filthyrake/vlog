@@ -147,7 +147,7 @@ Event-driven background process for local video transcoding:
 | Module | Purpose |
 |--------|---------|
 | `hwaccel.py` | GPU detection and hardware encoder selection (NVENC, VAAPI) |
-| `http_client.py` | HTTP client for worker-to-API communication |
+| `http_client.py` | HTTP client with circuit breaker for worker-to-API communication |
 | `alerts.py` | Webhook alerting for transcoding events (stale jobs, failures, retries) |
 
 ### 5. Remote Transcoding Workers (Kubernetes)
@@ -168,8 +168,17 @@ Containerized workers for horizontal scaling with GPU hardware acceleration.
 2. **Poll** - Periodically claims available jobs
 3. **Download** - Fetches source file from Worker API
 4. **Transcode** - Runs ffmpeg locally with GPU acceleration
-5. **Upload** - Sends HLS output as tar.gz to Worker API
+5. **Upload** - Sends output (archive or streaming segments) to Worker API
 6. **Complete** - Reports completion, job marked ready
+
+**Upload Modes:**
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **Archive** | Single tar.gz at job completion | Simpler, default mode |
+| **Streaming** | Progressive segment upload during transcoding | Faster first playback, lower peak bandwidth |
+
+Enable streaming upload via `VLOG_WORKER_STREAMING_UPLOAD=true`.
 
 **GPU Hardware Acceleration:**
 
@@ -240,10 +249,14 @@ PostgreSQL provides concurrent read/write support, making it suitable for multi-
 - `video_qualities` - Available HLS variants per video
 - `tags` - Tag definitions for granular content organization
 - `video_tags` - Many-to-many relationship between videos and tags
+- `playlists` - Playlist/collection definitions
+- `playlist_items` - Many-to-many with ordering between playlists and videos
+- `chapters` - Video chapter markers for timeline navigation
+- `sprite_queue` - Background sprite sheet generation jobs
 - `custom_field_definitions` - User-defined metadata field definitions (Issue #224)
 - `video_custom_fields` - Custom field values per video
 - `viewers` - Cookie-based viewer tracking
-- `playback_sessions` - Watch analytics
+- `playback_sessions` - Watch analytics (partitioned by month)
 - `transcoding_jobs` - Job tracking with checkpoints and job claiming
 - `quality_progress` - Per-quality transcoding progress
 - `transcriptions` - Whisper transcription records
@@ -420,7 +433,7 @@ Video ready → Transcription worker polls
 | File Monitoring | watchdog (inotify) |
 | Frontend Framework | Alpine.js |
 | CSS | Tailwind CSS v4 |
-| Video Player | hls.js |
+| Video Player | Shaka Player (CMAF/DASH), hls.js (legacy HLS/TS) |
 | Process Management | systemd |
 | Container Base | Rocky Linux 10 |
 | Container Registry | Docker Registry v2 (localhost:9003) |
@@ -444,6 +457,87 @@ All configuration is centralized in `config.py`. Every setting supports environm
 - **CORS** - Allowed origins for public and admin APIs
 - **Upload Limits** - Maximum file size, chunk size
 
+## Playlists and Collections
+
+Playlists enable organizing videos into curated groups:
+
+| Type | Use Case |
+|------|----------|
+| **playlist** | General purpose grouping |
+| **collection** | Curated content sets |
+| **series** | Sequential viewing (numbered) |
+| **course** | Learning paths |
+
+**Visibility Options:** public, private, unlisted
+
+**API Endpoints:** See [API.md](API.md#playlists-api) for full documentation.
+
+---
+
+## Video Chapters
+
+Chapters provide timeline navigation within videos:
+
+- Maximum 50 chapters per video
+- Start time required, end time optional
+- Supports reordering
+- Displayed in player timeline
+- Stored in `chapters` table, `has_chapters` flag on videos for performance
+
+---
+
+## Sprite Sheets (Timeline Previews)
+
+Sprite sheets enable thumbnail previews when scrubbing the video timeline:
+
+**Generation:**
+1. Admin queues sprite generation via API
+2. Background worker processes queue
+3. Generates 10x10 grid of thumbnails
+4. Stores sprite sheets in `videos/{slug}/sprites/`
+
+**Configuration:**
+- Interval: seconds between frames (default 10)
+- Tile size: grid dimensions (default 10x10 = 100 frames)
+- Frame size: thumbnail dimensions (default 160x90)
+
+**Files:**
+```
+videos/{slug}/sprites/
+├── sprite_0.jpg    # First 100 frames
+├── sprite_1.jpg    # Next 100 frames
+└── ...
+```
+
+---
+
+## Circuit Breaker Pattern
+
+The worker HTTP client implements a circuit breaker to prevent cascading failures:
+
+```
+        ┌─────────────────────────────────────────────────────┐
+        │                                                      │
+        ▼                                                      │
+    ┌───────┐  failure_threshold  ┌──────┐  recovery_timeout  │
+    │CLOSED │ ─────────────────→ │ OPEN │ ─────────────────→  │
+    └───────┘                    └──────┘                      │
+        ▲                            │                         │
+        │                            ▼                         │
+        │   success_threshold   ┌─────────┐                    │
+        └───────────────────── │HALF-OPEN│ ────────failure─────┘
+                               └─────────┘
+```
+
+**States:**
+- **Closed:** Normal operation, requests proceed
+- **Open:** All requests fail immediately (API unavailable)
+- **Half-Open:** Limited requests test recovery
+
+**Configuration:** See [CONFIGURATION.md](CONFIGURATION.md#circuit-breaker-settings)
+
+---
+
 ## Scalability Considerations
 
 ### Current Design
@@ -452,6 +546,7 @@ All configuration is centralized in `config.py`. Every setting supports environm
 - **Optional Redis** - Job queue with priority and real-time SSE updates
 - **Distributed transcoding** - Multiple GPU workers via Kubernetes
 - **NAS for video storage** - Horizontal storage scaling
+- **Table partitioning** - `playback_sessions` partitioned by month for analytics performance
 
 ### Scaling Options
 
