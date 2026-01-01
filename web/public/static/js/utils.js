@@ -14,6 +14,14 @@ window.VLogUtils = {
     SCHEMA_VERSION: 1,
 
     /**
+     * Watch progress thresholds for "Continue Watching" feature
+     * Videos below STARTED are considered "barely started" and excluded
+     * Videos above FINISHED are considered "essentially complete" and excluded
+     */
+    WATCH_PROGRESS_STARTED: 5,    // Skip videos barely started (< 5%)
+    WATCH_PROGRESS_FINISHED: 95,  // Skip videos essentially complete (> 95%)
+
+    /**
      * Fetch with timeout support using AbortController
      * @param {string} url - URL to fetch
      * @param {Object} options - Fetch options (method, headers, body, etc.)
@@ -248,10 +256,16 @@ window.VLogUtils = {
          */
         save(videoId, position, duration) {
             const history = this.getAll();
+            // Clamp values to valid ranges
+            const safePosition = Math.max(0, position);
+            const safeDuration = Math.max(0, duration);
+            const rawPercentage = safeDuration > 0 ? (safePosition / safeDuration) * 100 : 0;
+            const percentage = Math.min(100, Math.max(0, rawPercentage));
+
             history[videoId] = {
-                position,
-                duration,
-                percentage: duration > 0 ? (position / duration) * 100 : 0,
+                position: safePosition,
+                duration: safeDuration,
+                percentage,
                 timestamp: Date.now()
             };
             // Prune old entries if exceeding max
@@ -284,14 +298,22 @@ window.VLogUtils = {
 
         /**
          * Get videos for "Continue Watching" row
-         * Filters to videos with < 95% watched, sorted by most recent
+         * Filters to videos with progress between STARTED and FINISHED thresholds
          * @param {number} limit - Max number of videos to return (default: 10)
          * @returns {Array<{videoId: number, position: number, duration: number, percentage: number}>}
          */
         getContinueWatching(limit = 10) {
             const history = this.getAll();
+            const minProgress = VLogUtils.WATCH_PROGRESS_STARTED;
+            const maxProgress = VLogUtils.WATCH_PROGRESS_FINISHED;
+
             return Object.entries(history)
-                .filter(([_, data]) => data.percentage > 5 && data.percentage < 95)
+                .filter(([videoId, data]) =>
+                    data.percentage > minProgress &&
+                    data.percentage < maxProgress &&
+                    Number.isInteger(parseInt(videoId, 10)) &&
+                    parseInt(videoId, 10) > 0
+                )
                 .sort((a, b) => b[1].timestamp - a[1].timestamp)
                 .slice(0, limit)
                 .map(([videoId, data]) => ({
@@ -300,6 +322,25 @@ window.VLogUtils = {
                     duration: data.duration,
                     percentage: data.percentage
                 }));
+        },
+
+        /**
+         * Get progress map for displaying progress bars on video cards
+         * @returns {Object} Map of videoId -> percentage for videos with active progress
+         */
+        getProgressMap() {
+            const history = this.getAll();
+            const minProgress = VLogUtils.WATCH_PROGRESS_STARTED;
+            const maxProgress = VLogUtils.WATCH_PROGRESS_FINISHED;
+            const progressMap = {};
+
+            for (const [videoId, data] of Object.entries(history)) {
+                if (data.percentage > minProgress && data.percentage < maxProgress) {
+                    progressMap[videoId] = data.percentage;
+                }
+            }
+
+            return progressMap;
         },
 
         /**
@@ -400,15 +441,15 @@ window.VLogUtils = {
         /**
          * Toggle a video in watch later
          * @param {number} videoId - The video ID
-         * @returns {boolean} True if now in queue, false if removed
+         * @returns {{inQueue: boolean, success: boolean}} Status object indicating new state and write success
          */
         toggle(videoId) {
             if (this.has(videoId)) {
-                this.remove(videoId);
-                return false;
+                const success = this.remove(videoId);
+                return { inQueue: false, success };
             } else {
-                this.add(videoId);
-                return true;
+                const success = this.add(videoId);
+                return { inQueue: success, success }; // Only in queue if add succeeded
             }
         },
 

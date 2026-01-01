@@ -479,12 +479,7 @@
                     this.watchLaterIds = new Set(VLogUtils.watchLater.getVideoIds());
 
                     // Load watch progress map for showing progress bars
-                    const history = VLogUtils.watchHistory.getAll();
-                    for (const [videoId, data] of Object.entries(history)) {
-                        if (data.percentage > 5 && data.percentage < 95) {
-                            this.watchProgressMap[videoId] = data.percentage;
-                        }
-                    }
+                    this.watchProgressMap = VLogUtils.watchHistory.getProgressMap();
 
                     // Load saved preferences
                     this.sortBy = VLogUtils.preferences.get('sortBy', 'date-desc');
@@ -605,7 +600,10 @@
                     }
                 },
 
-                async loadContinueWatching() {
+                async loadContinueWatching(retryCount = 0) {
+                    const MAX_RETRIES = 2;
+                    const RETRY_DELAYS = [0, 1000, 3000]; // Exponential backoff
+
                     try {
                         // Get partially watched videos from localStorage
                         const watchedItems = VLogUtils.watchHistory.getContinueWatching(10);
@@ -639,8 +637,17 @@
                                 percentage: item.percentage
                             }));
                     } catch (e) {
-                        console.error('Failed to load continue watching:', e);
-                        this.continueWatching = [];
+                        console.error(`Failed to load continue watching (attempt ${retryCount + 1}/${MAX_RETRIES + 1}):`, e);
+
+                        if (retryCount < MAX_RETRIES) {
+                            const delay = RETRY_DELAYS[retryCount + 1];
+                            console.log(`Retrying in ${delay}ms...`);
+                            setTimeout(() => this.loadContinueWatching(retryCount + 1), delay);
+                        } else {
+                            // All retries exhausted
+                            this.continueWatching = [];
+                            console.error('Continue Watching unavailable - all retries failed');
+                        }
                     }
                 },
 
@@ -665,16 +672,21 @@
                 },
 
                 toggleWatchLater(videoId) {
-                    const isNowInQueue = VLogUtils.watchLater.toggle(videoId);
-                    if (isNowInQueue) {
-                        this.watchLaterIds.add(videoId);
-                        this.announcement = 'Added to Watch Later';
+                    const result = VLogUtils.watchLater.toggle(videoId);
+                    if (result.success) {
+                        if (result.inQueue) {
+                            this.watchLaterIds.add(videoId);
+                            this.announcement = 'Added to Watch Later';
+                        } else {
+                            this.watchLaterIds.delete(videoId);
+                            this.announcement = 'Removed from Watch Later';
+                        }
+                        // Force reactivity update
+                        this.watchLaterIds = new Set(this.watchLaterIds);
                     } else {
-                        this.watchLaterIds.delete(videoId);
-                        this.announcement = 'Removed from Watch Later';
+                        this.announcement = 'Unable to save - storage unavailable or full';
+                        console.error('Watch Later toggle failed for video', videoId);
                     }
-                    // Force reactivity update
-                    this.watchLaterIds = new Set(this.watchLaterIds);
                 },
 
                 clearAllWatchHistory() {

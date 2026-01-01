@@ -318,12 +318,7 @@
                     this.watchLaterIds = new Set(VLogUtils.watchLater.getVideoIds());
 
                     // Load watch progress map for showing progress bars
-                    const history = VLogUtils.watchHistory.getAll();
-                    for (const [videoId, data] of Object.entries(history)) {
-                        if (data.percentage > 5 && data.percentage < 95) {
-                            this.watchProgressMap[videoId] = data.percentage;
-                        }
-                    }
+                    this.watchProgressMap = VLogUtils.watchHistory.getProgressMap();
 
                     const slug = window.location.pathname.split('/').pop();
                     if (!slug || !SLUG_PATTERN.test(slug)) {
@@ -426,16 +421,21 @@
                 },
 
                 toggleWatchLater(videoId) {
-                    const isNowInQueue = VLogUtils.watchLater.toggle(videoId);
-                    if (isNowInQueue) {
-                        this.watchLaterIds.add(videoId);
-                        this.announcement = 'Added to Watch Later';
+                    const result = VLogUtils.watchLater.toggle(videoId);
+                    if (result.success) {
+                        if (result.inQueue) {
+                            this.watchLaterIds.add(videoId);
+                            this.announcement = 'Added to Watch Later';
+                        } else {
+                            this.watchLaterIds.delete(videoId);
+                            this.announcement = 'Removed from Watch Later';
+                        }
+                        // Force reactivity update
+                        this.watchLaterIds = new Set(this.watchLaterIds);
                     } else {
-                        this.watchLaterIds.delete(videoId);
-                        this.announcement = 'Removed from Watch Later';
+                        this.announcement = 'Unable to save - storage unavailable or full';
+                        console.error('Watch Later toggle failed for video', videoId);
                     }
-                    // Force reactivity update
-                    this.watchLaterIds = new Set(this.watchLaterIds);
                 }
             };
         }

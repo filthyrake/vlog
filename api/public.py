@@ -1051,17 +1051,33 @@ async def get_videos_bulk(
     """
     # Parse and validate IDs
     try:
-        id_list = [int(id_str.strip()) for id_str in ids.split(",") if id_str.strip()]
+        id_list = []
+        for id_str in ids.split(","):
+            cleaned = id_str.strip()
+            if cleaned:
+                vid = int(cleaned)
+                if vid <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid video ID: '{cleaned}' must be a positive integer"
+                    )
+                id_list.append(vid)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid video ID format")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid video ID format: '{cleaned}' is not a valid integer"
+        )
 
     if not id_list:
         return []
 
+    # Deduplicate while preserving order
+    id_list = list(dict.fromkeys(id_list))
+
     if len(id_list) > MAX_BULK_VIDEO_IDS:
         raise HTTPException(
             status_code=400,
-            detail=f"Maximum {MAX_BULK_VIDEO_IDS} video IDs allowed per request"
+            detail=f"Maximum {MAX_BULK_VIDEO_IDS} unique video IDs allowed per request"
         )
 
     # Build query for multiple videos
@@ -1116,8 +1132,10 @@ async def get_videos_bulk(
     video_ids = [row["id"] for row in rows]
     video_tags_map = await get_video_tags(video_ids)
 
-    # Build response
-    return build_video_list_response(rows, video_tags_map)
+    # Build response preserving original request order
+    row_map = {row["id"]: row for row in rows}
+    ordered_rows = [row_map[vid] for vid in id_list if vid in row_map]
+    return build_video_list_response(ordered_rows, video_tags_map)
 
 
 @app.get("/api/videos/{slug}")
