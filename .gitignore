@@ -53,3 +53,7 @@ CLAUDE.md
 
 # Code review oversight tooling (internal)
 .oversight/
+
+# Accessibility testing artifacts
+pa11y-screenshots/
+lighthouse-report.json

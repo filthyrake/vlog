@@ -651,6 +651,7 @@
 }
 
 .quality-modal-header {
+    margin: 0; /* Reset h2 default margin */
     padding: 12px 16px;
     font-size: 14px;
     font-weight: 600;
@@ -718,6 +719,7 @@
 }
 
 .speed-modal-header {
+    margin: 0; /* Reset h2 default margin */
     padding: 12px 16px;
     font-size: 14px;
     font-weight: 600;

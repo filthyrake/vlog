@@ -76,10 +76,11 @@ class VLogPlayerControls {
 
     createControlsUI() {
         // Gesture overlay (captures touch events above video)
+        // Note: role="application" removed as it disables standard keyboard navigation
+        // and is discouraged unless implementing complex widget patterns
         this.gestureOverlay = document.createElement('div');
         this.gestureOverlay.className = 'player-gesture-overlay';
-        this.gestureOverlay.setAttribute('aria-label', 'Video gesture controls');
-        this.gestureOverlay.setAttribute('role', 'application');
+        this.gestureOverlay.setAttribute('aria-hidden', 'true'); // Decorative, not interactive for AT
         this.container.appendChild(this.gestureOverlay);
 
         // Skip indicators
@@ -244,8 +245,8 @@ class VLogPlayerControls {
         this.qualityModal.innerHTML = `
             <div class="quality-modal-backdrop" aria-hidden="true"></div>
             <div class="quality-modal-content">
-                <div class="quality-modal-header">Quality</div>
-                <div class="quality-modal-options" role="listbox" aria-label="Quality options"></div>
+                <h2 class="quality-modal-header">Quality</h2>
+                <div class="quality-modal-options" role="listbox" aria-label="Quality options" tabindex="-1"></div>
             </div>
         `;
         this.container.appendChild(this.qualityModal);
@@ -259,8 +260,8 @@ class VLogPlayerControls {
         this.speedModal.innerHTML = `
             <div class="speed-modal-backdrop" aria-hidden="true"></div>
             <div class="speed-modal-content">
-                <div class="speed-modal-header">Playback Speed</div>
-                <div class="speed-modal-options" role="listbox" aria-label="Speed options"></div>
+                <h2 class="speed-modal-header">Playback Speed</h2>
+                <div class="speed-modal-options" role="listbox" aria-label="Speed options" tabindex="-1"></div>
             </div>
         `;
         this.container.appendChild(this.speedModal);
@@ -439,6 +440,24 @@ class VLogPlayerControls {
             e.stopPropagation();
             this.showSpeedModal();
         });
+
+        // Listbox keyboard navigation for quality modal (WCAG 2.1.1 Level A)
+        this.qualityModalOptions.addEventListener('keydown', (e) => {
+            this._handleListboxKeyboard(e, this.qualityModalOptions, '.quality-option', (option) => {
+                const index = option.id === 'quality-option-auto' ? -1 :
+                    parseInt(option.id.replace('quality-option-', ''), 10);
+                this.selectQuality(index);
+            });
+        });
+
+        // Listbox keyboard navigation for speed modal (WCAG 2.1.1 Level A)
+        this.speedModalOptions.addEventListener('keydown', (e) => {
+            this._handleListboxKeyboard(e, this.speedModalOptions, '.speed-option', (option) => {
+                const index = parseInt(option.id.replace('speed-option-', ''), 10);
+                this.selectSpeed(this.speedOptions[index]);
+            });
+        });
+
         this.captionsBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.onCaptionsToggle();
@@ -832,8 +851,12 @@ class VLogPlayerControls {
 
         // Auto option
         const autoOption = document.createElement('button');
-        autoOption.className = 'quality-option' + (this.currentQualityIndex === -1 ? ' active' : '');
+        const isAutoSelected = this.currentQualityIndex === -1;
+        autoOption.className = 'quality-option' + (isAutoSelected ? ' active' : '');
         autoOption.textContent = 'Auto';
+        autoOption.setAttribute('role', 'option');
+        autoOption.setAttribute('aria-selected', isAutoSelected.toString());
+        autoOption.id = 'quality-option-auto';
         autoOption.addEventListener('click', () => {
             this.selectQuality(-1);
         });
@@ -842,13 +865,21 @@ class VLogPlayerControls {
         // Quality levels
         this.qualities.forEach((level, index) => {
             const option = document.createElement('button');
-            option.className = 'quality-option' + (index === this.currentQualityIndex ? ' active' : '');
+            const isSelected = index === this.currentQualityIndex;
+            option.className = 'quality-option' + (isSelected ? ' active' : '');
             option.textContent = level.isOriginal ? 'Original' : level.height + 'p';
+            option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', isSelected.toString());
+            option.id = `quality-option-${index}`;
             option.addEventListener('click', () => {
                 this.selectQuality(index);
             });
             this.qualityModalOptions.appendChild(option);
         });
+
+        // Update aria-activedescendant to currently selected option
+        const selectedId = isAutoSelected ? 'quality-option-auto' : `quality-option-${this.currentQualityIndex}`;
+        this.qualityModalOptions.setAttribute('aria-activedescendant', selectedId);
     }
 
     selectQuality(index) {
@@ -857,6 +888,15 @@ class VLogPlayerControls {
         this.updateQualityModal();
         this.hideQualityModal();
         this.onQualityChange(index);
+
+        // Announce quality change to screen readers
+        let qualityLabel = 'Auto';
+        if (index !== -1 && this.qualities[index]) {
+            qualityLabel = this.qualities[index].isOriginal
+                ? 'Original'
+                : (this.qualities[index].height ?? 'Unknown') + 'p';
+        }
+        this._announce(`Video quality changed to ${qualityLabel}`);
     }
 
     showQualityModal() {
@@ -885,15 +925,25 @@ class VLogPlayerControls {
     buildSpeedOptions() {
         this.speedModalOptions.innerHTML = '';
 
-        this.speedOptions.forEach(speed => {
+        this.speedOptions.forEach((speed, index) => {
             const option = document.createElement('button');
-            option.className = 'speed-option' + (speed === this.currentSpeed ? ' active' : '');
+            const isSelected = speed === this.currentSpeed;
+            option.className = 'speed-option' + (isSelected ? ' active' : '');
             option.textContent = speed === 1 ? 'Normal' : speed + 'x';
+            option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', isSelected.toString());
+            option.id = `speed-option-${index}`;
             option.addEventListener('click', () => {
                 this.selectSpeed(speed);
             });
             this.speedModalOptions.appendChild(option);
         });
+
+        // Update aria-activedescendant to currently selected option
+        const selectedIndex = this.speedOptions.indexOf(this.currentSpeed);
+        if (selectedIndex >= 0) {
+            this.speedModalOptions.setAttribute('aria-activedescendant', `speed-option-${selectedIndex}`);
+        }
     }
 
     selectSpeed(speed) {
@@ -1161,6 +1211,48 @@ class VLogPlayerControls {
         }
     }
 
+    // Helper: Handle listbox keyboard navigation (WCAG 2.1.1 Level A)
+    _handleListboxKeyboard(e, container, optionSelector, onSelect) {
+        const options = Array.from(container.querySelectorAll(optionSelector));
+        if (options.length === 0) return;
+
+        const currentIndex = options.findIndex(opt => opt === document.activeElement);
+
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                if (currentIndex < options.length - 1) {
+                    options[currentIndex + 1].focus();
+                    container.setAttribute('aria-activedescendant', options[currentIndex + 1].id);
+                }
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                if (currentIndex > 0) {
+                    options[currentIndex - 1].focus();
+                    container.setAttribute('aria-activedescendant', options[currentIndex - 1].id);
+                }
+                break;
+            case 'Home':
+                e.preventDefault();
+                options[0].focus();
+                container.setAttribute('aria-activedescendant', options[0].id);
+                break;
+            case 'End':
+                e.preventDefault();
+                options[options.length - 1].focus();
+                container.setAttribute('aria-activedescendant', options[options.length - 1].id);
+                break;
+            case 'Enter':
+            case ' ':
+                e.preventDefault();
+                if (currentIndex >= 0 && onSelect) {
+                    onSelect(options[currentIndex]);
+                }
+                break;
+        }
+    }
+
     // Captions
     setCaptionsAvailable(available) {
         this.captionsBtn.classList.toggle('hidden', !available);
@@ -1213,14 +1305,8 @@ class VLogPlayerControls {
                 } else if (this.container.webkitRequestFullscreen) {
                     this.container.webkitRequestFullscreen();
                 }
-                // Lock to landscape
-                if (screen.orientation && screen.orientation.lock) {
-                    try {
-                        await screen.orientation.lock('landscape');
-                    } catch (e) {
-                        // Orientation lock not supported or denied
-                    }
-                }
+                // Note: Orientation locking removed for WCAG 1.3.4 compliance
+                // (Content should not restrict display orientation)
             }
         } catch (err) {
             // Filter out expected errors (user cancellation, permission denied, etc.)

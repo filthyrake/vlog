@@ -30,12 +30,21 @@
         background: var(--vlog-bg-tertiary, #1e293b);
         border-radius: var(--vlog-radius-lg, 0.75rem);
         overflow: hidden;
-        transition: box-shadow var(--vlog-transition-fast, 150ms ease);
+        transition: box-shadow var(--vlog-transition-fast, 150ms ease),
+                    transform var(--vlog-transition-fast, 150ms ease);
         text-decoration: none;
     }
 
     .video-card:hover {
         box-shadow: 0 0 0 2px var(--vlog-primary, #3b82f6);
+        transform: scale(1.02);
+    }
+
+    /* Respect prefers-reduced-motion */
+    @media (prefers-reduced-motion: reduce) {
+        .video-card:hover {
+            transform: none;
+        }
     }
 
     /* Modifier: Featured video card */
@@ -179,23 +188,37 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 2rem;
-        height: 2rem;
+        /* WCAG 2.1 requires 44x44px minimum touch targets */
+        width: 2.75rem;
+        height: 2.75rem;
         background: var(--vlog-bg-overlay, rgba(0, 0, 0, 0.8));
         border: none;
         border-radius: var(--vlog-radius-sm, 0.25rem);
         color: var(--vlog-text-primary, #f1f5f9);
         cursor: pointer;
-        transition: background var(--vlog-transition-fast, 150ms ease);
+        transition: background var(--vlog-transition-fast, 150ms ease),
+                    transform var(--vlog-transition-fast, 150ms ease);
     }
 
     .video-card__action:hover {
         background: var(--vlog-primary, #3b82f6);
     }
 
+    /* Tactile feedback on press */
+    .video-card__action:active {
+        transform: scale(0.95);
+    }
+
     .video-card__action:focus-visible {
         outline: 2px solid var(--vlog-primary, #3b82f6);
         outline-offset: 2px;
+    }
+
+    /* Respect prefers-reduced-motion for action buttons */
+    @media (prefers-reduced-motion: reduce) {
+        .video-card__action:active {
+            transform: none;
+        }
     }
 
     .video-card__action svg {

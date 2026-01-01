@@ -28,17 +28,17 @@
             <a href="/" class="site-header__logo">Damen's VLog</a>
 
             <!-- Search - navigates to homepage with query -->
-            <form role="search" class="site-header__search" action="/" method="get" @submit.prevent="navigateToSearch()">
+            <div role="search" class="site-header__search">
                 <label for="search-input" class="sr-only">Search videos</label>
                 <input
                     id="search-input"
                     type="search"
-                    name="q"
                     placeholder="Search videos..."
                     class="site-header__search-input"
                     x-model="searchQuery"
+                    @keydown.enter="navigateToSearch()"
                 >
-            </form>
+            </div>
 
             <!-- Mobile menu button -->
             <button
