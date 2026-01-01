@@ -18,23 +18,92 @@
     <script src="/static/vendor/hls.min.js"></script>
     <script src="/static/js/player-controls.js"></script>
 </head>
-<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="watchPage">
+<body class="bg-dark-950 text-dark-100 min-h-screen flex flex-col" x-data="watchPage">
     <!-- Skip to main content link -->
     <a href="#main-content" class="skip-link">Skip to main content</a>
 
     <!-- Header -->
-    <header class="bg-dark-900 border-b border-dark-800">
-        <div class="max-w-7xl mx-auto px-4 py-4">
-            <div class="flex items-center justify-between">
-                <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
-                <nav class="flex gap-4">
-                    <a href="/" class="text-dark-300 hover:text-white">Home</a>
-                </nav>
-            </div>
+    <header class="site-header">
+        <div class="site-header__container">
+            <a href="/" class="site-header__logo">Damen's VLog</a>
+
+            <!-- Search - navigates to homepage with query -->
+            <form role="search" class="site-header__search" action="/" method="get" @submit.prevent="navigateToSearch()">
+                <label for="search-input" class="sr-only">Search videos</label>
+                <input
+                    id="search-input"
+                    type="search"
+                    name="q"
+                    placeholder="Search videos..."
+                    class="site-header__search-input"
+                    x-model="searchQuery"
+                >
+            </form>
+
+            <!-- Mobile menu button -->
+            <button
+                type="button"
+                class="site-header__menu-btn"
+                @click="mobileNavOpen = true"
+                aria-label="Open menu"
+                :aria-expanded="mobileNavOpen"
+            >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
+
+            <!-- Desktop nav -->
+            <nav class="site-header__nav">
+                <a href="/" class="site-header__nav-link">Home</a>
+            </nav>
         </div>
     </header>
 
-    <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
+    <!-- Mobile Navigation Drawer -->
+    <div
+        class="mobile-nav"
+        :class="{ 'mobile-nav--open': mobileNavOpen }"
+        x-show="mobileNavOpen"
+        x-cloak
+        @keydown.escape.window="mobileNavOpen = false"
+    >
+        <div class="mobile-nav__backdrop" @click="mobileNavOpen = false"></div>
+        <div class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
+            <div class="mobile-nav__header">
+                <span class="mobile-nav__title">Menu</span>
+                <button
+                    type="button"
+                    class="mobile-nav__close"
+                    @click="mobileNavOpen = false"
+                    aria-label="Close menu"
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <nav class="mobile-nav__content">
+                <div class="mobile-nav__section">
+                    <div class="mobile-nav__section-title">Navigation</div>
+                    <a href="/" class="mobile-nav__link">Home</a>
+                </div>
+                <div class="mobile-nav__section" x-show="video?.category_name">
+                    <div class="mobile-nav__section-title">Category</div>
+                    <a
+                        :href="'/category/' + (video?.category_slug || '')"
+                        class="mobile-nav__link"
+                        x-text="video?.category_name"
+                    ></a>
+                </div>
+            </nav>
+        </div>
+    </div>
+
+    <main id="main-content" class="max-w-7xl mx-auto px-4 py-8 flex-1">
         <!-- Loading -->
         <div x-show="loading" class="flex justify-center py-12">
             <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
@@ -48,6 +117,23 @@
 
         <!-- Video Content -->
         <div x-show="!loading && !error && video" x-cloak>
+            <!-- Breadcrumb -->
+            <nav class="breadcrumb" aria-label="Breadcrumb">
+                <ol class="breadcrumb__list">
+                    <li class="breadcrumb__item">
+                        <a href="/" class="breadcrumb__link">Home</a>
+                    </li>
+                    <li class="breadcrumb__item" x-show="video?.category_name">
+                        <span class="breadcrumb__separator" aria-hidden="true">/</span>
+                        <a :href="'/category/' + (video?.category_slug || '')" class="breadcrumb__link" x-text="video?.category_name"></a>
+                    </li>
+                    <li class="breadcrumb__item">
+                        <span class="breadcrumb__separator" aria-hidden="true">/</span>
+                        <span class="breadcrumb__current" aria-current="page" x-text="video?.title"></span>
+                    </li>
+                </ol>
+            </nav>
+
             <!-- Video Player -->
             <div class="bg-black rounded-xl overflow-hidden mb-6">
                 <div id="player-container" class="aspect-video relative player-container">
@@ -127,5 +213,26 @@
             </div>
         </div>
     </main>
+
+    <!-- Footer -->
+    <footer class="site-footer">
+        <div class="site-footer__container">
+            <div class="site-footer__content">
+                <div class="site-footer__brand">
+                    <a href="/" class="site-footer__logo">Damen's VLog</a>
+                    <p class="site-footer__tagline">Automotive adventures and insights</p>
+                </div>
+                <nav class="site-footer__nav" aria-label="Footer navigation">
+                    <div class="site-footer__nav-group">
+                        <div class="site-footer__nav-title">Browse</div>
+                        <a href="/" class="site-footer__nav-link">All Videos</a>
+                    </div>
+                </nav>
+            </div>
+            <div class="site-footer__bottom">
+                <p class="site-footer__copyright">&copy; <span x-text="new Date().getFullYear()"></span> Damen's VLog. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
 </body>
 </html>

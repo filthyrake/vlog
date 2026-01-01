@@ -11,7 +11,7 @@
     <script src="/static/js/utils.js"></script>
     <script defer src="/static/vendor/alpine.min.js"></script>
 </head>
-<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="app()">
+<body class="bg-dark-950 text-dark-100 min-h-screen flex flex-col" x-data="app()">
     <!-- Skip to main content link -->
     <a href="#main-content" class="skip-link">Skip to main content</a>
 
@@ -19,27 +19,109 @@
     <div role="status" aria-live="polite" aria-atomic="true" class="sr-only" x-text="announcement"></div>
 
     <!-- Header -->
-    <header class="bg-dark-900 border-b border-dark-800 sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 py-4">
-            <div class="flex items-center justify-between">
-                <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
-                <div role="search" class="flex-1 max-w-xl mx-8">
-                    <label for="search-input" class="sr-only">Search videos</label>
-                    <input
-                        id="search-input"
-                        type="search"
-                        placeholder="Search videos..."
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-white"
-                        x-model="searchQuery"
-                        @input.debounce.300ms="loadVideos()"
-                    >
-                </div>
-                <nav class="flex gap-4">
-                    <a href="/" class="text-dark-300 hover:text-white">Home</a>
-                </nav>
+    <header class="site-header">
+        <div class="site-header__container">
+            <a href="/" class="site-header__logo">Damen's VLog</a>
+
+            <!-- Search -->
+            <div role="search" class="site-header__search">
+                <label for="search-input" class="sr-only">Search videos</label>
+                <input
+                    id="search-input"
+                    type="search"
+                    placeholder="Search videos..."
+                    class="site-header__search-input"
+                    x-model="searchQuery"
+                    @input.debounce.300ms="loadVideos()"
+                    @keydown.escape="clearSearch()"
+                >
+                <!-- Result count -->
+                <span
+                    class="site-header__search-count"
+                    :class="{ 'site-header__search-count--has-clear': searchQuery }"
+                    x-show="searchQuery && !loading"
+                    x-text="videos.length + ' result' + (videos.length === 1 ? '' : 's')"
+                ></span>
+                <!-- Clear button -->
+                <button
+                    type="button"
+                    class="site-header__search-clear"
+                    :class="{ 'site-header__search-clear--visible': searchQuery }"
+                    @click="clearSearch()"
+                    aria-label="Clear search"
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
             </div>
+
+            <!-- Mobile menu button -->
+            <button
+                type="button"
+                class="site-header__menu-btn"
+                @click="mobileNavOpen = true"
+                aria-label="Open menu"
+                aria-expanded="false"
+                :aria-expanded="mobileNavOpen"
+            >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
+
+            <!-- Desktop nav -->
+            <nav class="site-header__nav">
+                <a href="/" class="site-header__nav-link site-header__nav-link--active">Home</a>
+            </nav>
         </div>
     </header>
+
+    <!-- Mobile Navigation Drawer -->
+    <div
+        class="mobile-nav"
+        :class="{ 'mobile-nav--open': mobileNavOpen }"
+        x-show="mobileNavOpen"
+        x-cloak
+        @keydown.escape.window="mobileNavOpen = false"
+    >
+        <div class="mobile-nav__backdrop" @click="mobileNavOpen = false"></div>
+        <div class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
+            <div class="mobile-nav__header">
+                <span class="mobile-nav__title">Menu</span>
+                <button
+                    type="button"
+                    class="mobile-nav__close"
+                    @click="mobileNavOpen = false"
+                    aria-label="Close menu"
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <nav class="mobile-nav__content">
+                <div class="mobile-nav__section">
+                    <div class="mobile-nav__section-title">Navigation</div>
+                    <a href="/" class="mobile-nav__link mobile-nav__link--active">Home</a>
+                </div>
+                <div class="mobile-nav__section" x-show="categories.length > 0">
+                    <div class="mobile-nav__section-title">Categories</div>
+                    <template x-for="cat in categories" :key="cat.id">
+                        <a
+                            :href="'/category/' + cat.slug"
+                            class="mobile-nav__link"
+                            x-text="cat.name"
+                        ></a>
+                    </template>
+                </div>
+            </nav>
+        </div>
+    </div>
 
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
         <!-- Categories -->
@@ -74,8 +156,24 @@
                 <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
             </div>
 
-            <div x-show="!loading && videos.length === 0" class="text-center py-12 text-dark-400">
-                No videos found.
+            <div x-show="!loading && videos.length === 0" class="text-center py-12">
+                <svg class="mx-auto h-16 w-16 text-dark-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
+                    <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
+                </svg>
+                <h3 class="text-lg font-medium text-dark-300 mb-2" x-text="searchQuery ? 'No videos match your search' : 'No videos found'"></h3>
+                <p class="text-dark-500 mb-4" x-text="searchQuery ? 'Try adjusting your search terms or browse all videos.' : 'Check back soon for new content!'"></p>
+                <button
+                    x-show="searchQuery"
+                    @click="clearSearch()"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-dark-800 hover:bg-dark-700 text-dark-300 rounded-lg transition"
+                >
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                    Clear search
+                </button>
             </div>
 
             <div x-show="!loading && videos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -106,6 +204,27 @@
         </section>
     </main>
 
+    <!-- Footer -->
+    <footer class="site-footer">
+        <div class="site-footer__container">
+            <div class="site-footer__content">
+                <div class="site-footer__brand">
+                    <a href="/" class="site-footer__logo">Damen's VLog</a>
+                    <p class="site-footer__tagline">Automotive adventures and insights</p>
+                </div>
+                <nav class="site-footer__nav" aria-label="Footer navigation">
+                    <div class="site-footer__nav-group">
+                        <div class="site-footer__nav-title">Browse</div>
+                        <a href="/" class="site-footer__nav-link">All Videos</a>
+                    </div>
+                </nav>
+            </div>
+            <div class="site-footer__bottom">
+                <p class="site-footer__copyright">&copy; <span x-text="new Date().getFullYear()"></span> Damen's VLog. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+
     <script>
         function app() {
             return {
@@ -115,8 +234,18 @@
                 searchQuery: '',
                 selectedCategory: null,
                 announcement: '', // For screen reader announcements
+                mobileNavOpen: false,
 
                 async init() {
+                    // Check for search param from URL (e.g., from watch page search)
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const searchParam = urlParams.get('search') || urlParams.get('q');
+                    if (searchParam) {
+                        this.searchQuery = searchParam;
+                        // Clean URL without reloading
+                        window.history.replaceState({}, '', '/');
+                    }
+
                     await Promise.all([
                         this.loadCategories(),
                         this.loadVideos()
@@ -168,6 +297,12 @@
 
                 formatDate(dateStr) {
                     return VLogUtils.formatDate(dateStr);
+                },
+
+                clearSearch() {
+                    this.searchQuery = '';
+                    this.loadVideos();
+                    document.getElementById('search-input')?.focus();
                 }
             };
         }

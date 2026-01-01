@@ -138,6 +138,14 @@ function watchPage() {
         captionsEnabled: false,
         captionsTrack: null,
         watermark: null,
+        mobileNavOpen: false,
+        searchQuery: '',
+
+        navigateToSearch() {
+            if (this.searchQuery.trim()) {
+                window.location.href = '/?search=' + encodeURIComponent(this.searchQuery.trim());
+            }
+        },
 
         async init() {
             // Fetch watermark config (non-blocking)
