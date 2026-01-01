@@ -33,7 +33,10 @@ class TestPublicAPIHTTP:
         """Test listing videos when database is empty."""
         response = public_client.get("/api/videos")
         assert response.status_code == 200
-        assert response.json() == []
+        data = response.json()
+        assert data["videos"] == []
+        assert data["has_more"] is False
+        assert data["next_cursor"] is None
 
     @pytest.mark.asyncio
     async def test_list_videos_returns_ready_only(self, public_client, test_database, sample_category):
@@ -65,8 +68,8 @@ class TestPublicAPIHTTP:
         response = public_client.get("/api/videos")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["slug"] == "ready-video"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["slug"] == "ready-video"
 
     @pytest.mark.asyncio
     async def test_list_videos_excludes_deleted(self, public_client, test_database, sample_category):
@@ -99,8 +102,8 @@ class TestPublicAPIHTTP:
         response = public_client.get("/api/videos")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["slug"] == "active-video"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["slug"] == "active-video"
 
     @pytest.mark.asyncio
     async def test_get_video_by_slug(self, public_client, sample_video):
@@ -174,14 +177,15 @@ class TestPublicAPIHTTP:
         response = public_client.get("/api/videos?category=test-category")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["slug"] == "test-video"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["slug"] == "test-video"
 
     def test_filter_videos_by_nonexistent_category(self, public_client):
         """Test filtering by non-existent category returns empty."""
         response = public_client.get("/api/videos?category=nonexistent")
         assert response.status_code == 200
-        assert response.json() == []
+        data = response.json()
+        assert data["videos"] == []
 
     @pytest.mark.asyncio
     async def test_search_videos(self, public_client, sample_video):
@@ -189,14 +193,15 @@ class TestPublicAPIHTTP:
         response = public_client.get("/api/videos?search=Test")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["title"] == "Test Video"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["title"] == "Test Video"
 
     def test_search_videos_no_match(self, public_client):
         """Test searching with no matches returns empty."""
         response = public_client.get("/api/videos?search=nonexistent")
         assert response.status_code == 200
-        assert response.json() == []
+        data = response.json()
+        assert data["videos"] == []
 
     @pytest.mark.asyncio
     async def test_pagination(self, public_client, test_database, sample_category):
@@ -218,12 +223,16 @@ class TestPublicAPIHTTP:
         # Test limit
         response = public_client.get("/api/videos?limit=3")
         assert response.status_code == 200
-        assert len(response.json()) == 3
+        data = response.json()
+        assert len(data["videos"]) == 3
+        assert data["has_more"] is True  # More videos exist
 
-        # Test offset
+        # Test offset (legacy pagination)
         response = public_client.get("/api/videos?limit=3&offset=3")
         assert response.status_code == 200
-        assert len(response.json()) == 2
+        data = response.json()
+        assert len(data["videos"]) == 2
+        assert data["has_more"] is False  # No more videos
 
 
 class TestAnalyticsHTTP:
