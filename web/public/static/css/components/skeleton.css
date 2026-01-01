@@ -140,3 +140,28 @@
 .skeleton--w-1\/2 { width: 50%; }
 .skeleton--w-1\/3 { width: 33.333%; }
 .skeleton--w-1\/4 { width: 25%; }
+
+/* Staggered animation delays for visual polish */
+.skeleton-card:nth-child(1) .skeleton::after,
+.skeleton-card[style*="animation-delay:"] .skeleton::after {
+    animation-delay: inherit;
+}
+
+.skeleton-stagger-1 .skeleton::after { animation-delay: 0ms; }
+.skeleton-stagger-2 .skeleton::after { animation-delay: 100ms; }
+.skeleton-stagger-3 .skeleton::after { animation-delay: 200ms; }
+.skeleton-stagger-4 .skeleton::after { animation-delay: 300ms; }
+.skeleton-stagger-5 .skeleton::after { animation-delay: 400ms; }
+.skeleton-stagger-6 .skeleton::after { animation-delay: 500ms; }
+.skeleton-stagger-7 .skeleton::after { animation-delay: 600ms; }
+.skeleton-stagger-8 .skeleton::after { animation-delay: 700ms; }
+
+/* Apply stagger to cards by position */
+.skeleton-grid > .skeleton-card:nth-child(1) .skeleton::after { animation-delay: 0ms; }
+.skeleton-grid > .skeleton-card:nth-child(2) .skeleton::after { animation-delay: 50ms; }
+.skeleton-grid > .skeleton-card:nth-child(3) .skeleton::after { animation-delay: 100ms; }
+.skeleton-grid > .skeleton-card:nth-child(4) .skeleton::after { animation-delay: 150ms; }
+.skeleton-grid > .skeleton-card:nth-child(5) .skeleton::after { animation-delay: 200ms; }
+.skeleton-grid > .skeleton-card:nth-child(6) .skeleton::after { animation-delay: 250ms; }
+.skeleton-grid > .skeleton-card:nth-child(7) .skeleton::after { animation-delay: 300ms; }
+.skeleton-grid > .skeleton-card:nth-child(8) .skeleton::after { animation-delay: 350ms; }

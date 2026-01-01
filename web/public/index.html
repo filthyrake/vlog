@@ -164,7 +164,26 @@
         </section>
 
         <!-- Continue Watching Section -->
-        <section class="mb-8" x-show="continueWatching.length > 0 && !searchQuery" x-cloak>
+        <!-- Skeleton while loading -->
+        <section class="mb-8" x-show="continueWatchingLoading && !searchQuery" x-cloak>
+            <div class="flex items-center justify-between mb-4">
+                <div class="skeleton skeleton-text--lg" style="width: 180px;"></div>
+            </div>
+            <div class="flex gap-4 overflow-x-auto pb-4" role="status" aria-label="Loading continue watching">
+                <template x-for="i in 4" :key="i">
+                    <div class="skeleton-card flex-shrink-0 w-[280px] sm:w-[320px]" :style="'animation-delay:' + (i * 100) + 'ms'">
+                        <div class="skeleton skeleton-card__thumbnail"></div>
+                        <div class="skeleton-card__info">
+                            <div class="skeleton skeleton-card__title"></div>
+                            <div class="skeleton skeleton-card__meta"></div>
+                        </div>
+                    </div>
+                </template>
+                <span class="sr-only">Loading continue watching videos</span>
+            </div>
+        </section>
+        <!-- Actual content -->
+        <section class="mb-8" x-show="!continueWatchingLoading && continueWatching.length > 0 && !searchQuery" x-cloak>
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-xl font-semibold">Continue Watching</h2>
                 <button
@@ -313,7 +332,7 @@
             </div>
 
             <!-- Skeleton Loaders -->
-            <div x-show="loading" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" role="status" aria-label="Loading videos">
+            <div x-show="loading" class="skeleton-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" role="status" aria-label="Loading videos">
                 <template x-for="i in 8" :key="i">
                     <div class="skeleton-card">
                         <div class="skeleton skeleton-card__thumbnail"></div>
@@ -457,6 +476,7 @@
                 previousFocus: null, // For focus restoration
                 featuredVideo: null, // Hero section featured video
                 continueWatching: [], // Continue watching videos with metadata
+                continueWatchingLoading: false, // Loading state for continue watching section
                 watchLaterIds: new Set(), // Track watch later IDs for UI state
                 watchProgressMap: {}, // Map of videoId -> percentage watched
                 // Filter/sort state (Issue #413 Phase 3)
@@ -604,11 +624,17 @@
                     const MAX_RETRIES = 2;
                     const RETRY_DELAYS = [0, 1000, 3000]; // Exponential backoff
 
+                    // Set loading state only on first attempt
+                    if (retryCount === 0) {
+                        this.continueWatchingLoading = true;
+                    }
+
                     try {
                         // Get partially watched videos from localStorage
                         const watchedItems = VLogUtils.watchHistory.getContinueWatching(10);
                         if (watchedItems.length === 0) {
                             this.continueWatching = [];
+                            this.continueWatchingLoading = false;
                             return;
                         }
 
@@ -636,6 +662,7 @@
                                 duration: item.duration,
                                 percentage: item.percentage
                             }));
+                        this.continueWatchingLoading = false;
                     } catch (e) {
                         console.error(`Failed to load continue watching (attempt ${retryCount + 1}/${MAX_RETRIES + 1}):`, e);
 
@@ -646,6 +673,7 @@
                         } else {
                             // All retries exhausted
                             this.continueWatching = [];
+                            this.continueWatchingLoading = false;
                             console.error('Continue Watching unavailable - all retries failed');
                         }
                     }

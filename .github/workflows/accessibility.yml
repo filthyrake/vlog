@@ -1,0 +1,162 @@
+name: Accessibility
+
+on:
+  # Run on push to dev/main (matching tests.yml pattern)
+  push:
+    branches: [main, dev]
+    paths:
+      - 'web/public/**'
+      - '.pa11yci'
+      - 'package.json'
+      - '.github/workflows/accessibility.yml'
+  # Run on pull requests
+  pull_request:
+    paths:
+      - 'web/public/**'
+      - '.pa11yci'
+      - 'package.json'
+      - '.github/workflows/accessibility.yml'
+  # Manual trigger for debugging
+  workflow_dispatch:
+
+jobs:
+  accessibility-audit:
+    name: WCAG 2.1 AA Audit
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache npm packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-a11y-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-a11y-
+            ${{ runner.os }}-npm-
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Create screenshots directory
+        run: mkdir -p pa11y-screenshots
+
+      - name: Start HTTP server
+        run: |
+          # Start server in background and save PID
+          python3 -m http.server 8000 -d web/public &
+          echo $! > /tmp/http-server.pid
+
+          # Wait for server to be ready (up to 30 seconds)
+          for i in {1..30}; do
+            if curl -s http://localhost:8000/ > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Final check
+          if ! curl -s http://localhost:8000/ > /dev/null 2>&1; then
+            echo "Server failed to start"
+            exit 1
+          fi
+
+      - name: Run pa11y-ci (WCAG2AA)
+        run: npx pa11y-ci
+        continue-on-error: true
+        id: pa11y
+
+      - name: Run Lighthouse accessibility audit
+        run: |
+          npx lighthouse http://localhost:8000 \
+            --chrome-flags="--no-sandbox --headless --disable-gpu --disable-dev-shm-usage" \
+            --output=json \
+            --output-path=./lighthouse-report.json \
+            --only-categories=accessibility \
+            --quiet
+        continue-on-error: true
+        id: lighthouse
+
+      - name: Extract Lighthouse score
+        id: lighthouse-score
+        run: |
+          if [ -f lighthouse-report.json ]; then
+            SCORE=$(cat lighthouse-report.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(int(d['categories']['accessibility']['score']*100))")
+            echo "score=$SCORE" >> $GITHUB_OUTPUT
+            echo "Accessibility Score: $SCORE"
+            if [ "$SCORE" -lt 95 ]; then
+              echo "::warning::Lighthouse accessibility score ($SCORE) is below target (95)"
+            fi
+          else
+            echo "score=0" >> $GITHUB_OUTPUT
+            echo "::error::Lighthouse report not generated"
+          fi
+
+      - name: Stop HTTP server
+        if: always()
+        run: |
+          if [ -f /tmp/http-server.pid ]; then
+            kill $(cat /tmp/http-server.pid) 2>/dev/null || true
+            rm /tmp/http-server.pid
+          fi
+          # Also kill any stray python http.server processes on port 8000
+          fuser -k 8000/tcp 2>/dev/null || true
+
+      - name: Upload pa11y screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pa11y-screenshots
+          path: pa11y-screenshots/
+          retention-days: 7
+
+      - name: Upload Lighthouse report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lighthouse-report
+          path: lighthouse-report.json
+          retention-days: 7
+
+      - name: Check results
+        run: |
+          FAILED=false
+
+          # Check pa11y result
+          if [ "${{ steps.pa11y.outcome }}" == "failure" ]; then
+            echo "::error::pa11y-ci found WCAG 2.1 AA violations"
+            FAILED=true
+          fi
+
+          # Check Lighthouse score (warn but don't fail for now)
+          SCORE="${{ steps.lighthouse-score.outputs.score }}"
+          if [ -n "$SCORE" ] && [ "$SCORE" -lt 90 ]; then
+            echo "::warning::Lighthouse accessibility score ($SCORE) is below 90"
+          fi
+
+          if [ "$FAILED" = true ]; then
+            exit 1
+          fi
+
+  # Summary job for branch protection (matching tests.yml pattern)
+  accessibility-passed:
+    name: Accessibility Passed
+    runs-on: self-hosted
+    needs: [accessibility-audit]
+    if: always()
+    steps:
+      - name: Check accessibility audit passed
+        run: |
+          if [[ "${{ needs.accessibility-audit.result }}" != "success" ]]; then
+            echo "Accessibility audit failed"
+            exit 1
+          fi
+          echo "Accessibility audit passed!"
