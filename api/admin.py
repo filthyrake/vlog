@@ -5800,13 +5800,51 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
 
     Validates the value against the setting's type and constraints
     before saving. The change is reflected immediately in the cache.
+    If the setting doesn't exist but is in KNOWN_SETTINGS, it will be created.
     """
+    from api.settings_service import KNOWN_SETTINGS
+
     service = get_settings_service()
 
     # Verify setting exists
     existing = await service.get_single(key)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+        # Check if it's a known setting and create it
+        known = None
+        for k, category, value_type, description, constraints in KNOWN_SETTINGS:
+            if k == key:
+                known = (category, value_type, description, constraints)
+                break
+
+        if known is None:
+            raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+        # Create the setting with the provided value
+        category, value_type, description, constraints = known
+        try:
+            await service.create(
+                key=key,
+                value=data.value,
+                category=category,
+                value_type=value_type,
+                description=description,
+                constraints=constraints,
+                updated_by="admin",
+            )
+            # Fetch the created setting for the response
+            existing = await service.get_single(key)
+            return SettingResponse(
+                key=existing["key"],
+                value=existing["value"],
+                category=existing["category"],
+                value_type=existing["value_type"],
+                description=existing["description"],
+                constraints=existing.get("constraints"),
+                updated_at=existing["updated_at"],
+                updated_by=existing.get("updated_by"),
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     try:
         await service.set(key, data.value, updated_by="admin")
