@@ -34,6 +34,7 @@ from api.common import (
 )
 from api.database import (
     categories,
+    chapters,
     configure_database,
     custom_field_definitions,
     database,
@@ -61,6 +62,7 @@ from api.errors import sanitize_error_message, sanitize_progress_error
 from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
     CategoryResponse,
+    ChapterInfo,
     PaginatedVideoListResponse,
     PlaybackEnd,
     PlaybackHeartbeat,
@@ -71,6 +73,7 @@ from api.schemas import (
     PlaylistResponse,
     PlaylistVideoInfo,
     QualityProgressResponse,
+    SpriteSheetInfo,
     TagResponse,
     TranscodingProgressResponse,
     TranscriptionResponse,
@@ -473,6 +476,54 @@ async def get_video_tags(video_ids: List[int]) -> dict:
         if video_id not in result:
             result[video_id] = []
         result[video_id].append(VideoTagInfo(id=row["id"], name=row["name"], slug=row["slug"]))
+
+    return result
+
+
+async def get_video_chapters(video_ids: List[int], has_chapters_flags: Dict[int, bool] = None) -> dict:
+    """
+    Get chapters for a list of video IDs. Returns a dict of video_id -> list of chapters.
+
+    Args:
+        video_ids: List of video IDs to get chapters for
+        has_chapters_flags: Optional dict mapping video_id -> has_chapters bool.
+                           If provided, only queries for videos with has_chapters=True.
+    """
+    if not video_ids:
+        return {}
+
+    # Filter to only videos that have chapters (if flag info provided)
+    if has_chapters_flags:
+        video_ids = [vid for vid in video_ids if has_chapters_flags.get(vid, False)]
+
+    if not video_ids:
+        return {}
+
+    query = (
+        sa.select(
+            chapters.c.video_id,
+            chapters.c.id,
+            chapters.c.title,
+            chapters.c.start_time,
+            chapters.c.end_time,
+        )
+        .where(chapters.c.video_id.in_(video_ids))
+        .order_by(chapters.c.video_id, chapters.c.position)
+    )
+
+    rows = await fetch_all_with_retry(query)
+
+    result = {}
+    for row in rows:
+        video_id = row["video_id"]
+        if video_id not in result:
+            result[video_id] = []
+        result[video_id].append(ChapterInfo(
+            id=row["id"],
+            title=row["title"],
+            start_time=row["start_time"],
+            end_time=row["end_time"],
+        ))
 
     return result
 
@@ -1187,6 +1238,24 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
     video_tags_map = await get_video_tags([row["id"]])
     video_tag_list = video_tags_map.get(row["id"], [])
 
+    # Get chapters for this video (only if has_chapters is True - Issue #413 Phase 7A)
+    chapter_list = []
+    if row._mapping.get("has_chapters", False):
+        video_chapters_map = await get_video_chapters([row["id"]])
+        chapter_list = video_chapters_map.get(row["id"], [])
+
+    # Build sprite sheet info if available (Issue #413 Phase 7B)
+    sprite_sheet_info = None
+    if row._mapping.get("sprite_sheet_status") == "ready" and row._mapping.get("sprite_sheet_count", 0) > 0:
+        sprite_sheet_info = SpriteSheetInfo(
+            base_url=f"/videos/{row['slug']}/sprites/sprite_",
+            count=row["sprite_sheet_count"],
+            interval=row["sprite_sheet_interval"],
+            tile_size=row["sprite_sheet_tile_size"],
+            frame_width=row["sprite_sheet_frame_width"],
+            frame_height=row["sprite_sheet_frame_height"],
+        )
+
     # Generate thumbnail version for cache busting
     thumb_version = None
     if row["status"] == VideoStatus.READY:
@@ -1235,6 +1304,8 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         transcription_status=transcription_status,
         qualities=qualities,
         tags=video_tag_list,
+        chapters=chapter_list,
+        sprite_sheet_info=sprite_sheet_info,
     )
 
 

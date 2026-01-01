@@ -326,6 +326,16 @@ function watchPage() {
                     if (this.video.captions_url) {
                         this.playerControls.setCaptionsAvailable(true);
                     }
+
+                    // Set chapters (Issue #413 Phase 7A)
+                    if (this.video.chapters && this.video.chapters.length > 0) {
+                        this.playerControls.setChapters(this.video.chapters);
+                    }
+
+                    // Set sprite sheet info for timeline thumbnails (Issue #413 Phase 7B)
+                    if (this.video.sprite_sheet_info) {
+                        this.playerControls.setSpriteSheetInfo(this.video.sprite_sheet_info);
+                    }
                 } else {
                     // Fallback: keep native controls if custom controls are unavailable
                     console.warn('Custom player controls not available, using native controls');

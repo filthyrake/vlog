@@ -14,6 +14,7 @@ import { createAnalyticsStore, type AnalyticsStore } from './analytics.store';
 import { createSettingsStore, type SettingsStore } from './settings.store';
 import { createBulkStore, type BulkStore } from './bulk.store';
 import { createSSEStore, type SSEStore, getActiveVideoIds } from './sse.store';
+import { createChaptersStore, type ChaptersStore } from './chapters.store';
 import { getKeyboardManager, destroyKeyboardManager } from '@/utils/keyboard';
 import type { ProgressSSEEvent, WorkerSSEEvent, CustomField } from '@/api/types';
 
@@ -31,10 +32,13 @@ export type AdminStore = AuthStore &
   AnalyticsStore &
   SettingsStore &
   BulkStore &
-  SSEStore & {
+  SSEStore &
+  ChaptersStore & {
     init(): Promise<void>;
     destroy(): void;
     getApplicableCustomFields(): CustomField[];
+    editModalTab: 'details' | 'chapters';
+    openEditModalWithChapters(video: import('@/api/types').Video): void;
   };
 
 /**
@@ -54,6 +58,7 @@ export function createAdminStore(): AdminStore {
   const settingsStore = createSettingsStore();
   const bulkStore = createBulkStore();
   const sseStore = createSSEStore();
+  const chaptersStore = createChaptersStore();
 
   // Create the combined store
   const store: AdminStore = {
@@ -69,6 +74,21 @@ export function createAdminStore(): AdminStore {
     ...settingsStore,
     ...bulkStore,
     ...sseStore,
+    ...chaptersStore,
+
+    // Edit modal tab state
+    editModalTab: 'details' as 'details' | 'chapters',
+
+    /**
+     * Open edit modal and load chapters for the video
+     * This wraps openEditModal with chapter loading
+     */
+    openEditModalWithChapters(video: import('@/api/types').Video): void {
+      this.openEditModal(video);
+      this.editModalTab = 'details';
+      // Load chapters asynchronously
+      this.loadChapters(video.id);
+    },
 
     /**
      * Get custom fields applicable to the currently editing video's category
@@ -231,4 +251,5 @@ export { createAnalyticsStore, type AnalyticsStore } from './analytics.store';
 export { createSettingsStore, type SettingsStore } from './settings.store';
 export { createBulkStore, type BulkStore } from './bulk.store';
 export { createSSEStore, type SSEStore } from './sse.store';
+export { createChaptersStore, type ChaptersStore } from './chapters.store';
 export type { AlpineContext, AdminTab, SettingsTab } from './types';

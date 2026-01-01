@@ -18,6 +18,8 @@ export interface QualityInfo {
   status?: 'ready' | 'pending' | 'processing' | 'failed';
 }
 
+export type SpriteSheetStatus = 'pending' | 'generating' | 'ready' | 'failed';
+
 export interface Video {
   id: number;
   title: string;
@@ -41,6 +43,7 @@ export interface Video {
   current_progress?: number;
   is_featured?: boolean; // Issue #413 Phase 3
   featured_at?: string;  // Issue #413 Phase 3
+  sprite_sheet_status?: SpriteSheetStatus; // Issue #413 Phase 7B
 }
 
 export interface VideoProgress {
@@ -439,4 +442,44 @@ export interface AddVideoToPlaylistRequest {
 
 export interface ReorderPlaylistRequest {
   video_ids: number[];
+}
+
+// =============================================================================
+// Chapter Types (Issue #413 Phase 7)
+// =============================================================================
+
+export interface Chapter {
+  id: number;
+  video_id: number;
+  title: string;
+  description?: string;
+  start_time: number;
+  end_time?: number;
+  position: number;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface ChapterListResponse {
+  chapters: Chapter[];
+  video_id: number;
+  total_count: number;
+}
+
+export interface ChapterCreateRequest {
+  title: string;
+  description?: string;
+  start_time: number;
+  end_time?: number;
+}
+
+export interface ChapterUpdateRequest {
+  title?: string;
+  description?: string;
+  start_time?: number;
+  end_time?: number;
+}
+
+export interface ReorderChaptersRequest {
+  chapter_ids: number[];
 }

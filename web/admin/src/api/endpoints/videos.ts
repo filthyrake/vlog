@@ -320,6 +320,27 @@ export const videosApi = {
   },
 
   // ===========================================================================
+  // Sprite Sheet Generation
+  // ===========================================================================
+
+  /**
+   * Generate sprite sheets for a video (timeline thumbnails)
+   */
+  async generateSprites(id: number, priority: 'high' | 'normal' | 'low' = 'normal'): Promise<{ message: string; status: string }> {
+    const response = await apiClient.fetchResponse(`/api/videos/${id}/sprites/generate`, {
+      method: 'POST',
+      body: JSON.stringify({ priority }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Sprite generation failed: ${response.status}`);
+    }
+
+    return response.json();
+  },
+
+  // ===========================================================================
   // Bulk Operations
   // ===========================================================================
 

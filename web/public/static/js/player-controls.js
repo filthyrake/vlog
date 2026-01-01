@@ -62,6 +62,17 @@ class VLogPlayerControls {
         this.onQualityChange = options.onQualityChange || (() => {});
         this.onCaptionsToggle = options.onCaptionsToggle || (() => {});
 
+        // Chapters state (Issue #413 Phase 7A)
+        this.chapters = [];
+        this.currentChapterIndex = -1;
+        this.chapterPanelVisible = false;
+
+        // Sprite sheet state (Issue #413 Phase 7B)
+        this.spriteSheetInfo = null;
+        this.spriteCache = new Map(); // LRU cache for loaded sprite images
+        this.spriteCacheMaxSize = 5;
+        this.spriteCacheOrder = []; // Track access order for LRU
+
         this.init();
     }
 
@@ -157,9 +168,13 @@ class VLogPlayerControls {
                 <div class="player-progress-bar">
                     <div class="player-progress-buffered"></div>
                     <div class="player-progress-played"></div>
+                    <div class="player-chapter-markers"></div>
                     <div class="player-progress-thumb"></div>
                 </div>
                 <div class="player-progress-tooltip"></div>
+                <div class="player-thumbnail-preview" aria-hidden="true">
+                    <div class="player-thumbnail-preview-inner"></div>
+                </div>
             </div>
             <span class="player-time-display">0:00 / 0:00</span>
             <div class="player-controls-right">
@@ -196,6 +211,11 @@ class VLogPlayerControls {
                 <button class="player-btn captions-btn hidden" title="Captions (C)" aria-label="Toggle captions" aria-pressed="false">
                     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z"/>
+                    </svg>
+                </button>
+                <button class="player-btn chapters-btn hidden" title="Chapters (Shift+C)" aria-label="Toggle chapters panel" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/>
                     </svg>
                 </button>
                 <button class="player-btn share-btn" title="Share" aria-label="Share video" aria-haspopup="true" aria-expanded="false">
@@ -298,6 +318,8 @@ class VLogPlayerControls {
                     <div class="shortcut-row"><kbd>P</kbd><span>Picture in Picture</span></div>
                     <div class="shortcut-row"><kbd>Shift</kbd>+<kbd>></kbd><span>Speed up</span></div>
                     <div class="shortcut-row"><kbd>Shift</kbd>+<kbd><</kbd><span>Slow down</span></div>
+                    <div class="shortcut-row"><kbd>Shift</kbd>+<kbd>C</kbd><span>Next chapter</span></div>
+                    <div class="shortcut-row"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd><span>Previous chapter</span></div>
                     <div class="shortcut-row"><kbd>0-9</kbd><span>Jump to 0-90%</span></div>
                     <div class="shortcut-row"><kbd>?</kbd><span>Show shortcuts</span></div>
                 </div>
@@ -336,6 +358,25 @@ class VLogPlayerControls {
         `;
         this.container.appendChild(this.shareModal);
 
+        // Chapters panel (Issue #413 Phase 7)
+        this.chaptersPanel = document.createElement('div');
+        this.chaptersPanel.className = 'player-chapters-panel';
+        this.chaptersPanel.setAttribute('role', 'dialog');
+        this.chaptersPanel.setAttribute('aria-label', 'Video chapters');
+        this.chaptersPanel.setAttribute('aria-hidden', 'true');
+        this.chaptersPanel.innerHTML = `
+            <div class="chapters-panel-header">
+                <span>Chapters</span>
+                <button class="chapters-close-btn" aria-label="Close chapters panel">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="chapters-panel-list" role="listbox" aria-label="Chapter list"></div>
+        `;
+        this.container.appendChild(this.chaptersPanel);
+
         // Cache DOM references
         this.playPauseBtn = this.controlBar.querySelector('.play-pause-btn');
         this.progressContainer = this.controlBar.querySelector('.player-progress-container');
@@ -368,13 +409,29 @@ class VLogPlayerControls {
         this.shareInput = this.shareModal.querySelector('.share-modal-input');
         this.shareCopyBtn = this.shareModal.querySelector('.share-modal-copy');
         this.shareCloseBtn = this.shareModal.querySelector('.share-close-btn');
+
+        // Chapters references (Issue #413 Phase 7A)
+        this.chaptersBtn = this.controlBar.querySelector('.chapters-btn');
+        this.chapterMarkers = this.controlBar.querySelector('.player-chapter-markers');
+        this.chaptersPanelList = this.chaptersPanel.querySelector('.chapters-panel-list');
+        this.chaptersCloseBtn = this.chaptersPanel.querySelector('.chapters-close-btn');
+
+        // Thumbnail preview references (Issue #413 Phase 7B)
+        this.thumbnailPreview = this.controlBar.querySelector('.player-thumbnail-preview');
+        this.thumbnailPreviewInner = this.controlBar.querySelector('.player-thumbnail-preview-inner');
     }
 
     bindEvents() {
         // Create bound handlers for later removal
         this._boundHandlers.onPlay = () => this.updatePlayPauseButton();
         this._boundHandlers.onPause = () => this.updatePlayPauseButton();
-        this._boundHandlers.onTimeUpdate = this._throttle(() => this.updateProgress(), 250);
+        this._boundHandlers.onTimeUpdate = this._throttle(() => {
+            this.updateProgress();
+            // Update active chapter if chapters are available
+            if (this.chapters.length > 0) {
+                this.updateActiveChapter();
+            }
+        }, 250);
         this._boundHandlers.onProgress = () => this.updateBuffered();
         this._boundHandlers.onLoadedMetadata = () => this.updateTimeDisplay();
         this._boundHandlers.onDurationChange = () => this.updateTimeDisplay();
@@ -509,6 +566,15 @@ class VLogPlayerControls {
         });
         this.shareCopyBtn.addEventListener('click', () => {
             this.copyShareLink();
+        });
+
+        // Chapters button and panel (Issue #413 Phase 7)
+        this.chaptersBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleChaptersPanel();
+        });
+        this.chaptersCloseBtn.addEventListener('click', () => {
+            this.hideChaptersPanel();
         });
 
         // Shortcuts modal
@@ -671,10 +737,16 @@ class VLogPlayerControls {
         this.progressTooltip.textContent = this.formatTime(time);
         this.progressTooltip.style.left = `${percent * 100}%`;
         this.progressTooltip.classList.add('visible');
+
+        // Show thumbnail preview if sprite sheets are available (Issue #413 Phase 7B)
+        if (this.spriteSheetInfo && this.spriteSheetInfo.count > 0) {
+            this.showThumbnailPreview(time, percent);
+        }
     }
 
     hideProgressTooltip() {
         this.progressTooltip.classList.remove('visible');
+        this.hideThumbnailPreview();
     }
 
     // Volume
@@ -1125,6 +1197,383 @@ class VLogPlayerControls {
         }
     }
 
+    // =========================================================================
+    // Chapters (Issue #413 Phase 7)
+    // =========================================================================
+
+    /**
+     * Set chapters data and render chapter markers
+     * @param {Array} chapters - Array of chapter objects with id, title, start_time, end_time
+     */
+    setChapters(chapters) {
+        this.chapters = chapters || [];
+
+        // Show/hide chapters button based on availability
+        if (this.chapters.length > 0) {
+            this.chaptersBtn.classList.remove('hidden');
+            this.renderChapterMarkers();
+            this.buildChaptersList();
+        } else {
+            this.chaptersBtn.classList.add('hidden');
+        }
+    }
+
+    /**
+     * Render chapter markers on the progress bar
+     */
+    renderChapterMarkers() {
+        this.chapterMarkers.innerHTML = '';
+
+        if (!this.chapters.length || !this.video.duration) return;
+
+        this.chapters.forEach((chapter, index) => {
+            const marker = document.createElement('div');
+            marker.className = 'player-chapter-marker';
+            const percent = (chapter.start_time / this.video.duration) * 100;
+            marker.style.left = `${percent}%`;
+            marker.setAttribute('data-chapter-index', index);
+            marker.setAttribute('title', chapter.title);
+
+            // Click to seek to chapter
+            marker.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.seekToChapter(index);
+            });
+
+            this.chapterMarkers.appendChild(marker);
+        });
+    }
+
+    /**
+     * Build the chapters list panel
+     */
+    buildChaptersList() {
+        this.chaptersPanelList.innerHTML = '';
+
+        this.chapters.forEach((chapter, index) => {
+            const item = document.createElement('button');
+            item.className = 'chapters-panel-item';
+            item.setAttribute('role', 'option');
+            item.setAttribute('aria-selected', 'false');
+            item.id = `chapter-item-${index}`;
+
+            const timeStr = this.formatTime(chapter.start_time);
+            item.innerHTML = `
+                <span class="chapter-time">${timeStr}</span>
+                <span class="chapter-title">${this._escapeHtml(chapter.title)}</span>
+            `;
+
+            item.addEventListener('click', () => {
+                this.seekToChapter(index);
+            });
+
+            this.chaptersPanelList.appendChild(item);
+        });
+    }
+
+    /**
+     * Seek to a specific chapter
+     */
+    seekToChapter(index) {
+        if (index < 0 || index >= this.chapters.length) return;
+
+        const chapter = this.chapters[index];
+        this.video.currentTime = chapter.start_time;
+        this.updateActiveChapter(index);
+        this._announce(`Playing chapter: ${chapter.title}`);
+    }
+
+    /**
+     * Update which chapter is currently active based on playback time
+     */
+    updateActiveChapter(forceIndex = null) {
+        const currentTime = this.video.currentTime;
+        let newIndex = forceIndex;
+
+        if (newIndex === null) {
+            // Find current chapter based on time
+            for (let i = this.chapters.length - 1; i >= 0; i--) {
+                if (currentTime >= this.chapters[i].start_time) {
+                    newIndex = i;
+                    break;
+                }
+            }
+        }
+
+        if (newIndex === this.currentChapterIndex) return;
+
+        this.currentChapterIndex = newIndex !== null ? newIndex : -1;
+
+        // Update chapter markers styling
+        const markers = this.chapterMarkers.querySelectorAll('.player-chapter-marker');
+        markers.forEach((marker, i) => {
+            marker.classList.toggle('active', i === this.currentChapterIndex);
+        });
+
+        // Update chapter list styling
+        const items = this.chaptersPanelList.querySelectorAll('.chapters-panel-item');
+        items.forEach((item, i) => {
+            const isActive = i === this.currentChapterIndex;
+            item.classList.toggle('active', isActive);
+            item.setAttribute('aria-selected', isActive.toString());
+        });
+
+        // Scroll active chapter into view in panel
+        if (this.currentChapterIndex >= 0 && this.chapterPanelVisible) {
+            const activeItem = items[this.currentChapterIndex];
+            if (activeItem) {
+                activeItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+    }
+
+    /**
+     * Toggle chapters panel visibility
+     */
+    toggleChaptersPanel() {
+        if (this.chapterPanelVisible) {
+            this.hideChaptersPanel();
+        } else {
+            this.showChaptersPanel();
+        }
+    }
+
+    /**
+     * Show the chapters panel
+     */
+    showChaptersPanel() {
+        this._hideAllModals();
+        this.chapterPanelVisible = true;
+        this.chaptersPanel.classList.add('visible');
+        this.chaptersPanel.setAttribute('aria-hidden', 'false');
+        this.chaptersBtn.setAttribute('aria-pressed', 'true');
+
+        // Scroll to current chapter
+        if (this.currentChapterIndex >= 0) {
+            const items = this.chaptersPanelList.querySelectorAll('.chapters-panel-item');
+            if (items[this.currentChapterIndex]) {
+                items[this.currentChapterIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }
+
+    /**
+     * Hide the chapters panel
+     */
+    hideChaptersPanel() {
+        this.chapterPanelVisible = false;
+        this.chaptersPanel.classList.remove('visible');
+        this.chaptersPanel.setAttribute('aria-hidden', 'true');
+        this.chaptersBtn.setAttribute('aria-pressed', 'false');
+    }
+
+    /**
+     * Go to next chapter
+     */
+    nextChapter() {
+        if (this.chapters.length === 0) return;
+
+        const nextIndex = this.currentChapterIndex < this.chapters.length - 1
+            ? this.currentChapterIndex + 1
+            : 0; // Loop back to first chapter
+
+        this.seekToChapter(nextIndex);
+    }
+
+    /**
+     * Go to previous chapter
+     */
+    previousChapter() {
+        if (this.chapters.length === 0) return;
+
+        // If more than 3 seconds into current chapter, go to start of current chapter
+        const chapter = this.chapters[this.currentChapterIndex];
+        if (chapter && this.video.currentTime - chapter.start_time > 3) {
+            this.seekToChapter(this.currentChapterIndex);
+            return;
+        }
+
+        const prevIndex = this.currentChapterIndex > 0
+            ? this.currentChapterIndex - 1
+            : this.chapters.length - 1; // Loop to last chapter
+
+        this.seekToChapter(prevIndex);
+    }
+
+    // =========================================================================
+    // Timeline Thumbnail Previews (Issue #413 Phase 7B)
+    // =========================================================================
+
+    /**
+     * Set sprite sheet info for timeline thumbnail previews
+     * @param {Object} info - Sprite sheet info from API:
+     *   - base_url: Base URL for sprite sheets (e.g., /videos/{slug}/sprites/sprite_)
+     *   - count: Number of sprite sheets
+     *   - interval: Seconds between frames
+     *   - tile_size: Grid size (e.g., 10 for 10x10)
+     *   - frame_width: Width of each thumbnail frame
+     *   - frame_height: Height of each thumbnail frame
+     */
+    setSpriteSheetInfo(info) {
+        this.spriteSheetInfo = info;
+        // Pre-warm the first sprite sheet if info is valid
+        if (info && info.count > 0) {
+            this.loadSpriteSheet(0);
+        }
+    }
+
+    /**
+     * Show thumbnail preview at the given time position
+     * @param {number} time - Time in seconds
+     * @param {number} percent - Position as 0-1 fraction
+     */
+    showThumbnailPreview(time, percent) {
+        if (!this.spriteSheetInfo) return;
+
+        const info = this.spriteSheetInfo;
+        const frameIndex = Math.floor(time / info.interval);
+        const framesPerSheet = info.tile_size * info.tile_size;
+        const sheetIndex = Math.floor(frameIndex / framesPerSheet);
+        const frameInSheet = frameIndex % framesPerSheet;
+
+        // Bounds check
+        if (sheetIndex >= info.count) return;
+
+        // Calculate position within sprite sheet grid
+        const row = Math.floor(frameInSheet / info.tile_size);
+        const col = frameInSheet % info.tile_size;
+
+        // Try to get sprite from cache or load it
+        const sheetUrl = `${info.base_url}${String(sheetIndex + 1).padStart(2, '0')}.jpg`;
+        const cachedSprite = this.getSpriteFromCache(sheetIndex);
+
+        if (cachedSprite) {
+            this.displayThumbnailFrame(cachedSprite, row, col, percent, info);
+        } else {
+            // Load sprite sheet and display when ready
+            this.loadSpriteSheet(sheetIndex).then(img => {
+                if (img) {
+                    this.displayThumbnailFrame(img, row, col, percent, info);
+                }
+            }).catch(() => {
+                // Silently fail - graceful degradation
+            });
+        }
+    }
+
+    /**
+     * Display a specific frame from a sprite sheet
+     */
+    displayThumbnailFrame(img, row, col, percent, info) {
+        if (!this.thumbnailPreviewInner) return;
+
+        const bgX = col * info.frame_width;
+        const bgY = row * info.frame_height;
+
+        // Set dimensions (responsive - smaller on mobile)
+        const isMobile = window.innerWidth < 768;
+        const displayWidth = isMobile ? 80 : info.frame_width;
+        const displayHeight = isMobile
+            ? Math.round(80 * (info.frame_height / info.frame_width))
+            : info.frame_height;
+
+        // Scale factor for background position
+        const scale = displayWidth / info.frame_width;
+
+        this.thumbnailPreviewInner.style.width = `${displayWidth}px`;
+        this.thumbnailPreviewInner.style.height = `${displayHeight}px`;
+        this.thumbnailPreviewInner.style.backgroundImage = `url(${img.src})`;
+        this.thumbnailPreviewInner.style.backgroundPosition = `-${bgX * scale}px -${bgY * scale}px`;
+        this.thumbnailPreviewInner.style.backgroundSize = `${info.tile_size * displayWidth}px ${info.tile_size * displayHeight}px`;
+
+        // Position the preview centered on the cursor, constrained to progress bar
+        this.thumbnailPreview.style.left = `${percent * 100}%`;
+        this.thumbnailPreview.classList.add('visible');
+    }
+
+    /**
+     * Hide thumbnail preview
+     */
+    hideThumbnailPreview() {
+        if (this.thumbnailPreview) {
+            this.thumbnailPreview.classList.remove('visible');
+        }
+    }
+
+    /**
+     * Load a sprite sheet with LRU caching
+     * @param {number} sheetIndex - Index of the sprite sheet (0-based)
+     * @returns {Promise<HTMLImageElement>} - Loaded image
+     */
+    loadSpriteSheet(sheetIndex) {
+        // Check if already in cache
+        const cached = this.getSpriteFromCache(sheetIndex);
+        if (cached) {
+            return Promise.resolve(cached);
+        }
+
+        // Build URL (sprite sheets are 1-indexed: sprite_01.jpg, sprite_02.jpg, etc.)
+        const sheetUrl = `${this.spriteSheetInfo.base_url}${String(sheetIndex + 1).padStart(2, '0')}.jpg`;
+
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                this.addToSpriteCache(sheetIndex, img);
+                resolve(img);
+            };
+            img.onerror = () => {
+                // Remove from pending if failed
+                reject(new Error(`Failed to load sprite sheet: ${sheetUrl}`));
+            };
+            img.src = sheetUrl;
+        });
+    }
+
+    /**
+     * Get sprite from LRU cache
+     * @param {number} sheetIndex
+     * @returns {HTMLImageElement|null}
+     */
+    getSpriteFromCache(sheetIndex) {
+        if (this.spriteCache.has(sheetIndex)) {
+            // Move to end of order (most recently used)
+            const orderIdx = this.spriteCacheOrder.indexOf(sheetIndex);
+            if (orderIdx > -1) {
+                this.spriteCacheOrder.splice(orderIdx, 1);
+                this.spriteCacheOrder.push(sheetIndex);
+            }
+            return this.spriteCache.get(sheetIndex);
+        }
+        return null;
+    }
+
+    /**
+     * Add sprite to LRU cache, evicting oldest if at capacity
+     * @param {number} sheetIndex
+     * @param {HTMLImageElement} img
+     */
+    addToSpriteCache(sheetIndex, img) {
+        // Evict oldest if at capacity
+        while (this.spriteCache.size >= this.spriteCacheMaxSize) {
+            const oldest = this.spriteCacheOrder.shift();
+            if (oldest !== undefined) {
+                this.spriteCache.delete(oldest);
+            }
+        }
+
+        this.spriteCache.set(sheetIndex, img);
+        this.spriteCacheOrder.push(sheetIndex);
+    }
+
+    /**
+     * Escape HTML for safe rendering
+     */
+    _escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     // Helper: Hide all modals
     _hideAllModals() {
         if (this.qualityModal.classList.contains('visible')) {
@@ -1145,6 +1594,9 @@ class VLogPlayerControls {
             this.shareModal.classList.remove('visible');
             this.shareModal.setAttribute('aria-hidden', 'true');
             this.shareBtn.setAttribute('aria-expanded', 'false');
+        }
+        if (this.chapterPanelVisible) {
+            this.hideChaptersPanel();
         }
         this._removeFocusTrap();
     }
@@ -1607,6 +2059,11 @@ class VLogPlayerControls {
                 e.preventDefault();
                 return;
             }
+            if (this.chapterPanelVisible) {
+                this.hideChaptersPanel();
+                e.preventDefault();
+                return;
+            }
             if (this.speedModal.classList.contains('visible')) {
                 this.hideSpeedModal();
                 e.preventDefault();
@@ -1644,6 +2101,19 @@ class VLogPlayerControls {
         if (e.shiftKey && e.key === '>') {
             e.preventDefault();
             this.increaseSpeed();
+            return;
+        }
+
+        // Handle Shift+C for next chapter, Ctrl+Shift+C for previous chapter
+        if (e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+            e.preventDefault();
+            if (this.chapters.length > 0) {
+                if (e.ctrlKey || e.metaKey) {
+                    this.previousChapter();
+                } else {
+                    this.nextChapter();
+                }
+            }
             return;
         }
 

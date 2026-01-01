@@ -101,6 +101,9 @@ export interface VideosActions {
   retranscodeAll(video: Video): Promise<void>;
   toggleRetranscodeQuality(quality: string): void;
 
+  // Sprite sheet generation
+  generateSprites(video: Video): Promise<void>;
+
   // Custom field editing
   toggleMultiSelectOption(fieldId: string, option: string): void;
 
@@ -491,6 +494,24 @@ export function createVideosStore(): VideosStore {
         this.retranscodeSelected.push(quality);
       } else {
         this.retranscodeSelected.splice(idx, 1);
+      }
+    },
+
+    // ===========================================================================
+    // Sprite Sheet Generation
+    // ===========================================================================
+
+    async generateSprites(video: Video): Promise<void> {
+      try {
+        await videosApi.generateSprites(video.id);
+
+        // Update local state to show queued status
+        const found = this.videos.find((v) => v.id === video.id);
+        if (found) {
+          found.sprite_sheet_status = 'pending';
+        }
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : 'Failed to queue sprite generation';
       }
     },
 
