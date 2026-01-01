@@ -16,19 +16,19 @@
   },
   "urls": [
     {
-      "url": "http://localhost:8000/",
+      "url": "http://localhost:8888/",
       "screenCapture": "./pa11y-screenshots/index.png"
     },
     {
-      "url": "http://localhost:8000/watch.html",
+      "url": "http://localhost:8888/watch.html",
       "screenCapture": "./pa11y-screenshots/watch.png"
     },
     {
-      "url": "http://localhost:8000/category.html",
+      "url": "http://localhost:8888/category.html",
       "screenCapture": "./pa11y-screenshots/category.png"
     },
     {
-      "url": "http://localhost:8000/tag.html",
+      "url": "http://localhost:8888/tag.html",
       "screenCapture": "./pa11y-screenshots/tag.png"
     }
   ]

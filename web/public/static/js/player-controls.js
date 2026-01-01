@@ -76,10 +76,11 @@ class VLogPlayerControls {
 
     createControlsUI() {
         // Gesture overlay (captures touch events above video)
+        // Note: role="application" removed as it disables standard keyboard navigation
+        // and is discouraged unless implementing complex widget patterns
         this.gestureOverlay = document.createElement('div');
         this.gestureOverlay.className = 'player-gesture-overlay';
-        this.gestureOverlay.setAttribute('aria-label', 'Video gesture controls');
-        this.gestureOverlay.setAttribute('role', 'application');
+        this.gestureOverlay.setAttribute('aria-hidden', 'true'); // Decorative, not interactive for AT
         this.container.appendChild(this.gestureOverlay);
 
         // Skip indicators
@@ -439,6 +440,24 @@ class VLogPlayerControls {
             e.stopPropagation();
             this.showSpeedModal();
         });
+
+        // Listbox keyboard navigation for quality modal (WCAG 2.1.1 Level A)
+        this.qualityModalOptions.addEventListener('keydown', (e) => {
+            this._handleListboxKeyboard(e, this.qualityModalOptions, '.quality-option', (option) => {
+                const index = option.id === 'quality-option-auto' ? -1 :
+                    parseInt(option.id.replace('quality-option-', ''), 10);
+                this.selectQuality(index);
+            });
+        });
+
+        // Listbox keyboard navigation for speed modal (WCAG 2.1.1 Level A)
+        this.speedModalOptions.addEventListener('keydown', (e) => {
+            this._handleListboxKeyboard(e, this.speedModalOptions, '.speed-option', (option) => {
+                const index = parseInt(option.id.replace('speed-option-', ''), 10);
+                this.selectSpeed(this.speedOptions[index]);
+            });
+        });
+
         this.captionsBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.onCaptionsToggle();
@@ -871,8 +890,12 @@ class VLogPlayerControls {
         this.onQualityChange(index);
 
         // Announce quality change to screen readers
-        const qualityLabel = index === -1 ? 'Auto' :
-            (this.qualities[index]?.isOriginal ? 'Original' : this.qualities[index]?.height + 'p');
+        let qualityLabel = 'Auto';
+        if (index !== -1 && this.qualities[index]) {
+            qualityLabel = this.qualities[index].isOriginal
+                ? 'Original'
+                : (this.qualities[index].height ?? 'Unknown') + 'p';
+        }
         this._announce(`Video quality changed to ${qualityLabel}`);
     }
 
@@ -1185,6 +1208,48 @@ class VLogPlayerControls {
     _announce(message) {
         if (this.liveRegion) {
             this.liveRegion.textContent = message;
+        }
+    }
+
+    // Helper: Handle listbox keyboard navigation (WCAG 2.1.1 Level A)
+    _handleListboxKeyboard(e, container, optionSelector, onSelect) {
+        const options = Array.from(container.querySelectorAll(optionSelector));
+        if (options.length === 0) return;
+
+        const currentIndex = options.findIndex(opt => opt === document.activeElement);
+
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                if (currentIndex < options.length - 1) {
+                    options[currentIndex + 1].focus();
+                    container.setAttribute('aria-activedescendant', options[currentIndex + 1].id);
+                }
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                if (currentIndex > 0) {
+                    options[currentIndex - 1].focus();
+                    container.setAttribute('aria-activedescendant', options[currentIndex - 1].id);
+                }
+                break;
+            case 'Home':
+                e.preventDefault();
+                options[0].focus();
+                container.setAttribute('aria-activedescendant', options[0].id);
+                break;
+            case 'End':
+                e.preventDefault();
+                options[options.length - 1].focus();
+                container.setAttribute('aria-activedescendant', options[options.length - 1].id);
+                break;
+            case 'Enter':
+            case ' ':
+                e.preventDefault();
+                if (currentIndex >= 0 && onSelect) {
+                    onSelect(options[currentIndex]);
+                }
+                break;
         }
     }
 

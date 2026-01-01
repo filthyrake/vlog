@@ -43,20 +43,32 @@ jobs:
             ${{ runner.os }}-npm-
 
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Create screenshots directory
         run: mkdir -p pa11y-screenshots
 
       - name: Start HTTP server
         run: |
-          # Start server in background and save PID
-          python3 -m http.server 8000 -d web/public &
-          echo $! > /tmp/http-server.pid
+          # Start server in background and save PID (port 8888 to avoid conflicts with FastAPI)
+          python3 -m http.server 8888 -d web/public &
+          SERVER_PID=$!
+          echo $SERVER_PID > /tmp/http-server.pid
+
+          # Verify process started successfully
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "Server failed to start (PID not found)"
+            exit 1
+          fi
 
           # Wait for server to be ready (up to 30 seconds)
           for i in {1..30}; do
-            if curl -s http://localhost:8000/ > /dev/null 2>&1; then
+            # Check process is still alive
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Server process died during startup"
+              exit 1
+            fi
+            if curl -s http://localhost:8888/ > /dev/null 2>&1; then
               echo "Server ready after ${i}s"
               break
             fi
@@ -64,24 +76,26 @@ jobs:
           done
 
           # Final check
-          if ! curl -s http://localhost:8000/ > /dev/null 2>&1; then
-            echo "Server failed to start"
+          if ! curl -s http://localhost:8888/ > /dev/null 2>&1; then
+            echo "Server failed to start (not responding)"
             exit 1
           fi
 
       - name: Run pa11y-ci (WCAG2AA)
         run: npx pa11y-ci
+        timeout-minutes: 5
         continue-on-error: true
         id: pa11y
 
       - name: Run Lighthouse accessibility audit
         run: |
-          npx lighthouse http://localhost:8000 \
+          npx lighthouse http://localhost:8888 \
             --chrome-flags="--no-sandbox --headless --disable-gpu --disable-dev-shm-usage" \
             --output=json \
             --output-path=./lighthouse-report.json \
             --only-categories=accessibility \
             --quiet
+        timeout-minutes: 3
         continue-on-error: true
         id: lighthouse
 
@@ -107,8 +121,8 @@ jobs:
             kill $(cat /tmp/http-server.pid) 2>/dev/null || true
             rm /tmp/http-server.pid
           fi
-          # Also kill any stray python http.server processes on port 8000
-          fuser -k 8000/tcp 2>/dev/null || true
+          # Also kill any stray python http.server processes on port 8888
+          fuser -k 8888/tcp 2>/dev/null || true
 
       - name: Upload pa11y screenshots
         uses: actions/upload-artifact@v4
