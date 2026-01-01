@@ -27,6 +27,7 @@ export interface VideosState {
   editCategory: number;
   editPublishedAt: string;
   editCustomFieldValues: Record<string, unknown>; // Custom field values for edit modal
+  editFeatured: boolean;
   editSaving: boolean;
   editMessage: string;
   editError: string;
@@ -144,6 +145,7 @@ export function createVideosStore(): VideosStore {
     editCategory: 0,
     editPublishedAt: '',
     editCustomFieldValues: {},
+    editFeatured: false,
     editSaving: false,
     editMessage: '',
     editError: '',
@@ -310,6 +312,7 @@ export function createVideosStore(): VideosStore {
       this.editDescription = video.description || '';
       this.editCategory = video.category_id || 0;
       this.editPublishedAt = video.published_at?.slice(0, 16) || '';
+      this.editFeatured = video.is_featured || false;
       this.editMessage = '';
       this.editError = '';
       this.editModal = true;
@@ -337,6 +340,7 @@ export function createVideosStore(): VideosStore {
         if (this.editPublishedAt) {
           formData.append('published_at', new Date(this.editPublishedAt).toISOString());
         }
+        formData.append('is_featured', this.editFeatured.toString());
 
         const updated = await videosApi.update(this.editVideoId, formData);
 
