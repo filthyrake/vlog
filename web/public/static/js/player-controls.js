@@ -1044,7 +1044,11 @@ class VLogPlayerControls {
                 // Fallback for HTTP or older browsers
                 this.shareInput.select();
                 this.shareInput.setSelectionRange(0, 99999); // Mobile support
-                document.execCommand('copy');
+                // Critical fix (Margo): Check execCommand return value
+                const success = document.execCommand('copy');
+                if (!success) {
+                    throw new Error('execCommand copy returned false');
+                }
             }
 
             copyText.textContent = 'Copied!';
@@ -1058,7 +1062,13 @@ class VLogPlayerControls {
             }, 2000);
         } catch (err) {
             console.error('Copy failed:', err);
-            copyText.textContent = 'Failed';
+
+            // Provide more specific error messages
+            const message = err.name === 'NotAllowedError'
+                ? 'Permission denied'
+                : 'Copy failed';
+            copyText.textContent = message;
+
             setTimeout(() => {
                 copyText.textContent = 'Copy';
             }, 2000);

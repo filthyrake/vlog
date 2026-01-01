@@ -1434,13 +1434,20 @@ async def get_related_videos(
         raise HTTPException(status_code=400, detail="Invalid video slug")
 
     # Build cache key with SHA256 hash to prevent cache poisoning
-    cache_key_raw = f"related:{slug}|{limit}"
+    # High priority fix (Margo): Include schema version in cache key
+    RELATED_VIDEOS_CACHE_VERSION = "v1"  # Increment on schema changes
+    cache_key_raw = f"related:{RELATED_VIDEOS_CACHE_VERSION}:{slug}|{limit}"
     cache_key = f"related:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
 
     # Check cache first
     cached = _video_list_cache.get(cache_key)
     if cached is not None:
-        return [VideoListResponse(**v) for v in cached]
+        try:
+            return [VideoListResponse(**v) for v in cached]
+        except Exception as e:
+            # Cache schema mismatch after deploy, invalidate and regenerate
+            logger.warning(f"Cached related videos schema mismatch, invalidating: {e}")
+            _video_list_cache.delete(cache_key)
 
     # Get the source video with its category
     video_query = (

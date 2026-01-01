@@ -1325,4 +1325,13 @@ body.player-theater-active::after {
     }
 }
 
+/* Accessibility: Respect user's reduced motion preference (Code Review suggestion) */
+@media (prefers-reduced-motion: reduce) {
+    .skeleton-card__thumbnail--small,
+    .skeleton-card--horizontal .skeleton-card__title,
+    .skeleton-card--horizontal .skeleton-card__meta {
+        animation: none;
+    }
+}
+
 } /* End @layer pages */

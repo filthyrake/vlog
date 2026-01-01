@@ -180,7 +180,7 @@ function watchPage() {
         },
 
         // Load related videos (Issue #413 Phase 5)
-        async loadRelatedVideos(slug) {
+        async loadRelatedVideos(slug, retries = 1) {
             if (!slug) return;
 
             // Cancel any in-flight request
@@ -201,30 +201,35 @@ function watchPage() {
 
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-                const data = await res.json();
-                if (!Array.isArray(data)) throw new Error('Invalid response');
+                // Guard JSON parsing (High priority fix - Margo)
+                let data;
+                try {
+                    data = await res.json();
+                } catch (parseError) {
+                    throw new Error('Invalid JSON response');
+                }
+
+                if (!Array.isArray(data)) throw new Error('Invalid response schema');
 
                 this.relatedVideos = data;
             } catch (e) {
-                if (e.name !== 'AbortError') {
-                    console.warn('Failed to load related videos:', e);
-                    this.relatedError = true;
+                // Handle abort separately (including Safari quirks)
+                if (e.name === 'AbortError' || this._relatedAbortController?.signal?.aborted) {
+                    return;
                 }
+
+                // Retry transient network errors once
+                if (retries > 0 && (e.message.includes('timeout') || e.message.includes('fetch'))) {
+                    console.warn(`Retrying related videos fetch (${retries} attempts left)`);
+                    setTimeout(() => this.loadRelatedVideos(slug, retries - 1), 1000);
+                    return;
+                }
+
+                console.warn('Failed to load related videos:', e);
+                this.relatedError = true;
             } finally {
                 this.loadingRelated = false;
             }
-        },
-
-        // Format view count for display
-        formatViews(count) {
-            if (!count || count < 0) return '0';
-            if (count >= 1000000) {
-                return (count / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-            }
-            if (count >= 1000) {
-                return (count / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-            }
-            return count.toString();
         },
 
         async init() {
@@ -371,51 +376,103 @@ function watchPage() {
                 savedProgress.percentage <= 95) {
 
                 const seekToPosition = () => {
-                    // Validate position is within video duration (handle re-encoded videos)
+                    // Critical fix (Margo): Validate duration BEFORE using it
+                    if (!video.duration || video.duration <= 0 || !Number.isFinite(video.duration)) {
+                        debugLog('Cannot resume: invalid video duration', video.duration);
+                        return;
+                    }
+
+                    // Clear stale data if position exceeds duration (re-encoded video)
+                    if (savedProgress.position >= video.duration) {
+                        debugLog('Resume position exceeds duration, clearing stale data');
+                        try {
+                            VLogUtils.watchHistory.clear(self.video.id);
+                        } catch (e) {
+                            console.warn('Failed to clear stale watch history:', e);
+                        }
+                        return;
+                    }
+
+                    // Validate position is within video duration
                     const safePosition = Math.min(savedProgress.position, video.duration - 1);
-                    if (safePosition > 0 && Number.isFinite(safePosition)) {
+                    if (safePosition > 0) {
                         video.currentTime = safePosition;
                         debugLog('Resumed playback from', safePosition.toFixed(1), 'seconds');
                     }
                 };
 
                 // Handle both: metadata not yet loaded AND already loaded (cached video)
+                // High priority fix (Margo): Add timeout for loadedmetadata event
                 if (video.readyState >= 1) {
                     seekToPosition();
                 } else {
-                    video.addEventListener('loadedmetadata', seekToPosition, { once: true });
+                    const metadataTimeout = setTimeout(() => {
+                        debugLog('loadedmetadata timeout, skipping resume');
+                    }, 5000);
+
+                    video.addEventListener('loadedmetadata', () => {
+                        clearTimeout(metadataTimeout);
+                        seekToPosition();
+                    }, { once: true });
                 }
             }
 
-            // Save watch progress periodically (throttled to every 5 seconds)
+            // =================================================================
+            // Save Watch Progress (Issue #413 Phase 5)
+            // Performance fix (Brendan): Use setInterval instead of timeupdate
+            // Reduces CPU overhead from 4-10 checks/sec to 0.2 checks/sec
+            // =================================================================
             let lastSavedPosition = -1;
-            const WATCH_SAVE_INTERVAL = 5000; // 5 seconds
-            let lastSaveTime = 0;
+            let watchHistoryDisabled = false;  // Flag to disable after quota errors
+            let videoCompleted = false;  // Race guard for completion
 
-            video.addEventListener('timeupdate', () => {
-                const now = Date.now();
-                // Only save if enough time has passed and position changed meaningfully
-                if (now - lastSaveTime >= WATCH_SAVE_INTERVAL &&
-                    video.duration > 0 &&
+            const saveInterval = setInterval(() => {
+                // Skip if localStorage is unavailable or video completed
+                if (watchHistoryDisabled || videoCompleted) return;
+
+                // Only save if video is playing and has valid duration
+                if (!video.paused && video.duration > 0 &&
+                    Number.isFinite(video.currentTime) &&
                     Math.abs(video.currentTime - lastSavedPosition) > 1) {
-                    VLogUtils.watchHistory.save(self.video.id, video.currentTime, video.duration);
-                    lastSavedPosition = video.currentTime;
-                    lastSaveTime = now;
+                    try {
+                        VLogUtils.watchHistory.save(self.video.id, video.currentTime, video.duration);
+                        lastSavedPosition = video.currentTime;
+                    } catch (e) {
+                        // Critical fix (Margo): Handle localStorage exceptions
+                        console.warn('Failed to save watch progress, disabling:', e.name);
+                        watchHistoryDisabled = true;
+                    }
                 }
-            });
+            }, 5000);  // Every 5 seconds
+
+            // Clean up interval on page unload (will be handled in beforeunload)
+            this._watchSaveInterval = saveInterval;
 
             // End session on video complete
             video.addEventListener('ended', () => {
                 this.analytics.endSession(true);
-                // Clear watch history when video completes (prevents resuming completed videos)
-                lastSavedPosition = -1; // Prevent save after clear (race guard)
-                VLogUtils.watchHistory.clear(this.video.id);
-                debugLog('Video completed, cleared watch history');
+                // Set flag before clear to prevent race condition
+                videoCompleted = true;
+                lastSavedPosition = -1;
+
+                // Critical fix (Margo): Handle localStorage exceptions
+                if (!watchHistoryDisabled) {
+                    try {
+                        VLogUtils.watchHistory.clear(this.video.id);
+                        debugLog('Video completed, cleared watch history');
+                    } catch (e) {
+                        console.warn('Failed to clear watch history:', e);
+                    }
+                }
             });
 
             // Handle page unload
             window.addEventListener('beforeunload', () => {
                 this.analytics.endSession(false);
+                // Clean up save interval
+                if (this._watchSaveInterval) {
+                    clearInterval(this._watchSaveInterval);
+                }
                 if (this.playerControls) {
                     this.playerControls.destroy();
                 }
