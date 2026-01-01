@@ -8,6 +8,7 @@ See: https://github.com/filthyrake/vlog/issues/463
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import List
 
@@ -22,6 +23,47 @@ PARTITION_PREFIX = "playback_sessions_"
 
 # How many months ahead to create partitions
 PARTITION_LOOKAHEAD_MONTHS = 3
+
+# Valid year range for partitions (prevents SQL injection via extreme values)
+MIN_PARTITION_YEAR = 2020
+MAX_PARTITION_YEAR = 2100
+
+
+def _validate_partition_params(year: int, month: int) -> None:
+    """
+    Validate partition parameters to prevent SQL injection.
+
+    Args:
+        year: The year (must be integer between MIN_PARTITION_YEAR and MAX_PARTITION_YEAR)
+        month: The month (must be integer between 1 and 12)
+
+    Raises:
+        ValueError: If parameters are invalid
+    """
+    if not isinstance(year, int):
+        raise ValueError(f"Year must be an integer, got {type(year).__name__}")
+    if not isinstance(month, int):
+        raise ValueError(f"Month must be an integer, got {type(month).__name__}")
+    if not (MIN_PARTITION_YEAR <= year <= MAX_PARTITION_YEAR):
+        raise ValueError(f"Year must be between {MIN_PARTITION_YEAR} and {MAX_PARTITION_YEAR}, got {year}")
+    if not (1 <= month <= 12):
+        raise ValueError(f"Month must be between 1 and 12, got {month}")
+
+
+def _validate_partition_name(partition_name: str) -> None:
+    """
+    Validate partition name format to prevent SQL injection.
+
+    Args:
+        partition_name: The partition name to validate
+
+    Raises:
+        ValueError: If partition name doesn't match expected format
+    """
+    # Partition names must match: playback_sessions_YYYYMM
+    pattern = rf"^{re.escape(PARTITION_PREFIX)}\d{{6}}$"
+    if not re.match(pattern, partition_name):
+        raise ValueError(f"Invalid partition name format: {partition_name}")
 
 
 async def get_existing_partitions() -> List[str]:
@@ -53,7 +95,11 @@ async def partition_exists(year: int, month: int) -> bool:
 
     Returns:
         True if partition exists, False otherwise
+
+    Raises:
+        ValueError: If year or month are invalid
     """
+    _validate_partition_params(year, month)
     partition_name = f"{PARTITION_PREFIX}{year:04d}{month:02d}"
     query = """
         SELECT EXISTS (
@@ -75,8 +121,13 @@ async def create_partition(year: int, month: int) -> bool:
 
     Returns:
         True if partition was created, False if it already exists
+
+    Raises:
+        ValueError: If year or month are invalid
     """
+    _validate_partition_params(year, month)
     partition_name = f"{PARTITION_PREFIX}{year:04d}{month:02d}"
+    _validate_partition_name(partition_name)  # Extra safety check
 
     # Check if partition already exists
     if await partition_exists(year, month):
@@ -147,8 +198,13 @@ async def drop_partition(year: int, month: int) -> bool:
 
     Returns:
         True if partition was dropped, False if it didn't exist
+
+    Raises:
+        ValueError: If year or month are invalid
     """
+    _validate_partition_params(year, month)
     partition_name = f"{PARTITION_PREFIX}{year:04d}{month:02d}"
+    _validate_partition_name(partition_name)  # Extra safety check
 
     if not await partition_exists(year, month):
         logger.debug(f"Partition {partition_name} does not exist")

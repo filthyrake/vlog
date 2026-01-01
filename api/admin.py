@@ -75,6 +75,7 @@ from api.errors import is_unique_violation, sanitize_error_message, sanitize_pro
 from api.job_queue import JobDispatch, get_job_queue
 from api.metrics import get_metrics, init_app_info
 from api.pagination import encode_cursor, validate_cursor
+from api.partition_manager import ensure_partitions_exist, is_table_partitioned
 from api.public import get_video_url_prefix, get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
@@ -838,6 +839,18 @@ async def lifespan(app: FastAPI):
 
     # Clean up any orphaned transcoding jobs from previous crashes/bugs
     await cleanup_orphaned_jobs()
+
+    # Ensure future partitions exist for playback_sessions table (Issue #463)
+    # This creates partitions for the current month plus 3 months ahead
+    try:
+        if await is_table_partitioned():
+            created = await ensure_partitions_exist()
+            if created:
+                logger.info(f"Created {len(created)} new partitions for playback_sessions: {created}")
+        else:
+            logger.debug("playback_sessions table is not partitioned, skipping partition creation")
+    except Exception as e:
+        logger.warning(f"Failed to ensure partitions exist: {e}")
 
     # Clean up expired sessions on startup
     expired_count = await cleanup_expired_sessions()

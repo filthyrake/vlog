@@ -8,9 +8,20 @@ Converts the playback_sessions table to a partitioned table for improved
 query performance and efficient data cleanup. Uses monthly partitions
 based on the started_at column.
 
+Also adds a compound index on videos(published_at, id) to support efficient
+cursor-based pagination.
+
 Implements GitHub issue #463.
 
 IMPORTANT: This migration is PostgreSQL-specific and requires PostgreSQL 10+.
+
+BREAKING CHANGE: session_token uniqueness is now enforced per-partition rather
+than globally. This is acceptable because session tokens are never reused and
+include timestamps in their generation.
+
+ESTIMATED TIME: For large tables (>1M rows), this migration may take several
+minutes due to data copying. Ensure sufficient disk space for temporary
+data duplication.
 """
 
 from datetime import datetime, timezone
@@ -191,6 +202,19 @@ def upgrade() -> None:
         """)
         )
 
+        # Step 9a: Verify data integrity - row counts must match
+        new_count_result = conn.execute(
+            sa.text("SELECT COUNT(*) FROM playback_sessions")
+        ).fetchone()
+        new_count = new_count_result[0]
+
+        if new_count != row_count:
+            raise RuntimeError(
+                f"Data integrity check failed: expected {row_count} rows, "
+                f"but partitioned table has {new_count} rows. "
+                f"Rolling back migration."
+            )
+
         # Update the sequence to continue from the max id
         conn.execute(
             sa.text("""
@@ -201,6 +225,15 @@ def upgrade() -> None:
     # Step 10: Drop the old table
     op.drop_table("playback_sessions_old")
 
+    # Step 11: Add compound index for cursor-based pagination (Issue #463)
+    # This index supports efficient keyset pagination on videos table
+    op.create_index(
+        "ix_videos_published_at_id",
+        "videos",
+        ["published_at", "id"],
+        postgresql_using="btree",
+    )
+
 
 def downgrade() -> None:
     """
@@ -209,6 +242,9 @@ def downgrade() -> None:
     Note: This will lose the partitioning benefits but preserves all data.
     """
     conn = op.get_bind()
+
+    # Step 0: Drop the compound index for cursor pagination
+    op.drop_index("ix_videos_published_at_id", table_name="videos")
 
     # Step 1: Create a regular table with the same structure
     conn.execute(

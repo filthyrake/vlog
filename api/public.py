@@ -3,6 +3,7 @@ Public API - serves the video browsing interface.
 Runs on port 9000.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -911,10 +912,12 @@ async def list_videos(
     using_cursor = cursor_data is not None
 
     # Generate cache key from ALL query parameters including custom fields and cursor
-    # Sort custom filters by key for consistent cache keys
-    custom_filters_key = ":".join(f"{k}={v}" for k, v in sorted(custom_filters.items()))
+    # Use a hash to avoid collisions from delimiter conflicts in parameter values
+    # (e.g., search terms containing the delimiter character)
+    custom_filters_key = "|".join(f"{k}={v}" for k, v in sorted(custom_filters.items()))
     pagination_key = f"cursor:{cursor}" if using_cursor else f"offset:{offset}"
-    cache_key = f"videos:{category}:{tag}:{search}:{duration}:{quality}:{date_from}:{date_to}:{has_transcription}:{sort}:{order}:{limit}:{pagination_key}:{include_total}:{custom_filters_key}"
+    cache_key_raw = f"{category}|{tag}|{search}|{duration}|{quality}|{date_from}|{date_to}|{has_transcription}|{sort}|{order}|{limit}|{pagination_key}|{include_total}|{custom_filters_key}"
+    cache_key = f"videos:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
 
     # Check cache first
     cached_result = _video_list_cache.get(cache_key)

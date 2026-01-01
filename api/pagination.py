@@ -4,10 +4,15 @@ Cursor-based pagination utilities for efficient large dataset traversal.
 Implements keyset pagination using (timestamp, id) tuples as cursors,
 avoiding the performance issues of OFFSET-based pagination at high offsets.
 
+NOTE: Cursor pagination currently only works with date-based sorting
+(published_at for public API, created_at for admin API). Using cursors
+with other sort fields (title, duration, etc.) will produce incorrect results.
+
 See: https://github.com/filthyrake/vlog/issues/463
 """
 
 import base64
+import binascii
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
@@ -74,7 +79,7 @@ def decode_cursor(cursor: str) -> Optional[Tuple[datetime, int]]:
 
         return (timestamp, record_id)
 
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, binascii.Error):
         return None
 
 
