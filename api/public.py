@@ -836,6 +836,7 @@ def build_video_list_response(
             thumbnail_source=row["thumbnail_source"] or "auto",
             thumbnail_timestamp=row["thumbnail_timestamp"],
             tags=video_tags_map.get(row["id"], []),
+            view_count=row["view_count"] if "view_count" in row._mapping else 0,  # Issue #413 Phase 3
         )
         for row in rows
     ]
@@ -860,6 +861,9 @@ async def list_videos(
     date_to: Optional[datetime] = Query(default=None, description="Filter videos published until this date (ISO 8601)"),
     has_transcription: Optional[bool] = Query(
         default=None, description="Filter by transcription availability (true/false)"
+    ),
+    featured: Optional[bool] = Query(
+        default=None, description="Filter by featured status (true = only featured videos)"
     ),
     sort: Optional[str] = Query(default=None, description="Sort by: relevance, date, duration, views, title"),
     order: Optional[str] = Query(default="desc", description="Sort order: asc or desc"),
@@ -916,7 +920,7 @@ async def list_videos(
     # (e.g., search terms containing the delimiter character)
     custom_filters_key = "|".join(f"{k}={v}" for k, v in sorted(custom_filters.items()))
     pagination_key = f"cursor:{cursor}" if using_cursor else f"offset:{offset}"
-    cache_key_raw = f"{category}|{tag}|{search}|{duration}|{quality}|{date_from}|{date_to}|{has_transcription}|{sort}|{order}|{limit}|{pagination_key}|{include_total}|{custom_filters_key}"
+    cache_key_raw = f"{category}|{tag}|{search}|{duration}|{quality}|{date_from}|{date_to}|{has_transcription}|{featured}|{sort}|{order}|{limit}|{pagination_key}|{include_total}|{custom_filters_key}"
     cache_key = f"videos:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
 
     # Check cache first
@@ -933,6 +937,9 @@ async def list_videos(
     query = apply_quality_filter(query, quality)
     query = apply_date_range_filter(query, date_from, date_to)
     query = apply_transcription_filter(query, has_transcription)
+    # Issue #413 Phase 3: Featured video filter
+    if featured is not None:
+        query = query.where(videos.c.is_featured == featured)
     query = await apply_custom_field_filters(query, custom_filters)
 
     # Apply sorting - need to know sort direction for cursor pagination
@@ -1018,6 +1025,99 @@ async def list_videos(
     _video_list_cache.set(cache_key, result.model_dump())
 
     return result
+
+
+# Maximum videos per bulk request (Issue #413 Phase 3)
+MAX_BULK_VIDEO_IDS = 20
+
+
+@app.get("/api/videos/bulk")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_videos_bulk(
+    request: Request,
+    ids: str = Query(..., description="Comma-separated video IDs (max 20)"),
+) -> List[VideoListResponse]:
+    """
+    Get multiple videos by ID in a single request.
+
+    This endpoint is optimized for fetching multiple videos efficiently,
+    useful for Continue Watching and Watch Later features.
+
+    Args:
+        ids: Comma-separated video IDs (max 20)
+
+    Returns:
+        List of VideoListResponse objects (same order as requested IDs, excluding missing/deleted)
+    """
+    # Parse and validate IDs
+    try:
+        id_list = [int(id_str.strip()) for id_str in ids.split(",") if id_str.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID format")
+
+    if not id_list:
+        return []
+
+    if len(id_list) > MAX_BULK_VIDEO_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_BULK_VIDEO_IDS} video IDs allowed per request"
+        )
+
+    # Build query for multiple videos
+    query = (
+        sa.select(
+            videos.c.id,
+            videos.c.title,
+            videos.c.slug,
+            videos.c.description,
+            videos.c.category_id,
+            videos.c.duration,
+            videos.c.status,
+            videos.c.created_at,
+            videos.c.published_at,
+            videos.c.thumbnail_source,
+            videos.c.thumbnail_timestamp,
+            videos.c.streaming_format,
+            videos.c.primary_codec,
+            categories.c.name.label("category_name"),
+            sa.func.count(sa.distinct(playback_sessions.c.id)).label("view_count"),
+        )
+        .select_from(
+            videos.outerjoin(categories, videos.c.category_id == categories.c.id).outerjoin(
+                playback_sessions, videos.c.id == playback_sessions.c.video_id
+            )
+        )
+        .where(videos.c.id.in_(id_list))
+        .where(videos.c.status == "ready")
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+        .group_by(
+            videos.c.id,
+            videos.c.title,
+            videos.c.slug,
+            videos.c.description,
+            videos.c.category_id,
+            videos.c.duration,
+            videos.c.status,
+            videos.c.created_at,
+            videos.c.published_at,
+            videos.c.thumbnail_source,
+            videos.c.thumbnail_timestamp,
+            videos.c.streaming_format,
+            videos.c.primary_codec,
+            categories.c.name,
+        )
+    )
+
+    rows = await fetch_all_with_retry(query)
+
+    # Get tags for these videos
+    video_ids = [row["id"] for row in rows]
+    video_tags_map = await get_video_tags(video_ids)
+
+    # Build response
+    return build_video_list_response(rows, video_tags_map)
 
 
 @app.get("/api/videos/{slug}")
