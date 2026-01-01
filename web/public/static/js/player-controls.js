@@ -139,15 +139,15 @@ class VLogPlayerControls {
         this.controlBar = document.createElement('div');
         this.controlBar.className = 'player-control-bar';
         this.controlBar.innerHTML = `
-            <button class="player-btn play-pause-btn" title="Play/Pause">
-                <svg viewBox="0 0 24 24" fill="currentColor" class="play-icon">
+            <button class="player-btn play-pause-btn" title="Play/Pause" aria-label="Play video" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="currentColor" class="play-icon" aria-hidden="true">
                     <path d="M8 5v14l11-7z"/>
                 </svg>
-                <svg viewBox="0 0 24 24" fill="currentColor" class="pause-icon">
+                <svg viewBox="0 0 24 24" fill="currentColor" class="pause-icon" aria-hidden="true">
                     <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
                 </svg>
             </button>
-            <div class="player-progress-container">
+            <div class="player-progress-container" role="slider" aria-label="Video progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0:00 of 0:00" tabindex="0">
                 <div class="player-progress-bar">
                     <div class="player-progress-buffered"></div>
                     <div class="player-progress-played"></div>
@@ -158,14 +158,14 @@ class VLogPlayerControls {
             <span class="player-time-display">0:00 / 0:00</span>
             <div class="player-controls-right">
                 <div class="player-volume-container">
-                    <button class="player-btn volume-btn" title="Volume">
-                        <svg viewBox="0 0 24 24" fill="currentColor" class="volume-high">
+                    <button class="player-btn volume-btn" title="Volume" aria-label="Mute" aria-pressed="false">
+                        <svg viewBox="0 0 24 24" fill="currentColor" class="volume-high" aria-hidden="true">
                             <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
                         </svg>
-                        <svg viewBox="0 0 24 24" fill="currentColor" class="volume-low">
+                        <svg viewBox="0 0 24 24" fill="currentColor" class="volume-low" aria-hidden="true">
                             <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/>
                         </svg>
-                        <svg viewBox="0 0 24 24" fill="currentColor" class="volume-muted">
+                        <svg viewBox="0 0 24 24" fill="currentColor" class="volume-muted" aria-hidden="true">
                             <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
                         </svg>
                     </button>
@@ -178,27 +178,27 @@ class VLogPlayerControls {
                         </div>
                     </div>
                 </div>
-                <button class="player-btn quality-btn" title="Quality">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
+                <button class="player-btn quality-btn" title="Quality" aria-label="Video quality: Auto" aria-haspopup="true" aria-expanded="false">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8 12H9.5v-2h-2v2H6V9h1.5v2.5h2V9H11v6zm7-1c0 .55-.45 1-1 1h-.75v1.5h-1.5V15H14c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v4zm-3.5-.5h2v-3h-2v3z"/>
                     </svg>
                     <span class="quality-label">Auto</span>
                 </button>
-                <button class="player-btn captions-btn hidden" title="Captions">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
+                <button class="player-btn captions-btn hidden" title="Captions" aria-label="Toggle captions" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z"/>
                     </svg>
                 </button>
-                <button class="player-btn pip-btn hidden" title="Picture in Picture">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
+                <button class="player-btn pip-btn hidden" title="Picture in Picture" aria-label="Picture in picture">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/>
                     </svg>
                 </button>
-                <button class="player-btn fullscreen-btn" title="Fullscreen">
-                    <svg viewBox="0 0 24 24" fill="currentColor" class="fullscreen-enter">
+                <button class="player-btn fullscreen-btn" title="Fullscreen" aria-label="Enter fullscreen" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="currentColor" class="fullscreen-enter" aria-hidden="true">
                         <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
                     </svg>
-                    <svg viewBox="0 0 24 24" fill="currentColor" class="fullscreen-exit">
+                    <svg viewBox="0 0 24 24" fill="currentColor" class="fullscreen-exit" aria-hidden="true">
                         <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>
                     </svg>
                 </button>
@@ -329,6 +329,8 @@ class VLogPlayerControls {
         }, { passive: false });
         this.progressContainer.addEventListener('mousemove', (e) => this.showProgressTooltip(e));
         this.progressContainer.addEventListener('mouseleave', () => this.hideProgressTooltip());
+        this._boundHandlers.onProgressSliderKeyDown = (e) => this.handleProgressSliderKeyboard(e);
+        this.progressContainer.addEventListener('keydown', this._boundHandlers.onProgressSliderKeyDown);
 
         // Quality modal
         this.qualityModal.querySelector('.quality-modal-backdrop').addEventListener('click', () => {
@@ -385,6 +387,8 @@ class VLogPlayerControls {
         const isPlaying = !this.video.paused;
         this.playPauseBtn.classList.toggle('playing', isPlaying);
         this.playPauseBtn.title = isPlaying ? 'Pause' : 'Play';
+        this.playPauseBtn.setAttribute('aria-label', isPlaying ? 'Pause video' : 'Play video');
+        this.playPauseBtn.setAttribute('aria-pressed', isPlaying.toString());
     }
 
     // Progress/seeking
@@ -408,6 +412,10 @@ class VLogPlayerControls {
         const current = this.formatTime(this.video.currentTime);
         const duration = this.formatTime(this.video.duration);
         this.timeDisplay.textContent = `${current} / ${duration}`;
+        // Update progress slider ARIA attributes
+        const progress = (this.video.currentTime / this.video.duration) * 100 || 0;
+        this.progressContainer.setAttribute('aria-valuenow', Math.round(progress));
+        this.progressContainer.setAttribute('aria-valuetext', `${current} of ${duration}`);
     }
 
     formatTime(seconds) {
@@ -507,6 +515,10 @@ class VLogPlayerControls {
         this.volumeBtn.classList.toggle('low', !muted && volume > 0 && volume < 0.5);
         this.volumeBtn.classList.toggle('high', !muted && volume >= 0.5);
 
+        // Update ARIA states
+        this.volumeBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+        this.volumeBtn.setAttribute('aria-pressed', muted.toString());
+
         // Update slider fill
         this.updateVolumeSlider(volume);
     }
@@ -582,6 +594,40 @@ class VLogPlayerControls {
         }
     }
 
+    handleProgressSliderKeyboard(e) {
+        // Arrow keys for seeking (5 seconds per press)
+        const seekStep = 5;
+        const duration = this.video.duration || 0;
+        if (!duration) return;
+
+        if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.min(duration, this.video.currentTime + seekStep);
+        } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.max(0, this.video.currentTime - seekStep);
+        } else if (e.key === 'ArrowUp') {
+            // Larger seek (30 seconds)
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.min(duration, this.video.currentTime + 30);
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.max(0, this.video.currentTime - 30);
+        } else if (e.key === 'Home') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = 0;
+        } else if (e.key === 'End') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = duration;
+        }
+    }
+
     // Quality
     setQualities(levels, currentIndex = -1) {
         this.qualities = levels;
@@ -591,12 +637,17 @@ class VLogPlayerControls {
     }
 
     updateQualityLabel() {
+        let qualityText;
         if (this.currentQualityIndex === -1) {
-            this.qualityLabel.textContent = 'Auto';
+            qualityText = 'Auto';
         } else if (this.qualities && this.qualities[this.currentQualityIndex]) {
             const level = this.qualities[this.currentQualityIndex];
-            this.qualityLabel.textContent = level.isOriginal ? 'Original' : level.height + 'p';
+            qualityText = level.isOriginal ? 'Original' : level.height + 'p';
+        } else {
+            qualityText = 'Auto';
         }
+        this.qualityLabel.textContent = qualityText;
+        this.qualityBtn.setAttribute('aria-label', `Video quality: ${qualityText}`);
     }
 
     updateQualityModal() {
@@ -635,10 +686,12 @@ class VLogPlayerControls {
 
     showQualityModal() {
         this.qualityModal.classList.add('visible');
+        this.qualityBtn.setAttribute('aria-expanded', 'true');
     }
 
     hideQualityModal() {
         this.qualityModal.classList.remove('visible');
+        this.qualityBtn.setAttribute('aria-expanded', 'false');
     }
 
     // Captions
@@ -648,6 +701,8 @@ class VLogPlayerControls {
 
     setCaptionsEnabled(enabled) {
         this.captionsBtn.classList.toggle('active', enabled);
+        this.captionsBtn.setAttribute('aria-pressed', enabled.toString());
+        this.captionsBtn.setAttribute('aria-label', enabled ? 'Captions on' : 'Captions off');
     }
 
     // Picture-in-Picture
@@ -713,6 +768,8 @@ class VLogPlayerControls {
         const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
         this.fullscreenBtn.classList.toggle('is-fullscreen', isFullscreen);
         this.container.classList.toggle('is-fullscreen', isFullscreen);
+        this.fullscreenBtn.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
+        this.fullscreenBtn.setAttribute('aria-pressed', isFullscreen.toString());
     }
 
     // Loading state

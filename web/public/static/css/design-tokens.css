@@ -1,0 +1,55 @@
+/**
+ * VLog Public Site Design Tokens
+ * CSS Custom Properties for consistent design across public pages
+ *
+ * Usage: Reference via var(--vlog-*) in component CSS
+ */
+
+@layer base {
+  :root {
+    /* Backgrounds */
+    --vlog-bg-primary: #020617;      /* dark-950 - page background */
+    --vlog-bg-secondary: #0f172a;    /* dark-900 - card background */
+    --vlog-bg-tertiary: #1e293b;     /* dark-800 - elevated surfaces */
+    --vlog-bg-elevated: #334155;     /* dark-700 - hover states */
+    --vlog-bg-overlay: rgba(0, 0, 0, 0.8);  /* overlays, badges */
+
+    /* Text */
+    --vlog-text-primary: #f1f5f9;    /* dark-100 - headings */
+    --vlog-text-secondary: #cbd5e1;  /* dark-300 - body text */
+    --vlog-text-muted: #94a3b8;      /* dark-400 - metadata */
+    --vlog-text-disabled: #64748b;   /* dark-500 - disabled */
+
+    /* Brand */
+    --vlog-primary: #3b82f6;         /* blue-500 - links, accents */
+    --vlog-primary-hover: #2563eb;   /* blue-600 - hover state */
+    --vlog-primary-light: #60a5fa;   /* blue-400 - highlights */
+
+    /* Player-specific */
+    --vlog-player-bg: #000000;
+    --vlog-player-control-bg: rgba(0, 0, 0, 0.7);
+    --vlog-player-progress: #3b82f6;
+    --vlog-player-buffer: rgba(255, 255, 255, 0.3);
+
+    /* Focus & Accessibility */
+    --vlog-focus-ring-color: #3b82f6;
+    --vlog-focus-ring-offset: 2px;
+    --vlog-focus-ring-width: 2px;
+
+    /* Transitions */
+    --vlog-transition-fast: 150ms ease;
+    --vlog-transition-base: 200ms ease;
+    --vlog-transition-slow: 300ms ease;
+
+    /* Border Radius */
+    --vlog-radius-sm: 0.25rem;       /* 4px - badges */
+    --vlog-radius-md: 0.5rem;        /* 8px - buttons */
+    --vlog-radius-lg: 0.75rem;       /* 12px - cards */
+    --vlog-radius-full: 9999px;      /* pills */
+
+    /* Z-Index Scale */
+    --vlog-z-controls: 10;
+    --vlog-z-modal: 50;
+    --vlog-z-fullscreen: 9999;
+  }
+}
