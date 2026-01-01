@@ -284,6 +284,27 @@ export class VlogButton extends HTMLElement {
   connectedCallback() {
     this.updateClasses();
     this.updateAttributes();
+
+    // Handle form submission for type="submit" buttons
+    // Shadow DOM buttons don't automatically trigger parent form submission
+    this.button.addEventListener('click', this.handleClick.bind(this));
+  }
+
+  disconnectedCallback() {
+    this.button.removeEventListener('click', this.handleClick.bind(this));
+  }
+
+  private handleClick(event: Event) {
+    const type = this.getAttribute('type');
+    if (type === 'submit') {
+      // Find the parent form and submit it
+      const form = this.closest('form');
+      if (form) {
+        // Use requestSubmit to trigger submit event handlers (like @submit.prevent)
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    }
   }
 
   attributeChangedCallback(_name: string, _oldValue: string | null, _newValue: string | null) {
