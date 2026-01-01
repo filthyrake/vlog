@@ -480,6 +480,34 @@
     font-weight: 600;
 }
 
+/* Speed button */
+.speed-btn {
+    padding: 8px 12px;
+    min-width: auto;
+}
+
+.speed-btn .speed-label {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* Theater mode button */
+.theater-btn .theater-exit {
+    display: none;
+}
+
+.theater-btn.active .theater-enter {
+    display: none;
+}
+
+.theater-btn.active .theater-exit {
+    display: block;
+}
+
+.theater-btn.active {
+    background: rgba(59, 130, 246, 0.5);
+}
+
 /* Captions button */
 .captions-btn.active {
     background: rgba(59, 130, 246, 0.5);
@@ -655,11 +683,192 @@
     color: var(--vlog-primary-light, #60a5fa);
 }
 
+/* Speed modal */
+.player-speed-modal {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--vlog-z-modal, 40);
+    display: none;
+}
+
+.player-speed-modal.visible {
+    display: block;
+}
+
+.speed-modal-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.speed-modal-content {
+    position: absolute;
+    bottom: 70px;
+    right: 16px;
+    background: var(--vlog-bg-tertiary, #1f2937);
+    border-radius: var(--vlog-radius-md, 8px);
+    overflow: hidden;
+    min-width: 150px;
+}
+
+.speed-modal-header {
+    padding: 12px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: white;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.speed-modal-options {
+    display: flex;
+    flex-direction: column;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.speed-option {
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    color: white;
+    text-align: left;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color var(--vlog-transition-base, 0.2s ease);
+}
+
+.speed-option:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.speed-option.active {
+    background: rgba(59, 130, 246, 0.3);
+    color: var(--vlog-primary-light, #60a5fa);
+}
+
+/* Keyboard shortcuts modal */
+.player-shortcuts-modal {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--vlog-z-modal, 40);
+    display: none;
+}
+
+.player-shortcuts-modal.visible {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.shortcuts-modal-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+}
+
+.shortcuts-modal-content {
+    position: relative;
+    background: var(--vlog-bg-tertiary, #1f2937);
+    border-radius: var(--vlog-radius-lg, 12px);
+    max-width: 400px;
+    width: 90%;
+    max-height: 80%;
+    overflow: hidden;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+.shortcuts-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.shortcuts-modal-header span {
+    font-size: 16px;
+    font-weight: 600;
+    color: white;
+}
+
+.shortcuts-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    color: var(--vlog-text-secondary, #a1a1aa);
+    cursor: pointer;
+    border-radius: var(--vlog-radius-sm, 4px);
+    transition: background-color var(--vlog-transition-base, 0.2s ease), color var(--vlog-transition-base, 0.2s ease);
+}
+
+.shortcuts-close-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.shortcuts-close-btn svg {
+    width: 20px;
+    height: 20px;
+}
+
+.shortcuts-modal-body {
+    padding: 16px 20px;
+    max-height: 350px;
+    overflow-y: auto;
+}
+
+.shortcut-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.shortcut-row:last-child {
+    border-bottom: none;
+}
+
+.shortcut-row kbd {
+    display: inline-block;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: var(--vlog-radius-sm, 4px);
+    font-family: var(--vlog-font-mono, 'SF Mono', 'Consolas', monospace);
+    font-size: 12px;
+    color: var(--vlog-text-primary, #f4f4f5);
+    min-width: 24px;
+    text-align: center;
+}
+
+.shortcut-row span {
+    color: var(--vlog-text-secondary, #a1a1aa);
+    font-size: 14px;
+}
+
 /* Mobile responsive */
 @media (max-width: 640px) {
     .player-control-bar {
         padding: 8px 12px;
-        gap: 4px;
+        gap: 2px;
+        flex-wrap: nowrap;
     }
 
     .player-btn {
@@ -681,12 +890,42 @@
         font-size: 11px;
     }
 
+    /* Fix time display sizing - ensure readability */
     .player-time-display {
-        font-size: 11px;
-        min-width: 80px;
+        font-size: 13px;
+        min-width: 85px;
+        flex-shrink: 0;
     }
 
-    .quality-modal-content {
+    /* Speed button compact on mobile */
+    .speed-btn {
+        padding: 6px 8px;
+    }
+
+    .speed-btn .speed-label {
+        font-size: 12px;
+    }
+
+    /* Hide theater mode on mobile (not useful) */
+    .theater-btn {
+        display: none !important;
+    }
+
+    /* Progress container takes remaining space */
+    .player-progress-container {
+        min-width: 60px;
+        flex: 1 1 auto;
+    }
+
+    /* Right controls - compact layout */
+    .player-controls-right {
+        gap: 2px;
+        flex-shrink: 0;
+    }
+
+    /* Center all modals on mobile */
+    .quality-modal-content,
+    .speed-modal-content {
         bottom: auto;
         top: 50%;
         left: 50%;
@@ -707,6 +946,74 @@
     .player-volume-thumb {
         opacity: 1;
     }
+
+    /* Shortcuts modal full-width on small screens */
+    .shortcuts-modal-content {
+        width: 95%;
+        max-height: 85%;
+    }
+
+    .shortcuts-modal-body {
+        max-height: 400px;
+    }
+}
+
+/* Screen reader only - visually hidden but accessible */
+.player-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Theater mode styles */
+.player-container.theater-mode {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 70vh;
+    z-index: var(--vlog-z-theater, 100);
+    background: #000;
+}
+
+/* Theater mode body overlay - CSS :has() version (modern browsers) */
+body:has(.player-container.theater-mode) {
+    overflow: hidden;
+}
+
+body:has(.player-container.theater-mode)::after {
+    content: '';
+    position: fixed;
+    top: 70vh;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 99;
+    pointer-events: none;
+}
+
+/* Theater mode body fallback - for browsers without :has() support */
+body.player-theater-active {
+    overflow: hidden;
+}
+
+body.player-theater-active::after {
+    content: '';
+    position: fixed;
+    top: 70vh;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 99;
+    pointer-events: none;
 }
 
 } /* End @layer pages */
