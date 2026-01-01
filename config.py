@@ -503,6 +503,12 @@ ALERT_WEBHOOK_TIMEOUT = get_int_env("VLOG_ALERT_WEBHOOK_TIMEOUT", 10, min_val=1)
 # Prevents alert flooding when multiple jobs fail in quick succession
 ALERT_RATE_LIMIT_SECONDS = get_int_env("VLOG_ALERT_RATE_LIMIT_SECONDS", 300, min_val=0)
 
+# Streaming Segment Upload (Issue #478)
+# When enabled, workers upload segments individually as FFmpeg writes them
+# instead of creating a tar.gz after all qualities complete. This eliminates
+# event loop blocking during upload and keeps heartbeats alive.
+WORKER_STREAMING_UPLOAD = os.getenv("VLOG_WORKER_STREAMING_UPLOAD", "false").lower() in ("true", "1", "yes")
+
 # Watermark Configuration (client-side overlay, does not modify video files)
 # Enable/disable watermark overlay on video player
 WATERMARK_ENABLED = os.getenv("VLOG_WATERMARK_ENABLED", "false").lower() in ("true", "1", "yes")

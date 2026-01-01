@@ -59,9 +59,11 @@ see: docs/TRANSCODING_ARCHITECTURE.md
 
 import asyncio
 import functools
+import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import shutil
 import tarfile
@@ -115,6 +117,11 @@ from api.worker_schemas import (
     HeartbeatResponse,
     ProgressUpdateRequest,
     ProgressUpdateResponse,
+    SegmentFinalizeRequest,
+    SegmentFinalizeResponse,
+    SegmentQuality,
+    SegmentStatusResponse,
+    SegmentUploadResponse,
     StatusResponse,
     WorkerListResponse,
     WorkerRegisterRequest,
@@ -152,6 +159,206 @@ logger = logging.getLogger(__name__)
 # causing heartbeat failures. See issue: tar extraction to slow NAS
 # was blocking entire API for 3+ minutes.
 _io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="worker_api_io")
+
+
+# =============================================================================
+# Streaming Segment Upload Security Helpers (Issue #478)
+# =============================================================================
+
+# Magic bytes for segment file validation (Bruce's recommendation)
+# MPEG-TS sync byte (0x47) appears at start of every TS packet
+TS_MAGIC_BYTE = b"\x47"
+# fMP4/CMAF segments start with 'ftyp' or 'moof' box
+FTYP_MAGIC = b"ftyp"
+MOOF_MAGIC = b"moof"
+STYP_MAGIC = b"styp"  # Segment type box (common in CMAF)
+SIDX_MAGIC = b"sidx"  # Segment index box (code review fix)
+EMSG_MAGIC = b"emsg"  # Event message box (code review fix)
+
+
+def validate_segment_filename(filename: str) -> bool:
+    """
+    Validate segment filename for security (Bruce's recommendations).
+
+    Rejects:
+    - Null bytes
+    - Percent encoding (%)
+    - Path traversal (..)
+    - Directory separators (/, \\)
+    - Unicode normalization tricks
+
+    Args:
+        filename: The filename to validate
+
+    Returns:
+        True if filename is safe, False otherwise
+    """
+    # Reject null bytes
+    if "\x00" in filename:
+        return False
+
+    # Reject percent encoding (potential for bypass)
+    if "%" in filename:
+        return False
+
+    # Reject path traversal
+    if ".." in filename:
+        return False
+
+    # Reject directory separators
+    if "/" in filename or "\\" in filename:
+        return False
+
+    # Reject leading/trailing whitespace
+    if filename != filename.strip():
+        return False
+
+    # Reject empty filenames
+    if not filename:
+        return False
+
+    # Only allow expected extensions
+    allowed_extensions = (".ts", ".m4s", ".mp4", ".m3u8", ".mpd")
+    if not any(filename.endswith(ext) for ext in allowed_extensions):
+        return False
+
+    # Limit filename length
+    if len(filename) > 255:
+        return False
+
+    return True
+
+
+def validate_segment_magic_bytes(data: bytes, filename: str) -> bool:
+    """
+    Validate segment file magic bytes (Bruce's recommendation).
+
+    Verifies that the file content matches expected format based on extension:
+    - .ts files start with MPEG-TS sync byte (0x47)
+    - .m4s files start with 'ftyp', 'moof', or 'styp' box
+    - .mp4 files start with 'ftyp' box
+
+    Args:
+        data: First few bytes of the file (at least 8 bytes)
+        filename: The filename (used to determine expected format)
+
+    Returns:
+        True if magic bytes are valid, False otherwise
+    """
+    if len(data) < 8:
+        return False
+
+    if filename.endswith(".ts"):
+        # MPEG-TS sync byte
+        return data[0:1] == TS_MAGIC_BYTE
+
+    if filename.endswith(".m4s"):
+        # fMP4 segment: check for 'ftyp', 'moof', or 'styp' at offset 4
+        # ISO base media file format: [size (4 bytes)][type (4 bytes)]
+        box_type = data[4:8]
+        return box_type in (FTYP_MAGIC, MOOF_MAGIC, STYP_MAGIC, SIDX_MAGIC, EMSG_MAGIC)
+
+    if filename.endswith(".mp4"):
+        # MP4 init segment: check for 'ftyp' at offset 4
+        box_type = data[4:8]
+        return box_type == FTYP_MAGIC
+
+    if filename.endswith(".m3u8") or filename.endswith(".mpd"):
+        # Playlist files - just verify they're text (ASCII/UTF-8)
+        try:
+            data.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
+
+    return False
+
+
+def _write_segment_sync(
+    data: bytes,
+    dest_path: Path,
+    checksum: str,
+) -> tuple[bool, int, bool]:
+    """
+    Write segment file atomically with fsync (Margo's reliability requirements).
+
+    This is the synchronous version that runs in a thread pool.
+    Uses temp file + fsync + rename pattern for durability guarantee.
+    Only returns success if data is safely on disk.
+
+    Args:
+        data: The segment file data
+        dest_path: Final destination path
+        checksum: Expected SHA256 checksum (hex string, without 'sha256:' prefix)
+
+    Returns:
+        Tuple of (written, bytes_written, checksum_verified)
+    """
+    # Verify checksum before writing (Ada's integrity verification)
+    actual_checksum = hashlib.sha256(data).hexdigest()
+    checksum_verified = actual_checksum == checksum
+
+    if not checksum_verified:
+        logger.warning(
+            f"Checksum mismatch for {dest_path.name}: "
+            f"expected {checksum[:16]}..., got {actual_checksum[:16]}..."
+        )
+        return False, 0, False
+
+    # Ensure parent directory exists
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write to temp file in same directory (for atomic rename)
+    temp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+
+    try:
+        # Write data to temp file
+        with open(temp_path, "wb") as f:
+            f.write(data)
+            # fsync before returning 200 (Margo's durability guarantee)
+            f.flush()
+            os.fsync(f.fileno())
+
+        # Atomic rename to final location
+        temp_path.rename(dest_path)
+
+        # Set file permissions
+        dest_path.chmod(0o644)
+
+        return True, len(data), True
+
+    except Exception as e:
+        logger.error(f"Failed to write segment {dest_path}: {e}")
+        # Clean up temp file on failure
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+async def write_segment_atomic(
+    data: bytes,
+    dest_path: Path,
+    checksum: str,
+) -> tuple[bool, int, bool]:
+    """
+    Async wrapper for atomic segment write - runs in thread pool.
+
+    This is critical for reliability: writing large segments to NAS can take
+    seconds. Running it synchronously blocks the entire event loop, preventing
+    heartbeat processing. (Code review fix for Issue #478)
+
+    Args:
+        data: The segment file data
+        dest_path: Final destination path
+        checksum: Expected SHA256 checksum (hex string, without 'sha256:' prefix)
+
+    Returns:
+        Tuple of (written, bytes_written, checksum_verified)
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _io_executor,
+        functools.partial(_write_segment_sync, data, dest_path, checksum),
+    )
 
 
 def _extract_tar_sync(
@@ -2037,6 +2244,437 @@ async def upload_hls(
         tmp_path.unlink(missing_ok=True)
 
     return StatusResponse(status="ok", message="HLS files uploaded successfully")
+
+
+# =============================================================================
+# Streaming Segment Upload (Issue #478)
+# =============================================================================
+
+
+@app.post(
+    "/api/worker/upload/{video_id}/segment/{quality}/{filename}",
+    response_model=SegmentUploadResponse,
+)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def upload_segment(
+    request: Request,
+    video_id: int,
+    quality: str,
+    filename: str,
+    x_content_sha256: str = Header(..., alias="X-Content-SHA256"),
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Upload a single segment file during streaming transcoding (Issue #478).
+
+    This endpoint allows workers to upload segments as FFmpeg writes them,
+    eliminating the blocking tar.gz creation that causes heartbeat failures.
+
+    Security features (Bruce's recommendations):
+    - Quality validated against enum (no regex)
+    - Filename validated for path traversal, null bytes, etc.
+    - Magic byte validation for file type
+    - Atomic write with fsync for durability
+    - Checksum verification before writing
+
+    Reliability features (Margo's recommendations):
+    - fsync() before returning 200
+    - Idempotent: same segment uploaded twice = no error
+    - Returns checksum for verification
+
+    Args:
+        video_id: The video ID
+        quality: Quality name (e.g., "1080p", "720p")
+        filename: Segment filename (e.g., "seg_0001.m4s", "init.mp4")
+        x_content_sha256: SHA256 checksum of the content (hex string)
+
+    Returns:
+        SegmentUploadResponse with write status and verification
+    """
+    # Validate quality using enum (Bruce's recommendation - no regex)
+    try:
+        SegmentQuality.validate(quality)
+    except ValueError:
+        # Generic error message (Bruce's recommendation)
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # Validate filename for security (Bruce's recommendations)
+    if not validate_segment_filename(filename):
+        logger.warning(f"Invalid segment filename rejected: {filename!r}")
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # Verify worker owns this job with DB lock (Bruce's recommendation)
+    # FOR UPDATE prevents race conditions during claim verification
+    db_url = str(database.url)
+    is_postgresql = db_url.startswith("postgresql")
+
+    if is_postgresql:
+        job = await database.fetch_one(
+            sa.text("""
+                SELECT tj.id, tj.claim_expires_at, v.slug
+                FROM transcoding_jobs tj
+                JOIN videos v ON tj.video_id = v.id
+                WHERE tj.video_id = :video_id
+                  AND tj.worker_id = :worker_id
+                FOR UPDATE OF tj
+            """).bindparams(video_id=video_id, worker_id=worker["worker_id"])
+        )
+    else:
+        job = await database.fetch_one(
+            sa.text("""
+                SELECT tj.id, tj.claim_expires_at, v.slug
+                FROM transcoding_jobs tj
+                JOIN videos v ON tj.video_id = v.id
+                WHERE tj.video_id = :video_id
+                  AND tj.worker_id = :worker_id
+            """).bindparams(video_id=video_id, worker_id=worker["worker_id"])
+        )
+
+    if not job:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    # Check if claim has expired
+    now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(
+                status_code=409,
+                detail="Claim expired",
+            )
+
+    # Build destination path with canonical resolution (Bruce's recommendation)
+    video_slug = job["slug"]
+    output_dir = VIDEOS_DIR / video_slug / quality
+    dest_path = (output_dir / filename).resolve()
+
+    # Verify path is within allowed directory (prevent path traversal)
+    try:
+        dest_path.relative_to(VIDEOS_DIR.resolve())
+    except ValueError:
+        logger.warning(f"Path traversal attempt blocked: {dest_path}")
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # Stream the raw body with size limit (code review fix - prevents memory exhaustion)
+    # Don't use request.body() which loads everything into memory before size check
+    chunks = []
+    total_size = 0
+    async for chunk in request.stream():
+        total_size += len(chunk)
+        if total_size > MAX_HLS_SINGLE_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="File too large")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+
+    # Validate magic bytes (Bruce's recommendation)
+    if not validate_segment_magic_bytes(data, filename):
+        logger.warning(f"Magic byte validation failed for {filename}")
+        raise HTTPException(status_code=400, detail="Invalid file format")
+
+    # Parse checksum (remove 'sha256:' prefix if present)
+    checksum = x_content_sha256
+    if checksum.startswith("sha256:"):
+        checksum = checksum[7:]
+
+    # Check for idempotency (Margo's recommendation)
+    # If file already exists with same content, return success
+    # Use thread pool to avoid blocking event loop on NAS (code review fix)
+    loop = asyncio.get_event_loop()
+    dest_exists = await loop.run_in_executor(_io_executor, dest_path.exists)
+    if dest_exists:
+        try:
+            # Add timeout to handle NFS hangs (code review fix)
+            existing_checksum = await asyncio.wait_for(
+                loop.run_in_executor(
+                    _io_executor,
+                    lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()
+                ),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout reading existing segment {filename}, treating as non-existent")
+            dest_exists = False
+            existing_checksum = None
+        if dest_exists and existing_checksum == checksum:
+            logger.debug(f"Segment {filename} already exists with matching checksum")
+            return SegmentUploadResponse(
+                status="ok",
+                written=False,  # Not written, already existed
+                bytes_written=len(data),
+                checksum_verified=True,
+            )
+        else:
+            # File exists with different content - overwrite
+            logger.warning(
+                f"Segment {filename} exists with different checksum, overwriting"
+            )
+
+    # Atomic write with fsync (Margo's durability requirement)
+    try:
+        written, bytes_written, checksum_verified = await write_segment_atomic(
+            data, dest_path, checksum
+        )
+    except Exception as e:
+        logger.exception(f"Failed to write segment {filename}: {e}")
+        raise HTTPException(status_code=500, detail="Write failed")
+
+    if not written:
+        raise HTTPException(status_code=400, detail="Checksum verification failed")
+
+    # Extend claim on successful upload (each upload keeps claim alive)
+    new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+    await database.execute(
+        transcoding_jobs.update()
+        .where(transcoding_jobs.c.id == job["id"])
+        .values(claim_expires_at=new_expiry)
+    )
+
+    logger.debug(f"Segment {quality}/{filename} uploaded for video {video_slug}")
+    return SegmentUploadResponse(
+        status="ok",
+        written=True,
+        bytes_written=bytes_written,
+        checksum_verified=checksum_verified,
+    )
+
+
+@app.get(
+    "/api/worker/upload/{video_id}/segments/status",
+    response_model=SegmentStatusResponse,
+)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def get_segments_status(
+    request: Request,
+    video_id: int,
+    quality: str,
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Get status of uploaded segments for resume support (Issue #478).
+
+    Returns list of segment files already received for a quality,
+    allowing workers to resume uploads after restart.
+
+    Args:
+        video_id: The video ID
+        quality: Quality name to check (query parameter)
+
+    Returns:
+        SegmentStatusResponse with received segments and total size
+    """
+    # Validate quality
+    try:
+        SegmentQuality.validate(quality)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid quality")
+
+    # Verify worker owns this job
+    job = await database.fetch_one(
+        transcoding_jobs.select()
+        .where(transcoding_jobs.c.video_id == video_id)
+        .where(transcoding_jobs.c.worker_id == worker["worker_id"])
+    )
+    if not job:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    # Check if claim has expired (code review fix - consistency with other endpoints)
+    now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(status_code=409, detail="Claim expired")
+
+    # Get video slug
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Build and validate path (code review fix - defense in depth)
+    quality_dir = (VIDEOS_DIR / video["slug"] / quality).resolve()
+
+    # Verify path is within allowed directory (prevent path traversal)
+    try:
+        quality_dir.relative_to(VIDEOS_DIR.resolve())
+    except ValueError:
+        logger.warning(f"Path traversal attempt blocked in get_segments_status: {quality_dir}")
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # Scan quality directory for segments using thread pool (code review fix)
+    def scan_segments():
+        segments = []
+        size = 0
+        if quality_dir.exists():
+            for f in quality_dir.iterdir():
+                if f.is_file() and f.suffix in (".m4s", ".ts", ".mp4", ".m3u8"):
+                    segments.append(f.name)
+                    size += f.stat().st_size
+        return segments, size
+
+    loop = asyncio.get_event_loop()
+    received_segments, total_size = await loop.run_in_executor(_io_executor, scan_segments)
+
+    return SegmentStatusResponse(
+        quality=quality,
+        received_segments=sorted(received_segments),
+        total_size_bytes=total_size,
+    )
+
+
+@app.post(
+    "/api/worker/upload/{video_id}/segment/finalize",
+    response_model=SegmentFinalizeResponse,
+)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def finalize_segment_upload(
+    request: Request,
+    video_id: int,
+    data: SegmentFinalizeRequest,
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Finalize a quality's segment upload (Issue #478, Ada's recommendation).
+
+    Called after all segments for a quality are uploaded.
+    Server verifies segment count matches expected before marking complete.
+
+    Args:
+        video_id: The video ID
+        data: Finalize request with quality, segment_count, and optional manifest_checksum
+
+    Returns:
+        SegmentFinalizeResponse indicating completion status and any missing segments
+    """
+    quality = data.quality
+
+    # Verify worker owns this job with claim check
+    job = await database.fetch_one(
+        transcoding_jobs.select()
+        .where(transcoding_jobs.c.video_id == video_id)
+        .where(transcoding_jobs.c.worker_id == worker["worker_id"])
+    )
+    if not job:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    # Check if claim has expired
+    now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(status_code=409, detail="Claim expired")
+
+    # Get video slug
+    video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Build and validate path (code review fix - defense in depth)
+    quality_dir = (VIDEOS_DIR / video["slug"] / quality).resolve()
+
+    # Verify path is within allowed directory (prevent path traversal)
+    try:
+        quality_dir.relative_to(VIDEOS_DIR.resolve())
+    except ValueError:
+        logger.warning(f"Path traversal attempt blocked in finalize: {quality_dir}")
+        raise HTTPException(status_code=400, detail="Invalid request")
+
+    # Count segments and verify manifest using thread pool (code review fix)
+    def check_segments_and_manifest():
+        if not quality_dir.exists():
+            return None, None, "directory_not_found"
+
+        # Count actual segment files (init.mp4 + *.m4s for CMAF, *.ts for HLS)
+        segment_files = []
+        for f in quality_dir.iterdir():
+            if f.is_file() and f.suffix in (".m4s", ".ts", ".mp4"):
+                segment_files.append(f.name)
+
+        # Verify manifest checksum if provided
+        manifest_checksum = None
+        if data.manifest_checksum:
+            # Try CMAF naming first (more common with this feature), then quality-based
+            manifest_path = quality_dir / "stream.m3u8"
+            if not manifest_path.exists():
+                manifest_path = quality_dir / f"{quality}.m3u8"
+
+            if manifest_path.exists():
+                manifest_checksum = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+        return segment_files, manifest_checksum, None
+
+    loop = asyncio.get_event_loop()
+    segment_files, actual_manifest_checksum, error = await loop.run_in_executor(
+        _io_executor, check_segments_and_manifest
+    )
+
+    if error == "directory_not_found":
+        return SegmentFinalizeResponse(
+            status="incomplete",
+            complete=False,
+            missing_segments=["<quality directory not found>"],
+        )
+
+    actual_count = len(segment_files)
+    expected_count = data.segment_count
+
+    if actual_count < expected_count:
+        return SegmentFinalizeResponse(
+            status="incomplete",
+            complete=False,
+            missing_segments=[f"Expected {expected_count} segments, found {actual_count}"],
+        )
+
+    # Verify manifest checksum if provided
+    if data.manifest_checksum and actual_manifest_checksum:
+        expected_checksum = data.manifest_checksum.removeprefix("sha256:")
+        if actual_manifest_checksum != expected_checksum:
+            return SegmentFinalizeResponse(
+                status="incomplete",
+                complete=False,
+                missing_segments=["Manifest checksum mismatch"],
+            )
+
+    # Update quality_progress and extend claim in a transaction (code review fix)
+    db_url = str(database.url)
+    is_postgresql = db_url.startswith("postgresql")
+
+    async with database.transaction():
+        if is_postgresql:
+            await database.execute(
+                sa.text("""
+                    INSERT INTO quality_progress (job_id, quality, status, progress_percent)
+                    VALUES (:job_id, :quality, 'uploaded', 100)
+                    ON CONFLICT (job_id, quality) DO UPDATE
+                    SET status = 'uploaded', progress_percent = 100
+                """).bindparams(job_id=job["id"], quality=quality)
+            )
+        else:
+            await database.execute(
+                sa.text("""
+                    INSERT OR REPLACE INTO quality_progress (job_id, quality, status, progress_percent)
+                    VALUES (:job_id, :quality, 'uploaded', 100)
+                """).bindparams(job_id=job["id"], quality=quality)
+            )
+
+        # Extend claim
+        new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
+        await database.execute(
+            transcoding_jobs.update()
+            .where(transcoding_jobs.c.id == job["id"])
+            .values(claim_expires_at=new_expiry)
+        )
+
+    logger.info(f"Quality {quality} finalized for video {video['slug']} ({actual_count} segments)")
+    return SegmentFinalizeResponse(
+        status="ok",
+        complete=True,
+        missing_segments=[],
+    )
 
 
 # =============================================================================
