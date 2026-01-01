@@ -81,14 +81,35 @@ jobs:
             exit 1
           fi
 
+      - name: Set Chrome path from puppeteer
+        id: chrome-path
+        run: |
+          # Get Chrome path from puppeteer's bundled installation
+          CHROME_PATH=$(node -e "console.log(require('puppeteer').executablePath())" 2>/dev/null || echo "")
+          if [ -z "$CHROME_PATH" ] || [ ! -f "$CHROME_PATH" ]; then
+            echo "Puppeteer Chrome not found, skipping Lighthouse"
+            echo "found=false" >> $GITHUB_OUTPUT
+          else
+            echo "Found Chrome at: $CHROME_PATH"
+            echo "path=$CHROME_PATH" >> $GITHUB_OUTPUT
+            echo "found=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run pa11y-ci (WCAG2AA)
-        run: npx pa11y-ci
+        run: |
+          # Use puppeteer's Chrome for pa11y
+          if [ "${{ steps.chrome-path.outputs.found }}" == "true" ]; then
+            export CHROME_PATH="${{ steps.chrome-path.outputs.path }}"
+          fi
+          npx pa11y-ci
         timeout-minutes: 5
         continue-on-error: true
         id: pa11y
 
       - name: Run Lighthouse accessibility audit
+        if: steps.chrome-path.outputs.found == 'true'
         run: |
+          export CHROME_PATH="${{ steps.chrome-path.outputs.path }}"
           npx lighthouse http://localhost:8888 \
             --chrome-flags="--no-sandbox --headless --disable-gpu --disable-dev-shm-usage" \
             --output=json \
@@ -102,7 +123,10 @@ jobs:
       - name: Extract Lighthouse score
         id: lighthouse-score
         run: |
-          if [ -f lighthouse-report.json ]; then
+          if [ "${{ steps.chrome-path.outputs.found }}" != "true" ]; then
+            echo "score=skipped" >> $GITHUB_OUTPUT
+            echo "::warning::Lighthouse skipped - Chrome/Chromium not found"
+          elif [ -f lighthouse-report.json ]; then
             SCORE=$(cat lighthouse-report.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(int(d['categories']['accessibility']['score']*100))")
             echo "score=$SCORE" >> $GITHUB_OUTPUT
             echo "Accessibility Score: $SCORE"
@@ -150,9 +174,11 @@ jobs:
             FAILED=true
           fi
 
-          # Check Lighthouse score (warn but don't fail for now)
+          # Check Lighthouse score (warn but don't fail - informational only)
           SCORE="${{ steps.lighthouse-score.outputs.score }}"
-          if [ -n "$SCORE" ] && [ "$SCORE" -lt 90 ]; then
+          if [ "$SCORE" == "skipped" ]; then
+            echo "::notice::Lighthouse was skipped (Chrome not available)"
+          elif [ -n "$SCORE" ] && [ "$SCORE" != "0" ] && [ "$SCORE" -lt 90 ]; then
             echo "::warning::Lighthouse accessibility score ($SCORE) is below 90"
           fi
 
