@@ -420,6 +420,15 @@ function watchPage() {
                 }
             });
 
+            // Track ABR quality changes for Auto display
+            player.addEventListener('adaptation', () => {
+                const tracks = player.getVariantTracks();
+                const activeTrack = tracks.find(t => t.active);
+                if (activeTrack && self.playerControls) {
+                    self.playerControls.setCurrentAutoQuality(activeTrack.height);
+                }
+            });
+
             // Load the manifest
             player.load(dashUrl).then(() => {
                 debugLog('Shaka loaded DASH manifest successfully');
@@ -471,6 +480,14 @@ function watchPage() {
                 // Update quality options in player controls
                 if (self.playerControls && self.hlsLevels.length > 0) {
                     self.playerControls.setQualities(self.hlsLevels);
+                }
+            });
+
+            // Track ABR level changes for Auto display
+            hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+                const level = hls.levels[data.level];
+                if (level && self.playerControls) {
+                    self.playerControls.setCurrentAutoQuality(level.height);
                 }
             });
 

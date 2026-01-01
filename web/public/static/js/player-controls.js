@@ -9,7 +9,7 @@ class VLogPlayerControls {
         this.video = video;
         this.options = {
             skipSeconds: 10,
-            hideControlsDelay: 3000,
+            hideControlsDelay: 5000, // Increased from 3000ms to 5000ms for better usability
             doubleTapDelay: 300,
             swipeThreshold: 30,
             brightnessMin: 0.5,
@@ -40,6 +40,11 @@ class VLogPlayerControls {
         this.isInPiP = false;
         this.brightness = 1.0;
         this.currentVolume = 1.0;
+        this.currentSpeed = 1.0;
+        this.theaterMode = false;
+
+        // Playback speed options
+        this.speedOptions = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
         // Gesture tracking
         this.touchStartX = 0;
@@ -139,7 +144,7 @@ class VLogPlayerControls {
         this.controlBar = document.createElement('div');
         this.controlBar.className = 'player-control-bar';
         this.controlBar.innerHTML = `
-            <button class="player-btn play-pause-btn" title="Play/Pause" aria-label="Play video" aria-pressed="false">
+            <button class="player-btn play-pause-btn" title="Play/Pause (K or Space)" aria-label="Play video" aria-pressed="false">
                 <svg viewBox="0 0 24 24" fill="currentColor" class="play-icon" aria-hidden="true">
                     <path d="M8 5v14l11-7z"/>
                 </svg>
@@ -158,7 +163,7 @@ class VLogPlayerControls {
             <span class="player-time-display">0:00 / 0:00</span>
             <div class="player-controls-right">
                 <div class="player-volume-container">
-                    <button class="player-btn volume-btn" title="Volume" aria-label="Mute" aria-pressed="false">
+                    <button class="player-btn volume-btn" title="Mute/Unmute (M)" aria-label="Mute" aria-pressed="false">
                         <svg viewBox="0 0 24 24" fill="currentColor" class="volume-high" aria-hidden="true">
                             <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
                         </svg>
@@ -184,17 +189,28 @@ class VLogPlayerControls {
                     </svg>
                     <span class="quality-label">Auto</span>
                 </button>
-                <button class="player-btn captions-btn hidden" title="Captions" aria-label="Toggle captions" aria-pressed="false">
+                <button class="player-btn speed-btn" title="Playback speed (Shift+> / Shift+<)" aria-label="Playback speed: Normal" aria-haspopup="true" aria-expanded="false">
+                    <span class="speed-label">1x</span>
+                </button>
+                <button class="player-btn captions-btn hidden" title="Captions (C)" aria-label="Toggle captions" aria-pressed="false">
                     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z"/>
                     </svg>
                 </button>
-                <button class="player-btn pip-btn hidden" title="Picture in Picture" aria-label="Picture in picture">
+                <button class="player-btn theater-btn" title="Theater mode (T)" aria-label="Enter theater mode" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="currentColor" class="theater-enter" aria-hidden="true">
+                        <path d="M19 6H5c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 10H5V8h14v8z"/>
+                    </svg>
+                    <svg viewBox="0 0 24 24" fill="currentColor" class="theater-exit" aria-hidden="true">
+                        <path d="M19 4H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H5V6h14v12z"/>
+                    </svg>
+                </button>
+                <button class="player-btn pip-btn hidden" title="Picture in Picture (P)" aria-label="Picture in picture">
                     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/>
                     </svg>
                 </button>
-                <button class="player-btn fullscreen-btn" title="Fullscreen" aria-label="Enter fullscreen" aria-pressed="false">
+                <button class="player-btn fullscreen-btn" title="Fullscreen (F)" aria-label="Enter fullscreen" aria-pressed="false">
                     <svg viewBox="0 0 24 24" fill="currentColor" class="fullscreen-enter" aria-hidden="true">
                         <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
                     </svg>
@@ -218,6 +234,55 @@ class VLogPlayerControls {
         `;
         this.container.appendChild(this.qualityModal);
 
+        // Speed modal
+        this.speedModal = document.createElement('div');
+        this.speedModal.className = 'player-speed-modal';
+        this.speedModal.innerHTML = `
+            <div class="speed-modal-backdrop"></div>
+            <div class="speed-modal-content">
+                <div class="speed-modal-header">Playback Speed</div>
+                <div class="speed-modal-options"></div>
+            </div>
+        `;
+        this.container.appendChild(this.speedModal);
+        this.buildSpeedOptions();
+
+        // Keyboard shortcuts help modal
+        this.shortcutsModal = document.createElement('div');
+        this.shortcutsModal.className = 'player-shortcuts-modal';
+        this.shortcutsModal.setAttribute('role', 'dialog');
+        this.shortcutsModal.setAttribute('aria-label', 'Keyboard shortcuts');
+        this.shortcutsModal.innerHTML = `
+            <div class="shortcuts-modal-backdrop"></div>
+            <div class="shortcuts-modal-content">
+                <div class="shortcuts-modal-header">
+                    <span>Keyboard Shortcuts</span>
+                    <button class="shortcuts-close-btn" aria-label="Close shortcuts help">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="shortcuts-modal-body">
+                    <div class="shortcut-row"><kbd>Space</kbd> or <kbd>K</kbd><span>Play/Pause</span></div>
+                    <div class="shortcut-row"><kbd>←</kbd><span>Rewind 10s</span></div>
+                    <div class="shortcut-row"><kbd>→</kbd><span>Forward 10s</span></div>
+                    <div class="shortcut-row"><kbd>↑</kbd><span>Volume up</span></div>
+                    <div class="shortcut-row"><kbd>↓</kbd><span>Volume down</span></div>
+                    <div class="shortcut-row"><kbd>M</kbd><span>Mute/Unmute</span></div>
+                    <div class="shortcut-row"><kbd>F</kbd><span>Fullscreen</span></div>
+                    <div class="shortcut-row"><kbd>T</kbd><span>Theater mode</span></div>
+                    <div class="shortcut-row"><kbd>C</kbd><span>Toggle captions</span></div>
+                    <div class="shortcut-row"><kbd>P</kbd><span>Picture in Picture</span></div>
+                    <div class="shortcut-row"><kbd>Shift</kbd>+<kbd>></kbd><span>Speed up</span></div>
+                    <div class="shortcut-row"><kbd>Shift</kbd>+<kbd><</kbd><span>Slow down</span></div>
+                    <div class="shortcut-row"><kbd>0-9</kbd><span>Jump to 0-90%</span></div>
+                    <div class="shortcut-row"><kbd>?</kbd><span>Show shortcuts</span></div>
+                </div>
+            </div>
+        `;
+        this.container.appendChild(this.shortcutsModal);
+
         // Cache DOM references
         this.playPauseBtn = this.controlBar.querySelector('.play-pause-btn');
         this.progressContainer = this.controlBar.querySelector('.player-progress-container');
@@ -236,10 +301,14 @@ class VLogPlayerControls {
         this.volumeThumb = this.controlBar.querySelector('.player-volume-thumb');
         this.qualityBtn = this.controlBar.querySelector('.quality-btn');
         this.qualityLabel = this.qualityBtn.querySelector('.quality-label');
+        this.speedBtn = this.controlBar.querySelector('.speed-btn');
+        this.speedLabel = this.speedBtn.querySelector('.speed-label');
         this.captionsBtn = this.controlBar.querySelector('.captions-btn');
+        this.theaterBtn = this.controlBar.querySelector('.theater-btn');
         this.pipBtn = this.controlBar.querySelector('.pip-btn');
         this.fullscreenBtn = this.controlBar.querySelector('.fullscreen-btn');
         this.qualityModalOptions = this.qualityModal.querySelector('.quality-modal-options');
+        this.speedModalOptions = this.speedModal.querySelector('.speed-modal-options');
     }
 
     bindEvents() {
@@ -308,9 +377,17 @@ class VLogPlayerControls {
             e.stopPropagation();
             this.showQualityModal();
         });
+        this.speedBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.showSpeedModal();
+        });
         this.captionsBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.onCaptionsToggle();
+        });
+        this.theaterBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleTheaterMode();
         });
         this.pipBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -335,6 +412,19 @@ class VLogPlayerControls {
         // Quality modal
         this.qualityModal.querySelector('.quality-modal-backdrop').addEventListener('click', () => {
             this.hideQualityModal();
+        });
+
+        // Speed modal
+        this.speedModal.querySelector('.speed-modal-backdrop').addEventListener('click', () => {
+            this.hideSpeedModal();
+        });
+
+        // Shortcuts modal
+        this.shortcutsModal.querySelector('.shortcuts-modal-backdrop').addEventListener('click', () => {
+            this.hideShortcutsModal();
+        });
+        this.shortcutsModal.querySelector('.shortcuts-close-btn').addEventListener('click', () => {
+            this.hideShortcutsModal();
         });
 
         // Gesture overlay - touch events
@@ -632,14 +722,26 @@ class VLogPlayerControls {
     setQualities(levels, currentIndex = -1) {
         this.qualities = levels;
         this.currentQualityIndex = currentIndex;
+        this.currentAutoQuality = null; // Track actual quality when in auto mode
         this.updateQualityLabel();
         this.updateQualityModal();
+    }
+
+    // Called by the player to update the display when ABR changes quality
+    setCurrentAutoQuality(height) {
+        this.currentAutoQuality = height;
+        this.updateQualityLabel();
     }
 
     updateQualityLabel() {
         let qualityText;
         if (this.currentQualityIndex === -1) {
-            qualityText = 'Auto';
+            // Auto mode - show current resolution if available
+            if (this.currentAutoQuality) {
+                qualityText = this.currentAutoQuality + 'p (Auto)';
+            } else {
+                qualityText = 'Auto';
+            }
         } else if (this.qualities && this.qualities[this.currentQualityIndex]) {
             const level = this.qualities[this.currentQualityIndex];
             qualityText = level.isOriginal ? 'Original' : level.height + 'p';
@@ -692,6 +794,88 @@ class VLogPlayerControls {
     hideQualityModal() {
         this.qualityModal.classList.remove('visible');
         this.qualityBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    // Speed control
+    buildSpeedOptions() {
+        this.speedModalOptions.innerHTML = '';
+
+        this.speedOptions.forEach(speed => {
+            const option = document.createElement('button');
+            option.className = 'speed-option' + (speed === this.currentSpeed ? ' active' : '');
+            option.textContent = speed === 1 ? 'Normal' : speed + 'x';
+            option.addEventListener('click', () => {
+                this.selectSpeed(speed);
+            });
+            this.speedModalOptions.appendChild(option);
+        });
+    }
+
+    selectSpeed(speed) {
+        this.currentSpeed = speed;
+        this.video.playbackRate = speed;
+        this.updateSpeedLabel();
+        this.buildSpeedOptions();
+        this.hideSpeedModal();
+    }
+
+    updateSpeedLabel() {
+        const labelText = this.currentSpeed === 1 ? '1x' : this.currentSpeed + 'x';
+        this.speedLabel.textContent = labelText;
+        this.speedBtn.setAttribute('aria-label', `Playback speed: ${this.currentSpeed === 1 ? 'Normal' : this.currentSpeed + 'x'}`);
+    }
+
+    showSpeedModal() {
+        this.speedModal.classList.add('visible');
+        this.speedBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    hideSpeedModal() {
+        this.speedModal.classList.remove('visible');
+        this.speedBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    increaseSpeed() {
+        const currentIndex = this.speedOptions.indexOf(this.currentSpeed);
+        if (currentIndex < this.speedOptions.length - 1) {
+            this.selectSpeed(this.speedOptions[currentIndex + 1]);
+        }
+    }
+
+    decreaseSpeed() {
+        const currentIndex = this.speedOptions.indexOf(this.currentSpeed);
+        if (currentIndex > 0) {
+            this.selectSpeed(this.speedOptions[currentIndex - 1]);
+        }
+    }
+
+    // Theater mode
+    toggleTheaterMode() {
+        this.theaterMode = !this.theaterMode;
+        this.container.classList.toggle('theater-mode', this.theaterMode);
+        this.theaterBtn.classList.toggle('active', this.theaterMode);
+        this.theaterBtn.setAttribute('aria-pressed', this.theaterMode.toString());
+        this.theaterBtn.setAttribute('aria-label', this.theaterMode ? 'Exit theater mode' : 'Enter theater mode');
+
+        // Dispatch custom event for parent components to react
+        this.container.dispatchEvent(new CustomEvent('theatermodechange', {
+            detail: { theaterMode: this.theaterMode },
+            bubbles: true
+        }));
+    }
+
+    // Keyboard shortcuts help
+    showShortcutsModal() {
+        this.shortcutsModal.classList.add('visible');
+        // Focus the close button for accessibility
+        const closeBtn = this.shortcutsModal.querySelector('.shortcuts-close-btn');
+        if (closeBtn) closeBtn.focus();
+    }
+
+    hideShortcutsModal() {
+        this.shortcutsModal.classList.remove('visible');
+        // Return focus to the container
+        this.container.focus();
     }
 
     // Captions
@@ -1042,6 +1226,47 @@ class VLogPlayerControls {
             return;
         }
 
+        // Handle Escape key for closing modals
+        if (e.key === 'Escape') {
+            if (this.shortcutsModal.classList.contains('visible')) {
+                this.hideShortcutsModal();
+                e.preventDefault();
+                return;
+            }
+            if (this.speedModal.classList.contains('visible')) {
+                this.hideSpeedModal();
+                e.preventDefault();
+                return;
+            }
+            if (this.qualityModal.classList.contains('visible')) {
+                this.hideQualityModal();
+                e.preventDefault();
+                return;
+            }
+        }
+
+        // Handle number keys for seeking to percentage (0-9)
+        if (e.key >= '0' && e.key <= '9' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+            e.preventDefault();
+            const percent = parseInt(e.key, 10) / 10;
+            if (Number.isFinite(this.video.duration)) {
+                this.video.currentTime = this.video.duration * percent;
+            }
+            return;
+        }
+
+        // Handle Shift+< and Shift+> for speed control
+        if (e.shiftKey && e.key === '<') {
+            e.preventDefault();
+            this.decreaseSpeed();
+            return;
+        }
+        if (e.shiftKey && e.key === '>') {
+            e.preventDefault();
+            this.increaseSpeed();
+            return;
+        }
+
         switch (e.key) {
             case ' ':
             case 'k':
@@ -1075,6 +1300,18 @@ class VLogPlayerControls {
             case 'c':
                 e.preventDefault();
                 this.onCaptionsToggle();
+                break;
+            case 't':
+                e.preventDefault();
+                this.toggleTheaterMode();
+                break;
+            case 'p':
+                e.preventDefault();
+                this.togglePiP();
+                break;
+            case '?':
+                e.preventDefault();
+                this.showShortcutsModal();
                 break;
         }
     }
