@@ -2,6 +2,28 @@
 
 Thank you for your interest in contributing to VLog! This document provides guidelines and instructions for contributing.
 
+## Branching Strategy
+
+VLog uses a two-branch development model:
+
+| Branch | Purpose |
+|--------|---------|
+| `dev` | Active development (default branch) |
+| `main` | Stable releases only |
+
+### Workflow
+
+1. **Feature development**: Create branches from `dev`, submit PRs to `dev`
+2. **Quick feedback**: PRs to `dev` run a fast test suite (skips slow integration tests)
+3. **Releases**: Periodically, `dev` is merged to `main` after full test suite passes
+4. **Hotfixes**: Critical fixes can go directly to `main` if needed
+
+### Which branch should I target?
+
+- **Most contributions**: Target `dev` (the default)
+- **Documentation-only changes**: Either `dev` or `main` is fine
+- **Critical security fixes**: Discuss with maintainers first
+
 ## Getting Started
 
 ### Development Setup
@@ -83,8 +105,10 @@ ruff format api/ worker/ cli/ tests/ config.py
 
 ### Submitting Pull Requests
 
-1. **Fork and branch**
+1. **Fork and branch from `dev`**
    ```bash
+   git checkout dev
+   git pull origin dev
    git checkout -b feature/your-feature-name
    ```
 
@@ -95,8 +119,19 @@ ruff format api/ worker/ cli/ tests/ config.py
 
 3. **Test your changes**
    ```bash
-   VLOG_TEST_MODE=1 pytest
+   # Run quick tests (same as CI for dev branch)
+   VLOG_TEST_MODE=1 pytest \
+     --ignore=tests/test_workflows.py \
+     --ignore=tests/test_worker_integration.py \
+     --ignore=tests/test_transcoder_integration.py \
+     --ignore=tests/test_e2e_upload.py \
+     --ignore=tests/test_transcoder.py
+
+   # Run linting
    VLOG_TEST_MODE=1 ruff check api/ worker/ cli/ tests/ config.py
+
+   # Optional: Run full test suite
+   VLOG_TEST_MODE=1 pytest
    ```
 
 4. **Commit with clear messages**
@@ -104,7 +139,8 @@ ruff format api/ worker/ cli/ tests/ config.py
    git commit -m "Add feature: brief description"
    ```
 
-5. **Push and create PR**
+5. **Push and create PR targeting `dev`**
+   - PRs automatically target `dev` (the default branch)
    - Reference any related issues
    - Describe what your PR does and why
 

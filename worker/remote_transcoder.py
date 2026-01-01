@@ -24,6 +24,7 @@ Environment variables:
 """
 
 import asyncio
+import logging
 import shutil
 import signal
 import sys
@@ -33,6 +34,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from api.job_queue import JobDispatch, JobQueue
+
+# Import code version for compatibility checking
+from code_version import CODE_VERSION
 from config import (
     JOB_QUEUE_MODE,
     QUALITY_PRESETS,
@@ -42,6 +46,7 @@ from config import (
     WORKER_HEALTH_PORT,
     WORKER_HEARTBEAT_INTERVAL,
     WORKER_POLL_INTERVAL,
+    WORKER_STREAMING_UPLOAD,
     WORKER_WORK_DIR,
 )
 from worker.health_server import HealthServer
@@ -50,6 +55,7 @@ from worker.hwaccel import (
     GPUCapabilities,
     VideoCodec,
     build_cmaf_transcode_command,
+    detect_deployment_type,
     detect_gpu_capabilities,
     get_recommended_parallel_sessions,
     get_worker_capabilities,
@@ -71,6 +77,18 @@ from worker.transcoder import (
     validate_hls_playlist,
 )
 
+# Streaming segment upload (Issue #478) - imported conditionally to avoid
+# circular imports and only load when feature is enabled
+if WORKER_STREAMING_UPLOAD:
+    from worker.streaming_upload import (
+        ClaimExpiredError as StreamingClaimExpiredError,
+    )
+    from worker.streaming_upload import (
+        streaming_transcode_and_upload_quality,
+    )
+
+logger = logging.getLogger(__name__)
+
 # Global shutdown flag
 shutdown_requested = False
 
@@ -82,6 +100,9 @@ JOB_QUEUE: Optional[JobQueue] = None
 
 # Global health server (for K8s probes)
 HEALTH_SERVER: Optional[HealthServer] = None
+
+# Global command listener (for remote management)
+COMMAND_LISTENER = None
 
 # Worker ID for Redis consumer name (generated at startup)
 WORKER_UUID: str = ""
@@ -97,6 +118,104 @@ COMPLETE_JOB_RETRY_DELAY = 5  # seconds
 _cached_remote_settings: Dict = {}
 _cached_remote_settings_time: float = 0
 _REMOTE_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+# Allowed extensions for secure tar extraction (source files + streaming output)
+ALLOWED_TAR_EXTENSIONS = (
+    # Source video files
+    ".mp4",
+    ".mkv",
+    ".mov",
+    ".avi",
+    ".webm",
+    ".m4v",
+    # HLS/CMAF streaming files
+    ".m3u8",
+    ".ts",
+    ".m4s",
+    ".mpd",
+    # Thumbnails and subtitles
+    ".jpg",
+    ".png",
+    ".vtt",
+)
+
+# Limits for tar extraction (matching API limits)
+MAX_TAR_FILES = 2000
+MAX_TAR_SIZE = 50 * 1024 * 1024 * 1024  # 50GB
+MAX_TAR_SINGLE_FILE = 10 * 1024 * 1024 * 1024  # 10GB
+
+
+def extract_tar_secure(tar_path: Path, output_dir: Path) -> None:
+    """
+    Securely extract a tar.gz archive with path traversal and symlink protection.
+
+    This prevents CVE-2007-4559 (Python tarfile vulnerability) by:
+    - Rejecting symlinks and hardlinks
+    - Validating extracted paths stay within output_dir
+    - Checking file extensions against an allowlist
+    - Enforcing size limits
+
+    Args:
+        tar_path: Path to the tar.gz file
+        output_dir: Directory to extract to
+
+    Raises:
+        ValueError: If validation fails (malicious archive detected)
+    """
+    import tarfile
+
+    output_dir_resolved = output_dir.resolve()
+    extracted_count = 0
+    extracted_size = 0
+
+    with tarfile.open(tar_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            extracted_count += 1
+            if extracted_count > MAX_TAR_FILES:
+                raise ValueError(f"Archive contains too many files (limit: {MAX_TAR_FILES})")
+
+            if member.isfile() and member.size > MAX_TAR_SINGLE_FILE:
+                raise ValueError(f"File too large: {member.name} ({member.size} bytes)")
+
+            extracted_size += member.size
+            if extracted_size > MAX_TAR_SIZE:
+                raise ValueError(f"Archive too large (limit: {MAX_TAR_SIZE} bytes)")
+
+            # Reject symlinks and hardlinks (path traversal vector)
+            if member.issym() or member.islnk():
+                raise ValueError(f"Invalid archive: symlinks not allowed ({member.name})")
+
+            # Only allow regular files and directories
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(f"Invalid archive: unsupported file type ({member.name})")
+
+            # Check file extension
+            if member.isfile():
+                if not any(member.name.endswith(ext) for ext in ALLOWED_TAR_EXTENSIONS):
+                    raise ValueError(f"Invalid file type: {member.name}")
+
+            # Validate path traversal
+            member_path = output_dir / member.name
+            try:
+                if member_path.exists():
+                    dest_resolved = member_path.resolve()
+                else:
+                    dest_resolved = member_path.parent.resolve() / member_path.name
+            except (ValueError, OSError) as e:
+                raise ValueError(f"Invalid path {member.name}: {e}")
+
+            try:
+                dest_resolved.relative_to(output_dir_resolved)
+            except ValueError:
+                raise ValueError(f"Path traversal detected ({member.name})")
+
+            # Extract and fix permissions
+            tar.extract(member, output_dir)
+            extracted_path = output_dir / member.name
+            if extracted_path.is_file():
+                extracted_path.chmod(0o644)
+            elif extracted_path.is_dir():
+                extracted_path.chmod(0o755)
 
 
 async def get_remote_worker_settings() -> Dict:
@@ -182,27 +301,44 @@ async def check_claim_expiration(coro):
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     global shutdown_requested
-    print("Shutdown signal received, finishing current job...")
+    logger.info("Shutdown signal received, finishing current job...")
     shutdown_requested = True
 
 
 async def heartbeat_loop(client: WorkerAPIClient, state: dict):
     """Background task to send periodic heartbeats."""
-    global HEALTH_SERVER
+    global HEALTH_SERVER, shutdown_requested
     while not shutdown_requested:
         # Determine status based on whether we're processing a job
         status = "busy" if state.get("processing_job") else "idle"
         try:
-            await client.heartbeat(status=status)
+            response = await client.heartbeat(status=status, code_version=CODE_VERSION)
             # Update health server heartbeat status on success
             if HEALTH_SERVER:
                 HEALTH_SERVER.set_heartbeat_status(True)
+
+            # Check for version mismatch - if server says our version is wrong,
+            # we should exit and let the orchestrator restart us with new image
+            if response.get("version_ok") is False:
+                required = response.get("required_version", "unknown")
+                logger.info("CRITICAL: Code version mismatch detected!")
+                logger.info(f"  Worker version: {CODE_VERSION}")
+                logger.info(f"  Required version: {required}")
+                # Signal shutdown so we don't start new jobs
+                # The current job (if any) will complete first
+                shutdown_requested = True
+                if state.get("processing_job"):
+                    logger.info("  Worker will exit after current job completes.")
+                else:
+                    logger.info("  No job in progress - exiting now.")
+                # Break from heartbeat loop - main loop will handle graceful shutdown
+                break
         except WorkerAPIError as e:
-            print(f"Heartbeat failed: {e.message}")
+            logger.error(f"Heartbeat failed: {e.message}")
             if HEALTH_SERVER:
                 HEALTH_SERVER.set_heartbeat_status(False)
         except Exception as e:
-            print(f"Heartbeat error: {e}")
+            logger.error(f"Heartbeat error: {e}")
             if HEALTH_SERVER:
                 HEALTH_SERVER.set_heartbeat_status(False)
         await asyncio.sleep(WORKER_HEARTBEAT_INTERVAL)
@@ -231,8 +367,8 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     streaming_codec = settings.get("streaming_codec", "av1")
     enable_dash = settings.get("streaming_enable_dash", True)
 
-    print(f"Processing video: {video_slug} (job={job_id})")
-    print(f"  Streaming format: {streaming_format}, codec: {streaming_codec}")
+    logger.info(f"Processing video: {video_slug} (job={job_id})")
+    logger.debug(f"  Streaming format: {streaming_format}, codec: {streaming_codec}")
 
     # Create work directories
     work_dir = WORKER_WORK_DIR / str(job_id)
@@ -248,19 +384,19 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
     try:
         # Download source file
-        print("  Downloading source file...")
+        logger.info("  Downloading source file...")
         await check_claim_expiration(client.update_progress(job_id, "download", 0))
         await check_claim_expiration(client.download_source(video_id, source_path))
         await check_claim_expiration(client.update_progress(job_id, "download", 5))
 
         # Probe video
-        print("  Probing video info...")
+        logger.info("  Probing video info...")
         await check_claim_expiration(client.update_progress(job_id, "probe", 5))
         info = await get_video_info(source_path)
         duration = info["duration"]
         source_width = info["width"]
         source_height = info["height"]
-        print(f"    Source: {source_width}x{source_height}, {duration:.1f}s, codec={info['codec']}")
+        logger.info(f"    Source: {source_width}x{source_height}, {duration:.1f}s, codec={info['codec']}")
 
         # Update video metadata immediately after probing to prevent data loss if worker crashes
         await check_claim_expiration(
@@ -275,7 +411,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         )
 
         # Generate thumbnail
-        print("  Generating thumbnail...")
+        logger.info("  Generating thumbnail...")
         await check_claim_expiration(client.update_progress(job_id, "thumbnail", 10))
         thumb_path = output_dir / "thumbnail.jpg"
         thumbnail_time = min(5.0, duration / 4)
@@ -290,10 +426,10 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Get existing qualities to skip (for selective re-transcode)
         existing_qualities = set(job.get("existing_qualities") or [])
         if existing_qualities:
-            print(f"  Skipping existing qualities: {sorted(existing_qualities)}")
+            logger.info(f"  Skipping existing qualities: {sorted(existing_qualities)}")
 
         quality_names = [q["name"] for q in qualities]
-        print(f"  Transcoding to: original + {quality_names}")
+        logger.info(f"  Transcoding to: original + {quality_names}")
         await check_claim_expiration(client.update_progress(job_id, "transcode", 15))
 
         successful_qualities: List[dict] = []
@@ -308,11 +444,11 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
         # Create original quality (remux) - skip if already exists
         if "original" in existing_qualities:
-            print("    original: Skipping (already exists)")
+            logger.info("    original: Skipping (already exists)")
             quality_progress_list[0] = {"name": "original", "status": "skipped", "progress": 100}
             # Don't process, don't add to successful_qualities - server already has it
         else:
-            print("    original: Remuxing...")
+            logger.info("    original: Remuxing...")
             quality_progress_list[0] = {"name": "original", "status": "in_progress", "progress": 0}
             await check_claim_expiration(client.update_progress(job_id, "transcode", 15, quality_progress_list))
 
@@ -328,18 +464,18 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "bitrate": bitrate_bps // 1000,  # Convert to kbps
                     }
                 )
-                print("    original: Done")
+                logger.info("    original: Done")
 
                 # Validate HLS playlist before upload (issue #166)
                 playlist_path = output_dir / "original.m3u8"
                 is_valid, validation_error = await validate_hls_playlist(playlist_path)
                 if not is_valid:
-                    print(f"    original: HLS validation failed - {validation_error}")
+                    logger.error(f"    original: HLS validation failed - {validation_error}")
                     quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
                     failed_qualities.append("original")
                 else:
                     # Upload original quality immediately
-                    print("    original: Uploading...")
+                    logger.info("    original: Uploading...")
                     try:
                         # Define progress callback to extend claim during upload (issue #266)
                         async def upload_progress_callback_original(bytes_sent: int, total_bytes: int):
@@ -358,7 +494,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                                 raise
                             except Exception as e:
                                 # Other errors are logged but don't abort the upload
-                                print(f"      Upload progress update failed: {e}")
+                                logger.error(f"      Upload progress update failed: {e}")
 
                         await check_claim_expiration(
                             client.upload_quality(
@@ -366,7 +502,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             )
                         )
                         quality_progress_list[0] = {"name": "original", "status": "uploaded", "progress": 100}
-                        print("    original: Uploaded")
+                        logger.info("    original: Uploaded")
 
                         # Delete local files to free disk space
                         playlist_file = output_dir / "original.m3u8"
@@ -374,20 +510,20 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             playlist_file.unlink()
                         for segment in output_dir.glob("original_*.ts"):
                             segment.unlink()
-                        print("    original: Local files cleaned up")
+                        logger.info("    original: Local files cleaned up")
                     except WorkerAPIError as e:
                         quality_progress_list[0] = {"name": "original", "status": "completed", "progress": 100}
-                        print(f"    original: Upload failed - {e.message}")
+                        logger.error(f"    original: Upload failed - {e.message}")
             else:
                 quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
                 failed_qualities.append("original")
-                print(f"    original: Failed - {error}")
+                logger.error(f"    original: Failed - {error}")
 
         # Transcode other qualities (with parallel batching)
         # Get parallel encoding count based on GPU capabilities
         parallel_count = get_recommended_parallel_sessions(GPU_CAPS)
         if parallel_count > 1:
-            print(f"  Using parallel encoding: {parallel_count} qualities at a time")
+            logger.info(f"  Using parallel encoding: {parallel_count} qualities at a time")
 
         # Filter out existing qualities and group for parallel processing
         qualities_to_transcode = [q for q in qualities if q["name"] not in existing_qualities]
@@ -395,7 +531,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # Mark existing qualities as skipped
         for idx, quality in enumerate(qualities):
             if quality["name"] in existing_qualities:
-                print(f"    {quality['name']}: Skipping (already exists)")
+                logger.info(f"    {quality['name']}: Skipping (already exists)")
                 quality_progress_list[idx + 1] = {
                     "name": quality["name"],
                     "status": "skipped",
@@ -435,7 +571,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             quality_name = quality["name"]
             quality_idx = quality_to_idx[quality_name]
 
-            print(f"    {quality_name}: Transcoding...")
+            logger.info(f"    {quality_name}: Transcoding...")
             async with progress_list_lock:
                 quality_progress_list[quality_idx] = {
                     "name": quality_name,
@@ -476,12 +612,120 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         )
                     except ClaimExpiredError:
                         # Log claim expiration before propagating to abort job
-                        print(f"      {qname}: Claim expired - aborting job")
+                        logger.error(f"      {qname}: Claim expired - aborting job")
                         raise
                     except Exception as e:
                         # Other errors are logged but don't abort the job
-                        print(f"      {qname}: Progress update failed: {e}")
+                        logger.error(f"      {qname}: Progress update failed: {e}")
 
+            # Use streaming segment upload if enabled (Issue #478)
+            # This eliminates blocking tar.gz creation for large videos
+            if WORKER_STREAMING_UPLOAD and streaming_format == "cmaf":
+                logger.info(f"    {quality_name}: Using streaming segment upload")
+                try:
+                    # Create transcode coroutine (unawaited - will be run by streaming_transcode_and_upload_quality)
+                    transcode_coro = transcode_quality_with_progress(
+                        source_path,
+                        output_dir,
+                        quality,
+                        duration,
+                        update_quality_progress,
+                        gpu_caps=GPU_CAPS,
+                        streaming_format=streaming_format,
+                        preferred_codec=streaming_codec,
+                    )
+
+                    # Track segment upload progress (Issue #478 Phase 5)
+                    # This callback is called from sync context, so we use create_task for async updates
+                    # Note: We track segment progress locally but don't send separate HTTP updates.
+                    # The overall job progress is updated via update_quality_progress callback from FFmpeg,
+                    # which calculates the correct average across all qualities.
+                    segment_progress_state = {"count": 0, "bytes": 0, "last_update": 0.0}
+
+                    def on_segment_progress(segments_completed: int, bytes_uploaded: int) -> None:
+                        """Callback for segment upload progress - updates local tracking only."""
+                        segment_progress_state["count"] = segments_completed
+                        segment_progress_state["bytes"] = bytes_uploaded
+                        # Rate limit updates to avoid flooding (update at most every 2 seconds)
+                        now = time.time()
+                        if now - segment_progress_state["last_update"] < 2.0:
+                            return
+                        segment_progress_state["last_update"] = now
+
+                        # Schedule async update to quality_progress_list only (no HTTP call)
+                        # The main transcode progress callback handles the HTTP progress updates
+                        # to avoid conflicting progress values (fixes progress oscillation bug)
+                        async def update_segment_progress():
+                            async with progress_list_lock:
+                                quality_progress_list[quality_idx] = {
+                                    "name": quality_name,
+                                    "status": "uploading",
+                                    "progress": quality_progress_list[quality_idx].get("progress", 0),
+                                    "segments_completed": segments_completed,
+                                }
+
+                        asyncio.create_task(update_segment_progress())
+
+                    # Run transcode with streaming upload
+                    # Pass job_id for Phase 6 resume support
+                    success, error, segment_count = await streaming_transcode_and_upload_quality(
+                        client=client,
+                        video_id=video_id,
+                        output_dir=output_dir,
+                        quality_name=quality_name,
+                        streaming_format=streaming_format,
+                        transcode_coro=transcode_coro,
+                        on_segment_progress=on_segment_progress,
+                        job_id=job_id,
+                    )
+
+                    if not success:
+                        async with progress_list_lock:
+                            quality_progress_list[quality_idx] = {
+                                "name": quality_name,
+                                "status": "failed",
+                                "progress": 0,
+                            }
+                        logger.error(f"    {quality_name}: Streaming upload failed - {error}")
+                        return (None, quality_name)
+
+                    # Get actual dimensions from init.mp4 (segments already uploaded but we need dimensions)
+                    init_mp4 = output_dir / quality_name / "init.mp4"
+                    if init_mp4.exists():
+                        actual_width, actual_height = await get_output_dimensions(init_mp4)
+                    else:
+                        # Estimate based on aspect ratio
+                        actual_height = quality["height"]
+                        actual_width = int(actual_height * source_width / source_height)
+                        actual_width = actual_width + (actual_width % 2)
+
+                    quality_info = {
+                        "name": quality_name,
+                        "width": actual_width,
+                        "height": actual_height,
+                        "bitrate": int(quality["bitrate"].replace("k", "")),
+                    }
+
+                    async with progress_list_lock:
+                        quality_progress_list[quality_idx] = {
+                            "name": quality_name,
+                            "status": "uploaded",
+                            "progress": 100,
+                            "segments_completed": segment_count,
+                            "segments_total": segment_count,
+                        }
+
+                    logger.info(
+                        f"    {quality_name}: Streaming upload complete "
+                        f"({segment_count} segments, {actual_width}x{actual_height})"
+                    )
+                    return (quality_info, None)
+
+                except StreamingClaimExpiredError as e:
+                    # Streaming upload detected claim expiration
+                    raise ClaimExpiredError(str(e))
+
+            # Standard tar.gz upload path (when streaming upload is disabled or non-CMAF)
             success, error = await transcode_quality_with_progress(
                 source_path,
                 output_dir,
@@ -500,7 +744,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "status": "failed",
                         "progress": 0,
                     }
-                print(f"    {quality_name}: Failed - {error}")
+                logger.error(f"    {quality_name}: Failed - {error}")
                 return (None, quality_name)
 
             # Get actual dimensions from transcoded segment
@@ -523,7 +767,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 "height": actual_height,
                 "bitrate": int(quality["bitrate"].replace("k", "")),
             }
-            print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
+            logger.info(f"    {quality_name}: Done ({actual_width}x{actual_height})")
 
             # Validate HLS playlist before upload (issue #166)
             # CMAF uses subdirectory structure
@@ -533,7 +777,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 quality_playlist_path = output_dir / f"{quality_name}.m3u8"
             is_valid, validation_error = await validate_hls_playlist(quality_playlist_path)
             if not is_valid:
-                print(f"    {quality_name}: HLS validation failed - {validation_error}")
+                logger.error(f"    {quality_name}: HLS validation failed - {validation_error}")
                 async with progress_list_lock:
                     quality_progress_list[quality_idx] = {
                         "name": quality_name,
@@ -543,7 +787,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 return (None, quality_name)
 
             # Upload this quality immediately to free disk space
-            print(f"    {quality_name}: Uploading...")
+            logger.info(f"    {quality_name}: Uploading...")
             try:
                 # Upload progress callback
                 async def upload_progress_callback(
@@ -568,7 +812,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         raise
                     except Exception as e:
                         # Other errors are logged but don't abort the upload
-                        print(f"      {qname}: Upload progress update failed: {e}")
+                        logger.error(f"      {qname}: Upload progress update failed: {e}")
 
                 await check_claim_expiration(
                     client.upload_quality(
@@ -581,7 +825,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "status": "uploaded",
                         "progress": 100,
                     }
-                print(f"    {quality_name}: Uploaded")
+                logger.info(f"    {quality_name}: Uploaded")
 
                 # Delete local files to free disk space
                 # Check for CMAF subdirectory structure first
@@ -596,7 +840,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         playlist_file.unlink()
                     for segment in output_dir.glob(f"{quality_name}_*.ts"):
                         segment.unlink()
-                print(f"    {quality_name}: Local files cleaned up")
+                logger.info(f"    {quality_name}: Local files cleaned up")
 
             except WorkerAPIError as e:
                 # Upload failed - keep files, mark as completed (not uploaded)
@@ -606,7 +850,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                         "status": "completed",
                         "progress": 100,
                     }
-                print(f"    {quality_name}: Upload failed - {e.message}")
+                logger.error(f"    {quality_name}: Upload failed - {e.message}")
 
             return (quality_info, None)
 
@@ -616,7 +860,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 raise Exception("Shutdown requested")
 
             if len(batch) > 1:
-                print(f"  Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
+                logger.debug(f"  Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
 
             # Run batch in parallel
             tasks = [transcode_and_upload_quality(q) for q in batch]
@@ -637,7 +881,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             "progress": 0,
                         }
                     failed_qualities.append(quality["name"])
-                    print(f"    {quality['name']}: Unexpected error - {result}")
+                    logger.error(f"    {quality['name']}: Unexpected error - {result}")
                 elif isinstance(result, tuple):
                     success_info, failed_name = result
                     if success_info is not None:
@@ -651,48 +895,74 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         if not successful_qualities and not all_skipped:
             raise Exception(f"All quality variants failed: {', '.join(failed_qualities)}")
 
-        # Determine if this is a selective retranscode (some qualities skipped)
-        # If so, don't regenerate master playlist - the existing one is correct
-        is_selective_retranscode = bool(existing_qualities)
+        # Build complete quality list for manifest generation
+        # This includes both newly transcoded AND existing qualities
+        # We need the full list to generate proper manifests
+        all_qualities_for_manifest = []
 
-        if is_selective_retranscode and all_skipped:
-            # All qualities already existed - nothing to do, just complete the job
-            print("  All qualities already exist, skipping master playlist generation")
-        elif is_selective_retranscode:
-            # Selective retranscode - upload new qualities but keep existing master playlist
-            print("  Selective retranscode - keeping existing master playlist")
-            # Still upload thumbnail if it was regenerated
-            print("  Uploading thumbnail...")
-            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
-            await check_claim_expiration(client.upload_finalize(video_id, output_dir, skip_master=True))
-        else:
-            # Full transcode - generate and upload new master playlist
-            print("  Generating master playlist...")
-            await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
+        # Add successful qualities from this transcode
+        for q in successful_qualities:
+            mq = {
+                "name": q["name"],
+                "width": q["width"],
+                "height": q["height"],
+                "bitrate": f"{q['bitrate']}k" if q["name"] != "original" else "0k",
+            }
+            if q["name"] == "original":
+                mq["is_original"] = True
+                mq["bitrate_bps"] = q["bitrate"] * 1000
+            all_qualities_for_manifest.append(mq)
 
-            # Convert successful_qualities to format expected by generate_master_playlist
-            master_qualities = []
-            for q in successful_qualities:
+        # Add existing qualities (from the qualities list which has full info)
+        # Note: QUALITY_PRESETS don't have 'width', so we calculate it from height
+        # assuming 16:9 aspect ratio (this is a fallback - actual dimensions may vary)
+        for q in qualities:
+            if q["name"] in existing_qualities:
+                # Calculate width from height (16:9 aspect ratio, rounded to even)
+                height = q["height"]
+                width = q.get("width") or int(height * 16 / 9)
+                if width % 2 != 0:
+                    width += 1
                 mq = {
                     "name": q["name"],
-                    "width": q["width"],
-                    "height": q["height"],
-                    "bitrate": f"{q['bitrate']}k" if q["name"] != "original" else "0k",
+                    "width": width,
+                    "height": height,
+                    "bitrate": q["bitrate"],  # Already in "NNNNk" format
                 }
-                if q["name"] == "original":
-                    mq["is_original"] = True
-                    mq["bitrate_bps"] = q["bitrate"] * 1000
-                master_qualities.append(mq)
+                all_qualities_for_manifest.append(mq)
 
-            # Use appropriate master playlist generator based on streaming format
-            if streaming_format == "cmaf":
-                await generate_master_playlist_cmaf(output_dir, master_qualities, streaming_codec)
-                # Also generate DASH manifest if enabled
-                if enable_dash:
-                    print("  Generating DASH manifest...")
-                    await generate_dash_manifest(output_dir, master_qualities, codec=streaming_codec)
-            else:
-                await generate_master_playlist(output_dir, master_qualities)
+        # Also check for existing "original" quality
+        if "original" in existing_qualities:
+            # Original uses source dimensions
+            all_qualities_for_manifest.append(
+                {
+                    "name": "original",
+                    "width": source_width,
+                    "height": source_height,
+                    "bitrate": "0k",
+                    "is_original": True,
+                }
+            )
+
+        # Always generate manifests for CMAF streaming format
+        # Even for selective retranscode, we regenerate to ensure consistency
+        if streaming_format == "cmaf" and all_qualities_for_manifest:
+            logger.info("  Generating master playlist...")
+            await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
+
+            # Convert codec string to VideoCodec enum for manifest generators
+            codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
+                streaming_codec.lower(), VideoCodec.AV1
+            )
+            await generate_master_playlist_cmaf(output_dir, all_qualities_for_manifest, codec_enum)
+
+            # ALWAYS generate DASH manifest for CMAF - this was the bug!
+            # Previously this was conditional on enable_dash and skipped for selective retranscode
+            if enable_dash:
+                logger.info("  Generating DASH manifest...")
+                await generate_dash_manifest(
+                    output_dir, all_qualities_for_manifest, codec=codec_enum, total_duration=duration
+                )
 
             # Validate master playlist before upload (issue #166)
             master_playlist_path = output_dir / "master.m3u8"
@@ -704,16 +974,49 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
             if "#EXT-X-STREAM-INF" not in master_content:
                 raise Exception("Master playlist is malformed (no stream variants)")
 
-            # Upload finalize files (master.m3u8 + thumbnail.jpg)
-            # Quality files were already uploaded incrementally after each transcode
-            print("  Uploading master playlist and thumbnail...")
+            # Validate DASH manifest exists for CMAF (prevent missing manifest bug)
+            if enable_dash:
+                mpd_path = output_dir / "manifest.mpd"
+                if not mpd_path.exists():
+                    raise Exception("DASH manifest was not generated for CMAF streaming")
+
+            # Upload finalize files (master.m3u8, manifest.mpd, thumbnail.jpg)
+            logger.info("  Uploading master playlist, DASH manifest, and thumbnail...")
             await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
             await check_claim_expiration(client.upload_finalize(video_id, output_dir))
-        print("  Finalize files uploaded")
+
+        elif not all_skipped:
+            # Non-CMAF (HLS/TS) streaming format
+            logger.info("  Generating master playlist...")
+            await check_claim_expiration(client.update_progress(job_id, "master_playlist", 95, quality_progress_list))
+            await generate_master_playlist(output_dir, all_qualities_for_manifest)
+
+            # Validate master playlist before upload (issue #166)
+            master_playlist_path = output_dir / "master.m3u8"
+            if not master_playlist_path.exists():
+                raise Exception("Master playlist was not generated")
+            master_content = master_playlist_path.read_text()
+            if not master_content.startswith("#EXTM3U"):
+                raise Exception("Master playlist is malformed (missing #EXTM3U header)")
+            if "#EXT-X-STREAM-INF" not in master_content:
+                raise Exception("Master playlist is malformed (no stream variants)")
+
+            # Upload finalize files
+            logger.info("  Uploading master playlist and thumbnail...")
+            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
+            await check_claim_expiration(client.upload_finalize(video_id, output_dir))
+
+        else:
+            # All qualities skipped - still need to upload thumbnail if regenerated
+            logger.info("  All qualities already exist, uploading thumbnail only...")
+            await check_claim_expiration(client.update_progress(job_id, "upload", 98, quality_progress_list))
+            await check_claim_expiration(client.upload_finalize(video_id, output_dir, skip_master=True))
+
+        logger.info("  Finalize files uploaded")
 
         # Complete job with retry logic to ensure server-side completion is verified
         # before cleaning up local work files (issue #271)
-        print("  Marking job complete...")
+        logger.info("  Marking job complete...")
         for attempt in range(COMPLETE_JOB_MAX_RETRIES):
             try:
                 await check_claim_expiration(
@@ -736,23 +1039,25 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 # Retry on other errors
                 if attempt < COMPLETE_JOB_MAX_RETRIES - 1:
                     error_msg = e.message if isinstance(e, WorkerAPIError) else str(e)
-                    print(f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}")
-                    print(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
+                    logger.warning(
+                        f"    Completion failed (attempt {attempt + 1}/{COMPLETE_JOB_MAX_RETRIES}): {error_msg}"
+                    )
+                    logger.warning(f"    Retrying in {COMPLETE_JOB_RETRY_DELAY}s...")
                     await asyncio.sleep(COMPLETE_JOB_RETRY_DELAY)
                 else:
                     # Final attempt failed - don't cleanup, report failure
                     raise
 
-        print(f"  Done! Video {video_slug} is ready.")
+        logger.info(f"  Done! Video {video_slug} is ready.")
 
         if failed_qualities:
-            print(f"  Note: Some qualities failed: {', '.join(failed_qualities)}")
+            logger.warning(f"  Note: Some qualities failed: {', '.join(failed_qualities)}")
 
         return True
 
     except ClaimExpiredError:
         # Claim expired - job may have been reassigned
-        print(f"  {CLAIM_EXPIRED_ERROR}")
+        logger.error(f"  {CLAIM_EXPIRED_ERROR}")
         # Don't report failure - the job may already be claimed by another worker
         # Safe to cleanup since we don't own this job anymore
         completion_verified = True  # Mark for cleanup
@@ -761,27 +1066,27 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
     except WorkerAPIError as e:
         # Other API errors - don't cleanup, files may be needed for manual recovery
         error_msg = f"API error: {e.message}"[:500]
-        print(f"  Error: {error_msg}")
+        logger.error(f"{error_msg}")
         try:
             await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
         except ClaimExpiredError:
             # Claim expired while trying to report failure - ignore since job is lost anyway
-            print("  Claim expired while reporting error (job may have been reassigned)")
+            logger.error("  Claim expired while reporting error (job may have been reassigned)")
         except Exception as fail_e:
-            print(f"  Failed to report error: {fail_e}")
+            logger.error(f"  Failed to report error: {fail_e}")
         return False
 
     except Exception as e:
         # General errors - don't cleanup, files may be needed for manual recovery
         error_msg = str(e)[:500]
-        print(f"  Error: {error_msg}")
+        logger.error(f"{error_msg}")
         try:
             await check_claim_expiration(client.fail_job(job_id, error_msg, retry=True))
         except ClaimExpiredError:
             # Claim expired while trying to report failure - ignore since job is lost anyway
-            print("  Claim expired while reporting error (job may have been reassigned)")
+            logger.error("  Claim expired while reporting error (job may have been reassigned)")
         except Exception as fail_e:
-            print(f"  Failed to report error: {fail_e}")
+            logger.error(f"  Failed to report error: {fail_e}")
         return False
 
     finally:
@@ -792,7 +1097,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         if completion_verified and work_dir.exists():
             shutil.rmtree(work_dir, ignore_errors=True)
         elif work_dir.exists():
-            print(f"  Note: Work directory preserved at {work_dir} (completion not verified)")
+            logger.info(f"  Note: Work directory preserved at {work_dir} (completion not verified)")
 
 
 # Codec map for re-encoding
@@ -827,7 +1132,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
         target_codec_str = job.get("target_codec", "hevc")
         target_codec = REENCODE_CODEC_MAP.get(target_codec_str, VideoCodec.HEVC)
 
-        print(f"Re-encode job {job_id}: {slug} -> {target_codec_str}")
+        logger.info(f"Re-encode job {job_id}: {slug} -> {target_codec_str}")
 
         # Create work directory
         work_dir = WORKER_WORK_DIR / f"reencode_{job_id}"
@@ -839,13 +1144,12 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
 
         try:
             # Download existing video files
-            print("  Downloading source files...")
+            logger.info("  Downloading source files...")
             download_path = work_dir / "source.tar.gz"
             await client.download_reencode_source(job_id, download_path)
 
-            # Extract source files
-            with tarfile.open(download_path, "r:gz") as tar:
-                tar.extractall(source_dir)
+            # Extract source files securely (prevents path traversal/symlink attacks)
+            extract_tar_secure(download_path, source_dir)
             download_path.unlink(missing_ok=True)
 
             # Find source to re-encode from
@@ -853,7 +1157,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
             if not source_path:
                 raise ValueError("No source found in downloaded files")
 
-            print(f"  Source: {source_path.name}")
+            logger.info(f"  Source: {source_path.name}")
 
             # Get video info for quality selection
             probe_info = await get_video_info(source_path)
@@ -867,7 +1171,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
             completed_qualities = []
             for quality in qualities:
                 try:
-                    print(f"    Encoding {quality['name']}...")
+                    logger.info(f"    Encoding {quality['name']}...")
                     await reencode_quality(
                         source_path=source_path,
                         output_dir=output_dir,
@@ -877,9 +1181,9 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
                         gpu_caps=gpu_caps,
                     )
                     completed_qualities.append(quality)
-                    print(f"    Completed: {quality['name']}")
+                    logger.info(f"    Completed: {quality['name']}")
                 except Exception as e:
-                    print(f"    Failed {quality['name']}: {e}")
+                    logger.error(f"    Failed {quality['name']}: {e}")
                     # Continue with other qualities
 
             if not completed_qualities:
@@ -887,7 +1191,9 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
 
             # Generate manifests
             await generate_master_playlist_cmaf(output_dir, completed_qualities, target_codec)
-            await generate_dash_manifest(output_dir, completed_qualities, segment_duration=6, codec=target_codec)
+            await generate_dash_manifest(
+                output_dir, completed_qualities, segment_duration=6, codec=target_codec, total_duration=duration
+            )
 
             # Copy thumbnail if it exists in source
             for thumb_name in ["thumbnail.jpg", "thumbnail.png"]:
@@ -897,7 +1203,7 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
                     break
 
             # Package output as tar.gz
-            print("  Uploading re-encoded files...")
+            logger.info("  Uploading re-encoded files...")
             upload_path = work_dir / "output.tar.gz"
             with tarfile.open(upload_path, "w:gz") as tar:
                 for f in output_dir.iterdir():
@@ -910,10 +1216,10 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
 
             # Upload result
             await client.upload_reencode_result(job_id, upload_path)
-            print(f"  Re-encode job {job_id} completed successfully")
+            logger.info(f"  Re-encode job {job_id} completed successfully")
 
         except Exception as e:
-            print(f"  Re-encode job {job_id} failed: {e}")
+            logger.error(f"  Re-encode job {job_id} failed: {e}")
             retry_count = job.get("retry_count", 0) + 1
             max_retries = 3
 
@@ -938,10 +1244,10 @@ async def try_process_reencode_job(client: WorkerAPIClient, gpu_caps: Optional[G
         if e.status_code == 404:
             # No jobs available
             return False
-        print(f"API error claiming re-encode job: {e.message}")
+        logger.error(f"API error claiming re-encode job: {e.message}")
         return False
     except Exception as e:
-        print(f"Error processing re-encode job: {e}")
+        logger.error(f"Error processing re-encode job: {e}")
         return False
 
 
@@ -1086,7 +1392,7 @@ def build_concat_cmaf_command(
             "-hls_segment_filename",
             segment_pattern,
             "-movflags",
-            "+cmaf+faststart",
+            "+frag_keyframe+empty_moov+default_base_moof",
             str(playlist_path),
         ]
     )
@@ -1104,8 +1410,8 @@ async def worker_loop():
 
     # Validate API key
     if not WORKER_API_KEY:
-        print("ERROR: VLOG_WORKER_API_KEY environment variable required")
-        print("Register a worker first: curl -X POST http://server:9002/api/worker/register")
+        logger.error("VLOG_WORKER_API_KEY environment variable required")
+        logger.info("Register a worker first: curl -X POST http://server:9002/api/worker/register")
         sys.exit(1)
 
     # Generate unique worker ID for Redis consumer
@@ -1124,49 +1430,56 @@ async def worker_loop():
     worker_settings = await get_remote_worker_settings()
     poll_interval = worker_settings["poll_interval"]
 
-    print("Remote transcoding worker starting...")
-    print(f"  API URL: {WORKER_API_URL}")
-    print(f"  Work dir: {WORKER_WORK_DIR}")
-    print(f"  Heartbeat interval: {WORKER_HEARTBEAT_INTERVAL}s")
-    print(f"  Poll interval: {poll_interval}s")
-    print(f"  Job queue mode: {JOB_QUEUE_MODE}")
+    logger.info("Remote transcoding worker starting...")
+    logger.info(f"  API URL: {WORKER_API_URL}")
+    logger.info(f"  Work dir: {WORKER_WORK_DIR}")
+    logger.info(f"  Heartbeat interval: {WORKER_HEARTBEAT_INTERVAL}s")
+    logger.info(f"  Poll interval: {poll_interval}s")
+    logger.info(f"  Job queue mode: {JOB_QUEUE_MODE}")
 
     # Initialize Redis job queue if enabled
     if JOB_QUEUE_MODE in ("redis", "hybrid"):
-        print("  Initializing Redis job queue...")
+        logger.info("  Initializing Redis job queue...")
         JOB_QUEUE = JobQueue()
         await JOB_QUEUE.initialize(consumer_name=f"worker-{WORKER_UUID}")
         if JOB_QUEUE.is_redis_enabled:
-            print("  Redis Streams enabled for instant job dispatch")
+            logger.info("  Redis Streams enabled for instant job dispatch")
         else:
-            print("  Redis unavailable, using database polling")
+            logger.info("  Redis unavailable, using database polling")
     else:
-        print("  Job queue mode: database (polling)")
+        logger.info("  Job queue mode: database (polling)")
 
     # Detect GPU capabilities
-    print("  Detecting GPU capabilities...")
+    logger.info("  Detecting GPU capabilities...")
     GPU_CAPS = await detect_gpu_capabilities()
     if GPU_CAPS:
-        print(f"  GPU detected: {GPU_CAPS.device_name}")
-        print(f"    Type: {GPU_CAPS.hwaccel_type.value}")
+        logger.info(f"  GPU detected: {GPU_CAPS.device_name}")
+        logger.info(f"    Type: {GPU_CAPS.hwaccel_type.value}")
         encoders = [e.name for codec_encoders in GPU_CAPS.encoders.values() for e in codec_encoders]
-        print(f"    Encoders: {encoders}")
-        print(f"    Max sessions: {GPU_CAPS.max_concurrent_sessions}")
+        logger.info(f"    Encoders: {encoders}")
+        logger.info(f"    Max sessions: {GPU_CAPS.max_concurrent_sessions}")
     else:
-        print("  No GPU acceleration available, using CPU encoding")
+        logger.info("  No GPU acceleration available, using CPU encoding")
 
     # Get worker capabilities for heartbeat
     worker_caps = await get_worker_capabilities(GPU_CAPS)
+    deployment_type = detect_deployment_type()
+    logger.info(f"  Deployment type: {deployment_type}")
 
-    # Verify connection with initial heartbeat (include capabilities)
+    # Verify connection with initial heartbeat (include capabilities and deployment type)
+    logger.info(f"  Code version: {CODE_VERSION}")
     try:
-        await client.heartbeat(status="idle", metadata={"capabilities": worker_caps})
-        print("  Connected to Worker API")
+        await client.heartbeat(
+            status="idle",
+            metadata={"capabilities": worker_caps, "deployment_type": deployment_type},
+            code_version=CODE_VERSION,
+        )
+        logger.info("  Connected to Worker API")
         # Mark worker as ready after successful API connection
         HEALTH_SERVER.set_ready(True)
         HEALTH_SERVER.set_heartbeat_status(True)
     except WorkerAPIError as e:
-        print(f"ERROR: Failed to connect to Worker API: {e.message}")
+        logger.error(f"Failed to connect to Worker API: {e.message}")
         sys.exit(1)
 
     # Create worker state for tracking job status
@@ -1175,8 +1488,23 @@ async def worker_loop():
     # Start heartbeat background task
     heartbeat_task = asyncio.create_task(heartbeat_loop(client, worker_state))
 
+    # Start command listener for remote management (Issue #410)
+    from worker.command_listener import CommandListener
+
+    global COMMAND_LISTENER
+    COMMAND_LISTENER = CommandListener(WORKER_UUID)
+    command_listener_started = await COMMAND_LISTENER.start()
+    if command_listener_started:
+        logger.info("  Remote management enabled (listening for commands)")
+    else:
+        logger.warning("  Remote management unavailable (Redis not configured)")
+
     jobs_processed = 0
     jobs_failed = 0
+
+    # Track consecutive API failures for exponential backoff (Issue #454)
+    consecutive_api_failures = 0
+    MAX_BACKOFF_SECONDS = 300  # 5 minutes max
 
     try:
         while not shutdown_requested:
@@ -1190,13 +1518,13 @@ async def worker_loop():
 
                     if redis_job:
                         # Got job from Redis, do targeted HTTP claim to verify and lock in DB
-                        print(f"Redis dispatched job {redis_job.job_id}, confirming with API...")
+                        logger.info(f"Redis dispatched job {redis_job.job_id}, confirming with API...")
                         result = await client.claim_job(job_id=redis_job.job_id)
 
                         if not result.get("job_id"):
                             # Job already claimed by another worker or no longer available
                             # Acknowledge the Redis message to remove it from the stream
-                            print(f"  Job {redis_job.job_id} no longer available, acknowledging Redis message")
+                            logger.warning(f"  Job {redis_job.job_id} no longer available, acknowledging Redis message")
                             await JOB_QUEUE.acknowledge_job(redis_job)
                             redis_job = None
                             result = None
@@ -1206,6 +1534,9 @@ async def worker_loop():
                     result = await client.claim_job()
 
                 if result.get("job_id"):
+                    # Reset API failure counter on successful job claim
+                    consecutive_api_failures = 0
+
                     # Mark that we're processing a job
                     worker_state["processing_job"] = result.get("job_id")
 
@@ -1226,6 +1557,14 @@ async def worker_loop():
                         # The job will be re-queued to Redis when the database retry triggers
                         if redis_job:
                             await JOB_QUEUE.acknowledge_job(redis_job)
+
+                    # Check for pending management commands after job completion
+                    if COMMAND_LISTENER and COMMAND_LISTENER.has_pending_command():
+                        cmd = COMMAND_LISTENER.get_pending_command()
+                        logger.info(f"Executing pending management command: {cmd}")
+                        await COMMAND_LISTENER.execute_pending_command()
+                        # Command handler will send SIGTERM, which triggers graceful shutdown
+                        break
                 else:
                     # No regular transcoding jobs available
                     # Try to process a re-encode job at lower priority
@@ -1241,17 +1580,41 @@ async def worker_loop():
                             await asyncio.sleep(worker_settings["poll_interval"])
 
             except WorkerAPIError as e:
-                print(f"API error in worker loop: {e.message}")
+                import random
+
+                logger.error(f"API error in worker loop: {e.message}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
+
+                # Exponential backoff on API failures (Issue #454)
+                consecutive_api_failures = min(consecutive_api_failures + 1, 10)
                 worker_settings = await get_remote_worker_settings()
-                await asyncio.sleep(worker_settings["poll_interval"])
+                base_interval = worker_settings["poll_interval"]
+                backoff = min(MAX_BACKOFF_SECONDS, base_interval * (2**consecutive_api_failures))
+                # Add jitter (±20%) to prevent thundering herd when API recovers
+                jitter = backoff * 0.2 * (2 * random.random() - 1)
+                backoff = max(base_interval, backoff + jitter)
+                logger.warning(
+                    f"Backing off for {backoff:.1f}s after {consecutive_api_failures} consecutive API failures"
+                )
+                await asyncio.sleep(backoff)
             except Exception as e:
-                print(f"Error in worker loop: {e}")
+                import random
+
+                logger.error(f"Error in worker loop: {e}")
                 # Clear processing state on error
                 worker_state["processing_job"] = None
+
+                # Exponential backoff on errors (Issue #454)
+                consecutive_api_failures = min(consecutive_api_failures + 1, 10)
                 worker_settings = await get_remote_worker_settings()
-                await asyncio.sleep(worker_settings["poll_interval"])
+                base_interval = worker_settings["poll_interval"]
+                backoff = min(MAX_BACKOFF_SECONDS, base_interval * (2**consecutive_api_failures))
+                # Add jitter (±20%) to prevent thundering herd when API recovers
+                jitter = backoff * 0.2 * (2 * random.random() - 1)
+                backoff = max(base_interval, backoff + jitter)
+                logger.warning(f"Backing off for {backoff:.1f}s after {consecutive_api_failures} consecutive failures")
+                await asyncio.sleep(backoff)
 
     finally:
         # Cancel heartbeat task
@@ -1261,6 +1624,10 @@ async def worker_loop():
         except asyncio.CancelledError:
             pass
 
+        # Stop command listener
+        if COMMAND_LISTENER:
+            await COMMAND_LISTENER.stop()
+
         # Stop health server
         if HEALTH_SERVER:
             await HEALTH_SERVER.stop()
@@ -1268,11 +1635,17 @@ async def worker_loop():
         # Close HTTP client
         await client.close()
 
-        print(f"Worker stopped. Jobs processed: {jobs_processed}, failed: {jobs_failed}")
+        logger.info(f"Worker stopped. Jobs processed: {jobs_processed}, failed: {jobs_failed}")
 
 
 def main():
     """Entry point for the remote transcoder."""
+    # Configure logging to output to stdout
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
     asyncio.run(worker_loop())
 
 

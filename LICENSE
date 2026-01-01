@@ -1,4 +1,4 @@
-MIT License
+MIT License with Streaming Platform Exclusion
 
 Copyright (c) 2025 Damen Knight
 
@@ -11,6 +11,19 @@ furnished to do so, subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
+EXCLUSIONS:
+
+The following entities are explicitly prohibited from any use of this Software:
+
+- Amazon.com, Inc. and all subsidiaries (including but not limited to
+  Twitch Interactive, Inc., AWS, Amazon Web Services)
+- Any entity in which Amazon.com, Inc. holds >10% ownership
+- Any employee, contractor, or agent acting on behalf of the above entities
+
+"Use" includes: execution, modification, incorporation, reference architecture,
+benchmarking, or derivative works for any purpose including internal tools,
+research, or competitive analysis.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

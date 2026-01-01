@@ -11,7 +11,19 @@
 # - intel-media-driver 25.2.6 for Battlemage/Arc support (from RPM Fusion)
 # - NVIDIA libraries injected at runtime via nvidia-container-toolkit
 
-FROM rockylinux/rockylinux:10
+# Pin base image version for reproducible builds
+# Update this periodically and test before deploying
+ARG ROCKY_VERSION=10
+
+# Code version for worker compatibility checking
+# Set this during build: docker build --build-arg CODE_VERSION=$(git rev-parse --short HEAD) ...
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
+
+# =============================================================================
+# Stage 1: Builder - Install build dependencies and Python packages
+# =============================================================================
+FROM rockylinux/rockylinux:${ROCKY_VERSION} AS builder
 
 # Install EPEL and RPM Fusion repositories
 RUN dnf install -y epel-release && \
@@ -20,21 +32,7 @@ RUN dnf install -y epel-release && \
         https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-10.noarch.rpm && \
     dnf clean all
 
-# Install FFmpeg with hardware acceleration support
-# RPM Fusion's FFmpeg 7.1.2 includes nvenc, vaapi, and qsv encoders
-RUN dnf install -y \
-    ffmpeg \
-    ffmpeg-libs \
-    && dnf clean all
-
-# Install Intel VAAPI driver for Arc/Battlemage support
-# intel-media-driver 25.2.6 from RPM Fusion supports Battlemage (Arc B580)
-# Note: libva and mesa-dri-drivers are pulled in as ffmpeg dependencies
-RUN dnf install -y \
-    intel-media-driver \
-    && dnf clean all
-
-# Install Python 3.12 and pip
+# Install Python 3.12 and build dependencies
 RUN dnf install -y \
     python3.12 \
     python3.12-pip \
@@ -43,23 +41,13 @@ RUN dnf install -y \
     alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
     alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.12 1
 
-# Create non-root user for security
-RUN useradd -m -u 1000 -s /bin/bash vlog && \
-    usermod -aG video vlog
+WORKDIR /build
 
-WORKDIR /app
-
-# Copy package files first for better caching
+# Copy package files for dependency installation
 COPY pyproject.toml ./
 
-# Copy source code
-COPY config.py ./
-COPY api/ api/
-COPY worker/ worker/
-COPY cli/ cli/
-
-# Install Python dependencies
-RUN pip3 install --no-cache-dir \
+# Install Python dependencies to a specific location for copying
+RUN pip3 install --no-cache-dir --prefix=/install \
     fastapi>=0.100.0 \
     uvicorn>=0.23.0 \
     python-multipart>=0.0.6 \
@@ -75,11 +63,70 @@ RUN pip3 install --no-cache-dir \
     slowapi>=0.1.9 \
     limits>=3.0.0
 
-# Install the package itself (non-editable for container)
-RUN pip3 install --no-cache-dir .
+# Copy source code and install the package
+COPY config.py ./
+COPY code_version.py ./
+COPY api/ api/
+COPY worker/ worker/
+COPY cli/ cli/
 
-# Change ownership to non-root user
-RUN chown -R vlog:vlog /app
+RUN pip3 install --no-cache-dir --prefix=/install .
+
+# =============================================================================
+# Stage 2: Runtime - Minimal production image
+# =============================================================================
+FROM rockylinux/rockylinux:${ROCKY_VERSION} AS runtime
+
+# Install EPEL and RPM Fusion repositories
+RUN dnf install -y epel-release && \
+    dnf install -y --nogpgcheck \
+        https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-10.noarch.rpm \
+        https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-10.noarch.rpm && \
+    dnf clean all
+
+# Install FFmpeg with hardware acceleration support and curl for health checks
+# RPM Fusion's FFmpeg 7.1.2 includes nvenc, vaapi, and qsv encoders
+RUN dnf install -y \
+    ffmpeg \
+    ffmpeg-libs \
+    curl \
+    && dnf clean all
+
+# Install Intel VAAPI driver for Arc/Battlemage support
+# intel-media-driver 25.2.6 from RPM Fusion supports Battlemage (Arc B580)
+# Note: libva and mesa-dri-drivers are pulled in as ffmpeg dependencies
+RUN dnf install -y \
+    intel-media-driver \
+    && dnf clean all
+
+# Install Python 3.12 runtime (no devel packages needed)
+RUN dnf install -y \
+    python3.12 \
+    python3.12-pip \
+    && dnf clean all && \
+    alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
+    alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.12 1
+
+# Create non-root user for security
+RUN useradd -m -u 1000 -s /bin/bash vlog && \
+    usermod -aG video vlog
+
+WORKDIR /app
+
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy source code
+COPY --chown=vlog:vlog config.py ./
+COPY --chown=vlog:vlog code_version.py ./
+COPY --chown=vlog:vlog api/ api/
+COPY --chown=vlog:vlog worker/ worker/
+COPY --chown=vlog:vlog cli/ cli/
+COPY --chown=vlog:vlog pyproject.toml ./
+
+# Re-declare build args for use in this stage (args don't persist across stages)
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
 
 # Switch to non-root user
 USER vlog
@@ -88,10 +135,14 @@ USER vlog
 RUN mkdir -p /tmp/vlog-worker
 
 # Environment variables
+# VLOG_CODE_VERSION and VLOG_BUILD_TIMESTAMP are used for worker compatibility checking
 ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     VLOG_WORKER_WORK_DIR=/tmp/vlog-worker \
     VLOG_WORKER_HEARTBEAT_INTERVAL=30 \
     VLOG_WORKER_POLL_INTERVAL=10 \
+    # Code version for compatibility checking
+    VLOG_CODE_VERSION=${CODE_VERSION} \
+    VLOG_BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
     # GPU detection (auto-detect by default)
     VLOG_HWACCEL_TYPE=auto \
     VLOG_HWACCEL_PREFERRED_CODEC=h264 \
@@ -103,9 +154,13 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     # Python settings
     PYTHONUNBUFFERED=1
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python3 -c "import sys; sys.exit(0)"
+# Health check - verify worker's health server is responding
+# The worker exposes /health on port 8080 which verifies:
+# - Worker process is alive
+# - API connection is working
+# - FFmpeg is available (including GPU codecs)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Run the remote transcoder
 CMD ["python3", "-m", "worker.remote_transcoder"]

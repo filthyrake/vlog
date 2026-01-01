@@ -3,9 +3,9 @@
 #
 # Prerequisites:
 # 1. Build and push worker image to your registry:
-#    docker build -f Dockerfile.worker -t your-registry/vlog-worker:latest .
-#    docker push your-registry/vlog-worker:latest
-# 2. Update the image reference below
+#    docker build -f Dockerfile.worker-cpu-only -t your-registry/vlog-worker:v1.0.0 .
+#    docker push your-registry/vlog-worker:v1.0.0
+# 2. Update the image reference below to match your version tag
 # 3. Create the secret with your API key (see secret.yaml)
 # 4. Update the ConfigMap with your API URL (see configmap.yaml)
 
@@ -35,12 +35,15 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
 
       containers:
       - name: worker
-        # Update this to your container registry
-        image: vlog-worker:latest
-        imagePullPolicy: Always
+        # Update this to your container registry and version tag
+        # IMPORTANT: Always use specific version tags, never use 'latest'
+        image: vlog-worker:v1.0.0
+        imagePullPolicy: IfNotPresent
 
         # Load environment from ConfigMap and Secret
         envFrom:

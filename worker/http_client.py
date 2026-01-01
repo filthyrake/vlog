@@ -1,15 +1,19 @@
 """HTTP client for worker-to-API communication."""
 
 import asyncio
+import logging
 import random
 import tarfile
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable, List, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerAPIError(Exception):
@@ -19,6 +23,14 @@ class WorkerAPIError(Exception):
         self.status_code = status_code
         self.message = message
         super().__init__(f"API error {status_code}: {message}")
+
+
+class CircuitBreakerOpen(WorkerAPIError):
+    """Exception raised when circuit breaker is open."""
+
+    def __init__(self, retry_after: float):
+        self.retry_after = retry_after
+        super().__init__(0, f"Circuit breaker open - API unavailable, retry after {retry_after:.1f}s")
 
 
 # Retry configuration
@@ -32,6 +44,12 @@ TIMEOUT_CLAIM = 30.0  # Moderate timeout for claim
 TIMEOUT_PROGRESS = 15.0  # Short timeout for progress updates
 TIMEOUT_DEFAULT = 60.0  # Default for most operations
 TIMEOUT_FILE_TRANSFER = 300.0  # Long timeout for file transfers
+
+# Circuit breaker configuration (Issue #453)
+# Opens circuit after consecutive failures, preventing wasted retry time
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3  # Open circuit after 3 consecutive failures
+CIRCUIT_BREAKER_BASE_RESET_SECONDS = 30.0  # Base reset time (doubles each time)
+CIRCUIT_BREAKER_MAX_RESET_SECONDS = 300.0  # Max reset time (5 minutes)
 
 
 class WorkerAPIClient:
@@ -59,6 +77,84 @@ class WorkerAPIClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self._client: Optional[httpx.AsyncClient] = None
+
+        # Circuit breaker state (Issue #453)
+        # Prevents wasting time on retries when API is down
+        self._circuit_open = False
+        self._circuit_open_until: Optional[datetime] = None
+        self._consecutive_failures = 0
+        self._circuit_open_count = 0  # Track how many times circuit has opened
+        self._half_open = False  # True when testing if circuit should close
+
+    def _check_circuit_breaker(self) -> None:
+        """Check if circuit breaker is open and raise if so.
+
+        Raises:
+            CircuitBreakerOpen: If circuit is open and reset time hasn't passed
+        """
+        if not self._circuit_open:
+            return
+
+        now = datetime.now()
+        if self._circuit_open_until and now < self._circuit_open_until:
+            retry_after = (self._circuit_open_until - now).total_seconds()
+            raise CircuitBreakerOpen(retry_after)
+
+        # Reset time has passed, try half-open state (allow one probe request through)
+        # If the probe succeeds, circuit closes. If it fails, circuit re-opens immediately.
+        logger.info("Circuit breaker entering half-open state, allowing probe request")
+        self._circuit_open = False
+        self._half_open = True
+
+    def _record_success(self) -> None:
+        """Record a successful request, resetting circuit breaker."""
+        if self._half_open:
+            logger.info("Half-open probe succeeded, closing circuit breaker")
+        elif self._consecutive_failures > 0:
+            logger.info(f"API request succeeded after {self._consecutive_failures} failures, resetting circuit breaker")
+        self._consecutive_failures = 0
+        self._circuit_open = False
+        self._circuit_open_count = 0
+        self._half_open = False
+
+    def _record_failure(self) -> None:
+        """Record a failed request, potentially opening circuit breaker."""
+        self._consecutive_failures += 1
+
+        # If in half-open state, immediately re-open circuit on any failure
+        if self._half_open:
+            self._half_open = False
+            self._circuit_open = True
+            self._circuit_open_count += 1
+
+            # Exponential backoff for reset time (doubles each time circuit opens)
+            reset_seconds = min(
+                CIRCUIT_BREAKER_BASE_RESET_SECONDS * (2 ** (self._circuit_open_count - 1)),
+                CIRCUIT_BREAKER_MAX_RESET_SECONDS,
+            )
+            self._circuit_open_until = datetime.now() + timedelta(seconds=reset_seconds)
+
+            logger.warning(
+                f"Half-open probe failed, re-opening circuit breaker. "
+                f"Will retry after {reset_seconds:.1f}s (open count: {self._circuit_open_count})"
+            )
+            return
+
+        if self._consecutive_failures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+            self._circuit_open = True
+            self._circuit_open_count += 1
+
+            # Exponential backoff for reset time (doubles each time circuit opens)
+            reset_seconds = min(
+                CIRCUIT_BREAKER_BASE_RESET_SECONDS * (2 ** (self._circuit_open_count - 1)),
+                CIRCUIT_BREAKER_MAX_RESET_SECONDS,
+            )
+            self._circuit_open_until = datetime.now() + timedelta(seconds=reset_seconds)
+
+            logger.warning(
+                f"Circuit breaker opened after {self._consecutive_failures} consecutive failures. "
+                f"Will retry after {reset_seconds:.1f}s (open count: {self._circuit_open_count})"
+            )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with connection pooling."""
@@ -99,7 +195,10 @@ class WorkerAPIClient:
         max_retries: Optional[int] = None,
         **kwargs,
     ) -> dict:
-        """Make an API request with retry logic for transient errors."""
+        """Make an API request with retry logic and circuit breaker (Issue #453)."""
+        # Check circuit breaker before attempting request
+        self._check_circuit_breaker()
+
         client = await self._get_client()
         url = f"{self.base_url}{path}"
         retries = max_retries if max_retries is not None else self.max_retries
@@ -118,11 +217,14 @@ class WorkerAPIClient:
                     **kwargs,
                 )
                 resp.raise_for_status()
+                # Success - reset circuit breaker
+                self._record_success()
                 return resp.json()
             except httpx.HTTPStatusError as e:
                 last_error = e
                 # Don't retry 4xx errors (except 429 rate limit)
                 if e.response.status_code < 500 and e.response.status_code != 429:
+                    # Client error - don't count against circuit breaker
                     try:
                         detail = e.response.json().get("detail", str(e))
                     except Exception:
@@ -144,7 +246,8 @@ class WorkerAPIClient:
                 delay = delay * (0.75 + random.random() * 0.5)
                 await asyncio.sleep(delay)
 
-        # All retries exhausted
+        # All retries exhausted - record failure for circuit breaker
+        self._record_failure()
         if isinstance(last_error, httpx.HTTPStatusError):
             try:
                 detail = last_error.response.json().get("detail", str(last_error))
@@ -158,6 +261,7 @@ class WorkerAPIClient:
         self,
         status: str = "active",
         metadata: Optional[dict] = None,
+        code_version: Optional[str] = None,
     ) -> dict:
         """
         Send heartbeat to server.
@@ -165,13 +269,16 @@ class WorkerAPIClient:
         Args:
             status: Worker status (active, busy, idle)
             metadata: Optional metadata to update
+            code_version: Worker's code version for compatibility checking
 
         Returns:
-            Server response with server_time
+            Server response with server_time, required_version, version_ok
         """
         data = {"status": status}
         if metadata:
             data["metadata"] = metadata
+        if code_version:
+            data["code_version"] = code_version
         return await self._request(
             "POST",
             "/api/worker/heartbeat",
@@ -254,6 +361,9 @@ class WorkerAPIClient:
             video_id: The video ID
             dest_path: Local path to save the file
         """
+        # Check circuit breaker before attempting download
+        self._check_circuit_breaker()
+
         client = await self._get_client()
         url = f"{self.base_url}/api/worker/source/{video_id}"
 
@@ -263,12 +373,21 @@ class WorkerAPIClient:
                 with open(dest_path, "wb") as f:
                     async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                         f.write(chunk)
+            # Success - record for circuit breaker
+            self._record_success()
         except httpx.HTTPStatusError as e:
+            # Record failure for 5xx errors (server issues)
+            if e.response.status_code >= 500:
+                self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            # Connection/timeout errors count against circuit breaker
+            self._record_failure()
+            raise WorkerAPIError(0, f"Download failed: {e}")
 
     async def upload_quality(
         self,
@@ -294,6 +413,9 @@ class WorkerAPIClient:
         Returns:
             Server response
         """
+        # Check circuit breaker before attempting upload
+        self._check_circuit_breaker()
+
         # Create tar.gz of just this quality's files
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
             tmp_path = Path(tmp.name)
@@ -385,18 +507,29 @@ class WorkerAPIClient:
                 timeout=upload_timeout,
             )
             resp.raise_for_status()
+            # Success - record for circuit breaker
+            self._record_success()
             return resp.json()
         except httpx.HTTPStatusError as e:
+            # Record failure for 5xx errors (server issues)
+            if e.response.status_code >= 500:
+                self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
         except httpx.TimeoutException as e:
+            # Timeout counts against circuit breaker
+            self._record_failure()
             raise WorkerAPIError(
                 0,
                 f"Upload timeout for {quality_name} ({file_size_mb:.1f}MB): {e}",
             )
+        except (httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
+            # Connection errors count against circuit breaker
+            self._record_failure()
+            raise WorkerAPIError(0, f"Upload failed for {quality_name}: {e}")
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -407,7 +540,7 @@ class WorkerAPIClient:
         skip_master: bool = False,
     ) -> dict:
         """
-        Upload final files (master.m3u8 and thumbnail.jpg) after all qualities uploaded.
+        Upload final files (master.m3u8, manifest.mpd, and thumbnail.jpg) after all qualities uploaded.
 
         Args:
             video_id: The video ID
@@ -417,6 +550,9 @@ class WorkerAPIClient:
         Returns:
             Server response
         """
+        # Check circuit breaker before attempting upload
+        self._check_circuit_breaker()
+
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
@@ -427,6 +563,11 @@ class WorkerAPIClient:
                     master = output_dir / "master.m3u8"
                     if master.exists():
                         tar.add(master, arcname=master.name)
+
+                # Add DASH manifest (for CMAF streaming)
+                mpd = output_dir / "manifest.mpd"
+                if mpd.exists():
+                    tar.add(mpd, arcname=mpd.name)
 
                 # Add thumbnail
                 thumb = output_dir / "thumbnail.jpg"
@@ -445,13 +586,22 @@ class WorkerAPIClient:
                     timeout=60,  # Small files, short timeout
                 )
                 resp.raise_for_status()
+                # Success - record for circuit breaker
+                self._record_success()
                 return resp.json()
         except httpx.HTTPStatusError as e:
+            # Record failure for 5xx errors (server issues)
+            if e.response.status_code >= 500:
+                self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
+            # Connection/timeout errors count against circuit breaker
+            self._record_failure()
+            raise WorkerAPIError(0, f"Upload finalize failed: {e}")
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -479,6 +629,9 @@ class WorkerAPIClient:
             For large 4K videos with multiple quality variants, the tar.gz
             can be 5-15GB, which would exhaust worker memory if loaded at once.
         """
+        # Check circuit breaker before attempting upload
+        self._check_circuit_breaker()
+
         # Create tar.gz of output directory
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
             tmp_path = Path(tmp.name)
@@ -558,18 +711,29 @@ class WorkerAPIClient:
                 timeout=upload_timeout,
             )
             resp.raise_for_status()
+            # Success - record for circuit breaker
+            self._record_success()
             return resp.json()
         except httpx.HTTPStatusError as e:
+            # Record failure for 5xx errors (server issues)
+            if e.response.status_code >= 500:
+                self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
         except httpx.TimeoutException as e:
+            # Timeout counts against circuit breaker
+            self._record_failure()
             raise WorkerAPIError(
                 0,
                 f"Upload timeout after {upload_timeout}s for {file_size_mb:.1f}MB file: {e}",
             )
+        except (httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
+            # Connection errors count against circuit breaker
+            self._record_failure()
+            raise WorkerAPIError(0, f"Upload HLS failed: {e}")
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -714,6 +878,9 @@ class WorkerAPIClient:
             job_id: The re-encode job ID
             dest_path: Local path to save the tar.gz file
         """
+        # Check circuit breaker before attempting download
+        self._check_circuit_breaker()
+
         client = await self._get_client()
         url = f"{self.base_url}/api/reencode/{job_id}/download"
 
@@ -723,12 +890,21 @@ class WorkerAPIClient:
                 with open(dest_path, "wb") as f:
                     async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                         f.write(chunk)
+            # Success - record for circuit breaker
+            self._record_success()
         except httpx.HTTPStatusError as e:
+            # Record failure for 5xx errors (server issues)
+            if e.response.status_code >= 500:
+                self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            # Connection/timeout errors count against circuit breaker
+            self._record_failure()
+            raise WorkerAPIError(0, f"Download reencode source failed: {e}")
 
     async def upload_reencode_result(
         self,
@@ -745,6 +921,9 @@ class WorkerAPIClient:
         Returns:
             Server response
         """
+        # Check circuit breaker before attempting upload
+        self._check_circuit_breaker()
+
         client = await self._get_client()
         url = f"{self.base_url}/api/reencode/{job_id}/upload"
 
@@ -763,13 +942,192 @@ class WorkerAPIClient:
                     timeout=upload_timeout,
                 )
                 resp.raise_for_status()
+                # Success - record for circuit breaker
+                self._record_success()
                 return resp.json()
         except httpx.HTTPStatusError as e:
+            # Record failure for 5xx errors (server issues)
+            if e.response.status_code >= 500:
+                self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
                 detail = str(e)
             raise WorkerAPIError(e.response.status_code, detail)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
+            # Connection/timeout errors count against circuit breaker
+            self._record_failure()
+            raise WorkerAPIError(0, f"Upload reencode result failed: {e}")
+
+    # =========================================================================
+    # Streaming Segment Upload Methods (Issue #478)
+    # =========================================================================
+
+    async def upload_segment(
+        self,
+        video_id: int,
+        quality: str,
+        filename: str,
+        data: bytes,
+        checksum: str,
+        timeout: float = 60.0,
+    ) -> dict:
+        """
+        Upload a single segment file to the server (Issue #478).
+
+        This method uploads individual segments as FFmpeg writes them,
+        eliminating the blocking tar.gz creation that caused heartbeat failures.
+
+        Features:
+        - SHA256 checksum verification (Ada's integrity guarantee)
+        - 60s timeout (reasonable for typical segment sizes)
+        - Exponential backoff retry via _request
+
+        Args:
+            video_id: The video ID
+            quality: Quality name (e.g., "1080p", "720p")
+            filename: Segment filename (e.g., "seg_0001.m4s", "init.mp4")
+            data: Raw segment bytes
+            checksum: SHA256 hex digest of the data
+
+        Returns:
+            Server response with write status and checksum verification
+
+        Raises:
+            WorkerAPIError: On HTTP error or connection failure
+            WorkerAPIError(409, ...): If claim has expired
+        """
+        # Check circuit breaker before attempting upload
+        self._check_circuit_breaker()
+
+        client = await self._get_client()
+        url = f"{self.base_url}/api/worker/upload/{video_id}/segment/{quality}/{filename}"
+
+        headers = {
+            **self.headers,
+            "Content-Type": "application/octet-stream",
+            "X-Content-SHA256": checksum,
+        }
+
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = await client.post(
+                    url,
+                    content=data,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
+                self._record_success()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                # Don't retry 4xx errors
+                if e.response.status_code < 500:
+                    try:
+                        detail = e.response.json().get("detail", str(e))
+                    except Exception:
+                        detail = str(e)
+                    raise WorkerAPIError(e.response.status_code, detail)
+            except httpx.RequestError as e:
+                last_error = e
+                if not self._is_retryable_error(e):
+                    raise WorkerAPIError(0, f"Upload segment failed: {e}")
+
+            # Backoff before retry
+            if attempt < self.max_retries:
+                delay = min(
+                    DEFAULT_RETRY_BASE_DELAY * (2**attempt),
+                    DEFAULT_RETRY_MAX_DELAY,
+                )
+                delay = delay * (0.75 + random.random() * 0.5)
+                await asyncio.sleep(delay)
+
+        # All retries exhausted
+        self._record_failure()
+        if isinstance(last_error, httpx.HTTPStatusError):
+            try:
+                detail = last_error.response.json().get("detail", str(last_error))
+            except Exception:
+                detail = str(last_error)
+            raise WorkerAPIError(last_error.response.status_code, detail)
+        else:
+            raise WorkerAPIError(0, f"Upload segment failed after retries: {last_error}")
+
+    async def get_segments_status(
+        self,
+        video_id: int,
+        quality: str,
+    ) -> dict:
+        """
+        Get status of uploaded segments for resume support (Issue #478).
+
+        Query the server to find which segments have already been received
+        for a given quality. Used when resuming after worker restart.
+
+        Args:
+            video_id: The video ID
+            quality: Quality name to check
+
+        Returns:
+            Dict with:
+                - quality: Quality name
+                - received_segments: List of filenames already received
+                - total_size_bytes: Total bytes received
+
+        Raises:
+            WorkerAPIError: On HTTP error or connection failure
+        """
+        return await self._request(
+            "GET",
+            f"/api/worker/upload/{video_id}/segments/status",
+            params={"quality": quality},
+            timeout=TIMEOUT_DEFAULT,
+        )
+
+    async def finalize_quality_upload(
+        self,
+        video_id: int,
+        quality: str,
+        segment_count: int,
+        manifest_checksum: str = None,
+    ) -> dict:
+        """
+        Finalize a quality's segment upload (Issue #478).
+
+        Called after all segments for a quality are uploaded.
+        Server verifies segment count matches expected before marking complete.
+
+        Args:
+            video_id: The video ID
+            quality: Quality name (e.g., "1080p")
+            segment_count: Expected number of segment files
+            manifest_checksum: Optional SHA256 of manifest file
+
+        Returns:
+            Dict with:
+                - status: "ok" or "incomplete"
+                - complete: True if all segments received
+                - missing_segments: List of missing segment names (if incomplete)
+
+        Raises:
+            WorkerAPIError: On HTTP error or connection failure
+            WorkerAPIError(409, ...): If claim has expired
+        """
+        data = {
+            "quality": quality,
+            "segment_count": segment_count,
+        }
+        if manifest_checksum:
+            data["manifest_checksum"] = manifest_checksum
+
+        return await self._request(
+            "POST",
+            f"/api/worker/upload/{video_id}/segment/finalize",
+            json=data,
+            timeout=TIMEOUT_DEFAULT,
+        )
 
     async def close(self) -> None:
         """Close the HTTP client."""

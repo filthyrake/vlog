@@ -1,0 +1,79 @@
+name: Build Worker Container
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'worker/**'
+      - 'api/**'
+      - 'cli/**'
+      - 'config.py'
+      - 'Dockerfile.worker.gpu'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force build even without code changes'
+        required: false
+        default: 'false'
+
+env:
+  REGISTRY: 10.0.1.152:9003
+  IMAGE_NAME: vlog-worker-gpu
+  BASE_TAG: rocky10
+
+jobs:
+  build:
+    name: Build and Push Worker Image
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate version tag
+        id: version
+        run: |
+          # Use git short SHA for unique versioning (7 chars, matching git default)
+          SHA=$(git rev-parse --short HEAD)
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "full_tag=${BASE_TAG}-${SHA}" >> $GITHUB_OUTPUT
+          echo "Generated tag: ${BASE_TAG}-${SHA}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -f Dockerfile.worker.gpu \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }} \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BASE_TAG }}-latest \
+            --build-arg CODE_VERSION=${{ steps.version.outputs.sha }} \
+            --build-arg BUILD_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            .
+
+      - name: Push to registry
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BASE_TAG }}-latest
+          echo "Pushed: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}"
+
+      - name: Update K8s deployment (dev branch)
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          # Update the deployment to use the new image
+          kubectl -n vlog set image deployment/vlog-worker-intel \
+            worker=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}
+
+          # Wait for rollout
+          kubectl -n vlog rollout status deployment/vlog-worker-intel --timeout=300s
+
+          echo "Deployment updated to ${{ steps.version.outputs.full_tag }}"
+
+      - name: Summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY

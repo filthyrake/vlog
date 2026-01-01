@@ -18,6 +18,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",
     "python-slugify>=8.0.0",
+    "python-dateutil>=2.8.0",  # Required for partition management
     "aiofiles>=23.0.0",
     "httpx>=0.25.0",
     "faster-whisper>=1.0.0",
@@ -26,6 +27,8 @@ dependencies = [
     "rich>=13.0.0",
     "redis>=4.0.0",  # Required for job queue and pub/sub
     "sse-starlette>=1.6.0",  # Server-Sent Events support
+    "prometheus-client>=0.19.0",  # Prometheus metrics
+    "psutil>=5.9.0",  # System resource monitoring for sprite worker
 ]
 
 [project.optional-dependencies]
@@ -44,7 +47,7 @@ include = ["api", "worker", "cli"]
 where = ["."]
 
 [tool.setuptools]
-py-modules = ["config"]
+py-modules = ["config", "code_version"]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
@@ -60,6 +63,10 @@ addopts = "-v --tb=short --cov=api --cov=worker --cov=cli --cov-report=html --co
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
+]
+markers = [
+    "slow: marks test as slow (deselect with '-m \"not slow\"')",
+    "integration: marks test as integration test",
 ]
 
 [tool.coverage.run]

@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -78,6 +79,8 @@ class SettingsService:
         self._cache_updated: float = 0
         self._cache_loaded: bool = False
         self._refresh_lock: Optional[asyncio.Lock] = None  # Lazy init for async context
+        # Thread-safe lock for initializing _refresh_lock (Issue #429)
+        self._init_lock = threading.Lock()
 
     def _is_cache_valid(self) -> bool:
         """Check if the cache is still valid (not expired)."""
@@ -139,9 +142,12 @@ class SettingsService:
         if self._is_cache_valid():
             return
 
-        # Lazy-init the lock (can't create in __init__ outside async context)
+        # Thread-safe lazy initialization of async lock (Issue #429)
+        # Uses double-checked locking pattern to avoid race condition
         if self._refresh_lock is None:
-            self._refresh_lock = asyncio.Lock()
+            with self._init_lock:
+                if self._refresh_lock is None:
+                    self._refresh_lock = asyncio.Lock()
 
         # Use lock to prevent multiple concurrent refreshes
         async with self._refresh_lock:
@@ -966,6 +972,36 @@ KNOWN_SETTINGS = [
         "Videos with more views than this get high priority re-encoding",
         {"min": 0, "max": 100000},
     ),
+    # Streaming segment upload settings (Issue #478)
+    (
+        "workers.streaming_upload",
+        "workers",
+        "boolean",
+        "Upload segments individually during transcoding (eliminates tar.gz blocking)",
+        None,
+    ),
+    # Display settings
+    (
+        "display.show_view_counts",
+        "display",
+        "boolean",
+        "Show view counts on video cards in the public UI",
+        None,
+    ),
+    (
+        "display.show_tagline",
+        "display",
+        "boolean",
+        "Show tagline in the footer",
+        None,
+    ),
+    (
+        "display.tagline",
+        "display",
+        "string",
+        "Footer tagline text",
+        {"max_length": 100},
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1018,6 +1054,12 @@ SETTING_TO_ENV_MAP = {
     "reencode.batch_size": "VLOG_REENCODE_BATCH_SIZE",
     "reencode.enabled": "VLOG_REENCODE_ENABLED",
     "reencode.priority_threshold_views": "VLOG_REENCODE_PRIORITY_THRESHOLD",
+    # Streaming segment upload (Issue #478)
+    "workers.streaming_upload": "VLOG_WORKER_STREAMING_UPLOAD",
+    # Display settings
+    "display.show_view_counts": "VLOG_DISPLAY_SHOW_VIEW_COUNTS",
+    "display.show_tagline": "VLOG_DISPLAY_SHOW_TAGLINE",
+    "display.tagline": "VLOG_DISPLAY_TAGLINE",
 }
 
 

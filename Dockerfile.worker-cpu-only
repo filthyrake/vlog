@@ -1,0 +1,108 @@
+# VLog Remote Transcoding Worker (CPU-only)
+# Containerized worker for distributed video transcoding
+#
+# Build: docker build -f Dockerfile.worker-cpu-only -t vlog-worker --build-arg CODE_VERSION=$(git rev-parse --short HEAD) .
+# Run: docker run -e VLOG_WORKER_API_KEY=<key> -e VLOG_WORKER_API_URL=http://host:9002 vlog-worker
+
+# Pin base image version for reproducible builds
+# python:3.12-slim-bookworm is Debian Bookworm (12) based
+ARG PYTHON_VERSION=3.12-slim-bookworm
+
+# Code version for worker compatibility checking
+# Set this during build: docker build --build-arg CODE_VERSION=$(git rev-parse --short HEAD) ...
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
+
+# =============================================================================
+# Stage 1: Builder - Install Python dependencies
+# =============================================================================
+FROM python:${PYTHON_VERSION} AS builder
+
+WORKDIR /build
+
+# Copy package files for dependency installation
+COPY pyproject.toml ./
+
+# Install Python dependencies to a specific location for copying
+RUN pip install --no-cache-dir --prefix=/install \
+    fastapi>=0.100.0 \
+    uvicorn>=0.23.0 \
+    python-multipart>=0.0.6 \
+    asyncpg>=0.29.0 \
+    "databases[postgresql]>=0.8.0" \
+    psycopg2-binary>=2.9.0 \
+    sqlalchemy>=2.0.0 \
+    alembic>=1.13.0 \
+    python-slugify>=8.0.0 \
+    aiofiles>=23.0.0 \
+    httpx>=0.25.0 \
+    watchdog>=3.0.0 \
+    slowapi>=0.1.9 \
+    limits>=3.0.0
+
+# Copy source code and install the package
+COPY config.py ./
+COPY code_version.py ./
+COPY api/ api/
+COPY worker/ worker/
+COPY cli/ cli/
+
+RUN pip install --no-cache-dir --prefix=/install .
+
+# =============================================================================
+# Stage 2: Runtime - Minimal production image
+# =============================================================================
+FROM python:${PYTHON_VERSION} AS runtime
+
+# Install FFmpeg and curl (for health checks)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN useradd -m -u 1000 -s /bin/bash vlog
+
+WORKDIR /app
+
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy source code
+COPY --chown=vlog:vlog pyproject.toml ./
+COPY --chown=vlog:vlog config.py ./
+COPY --chown=vlog:vlog code_version.py ./
+COPY --chown=vlog:vlog api/ api/
+COPY --chown=vlog:vlog worker/ worker/
+COPY --chown=vlog:vlog cli/ cli/
+
+# Re-declare build args for use in this stage (args don't persist across stages)
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
+
+# Switch to non-root user
+USER vlog
+
+# Create work directory
+RUN mkdir -p /tmp/vlog-worker
+
+# Environment variables with defaults
+# VLOG_CODE_VERSION and VLOG_BUILD_TIMESTAMP are used for worker compatibility checking
+ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
+    VLOG_WORKER_WORK_DIR=/tmp/vlog-worker \
+    VLOG_WORKER_HEARTBEAT_INTERVAL=30 \
+    VLOG_WORKER_POLL_INTERVAL=10 \
+    VLOG_CODE_VERSION=${CODE_VERSION} \
+    VLOG_BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
+    PYTHONUNBUFFERED=1
+
+# Health check - verify worker's health server is responding
+# The worker exposes /health on port 8080 which verifies:
+# - Worker process is alive
+# - API connection is working
+# - FFmpeg is available
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Run the remote transcoder
+CMD ["python", "-m", "worker.remote_transcoder"]

@@ -45,6 +45,9 @@ class WorkerCapabilities(BaseModel):
         default="none", max_length=20, description="Hardware acceleration type: nvidia, intel, or none"
     )
     gpu_name: Optional[str] = Field(default=None, max_length=200, description="GPU device name")
+    code_version: Optional[str] = Field(
+        default=None, max_length=64, description="Worker code version (git commit hash or semver tag)"
+    )
     supported_codecs: List[str] = Field(
         default=["h264"],
         max_length=10,  # Max 10 codecs in the list
@@ -92,6 +95,14 @@ class WorkerMetadata(BaseModel):
     """Worker metadata for Kubernetes pod info, etc."""
 
     model_config = ConfigDict(extra="forbid")  # Reject unknown fields
+
+    # Deployment type: how this worker is deployed
+    deployment_type: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        pattern="^(kubernetes|systemd|docker|manual)$",
+        description="Deployment method: kubernetes, systemd, docker, or manual",
+    )
 
     # Kubernetes pod information
     pod_name: Optional[str] = Field(default=None, max_length=253)
@@ -151,6 +162,11 @@ class WorkerRegisterResponse(BaseModel):
 # Heartbeat
 class HeartbeatRequest(BaseModel):
     status: str = Field(default="active", pattern="^(active|busy|idle)$")
+    code_version: Optional[str] = Field(
+        default=None,
+        description="Worker's code version (git commit hash). Used for version compatibility checks.",
+        max_length=40,
+    )
     metadata: Optional[Dict] = Field(
         default=None, description="Optional metadata dict containing 'capabilities' key with WorkerCapabilities"
     )
@@ -186,6 +202,14 @@ class HeartbeatRequest(BaseModel):
 class HeartbeatResponse(BaseModel):
     status: str
     server_time: datetime
+    required_version: Optional[str] = Field(
+        default=None,
+        description="Required code version. If set and doesn't match worker's version, worker should exit.",
+    )
+    version_ok: bool = Field(
+        default=True,
+        description="True if worker's code version matches required version. False means worker should exit.",
+    )
 
 
 # Job claiming
@@ -207,6 +231,9 @@ class QualityProgressUpdate(BaseModel):
     name: str
     status: str = Field(pattern="^(pending|in_progress|uploading|completed|uploaded|failed|skipped)$")
     progress: int = Field(ge=0, le=100)
+    # Segment tracking for streaming upload (Issue #478)
+    segments_total: Optional[int] = Field(default=None, ge=0, description="Total segments expected")
+    segments_completed: Optional[int] = Field(default=None, ge=0, description="Segments uploaded so far")
 
 
 class ProgressUpdateRequest(BaseModel):
@@ -292,3 +319,72 @@ class WorkerListResponse(BaseModel):
 class StatusResponse(BaseModel):
     status: str
     message: Optional[str] = None
+
+
+# =============================================================================
+# Streaming Segment Upload Schemas (Issue #478)
+# =============================================================================
+
+
+class SegmentQuality(str):
+    """Valid quality names for segment uploads.
+
+    Using an enum-like validation instead of regex for security (Bruce's recommendation).
+    """
+
+    VALID_QUALITIES = frozenset(
+        ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original"]
+    )
+
+    @classmethod
+    def validate(cls, value: str) -> str:
+        """Validate quality is one of the allowed values."""
+        if value not in cls.VALID_QUALITIES:
+            raise ValueError(f"Invalid quality '{value}'. Must be one of: {sorted(cls.VALID_QUALITIES)}")
+        return value
+
+
+class SegmentUploadResponse(BaseModel):
+    """Response from segment upload endpoint."""
+
+    status: str
+    written: bool
+    bytes_written: int
+    checksum_verified: bool
+
+
+class SegmentStatusResponse(BaseModel):
+    """Response from segments status endpoint."""
+
+    quality: str
+    received_segments: List[str]
+    total_size_bytes: int
+
+
+class SegmentFinalizeRequest(BaseModel):
+    """Request to finalize a quality upload."""
+
+    quality: str
+    segment_count: int = Field(
+        ge=0,
+        le=100000,  # Reasonable upper bound (code review fix)
+        description="Expected number of segment files (init.mp4 + *.m4s or *.ts)",
+    )
+    manifest_checksum: Optional[str] = Field(
+        default=None,
+        description="SHA256 checksum of the manifest file (e.g., 'sha256:abc123...')",
+    )
+
+    @field_validator("quality")
+    @classmethod
+    def validate_quality(cls, v):
+        """Ensure quality is valid."""
+        return SegmentQuality.validate(v)
+
+
+class SegmentFinalizeResponse(BaseModel):
+    """Response from finalize endpoint."""
+
+    status: str
+    complete: bool
+    missing_segments: List[str] = Field(default_factory=list)

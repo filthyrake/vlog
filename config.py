@@ -93,8 +93,8 @@ def check_deprecated_env_vars() -> None:
 
 
 def get_int_env(
-    name: str,
-    default: int,
+    env_var_name: str,
+    default_value: int,
     min_val: Optional[int] = None,
     max_val: Optional[int] = None,
 ) -> int:
@@ -109,35 +109,35 @@ def get_int_env(
     Returns:
         Parsed integer value, or default if parsing fails or value is out of range
     """
-    value = os.getenv(name)
+    value = os.getenv(env_var_name)
     if value is None:
         # Environment variable not set; use default without validation
-        return default
+        return default_value
 
     try:
         result = int(value)
     except ValueError:
-        logger.warning(f"Invalid {name}='{value}', using default {default}")
-        return default
+        logger.warning(f"Invalid {env_var_name}='{value}', using default {default_value}")
+        return default_value
 
     # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
         logger.warning(
-            f"{name}={result} is below minimum {min_val}, using default {default}"
+            f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}"
         )
-        return default
+        return default_value
     if max_val is not None and result > max_val:
         logger.warning(
-            f"{name}={result} is above maximum {max_val}, using default {default}"
+            f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}"
         )
-        return default
+        return default_value
 
     return result
 
 
 def get_float_env(
-    name: str,
-    default: float,
+    env_var_name: str,
+    default_value: float,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
 ) -> float:
@@ -154,33 +154,33 @@ def get_float_env(
     """
     import math
 
-    value = os.getenv(name)
+    value = os.getenv(env_var_name)
     if value is None:
         # Environment variable not set; use default without validation
-        return default
+        return default_value
 
     try:
         result = float(value)
     except ValueError:
-        logger.warning(f"Invalid {name}='{value}', using default {default}")
-        return default
+        logger.warning(f"Invalid {env_var_name}='{value}', using default {default_value}")
+        return default_value
 
     # Reject special float values (inf, -inf, nan)
     if math.isinf(result) or math.isnan(result):
-        logger.warning(f"Invalid {name}='{value}' (special float), using default {default}")
-        return default
+        logger.warning(f"Invalid {env_var_name}='{value}' (special float), using default {default_value}")
+        return default_value
 
     # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
         logger.warning(
-            f"{name}={result} is below minimum {min_val}, using default {default}"
+            f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}"
         )
-        return default
+        return default_value
     if max_val is not None and result > max_val:
         logger.warning(
-            f"{name}={result} is above maximum {max_val}, using default {default}"
+            f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}"
         )
-        return default
+        return default_value
 
     return result
 
@@ -196,7 +196,14 @@ UPLOADS_DIR = NAS_STORAGE / os.getenv("VLOG_UPLOADS_SUBDIR", "uploads")
 ARCHIVE_DIR = NAS_STORAGE / os.getenv("VLOG_ARCHIVE_SUBDIR", "archive")
 # Database configuration - PostgreSQL is the default
 # Set VLOG_DATABASE_URL to override (e.g., for SQLite: sqlite:///./vlog.db)
-DATABASE_URL = os.getenv("VLOG_DATABASE_URL", "postgresql://vlog:vlog_password@localhost/vlog")
+# IMPORTANT: Always set VLOG_DATABASE_URL in production with a secure password
+_default_db_url = "postgresql://vlog@localhost/vlog"
+DATABASE_URL = os.getenv("VLOG_DATABASE_URL", _default_db_url)
+if DATABASE_URL == _default_db_url and not os.environ.get("VLOG_TEST_MODE"):
+    logger.warning(
+        "VLOG_DATABASE_URL not set - using default without password. "
+        "Set VLOG_DATABASE_URL with credentials for production use."
+    )
 
 # Legacy SQLite path (kept for migration scripts)
 DATABASE_PATH = Path(os.getenv("VLOG_DATABASE_PATH", str(BASE_DIR / "vlog.db")))
@@ -455,10 +462,30 @@ ANALYTICS_CLIENT_CACHE_MAX_AGE = get_int_env("VLOG_ANALYTICS_CLIENT_CACHE_MAX_AG
 # Reduced from 5 to 2 for faster failure detection on stale NFS mounts
 STORAGE_CHECK_TIMEOUT = get_int_env("VLOG_STORAGE_CHECK_TIMEOUT", 2, min_val=1)
 
+# TAR Extraction Timeout (Issue #451)
+# Timeout for tar extraction operations in seconds
+# NAS I/O can hang indefinitely on stale mounts - this prevents thread pool exhaustion
+# Default: 600 seconds (10 minutes) - sufficient for large quality archives on slow NAS
+TAR_EXTRACTION_TIMEOUT = get_int_env("VLOG_TAR_EXTRACTION_TIMEOUT", 600, min_val=60)
+
+# Orphaned Quality File Cleanup (Issue #450)
+# Enable/disable automatic cleanup of orphaned quality directories
+ORPHAN_CLEANUP_ENABLED = os.getenv("VLOG_ORPHAN_CLEANUP_ENABLED", "true").lower() in ("true", "1", "yes")
+# How often to run orphan cleanup check (seconds, default: 1 hour)
+ORPHAN_CLEANUP_INTERVAL = get_int_env("VLOG_ORPHAN_CLEANUP_INTERVAL", 3600, min_val=300)
+# Minimum age before a directory is considered orphaned (seconds, default: 24 hours)
+# Directories younger than this are not cleaned up - allows time for job completion
+ORPHAN_CLEANUP_MIN_AGE = get_int_env("VLOG_ORPHAN_CLEANUP_MIN_AGE", 86400, min_val=3600)
+
 # Audit Logging Configuration
 AUDIT_LOG_ENABLED = os.getenv("VLOG_AUDIT_LOG_ENABLED", "true").lower() not in ("false", "0", "no")
 AUDIT_LOG_PATH = Path(os.getenv("VLOG_AUDIT_LOG_PATH", "/var/log/vlog/audit.log"))
 AUDIT_LOG_LEVEL = os.getenv("VLOG_AUDIT_LOG_LEVEL", "INFO").upper()
+# Log rotation settings
+# Maximum size of audit log file before rotation (in bytes, default: 10MB)
+AUDIT_LOG_MAX_BYTES = get_int_env("VLOG_AUDIT_LOG_MAX_BYTES", 10 * 1024 * 1024, min_val=1024)
+# Number of backup files to keep (default: 5, so 6 total files including current)
+AUDIT_LOG_BACKUP_COUNT = get_int_env("VLOG_AUDIT_LOG_BACKUP_COUNT", 5, min_val=0)
 
 # Error Message Truncation Limits
 # Standardized limits for consistent debugging experience across the codebase
@@ -475,6 +502,12 @@ ALERT_WEBHOOK_TIMEOUT = get_int_env("VLOG_ALERT_WEBHOOK_TIMEOUT", 10, min_val=1)
 # Minimum interval between alerts for the same event type (seconds)
 # Prevents alert flooding when multiple jobs fail in quick succession
 ALERT_RATE_LIMIT_SECONDS = get_int_env("VLOG_ALERT_RATE_LIMIT_SECONDS", 300, min_val=0)
+
+# Streaming Segment Upload (Issue #478)
+# When enabled, workers upload segments individually as FFmpeg writes them
+# instead of creating a tar.gz after all qualities complete. This eliminates
+# event loop blocking during upload and keeps heartbeats alive.
+WORKER_STREAMING_UPLOAD = os.getenv("VLOG_WORKER_STREAMING_UPLOAD", "false").lower() in ("true", "1", "yes")
 
 # Watermark Configuration (client-side overlay, does not modify video files)
 # Enable/disable watermark overlay on video player
@@ -499,3 +532,53 @@ WATERMARK_OPACITY = get_float_env("VLOG_WATERMARK_OPACITY", 0.5, min_val=0.0, ma
 WATERMARK_PADDING = get_int_env("VLOG_WATERMARK_PADDING", 16, min_val=0)
 # Maximum width as percentage of video player (keeps watermark proportional, for images only)
 WATERMARK_MAX_WIDTH_PERCENT = get_int_env("VLOG_WATERMARK_MAX_WIDTH_PERCENT", 15, min_val=1, max_val=50)
+
+# =============================================================================
+# Sprite Sheet Configuration (Issue #413 Phase 7B)
+# Timeline thumbnail previews on video progress bar hover
+# =============================================================================
+
+# Enable/disable sprite sheet generation for timeline thumbnails
+SPRITE_SHEET_ENABLED = os.getenv("VLOG_SPRITE_SHEET_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Seconds between frames in sprite sheet (default: 5 seconds)
+# Lower values = more frames = larger file size but smoother preview
+SPRITE_SHEET_FRAME_INTERVAL = get_int_env("VLOG_SPRITE_SHEET_FRAME_INTERVAL", 5, min_val=1, max_val=30)
+
+# Width of each thumbnail frame in pixels (height auto-calculated from aspect ratio)
+# Smaller = smaller file size, larger = clearer preview
+SPRITE_SHEET_THUMBNAIL_WIDTH = get_int_env("VLOG_SPRITE_SHEET_THUMBNAIL_WIDTH", 160, min_val=80, max_val=320)
+
+# Number of frames per row/column in sprite sheet grid (e.g., 10 = 10x10 = 100 frames per sheet)
+SPRITE_SHEET_TILE_SIZE = get_int_env("VLOG_SPRITE_SHEET_TILE_SIZE", 10, min_val=5, max_val=20)
+
+# JPEG quality for sprite sheets (lower = smaller files, 60 recommended per reviewer feedback)
+# Range: 1-100, with 60-75 being good quality/size tradeoff
+SPRITE_SHEET_JPEG_QUALITY = get_int_env("VLOG_SPRITE_SHEET_JPEG_QUALITY", 60, min_val=30, max_val=95)
+
+# Maximum number of sprite sheets per video (prevents excessive storage for very long videos)
+# 100 sheets × 100 frames/sheet × 5 sec/frame = ~14 hours of video coverage
+SPRITE_SHEET_MAX_SHEETS = get_int_env("VLOG_SPRITE_SHEET_MAX_SHEETS", 100, min_val=1, max_val=1000)
+
+# Timeout multiplier for sprite generation (relative to video duration)
+# e.g., 0.5 = sprite gen timeout is 50% of video duration
+SPRITE_SHEET_TIMEOUT_MULTIPLIER = get_float_env("VLOG_SPRITE_SHEET_TIMEOUT_MULTIPLIER", 0.5, min_val=0.1, max_val=2.0)
+
+# Minimum and maximum timeout for sprite generation (seconds)
+SPRITE_SHEET_TIMEOUT_MINIMUM = get_int_env("VLOG_SPRITE_SHEET_TIMEOUT_MINIMUM", 60, min_val=30)
+SPRITE_SHEET_TIMEOUT_MAXIMUM = get_int_env("VLOG_SPRITE_SHEET_TIMEOUT_MAXIMUM", 600, min_val=120)
+
+# Auto-generate sprites after successful transcode (set to false to only generate on-demand)
+SPRITE_SHEET_AUTO_GENERATE = os.getenv("VLOG_SPRITE_SHEET_AUTO_GENERATE", "false").lower() in ("true", "1", "yes")
+
+# Memory threshold for sprite generation (percentage of available memory)
+# Worker will skip job if available memory is below this percentage
+SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT = get_int_env(
+    "VLOG_SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT", 20, min_val=5, max_val=50
+)
+
+# Maximum video duration (in seconds) that the sprite worker will process
+# Videos longer than this will be skipped to prevent OOM (default: 4 hours)
+SPRITE_SHEET_MAX_VIDEO_DURATION = get_int_env(
+    "VLOG_SPRITE_SHEET_MAX_VIDEO_DURATION", 14400, min_val=600
+)

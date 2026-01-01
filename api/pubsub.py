@@ -14,6 +14,7 @@ Channels:
 - vlog:jobs:failed - Job failure notifications
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -356,18 +357,26 @@ class Subscriber:
     async def close(self) -> None:
         """Close the subscription and clean up."""
         if self._pubsub:
+            pubsub = self._pubsub
+            channels = list(self._subscribed_channels)
+            patterns = list(self._subscribed_patterns)
+            # Clear state first to prevent re-entry
+            self._pubsub = None
+            self._subscribed_channels.clear()
+            self._subscribed_patterns.clear()
             try:
-                if self._subscribed_channels:
-                    await self._pubsub.unsubscribe(*self._subscribed_channels)
-                if self._subscribed_patterns:
-                    await self._pubsub.punsubscribe(*self._subscribed_patterns)
-                await self._pubsub.close()
+                # Try graceful unsubscribe first (non-critical)
+                try:
+                    if channels:
+                        await pubsub.unsubscribe(*channels)
+                    if patterns:
+                        await pubsub.punsubscribe(*patterns)
+                except Exception as e:
+                    logger.debug(f"Error unsubscribing pub/sub (non-critical): {e}")
+                # Always close the connection to prevent pool leaks
+                await pubsub.close()
             except Exception as e:
                 logger.debug(f"Error closing pub/sub: {e}")
-            finally:
-                self._pubsub = None
-                self._subscribed_channels.clear()
-                self._subscribed_patterns.clear()
 
     @property
     def is_active(self) -> bool:
@@ -412,3 +421,147 @@ async def subscribe_to_workers() -> Subscriber:
         channel_name("progress", "all"),
     )
     return subscriber
+
+
+async def subscribe_to_worker_commands(worker_id: str) -> Subscriber:
+    """
+    Create a subscriber for worker-specific management commands.
+
+    Subscribes to both worker-specific and broadcast command channels.
+
+    Args:
+        worker_id: The worker's UUID
+
+    Returns:
+        Configured Subscriber instance
+    """
+    subscriber = Subscriber()
+    await subscriber.subscribe(
+        channel_name("worker", f"{worker_id}:commands"),  # Worker-specific commands
+        channel_name("workers", "commands"),  # Broadcast commands to all workers
+    )
+    return subscriber
+
+
+async def publish_worker_command(
+    worker_id: str,
+    command: str,
+    params: Optional[Dict] = None,
+    request_id: Optional[str] = None,
+) -> bool:
+    """
+    Publish a management command to a worker.
+
+    Args:
+        worker_id: Target worker UUID or "all" for broadcast
+        command: Command type (restart, stop, update, get_logs, get_metrics)
+        params: Optional command parameters
+        request_id: Optional request ID for response correlation
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "command",
+        "command": command,
+        "params": params or {},
+        "request_id": request_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        payload = json.dumps(message)
+        if worker_id == "all":
+            # Broadcast to all workers
+            await redis.publish(channel_name("workers", "commands"), payload)
+        else:
+            # Target specific worker
+            await redis.publish(channel_name("worker", f"{worker_id}:commands"), payload)
+        logger.info(f"Published {command} command to worker {worker_id}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish worker command: {e}")
+        return False
+
+
+async def request_worker_response(
+    worker_id: str,
+    command: str,
+    params: Optional[Dict] = None,
+    timeout_seconds: float = 10.0,
+) -> Optional[Dict]:
+    """
+    Send a command to a worker and wait for a response.
+
+    This is used for commands that return data (get_logs, get_metrics).
+
+    Args:
+        worker_id: Target worker UUID
+        command: Command type (get_logs, get_metrics)
+        params: Optional command parameters
+        timeout_seconds: How long to wait for response
+
+    Returns:
+        Response dict from worker, or None if timeout/error
+    """
+    import uuid
+
+    redis = await get_redis()
+    if not redis:
+        return None
+
+    # Generate unique request ID
+    request_id = str(uuid.uuid4())[:8]
+
+    # Subscribe to response channel before sending command
+    response_channel = f"{REDIS_PUBSUB_PREFIX}:worker:{worker_id}:response:{request_id}"
+    pubsub = None
+
+    async def _wait_for_response(ps) -> Optional[Dict]:
+        """Inner coroutine to wait for response message."""
+        async for message in ps.listen():
+            msg_type = message.get("type", "")
+            if msg_type in ("subscribe", "unsubscribe"):
+                continue
+
+            if msg_type == "message":
+                try:
+                    return json.loads(message.get("data", "{}"))
+                except json.JSONDecodeError:
+                    continue
+        return None
+
+    try:
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(response_channel)
+
+        # Send the command
+        success = await publish_worker_command(worker_id, command, params, request_id)
+        if not success:
+            return None
+
+        # Wait for response with proper timeout using asyncio.wait_for
+        try:
+            result = await asyncio.wait_for(
+                _wait_for_response(pubsub),
+                timeout=timeout_seconds
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout waiting for worker {worker_id} response after {timeout_seconds}s")
+            return None
+
+    except Exception as e:
+        logger.warning(f"Error in request_worker_response: {e}")
+        return None
+    finally:
+        # Always clean up the pubsub connection
+        if pubsub:
+            try:
+                await pubsub.close()
+            except Exception:
+                pass  # Ignore cleanup errors

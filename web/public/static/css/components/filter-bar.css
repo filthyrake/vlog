@@ -1,0 +1,146 @@
+/**
+ * Filter Bar Component
+ * Issue #413 Phase 3: Filter and sort controls for video listings
+ *
+ * BEM Naming Convention:
+ *   Block: .filter-bar
+ *   Element: .filter-bar__group, .filter-bar__select
+ *   Modifier: .filter-bar--sticky
+ */
+
+@layer components {
+    /* Block: Filter bar container */
+    .filter-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--vlog-space-md, 1rem);
+        align-items: center;
+        padding: var(--vlog-space-md, 1rem) 0;
+        margin-bottom: var(--vlog-space-md, 1rem);
+    }
+
+    /* Element: Filter group (label + control) */
+    .filter-bar__group {
+        display: flex;
+        align-items: center;
+        gap: var(--vlog-space-sm, 0.5rem);
+    }
+
+    /* Element: Label */
+    .filter-bar__label {
+        color: var(--vlog-text-muted, #94a3b8);
+        font-size: 0.875rem;
+        white-space: nowrap;
+    }
+
+    /* Element: Select dropdown */
+    .filter-bar__select {
+        appearance: none;
+        background: var(--vlog-bg-tertiary, #1e293b);
+        border: 1px solid var(--vlog-bg-elevated, #334155);
+        border-radius: var(--vlog-radius-md, 0.5rem);
+        color: var(--vlog-text-primary, #f1f5f9);
+        padding: 0.5rem 2rem 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        cursor: pointer;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 0.5rem center;
+        transition: border-color var(--vlog-transition-fast, 150ms ease);
+    }
+
+    .filter-bar__select:hover {
+        border-color: var(--vlog-primary, #3b82f6);
+    }
+
+    .filter-bar__select:focus {
+        outline: none;
+        border-color: var(--vlog-primary, #3b82f6);
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    }
+
+    /* Element: Toggle button group */
+    .filter-bar__toggles {
+        display: flex;
+        border: 1px solid var(--vlog-bg-elevated, #334155);
+        border-radius: var(--vlog-radius-md, 0.5rem);
+        overflow: hidden;
+    }
+
+    .filter-bar__toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.5rem 0.75rem;
+        background: var(--vlog-bg-tertiary, #1e293b);
+        border: none;
+        color: var(--vlog-text-muted, #94a3b8);
+        cursor: pointer;
+        transition:
+            background var(--vlog-transition-fast, 150ms ease),
+            color var(--vlog-transition-fast, 150ms ease);
+    }
+
+    .filter-bar__toggle:not(:last-child) {
+        border-right: 1px solid var(--vlog-bg-elevated, #334155);
+    }
+
+    .filter-bar__toggle:hover {
+        background: var(--vlog-bg-elevated, #334155);
+        color: var(--vlog-text-primary, #f1f5f9);
+    }
+
+    .filter-bar__toggle--active {
+        background: var(--vlog-primary, #3b82f6);
+        color: var(--vlog-text-primary, #f1f5f9);
+    }
+
+    .filter-bar__toggle--active:hover {
+        background: var(--vlog-primary-hover, #2563eb);
+    }
+
+    .filter-bar__toggle:focus-visible {
+        outline: 2px solid var(--vlog-primary, #3b82f6);
+        outline-offset: -2px;
+    }
+
+    .filter-bar__toggle svg {
+        width: 1.25rem;
+        height: 1.25rem;
+    }
+
+    /* Element: Spacer for flexbox alignment */
+    .filter-bar__spacer {
+        flex: 1;
+    }
+
+    /* Element: Result count */
+    .filter-bar__count {
+        color: var(--vlog-text-muted, #94a3b8);
+        font-size: 0.875rem;
+    }
+
+    /* Mobile: Stack vertically */
+    @media (max-width: 640px) {
+        .filter-bar {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .filter-bar__group {
+            width: 100%;
+        }
+
+        .filter-bar__select {
+            flex: 1;
+        }
+
+        .filter-bar__spacer {
+            display: none;
+        }
+
+        .filter-bar__toggles {
+            align-self: flex-end;
+        }
+    }
+}

@@ -32,6 +32,7 @@ from api.database import (
     database,
     playback_sessions,
     quality_progress,
+    sprite_queue,
     transcoding_jobs,
     transcriptions,
     video_qualities,
@@ -59,6 +60,8 @@ from config import (
     PROGRESS_UPDATE_INTERVAL,
     QUALITY_NAMES,
     QUALITY_PRESETS,
+    SPRITE_SHEET_AUTO_GENERATE,
+    SPRITE_SHEET_ENABLED,
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
@@ -81,6 +84,7 @@ from worker.alerts import (
 from worker.hwaccel import (
     StreamingFormat,  # noqa: F401 - Used in future CMAF transcoding integration
     VideoCodec,
+    extract_codec_string_from_file,
     get_codec_string,
     get_recommended_parallel_sessions,
 )
@@ -165,8 +169,8 @@ async def get_transcoder_settings() -> Dict[str, Any]:
             ),
             "debounce_delay": await service.get("workers.debounce_delay", WORKER_DEBOUNCE_DELAY),
             # Streaming format settings (Issue #212)
-            "streaming_format": await service.get("streaming.default_format", "hls_ts"),
-            "streaming_codec": await service.get("streaming.default_codec", "h264"),
+            "streaming_format": await service.get("streaming.default_format", "cmaf"),
+            "streaming_codec": await service.get("streaming.default_codec", "av1"),
             "streaming_enable_dash": await service.get("streaming.enable_dash", True),
             "streaming_segment_duration": await service.get("streaming.segment_duration", 6),
         }
@@ -187,8 +191,8 @@ async def get_transcoder_settings() -> Dict[str, Any]:
             "fallback_poll_interval": WORKER_FALLBACK_POLL_INTERVAL,
             "debounce_delay": WORKER_DEBOUNCE_DELAY,
             # Streaming format defaults
-            "streaming_format": "hls_ts",
-            "streaming_codec": "h264",
+            "streaming_format": "cmaf",
+            "streaming_codec": "av1",
             "streaming_enable_dash": True,
             "streaming_segment_duration": 6,
         }
@@ -206,11 +210,16 @@ def reset_transcoder_settings_cache() -> None:
 
 def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) -> List[List[dict]]:
     """
-    Group qualities into batches for parallel encoding.
+    Group qualities into batches for parallel encoding with interleaved resolution.
 
-    Groups high-res qualities (>= 1080p) together and low-res (< 1080p) together,
-    then chunks each group by the parallel count. This keeps similar workloads
-    together for better memory usage.
+    Interleaves high-res (>= 1080p) and low-res (< 1080p) qualities to balance
+    memory usage during parallel encoding. This prevents running all high-res
+    encodes simultaneously which could exhaust memory (Issue #429).
+
+    Example with parallel_count=2 and qualities [4K, 1440p, 1080p, 720p, 480p, 360p]:
+    - High-res: [4K, 1440p, 1080p]
+    - Low-res: [720p, 480p, 360p]
+    - Interleaved batches: [[4K, 720p], [1440p, 480p], [1080p, 360p]]
 
     Args:
         qualities: List of quality preset dicts with 'name' and 'height' keys
@@ -229,12 +238,27 @@ def group_qualities_by_resolution(qualities: List[dict], parallel_count: int) ->
 
     batches = []
 
-    # Create batches from high-res first, then low-res
-    for group in [high_res, low_res]:
-        for i in range(0, len(group), parallel_count):
-            batch = group[i : i + parallel_count]
-            if batch:
-                batches.append(batch)
+    # Interleave high-res and low-res to balance memory usage (Issue #429)
+    # This prevents all high-res encodes from running simultaneously
+    high_idx = 0
+    low_idx = 0
+
+    while high_idx < len(high_res) or low_idx < len(low_res):
+        batch = []
+
+        # Add qualities alternating between high and low res
+        for _ in range(parallel_count):
+            if high_idx < len(high_res) and (low_idx >= len(low_res) or len(batch) % 2 == 0):
+                batch.append(high_res[high_idx])
+                high_idx += 1
+            elif low_idx < len(low_res):
+                batch.append(low_res[low_idx])
+                low_idx += 1
+            else:
+                break
+
+        if batch:
+            batches.append(batch)
 
     return batches
 
@@ -355,7 +379,7 @@ class ProgressTracker:
             self.last_job_progress = progress
 
 
-def calculate_ffmpeg_timeout(duration: float, height: int = 1080) -> float:
+def calculate_ffmpeg_timeout(duration_of_video: float, target_height: int = 1080) -> float:
     """
     Calculate appropriate timeout for ffmpeg transcoding based on video duration and resolution.
 
@@ -369,13 +393,13 @@ def calculate_ffmpeg_timeout(duration: float, height: int = 1080) -> float:
         Timeout in seconds, clamped between min and max values
     """
     # Get resolution multiplier (default to 2.0 for unknown resolutions)
-    resolution_multiplier = FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS.get(height, 2.0)
+    resolution_multiplier = FFMPEG_TIMEOUT_RESOLUTION_MULTIPLIERS.get(target_height, 2.0)
     effective_multiplier = FFMPEG_TIMEOUT_BASE_MULTIPLIER * resolution_multiplier
-    timeout = duration * effective_multiplier
+    timeout = duration_of_video * effective_multiplier
     return max(FFMPEG_TIMEOUT_MINIMUM, min(timeout, FFMPEG_TIMEOUT_MAXIMUM))
 
 
-async def cleanup_ffmpeg_process(process: asyncio.subprocess.Process, context: str = "FFmpeg") -> None:
+async def cleanup_ffmpeg_process(target_subprocess: asyncio.subprocess.Process, logging_description: str = "FFmpeg") -> None:
     """
     Clean up an FFmpeg subprocess, handling race conditions where the process
     may exit between checking returncode and calling kill().
@@ -384,24 +408,24 @@ async def cleanup_ffmpeg_process(process: asyncio.subprocess.Process, context: s
         process: The asyncio subprocess to clean up
         context: Description for logging (e.g., "FFmpeg", "FFmpeg remux")
     """
-    if process.returncode is None:
+    if target_subprocess.returncode is None:
         try:
-            process.kill()
+            target_subprocess.kill()
         except (ProcessLookupError, OSError):
             # Process already terminated - this is expected in race conditions
             pass
         try:
-            await asyncio.wait_for(process.wait(), timeout=5)
+            await asyncio.wait_for(target_subprocess.wait(), timeout=5)
         except asyncio.TimeoutError:
-            print(f"  WARNING: {context} process did not terminate after kill")
+            print(f"  WARNING: {logging_description} process did not terminate after kill")
 
 
 async def run_ffmpeg_with_progress(
     cmd: List[str],
-    duration: float,
+    video_duration: float,
     timeout: float,
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
-    context: str = "FFmpeg",
+    logging_description: str = "FFmpeg",
 ) -> Tuple[bool, Optional[str]]:
     """
     Run an FFmpeg command with timeout and progress tracking.
@@ -449,8 +473,8 @@ async def run_ffmpeg_with_progress(
                 try:
                     time_ms = int(line_str.split("=")[1])
                     current_seconds = time_ms / 1000000.0
-                    if duration > 0:
-                        progress = min(100, int(current_seconds / duration * 100))
+                    if video_duration > 0:
+                        progress = min(100, int(current_seconds / video_duration * 100))
                         # Only update if progress changed significantly
                         if progress > last_progress_update:
                             last_progress_update = progress
@@ -471,7 +495,7 @@ async def run_ffmpeg_with_progress(
         await asyncio.sleep(timeout)
         timed_out = True
         elapsed = asyncio.get_running_loop().time() - start_time
-        print(f"  TIMEOUT: {context} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
+        print(f"  TIMEOUT: {logging_description} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
         try:
             process.kill()
         except ProcessLookupError:
@@ -485,7 +509,7 @@ async def run_ffmpeg_with_progress(
         await drain_and_wait()
     except Exception as e:
         # Log unexpected exceptions before cleanup
-        print(f"  ERROR: Unexpected exception during {context}: {e}")
+        print(f"  ERROR: Unexpected exception during {logging_description}: {e}")
         raise
     finally:
         # Cancel the timeout task
@@ -496,14 +520,14 @@ async def run_ffmpeg_with_progress(
             pass
 
         # Ensure FFmpeg process is cleaned up on any exception or early exit
-        await cleanup_ffmpeg_process(process, context)
+        await cleanup_ffmpeg_process(process, logging_description)
 
     if timed_out:
         elapsed = asyncio.get_running_loop().time() - start_time
-        return False, f"{context} timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
+        return False, f"{logging_description} timed out after {elapsed:.0f} seconds (limit: {timeout:.0f}s)"
 
     if process.returncode != 0:
-        error_msg = f"{context} exited with code {process.returncode}"
+        error_msg = f"{logging_description} exited with code {process.returncode}"
         print(f"  ERROR: {error_msg}")
         return False, error_msg
 
@@ -518,7 +542,7 @@ def signal_handler(sig, frame):
     state.request_shutdown()
 
 
-def validate_duration(duration: Any) -> float:
+def validate_duration(duration_ffprobe: Any) -> float:
     """
     Validate and normalize video duration from ffprobe.
 
@@ -531,27 +555,27 @@ def validate_duration(duration: Any) -> float:
     Raises:
         ValueError: If duration is invalid, missing, or out of acceptable range
     """
-    if duration is None:
+    if duration_ffprobe is None:
         raise ValueError("Could not determine video duration")
 
     # Convert to float if possible
-    if not isinstance(duration, (int, float)):
+    if not isinstance(duration_ffprobe, (int, float)):
         try:
-            duration = float(duration)
+            duration_ffprobe = float(duration_ffprobe)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"Could not convert duration to float: {type(duration).__name__}") from e
+            raise ValueError(f"Could not convert duration to float: {type(duration_ffprobe).__name__}") from e
 
-    if math.isnan(duration) or math.isinf(duration):
-        raise ValueError(f"Invalid duration value: {duration}")
+    if math.isnan(duration_ffprobe) or math.isinf(duration_ffprobe):
+        raise ValueError(f"Invalid duration value: {duration_ffprobe}")
 
-    if duration <= 0:
-        raise ValueError(f"Invalid duration: {duration} seconds (must be positive)")
+    if duration_ffprobe <= 0:
+        raise ValueError(f"Invalid duration: {duration_ffprobe} seconds (must be positive)")
 
     # Prevent potential memory issues and catch corrupted metadata
-    if duration > MAX_DURATION_SECONDS:
-        raise ValueError(f"Duration too long: {duration} seconds (max {MAX_DURATION_SECONDS})")
+    if duration_ffprobe > MAX_DURATION_SECONDS:
+        raise ValueError(f"Duration too long: {duration_ffprobe} seconds (max {MAX_DURATION_SECONDS})")
 
-    return float(duration)
+    return float(duration_ffprobe)
 
 
 # ============================================================================
@@ -630,7 +654,7 @@ class UploadEventHandler(FileSystemEventHandler):
 
 
 def start_filesystem_watcher(
-    loop: asyncio.AbstractEventLoop,
+    event_loop: asyncio.AbstractEventLoop,
     event: asyncio.Event,
     debounce_delay: float = WORKER_DEBOUNCE_DELAY,
 ) -> Optional[Observer]:
@@ -649,7 +673,7 @@ def start_filesystem_watcher(
         return None
 
     try:
-        handler = UploadEventHandler(loop, event, debounce_delay=debounce_delay)
+        handler = UploadEventHandler(event_loop, event, debounce_delay=debounce_delay)
         observer = Observer()
         observer.schedule(handler, str(UPLOADS_DIR), recursive=False)
         observer.start()
@@ -705,12 +729,14 @@ async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
 
     data = json.loads(stdout.decode("utf-8", errors="ignore"))
 
-    # Find video stream
+    # Find video and audio streams
     video_stream = None
+    audio_stream = None
     for stream in data.get("streams", []):
-        if stream.get("codec_type") == "video":
+        if stream.get("codec_type") == "video" and video_stream is None:
             video_stream = stream
-            break
+        elif stream.get("codec_type") == "audio" and audio_stream is None:
+            audio_stream = stream
 
     if not video_stream:
         raise RuntimeError("No video stream found")
@@ -724,6 +750,7 @@ async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
         "height": int(video_stream.get("height", 0)),
         "duration": duration,
         "codec": video_stream.get("codec_name", "unknown"),
+        "audio_codec": audio_stream.get("codec_name", "aac") if audio_stream else "aac",
     }
 
 
@@ -873,6 +900,22 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
             except OSError as e:
                 return False, f"Error probing segment: {e}"
 
+            # For CMAF/fMP4: validate segment structure by checking for required atoms
+            # Note: m4s segments cannot be probed directly with ffprobe - they require
+            # the init.mp4 header. Instead, we do a quick structural check.
+            if first_segment_path.suffix == ".m4s":
+                try:
+                    # Read first 4KB to check for required fMP4 atoms
+                    # moof atom can be preceded by styp, sidx, or padding
+                    with open(first_segment_path, "rb") as f:
+                        header = f.read(4096)
+                    # Valid fMP4 segments must have moof (movie fragment) atom
+                    # moof contains mfhd and traf which contains tfhd
+                    if b"moof" not in header:
+                        return False, f"Corrupted fMP4 segment: {first_segment_path.name} (missing moof atom)"
+                except OSError as e:
+                    return False, f"Error validating fMP4 segment: {e}"
+
         return True, None
 
     except (IOError, OSError) as e:
@@ -940,7 +983,7 @@ async def transcode_quality_with_progress(
     input_path: Path,
     output_dir: Path,
     quality: dict,
-    duration: float,
+    video_duration: float,
     progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     gpu_caps: Optional["GPUCapabilities"] = None,
     streaming_format: str = "hls_ts",
@@ -971,7 +1014,7 @@ async def transcode_quality_with_progress(
     use_cmaf = streaming_format == "cmaf"
 
     # Calculate timeout based on video duration and resolution
-    timeout = calculate_ffmpeg_timeout(duration, height)
+    timeout = calculate_ffmpeg_timeout(video_duration, height)
     print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for {name}")
     if use_cmaf:
         print("      Output format: CMAF (fMP4)")
@@ -1059,7 +1102,7 @@ async def transcode_quality_with_progress(
                 "-hls_segment_filename",
                 segment_pattern,
                 "-movflags",
-                "+cmaf+faststart",
+                "+frag_keyframe+empty_moov+default_base_moof",
                 "-progress",
                 "pipe:1",
                 "-f",
@@ -1112,10 +1155,10 @@ async def transcode_quality_with_progress(
     # Use shared helper for running FFmpeg with progress and timeout
     success, error_msg = await run_ffmpeg_with_progress(
         cmd=cmd,
-        duration=duration,
+        video_duration=video_duration,
         timeout=timeout,
         progress_callback=progress_callback,
-        context=f"FFmpeg transcode {name}",
+        logging_description=f"FFmpeg transcode {name}",
     )
 
     if not success and error_msg:
@@ -1172,10 +1215,10 @@ async def create_original_quality(
     # Use shared helper for running FFmpeg with progress and timeout
     success, error_msg = await run_ffmpeg_with_progress(
         cmd=cmd,
-        duration=duration,
+        video_duration=duration,
         timeout=timeout,
         progress_callback=progress_callback,
-        context="FFmpeg remux original",
+        logging_description="FFmpeg remux original",
     )
 
     if not success:
@@ -1210,6 +1253,7 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
         completed_qualities: List of quality dicts with name, width, height, bitrate fields
     """
     # Verify actual dimensions from first segment of each quality
+    # If segment exists, extract actual dimensions; otherwise calculate from height
     for quality in completed_qualities:
         first_segment = output_dir / f"{quality['name']}_0000.ts"
         if first_segment.exists():
@@ -1217,6 +1261,13 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
             if actual_width > 0 and actual_height > 0:
                 quality["width"] = actual_width
                 quality["height"] = actual_height
+        # Ensure width is set even if segment wasn't found (calculate from height)
+        if "width" not in quality and "height" in quality:
+            height = quality["height"]
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
+            quality["width"] = width
 
     master_content = "#EXTM3U\n#EXT-X-VERSION:3\n\n"
 
@@ -1224,8 +1275,13 @@ async def generate_master_playlist(output_dir: Path, completed_qualities: List[d
     qualities_with_bandwidth = []
     for quality in completed_qualities:
         name = quality["name"]
-        width = quality["width"]
-        height = quality["height"]
+        height = quality.get("height", 0)
+        width = quality.get("width", 0)
+        # Fallback: calculate width from height if missing
+        if not width and height:
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
 
         # Handle original quality (has bitrate_bps) vs transcoded (has bitrate string)
         if quality.get("is_original") and quality.get("bitrate_bps"):
@@ -1260,6 +1316,7 @@ async def generate_master_playlist_cmaf(
     output_dir: Path,
     completed_qualities: List[dict],
     codec: VideoCodec = VideoCodec.H264,
+    original_audio_codec: str = "aac",
 ):
     """
     Generate master HLS playlist for CMAF output structure.
@@ -1282,8 +1339,10 @@ async def generate_master_playlist_cmaf(
         output_dir: Directory containing the CMAF quality subdirectories
         completed_qualities: List of quality dicts with name, width, height, bitrate fields
         codec: Video codec used for encoding (affects CODECS attribute)
+        original_audio_codec: Audio codec of original quality (e.g., 'aac', 'ac3', 'eac3')
     """
     # Verify actual dimensions from init segment of each quality
+    # If init.mp4 exists, extract actual dimensions; otherwise calculate from height
     for quality in completed_qualities:
         quality_dir = output_dir / quality["name"]
         init_segment = quality_dir / "init.mp4"
@@ -1292,6 +1351,13 @@ async def generate_master_playlist_cmaf(
             if actual_width > 0 and actual_height > 0:
                 quality["width"] = actual_width
                 quality["height"] = actual_height
+        # Ensure width is set even if init.mp4 wasn't found (calculate from height)
+        if "width" not in quality and "height" in quality:
+            height = quality["height"]
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
+            quality["width"] = width
 
     # HLS version 7 required for fMP4 segments
     master_content = "#EXTM3U\n#EXT-X-VERSION:7\n\n"
@@ -1300,8 +1366,13 @@ async def generate_master_playlist_cmaf(
     qualities_with_bandwidth = []
     for quality in completed_qualities:
         name = quality["name"]
-        width = quality["width"]
-        height = quality["height"]
+        height = quality.get("height", 0)
+        width = quality.get("width", 0)
+        # Fallback: calculate width from height if missing
+        if not width and height:
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
 
         # Handle original quality (has bitrate_bps) vs transcoded (has bitrate string)
         if quality.get("is_original") and quality.get("bitrate_bps"):
@@ -1323,17 +1394,54 @@ async def generate_master_playlist_cmaf(
     # Sort by bandwidth descending (highest quality first)
     qualities_with_bandwidth.sort(key=lambda q: q["bandwidth"], reverse=True)
 
-    # Get codec string for manifest
-    codec_string = get_codec_string(codec)
+    # Get default codec string for manifest (fallback if extraction fails)
+    default_codec_string = get_codec_string(codec)
+    # Map audio codec name to HLS codec string for original quality
+    audio_codec_map = {
+        "aac": "mp4a.40.2",
+        "ac3": "ac-3",
+        "ac-3": "ac-3",
+        "eac3": "ec-3",
+        "ec-3": "ec-3",
+        "e-ac-3": "ec-3",
+        "mp3": "mp4a.40.34",
+        "opus": "opus",
+    }
+    original_audio_string = audio_codec_map.get(original_audio_codec.lower(), "mp4a.40.2")
+    # Build original codec string: H.264 video + actual source audio
+    default_original_codec_string = f"avc1.640028,{original_audio_string}"
+
+    # Try to extract actual codec strings from init.mp4 files
+    quality_codec_strings = {}
+    for quality in qualities_with_bandwidth:
+        quality_dir = output_dir / quality["name"]
+        init_segment = quality_dir / "init.mp4"
+        if init_segment.exists():
+            extracted = await extract_codec_string_from_file(init_segment)
+            if extracted:
+                quality_codec_strings[quality["name"]] = extracted
+                logger.debug(
+                    f"Extracted codec string for {quality['name']}: {extracted}"
+                )
 
     for quality in qualities_with_bandwidth:
+        # Use extracted codec string if available, otherwise use defaults
+        if quality["name"] in quality_codec_strings:
+            quality_codec = quality_codec_strings[quality["name"]]
+        elif quality["name"] == "original":
+            quality_codec = default_original_codec_string
+        else:
+            quality_codec = default_codec_string
         master_content += (
             f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},'
             f'RESOLUTION={quality["width"]}x{quality["height"]},'
-            f'CODECS="{codec_string}"\n'
+            f'CODECS="{quality_codec}"\n'
         )
-        # Reference subdirectory playlist
-        master_content += f"{quality['name']}/stream.m3u8\n"
+        # Original quality uses legacy TS format at root, transcoded use CMAF subdirs
+        if quality["name"] == "original":
+            master_content += "original.m3u8\n"
+        else:
+            master_content += f"{quality['name']}/stream.m3u8\n"
 
     (output_dir / "master.m3u8").write_text(master_content)
 
@@ -1343,6 +1451,7 @@ async def generate_dash_manifest(
     completed_qualities: List[dict],
     segment_duration: int = 6,
     codec: VideoCodec = VideoCodec.H264,
+    total_duration: Optional[float] = None,
 ):
     """
     Generate DASH MPD manifest for CMAF segments.
@@ -1350,33 +1459,47 @@ async def generate_dash_manifest(
     Creates a simple DASH manifest that references the same fMP4 segments
     used by HLS, enabling dual-protocol streaming from a single encode.
 
+    Note: Only transcoded qualities (CMAF/fMP4) are included in the DASH manifest.
+    The "original" quality uses TS segments and is excluded.
+
     Args:
         output_dir: Directory containing the CMAF quality subdirectories
         completed_qualities: List of quality dicts with name, width, height, bitrate fields
         segment_duration: Segment duration in seconds
         codec: Video codec used for encoding
+        total_duration: Video duration in seconds (if None, calculated from playlists)
     """
-    # Calculate total duration from first quality's playlist
-    total_duration = 0
-    segment_count = 0
-    for quality in completed_qualities:
-        quality_dir = output_dir / quality["name"]
-        playlist = quality_dir / "stream.m3u8"
-        if playlist.exists():
-            content = playlist.read_text()
-            # Count segments and calculate duration
-            for line in content.split("\n"):
-                if line.startswith("#EXTINF:"):
-                    try:
-                        duration = float(line.split(":")[1].rstrip(","))
-                        total_duration += duration
-                        segment_count += 1
-                    except (ValueError, IndexError):
-                        pass
-            break  # Only need to check one quality
+    # Filter out "original" quality - it uses TS segments, not CMAF/fMP4
+    # DASH manifest only supports fMP4 segments (init.mp4 + seg_*.m4s)
+    cmaf_qualities = [q for q in completed_qualities if q["name"] != "original"]
 
-    if total_duration == 0:
-        total_duration = segment_count * segment_duration
+    if not cmaf_qualities:
+        # No CMAF qualities to include - skip manifest generation
+        print("    No CMAF qualities for DASH manifest, skipping...")
+        return
+
+    # Use provided duration, or calculate from first quality's playlist
+    if total_duration is None:
+        total_duration = 0
+        segment_count = 0
+        for quality in cmaf_qualities:
+            quality_dir = output_dir / quality["name"]
+            playlist = quality_dir / "stream.m3u8"
+            if playlist.exists():
+                content = playlist.read_text()
+                # Count segments and calculate duration
+                for line in content.split("\n"):
+                    if line.startswith("#EXTINF:"):
+                        try:
+                            duration = float(line.split(":")[1].rstrip(","))
+                            total_duration += duration
+                            segment_count += 1
+                        except (ValueError, IndexError):
+                            pass
+                break  # Only need to check one quality
+
+        if total_duration == 0:
+            total_duration = segment_count * segment_duration
 
     # Format duration as ISO 8601
     hours = int(total_duration // 3600)
@@ -1384,38 +1507,60 @@ async def generate_dash_manifest(
     seconds = total_duration % 60
     duration_str = f"PT{hours}H{minutes}M{seconds:.3f}S"
 
-    # Determine codec-specific codecs string
+    # Determine default codec-specific codecs string (video + AAC audio)
     if codec == VideoCodec.HEVC:
-        video_codecs = "hvc1.1.6.L120.90"
+        default_video_codecs = "hvc1.1.6.L120.90,mp4a.40.2"
     elif codec == VideoCodec.AV1:
-        video_codecs = "av01.0.08M.08"
+        default_video_codecs = "av01.0.08M.08,mp4a.40.2"
     else:
-        video_codecs = "avc1.640028"
+        default_video_codecs = "avc1.640028,mp4a.40.2"
 
     # Build adaptation sets for each quality
+    # Note: CMAF segments have muxed audio+video, so we use a single AdaptationSet
+    # with combined codecs string
     adaptation_sets = []
     seg_duration_ms = segment_duration * 1000
 
     # Sort qualities by bandwidth descending
     sorted_qualities = sorted(
-        completed_qualities,
+        cmaf_qualities,
         key=lambda q: q.get("bitrate_bps", int(q.get("bitrate", "0").replace("k", "")) * 1000),
         reverse=True,
     )
 
+    # Try to extract actual codec strings from init.mp4 files
+    quality_codec_strings = {}
+    for quality in sorted_qualities:
+        quality_dir = output_dir / quality["name"]
+        init_segment = quality_dir / "init.mp4"
+        if init_segment.exists():
+            extracted = await extract_codec_string_from_file(init_segment)
+            if extracted:
+                quality_codec_strings[quality["name"]] = extracted
+
     for i, quality in enumerate(sorted_qualities):
         name = quality["name"]
-        width = quality["width"]
-        height = quality["height"]
+        height = quality.get("height", 0)
+        # Ensure width is available (calculate from height if not present)
+        width = quality.get("width")
+        if width is None and height > 0:
+            width = int(height * 16 / 9)
+            if width % 2 != 0:
+                width += 1
+        width = width or 0
         bandwidth = quality.get("bitrate_bps", int(quality.get("bitrate", "0").replace("k", "")) * 1000)
 
+        # Use extracted codec string if available, otherwise use default
+        video_codecs = quality_codec_strings.get(name, default_video_codecs)
+
+        # startNumber=0 since segments are named seg_0000.m4s, seg_0001.m4s, etc.
         adaptation_sets.append(
             f'    <AdaptationSet id="{i}" mimeType="video/mp4" codecs="{video_codecs}" '
             f'startWithSAP="1" segmentAlignment="true">\n'
             f'      <Representation id="{name}" bandwidth="{bandwidth}" '
             f'width="{width}" height="{height}">\n'
             f'        <SegmentTemplate media="{name}/seg_$Number%04d$.m4s" '
-            f'initialization="{name}/init.mp4" startNumber="1" '
+            f'initialization="{name}/init.mp4" startNumber="0" '
             f'duration="{seg_duration_ms}" timescale="1000"/>\n'
             f"      </Representation>\n"
             f"    </AdaptationSet>"
@@ -2084,8 +2229,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
         # Get streaming format from settings (Issue #222)
         transcoder_settings = await get_transcoder_settings()
-        streaming_format = transcoder_settings.get("streaming_format", "hls_ts")
-        print(f"  Output format: {streaming_format}")
+        streaming_format = transcoder_settings.get("streaming_format", "cmaf")
+        streaming_codec = transcoder_settings.get("streaming_codec", "av1")
+        print(f"  Output format: {streaming_format}, codec: {streaming_codec}")
 
         qualities = get_applicable_qualities(info["height"])
         if not qualities:
@@ -2295,6 +2441,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     progress_cb,
                     gpu_caps=state.gpu_caps,
                     streaming_format=streaming_format,
+                    preferred_codec=streaming_codec,
                 )
 
                 if success:
@@ -2405,7 +2552,12 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     return False
 
                 # Check if playlist file is actually complete on disk
-                playlist_path = output_dir / f"{quality_name}.m3u8"
+                # Use correct path based on streaming format
+                if streaming_format == "cmaf" and quality_name != "original":
+                    playlist_path = output_dir / quality_name / "stream.m3u8"
+                else:
+                    playlist_path = output_dir / f"{quality_name}.m3u8"
+
                 if await is_hls_playlist_complete(playlist_path):
                     print(f"    {quality_name}: Found complete playlist on disk, marking complete...")
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
@@ -2421,11 +2573,17 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             }
                         )
                     else:
-                        first_segment = output_dir / f"{quality_name}_0000.ts"
+                        # Use correct segment path based on streaming format
+                        if streaming_format == "cmaf":
+                            first_segment = output_dir / quality_name / "init.mp4"
+                        else:
+                            first_segment = output_dir / f"{quality_name}_0000.ts"
                         if first_segment.exists():
                             actual_width, actual_height = await get_output_dimensions(first_segment)
                         else:
-                            actual_width = int(quality["height"] * 16 / 9)
+                            # Fallback: use source aspect ratio instead of hardcoded 16:9
+                            source_aspect = info["width"] / info["height"]
+                            actual_width = int(quality["height"] * source_aspect)
                             if actual_width % 2 != 0:
                                 actual_width += 1
                             actual_height = quality["height"]
@@ -2475,6 +2633,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             None,
                             gpu_caps=state.gpu_caps,
                             streaming_format=streaming_format,
+                            preferred_codec=streaming_codec,
                         )
                         if success:
                             await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
@@ -2540,13 +2699,26 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         if streaming_format == "cmaf":
             # Use CMAF-specific master playlist generator
             # Get codec from settings for CMAF manifest
-            primary_codec = transcoder_settings.get("streaming_codec", "h264")
-            await generate_master_playlist_cmaf(output_dir, successful_qualities, primary_codec)
-            # Also generate DASH manifest if enabled
+            primary_codec = transcoder_settings.get("streaming_codec", "av1")
+            # Convert codec string to VideoCodec enum for manifest generators
+            codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
+                primary_codec.lower(), VideoCodec.AV1
+            )
+            # Pass original audio codec for correct manifest codec string
+            original_audio = info.get("audio_codec", "aac")
+            await generate_master_playlist_cmaf(output_dir, successful_qualities, codec_enum, original_audio)
+
+            # Generate DASH manifest for CMAF streaming
             enable_dash = transcoder_settings.get("streaming_enable_dash", True)
             if enable_dash:
                 print("  Generating DASH manifest...")
-                await generate_dash_manifest(output_dir, successful_qualities, primary_codec)
+                await generate_dash_manifest(output_dir, successful_qualities, codec=codec_enum)
+
+                # Validate DASH manifest was created (prevent missing manifest bug)
+                mpd_path = output_dir / "manifest.mpd"
+                if not mpd_path.exists():
+                    raise RuntimeError("DASH manifest was not generated for CMAF streaming")
+                print(f"  DASH manifest created: {mpd_path}")
         else:
             await generate_master_playlist(output_dir, successful_qualities)
         await checkpoint(job_id)
@@ -2586,7 +2758,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         }
         # Set primary_codec for CMAF (from settings)
         if streaming_format == "cmaf":
-            video_updates["primary_codec"] = transcoder_settings.get("streaming_codec", "h264")
+            video_updates["primary_codec"] = transcoder_settings.get("streaming_codec", "av1")
         else:
             video_updates["primary_codec"] = "h264"  # HLS/TS always uses H.264
         if video_row and video_row["published_at"] is None:
@@ -2596,6 +2768,35 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
         # Mark job completed
         await mark_job_completed(job_id)
+
+        # Queue sprite sheet generation if enabled (Issue #413 Phase 7B)
+        if SPRITE_SHEET_ENABLED and SPRITE_SHEET_AUTO_GENERATE:
+            try:
+                # Check if already queued or has sprites
+                existing_sprite = await database.fetch_one(
+                    sa.text(
+                        "SELECT id FROM sprite_queue WHERE video_id = :video_id AND status IN ('pending', 'processing')"
+                    ).bindparams(video_id=video_id)
+                )
+                if not existing_sprite:
+                    await database.execute(
+                        sprite_queue.insert().values(
+                            video_id=video_id,
+                            priority="normal",
+                            status="pending",
+                            created_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    await database.execute(
+                        videos.update().where(videos.c.id == video_id).values(
+                            sprite_sheet_status="pending",
+                            sprite_sheet_error=None,
+                        )
+                    )
+                    print(f"  Queued sprite sheet generation for video {video_id}")
+            except Exception as sprite_err:
+                # Don't fail the transcode if sprite queueing fails
+                print(f"  Warning: Failed to queue sprite generation: {sprite_err}")
 
         # NOTE: Source file is intentionally kept for potential future re-transcoding
         # (e.g., if new quality presets are added or original quality is needed)
@@ -2654,7 +2855,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         return False
 
 
-async def check_stale_jobs(state: Optional[WorkerState] = None):
+async def check_stale_jobs(worker_state: Optional[WorkerState] = None):
     """
     Periodic check for stale jobs that might need recovery.
     Called periodically during the worker loop.
@@ -2663,8 +2864,8 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
         state: Optional WorkerState instance. If not provided, uses/creates the
                default global state.
     """
-    if state is None:
-        state = get_worker_state()
+    if worker_state is None:
+        worker_state = get_worker_state()
 
     # Get stale timeout from settings service
     settings = await get_transcoder_settings()
@@ -2677,7 +2878,7 @@ async def check_stale_jobs(state: Optional[WorkerState] = None):
             transcoding_jobs.c.completed_at.is_(None)
             & transcoding_jobs.c.last_checkpoint.isnot(None)
             & (transcoding_jobs.c.last_checkpoint < stale_threshold)
-            & (transcoding_jobs.c.worker_id != state.worker_id)  # Not our own jobs
+            & (transcoding_jobs.c.worker_id != worker_state.worker_id)  # Not our own jobs
         )
     )
 

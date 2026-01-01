@@ -1058,6 +1058,139 @@ Response:
 }
 ```
 
+### Re-encode Queue
+
+Queue videos for re-encoding to modern CMAF format with HEVC/AV1 codecs.
+
+#### Get Queue Status
+```
+GET /api/reencode/status
+```
+
+Response:
+```json
+{
+  "pending": 5,
+  "processing": 2,
+  "completed": 100,
+  "failed": 1,
+  "total": 108
+}
+```
+
+#### Queue Videos for Re-encode
+```
+POST /api/reencode/queue
+```
+
+Request body:
+```json
+{
+  "video_ids": [1, 2, 3],
+  "priority": "normal",
+  "target_codec": "hevc"
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| video_ids | int[] | required | Video IDs to queue |
+| priority | string | "normal" | Priority: high, normal, low |
+| target_codec | string | "hevc" | Target codec: h264, hevc, av1 |
+
+Response:
+```json
+{
+  "queued": 3,
+  "skipped": 0,
+  "message": "3 videos queued for re-encoding"
+}
+```
+
+#### Queue All Legacy Videos
+```
+POST /api/reencode/queue-all
+```
+
+Request body:
+```json
+{
+  "priority": "low",
+  "target_codec": "hevc"
+}
+```
+
+Queues all videos with `streaming_format = 'hls_ts'` for re-encoding.
+
+#### List Re-encode Jobs
+```
+GET /api/reencode/jobs
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| status | string | null | Filter by status: pending, processing, completed, failed |
+| limit | int | 50 | Max items (1-100) |
+| offset | int | 0 | Pagination offset |
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "video_id": 123,
+    "video_title": "My Video",
+    "status": "pending",
+    "priority": "normal",
+    "target_codec": "hevc",
+    "created_at": "2024-01-15T10:30:00",
+    "started_at": null,
+    "completed_at": null
+  }
+]
+```
+
+#### Cancel Re-encode Job
+```
+DELETE /api/reencode/jobs/{job_id}
+```
+
+Only pending jobs can be cancelled. Returns 400 if job is already processing.
+
+---
+
+### Metrics
+
+#### Get Prometheus Metrics
+```
+GET /metrics
+```
+
+Returns metrics in Prometheus text format for scraping.
+
+Response (text/plain):
+```
+# HELP vlog_videos_total Total number of videos
+# TYPE vlog_videos_total gauge
+vlog_videos_total{status="ready"} 150
+vlog_videos_total{status="processing"} 3
+vlog_videos_total{status="pending"} 5
+vlog_videos_total{status="failed"} 2
+
+# HELP vlog_transcoding_queue_size Number of jobs in transcoding queue
+# TYPE vlog_transcoding_queue_size gauge
+vlog_transcoding_queue_size 5
+
+# HELP vlog_http_requests_total Total HTTP requests
+# TYPE vlog_http_requests_total counter
+vlog_http_requests_total{method="GET",endpoint="/api/videos",status_code="200"} 1234
+```
+
+See [MONITORING.md](MONITORING.md) for complete metrics documentation.
+
+---
+
 ### Server-Sent Events (SSE)
 
 Real-time updates for transcoding progress and worker status.
@@ -1405,3 +1538,30 @@ POST /api/workers/{worker_id}/revoke
 ```
 
 Revokes the worker's API key, preventing further API access.
+
+### Metrics
+
+#### Get Prometheus Metrics
+```
+GET /api/metrics
+```
+
+Returns worker-related metrics in Prometheus text format.
+
+Response (text/plain):
+```
+# HELP vlog_workers_total Total number of registered workers
+# TYPE vlog_workers_total gauge
+vlog_workers_total{status="online"} 3
+vlog_workers_total{status="offline"} 1
+
+# HELP vlog_transcoding_jobs_active Number of active transcoding jobs
+# TYPE vlog_transcoding_jobs_active gauge
+vlog_transcoding_jobs_active 2
+
+# HELP vlog_worker_heartbeat_total Total worker heartbeats
+# TYPE vlog_worker_heartbeat_total counter
+vlog_worker_heartbeat_total{worker_id="uuid-1",result="success"} 1000
+```
+
+See [MONITORING.md](MONITORING.md) for complete metrics documentation.

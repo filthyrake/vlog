@@ -1,0 +1,144 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "14"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app.kubernetes.io/component":"worker","app.kubernetes.io/gpu-type":"intel","app.kubernetes.io/name":"vlog"},"name":"vlog-worker-intel","namespace":"vlog"},"spec":{"replicas":1,"selector":{"matchLabels":{"app.kubernetes.io/component":"worker","app.kubernetes.io/gpu-type":"intel","app.kubernetes.io/name":"vlog"}},"strategy":{"type":"Recreate"},"template":{"metadata":{"labels":{"app.kubernetes.io/component":"worker","app.kubernetes.io/gpu-type":"intel","app.kubernetes.io/name":"vlog"}},"spec":{"containers":[{"env":[{"name":"VLOG_WORKER_API_KEY","valueFrom":{"secretKeyRef":{"key":"intel-api-key","name":"vlog-worker-secret"}}},{"name":"VLOG_HWACCEL_TYPE","value":"intel"},{"name":"VLOG_HWACCEL_PREFERRED_CODEC","value":"h264"},{"name":"LIBVA_DRIVER_NAME","value":"iHD"}],"envFrom":[{"configMapRef":{"name":"vlog-worker-config"}}],"image":"10.0.1.152:9003/vlog-worker-gpu:rocky10","imagePullPolicy":"IfNotPresent","livenessProbe":{"failureThreshold":3,"httpGet":{"path":"/health","port":8080},"initialDelaySeconds":30,"periodSeconds":60,"timeoutSeconds":5},"name":"worker","readinessProbe":{"failureThreshold":3,"httpGet":{"path":"/ready","port":8080},"initialDelaySeconds":15,"periodSeconds":30,"timeoutSeconds":5},"resources":{"limits":{"cpu":"2000m","gpu.intel.com/xe":1,"memory":"8Gi"},"requests":{"cpu":"1000m","gpu.intel.com/xe":1,"memory":"4Gi"}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":false},"volumeMounts":[{"mountPath":"/tmp/vlog-worker","name":"work-dir"},{"mountPath":"/dev/dri","name":"dri"}]}],"nodeSelector":{"intel.feature.node.kubernetes.io/gpu":"true"},"restartPolicy":"Always","securityContext":{"fsGroup":44,"runAsNonRoot":true,"runAsUser":1000},"terminationGracePeriodSeconds":300,"tolerations":[{"effect":"NoSchedule","key":"gpu.intel.com/i915","operator":"Exists"}],"volumes":[{"emptyDir":{"sizeLimit":"150Gi"},"name":"work-dir"},{"hostPath":{"path":"/dev/dri","type":"Directory"},"name":"dri"}]}}}}
+  creationTimestamp: "2025-12-26T14:50:35Z"
+  generation: 17
+  labels:
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/gpu-type: intel
+    app.kubernetes.io/name: vlog
+  name: vlog-worker-intel
+  namespace: vlog
+  resourceVersion: "1124030"
+  uid: dbbcddf2-9428-436f-86e5-086d507c7b8e
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/gpu-type: intel
+      app.kubernetes.io/name: vlog
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2025-12-26T16:01:45-08:00"
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/gpu-type: intel
+        app.kubernetes.io/name: vlog
+    spec:
+      containers:
+      - env:
+        - name: VLOG_WORKER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: intel-api-key
+              name: vlog-worker-secret
+        - name: VLOG_HWACCEL_TYPE
+          value: intel
+        - name: VLOG_HWACCEL_PREFERRED_CODEC
+          value: h264
+        - name: LIBVA_DRIVER_NAME
+          value: iHD
+        - name: VLOG_WORKER_WORK_DIR
+          value: /home/vlog-worker
+        envFrom:
+        - configMapRef:
+            name: vlog-worker-config
+        # Image tag format: rocky10-<git-sha> (e.g., rocky10-abc123ef)
+        # Use 'rocky10-latest' for most recent build, or specific SHA for pinned version
+        image: 10.0.1.152:9003/vlog-worker-gpu:rocky10-latest
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: worker
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: "2"
+            gpu.intel.com/xe: "1"
+            memory: 8Gi
+          requests:
+            cpu: "1"
+            gpu.intel.com/xe: "1"
+            memory: 4Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /home/vlog-worker
+          name: work-dir
+        - mountPath: /dev/dri
+          name: dri
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        intel.feature.node.kubernetes.io/gpu: "true"
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 44
+        runAsNonRoot: true
+        runAsUser: 1000
+      terminationGracePeriodSeconds: 300
+      tolerations:
+      - effect: NoSchedule
+        key: gpu.intel.com/i915
+        operator: Exists
+      volumes:
+      - hostPath:
+          path: /home/vlog-worker
+          type: DirectoryOrCreate
+        name: work-dir
+      - hostPath:
+          path: /dev/dri
+          type: Directory
+        name: dri
+status:
+  conditions:
+  - lastTransitionTime: "2025-12-26T23:46:06Z"
+    lastUpdateTime: "2025-12-26T23:46:06Z"
+    message: Deployment does not have minimum availability.
+    reason: MinimumReplicasUnavailable
+    status: "False"
+    type: Available
+  - lastTransitionTime: "2025-12-26T14:50:35Z"
+    lastUpdateTime: "2025-12-27T00:05:07Z"
+    message: ReplicaSet "vlog-worker-intel-55cf4f867f" is progressing.
+    reason: ReplicaSetUpdated
+    status: "True"
+    type: Progressing
+  observedGeneration: 17
+  replicas: 1
+  unavailableReplicas: 1
+  updatedReplicas: 1

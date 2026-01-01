@@ -701,6 +701,186 @@ def cmd_worker(args):
         sys.exit(1)
 
 
+def cmd_manifests(args):
+    """Manifest management commands."""
+    import asyncio
+    import json as json_module
+    import subprocess
+    from pathlib import Path
+
+    # Import config for videos directory
+    from config import VIDEOS_DIR
+
+    if args.manifests_command == "regenerate":
+        # Validate arguments
+        if not args.all_videos and not args.video_slug and not args.video_id:
+            print("Error: Must specify --all, --video-slug, or --video-id")
+            sys.exit(1)
+
+        try:
+            # Get list of videos to regenerate
+            params = {"status": "ready"}
+            response = httpx.get(f"{API_BASE}/videos", params=params, headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+            handle_auth_error(response)
+            videos = safe_json_response(response)
+
+            # Filter to CMAF videos
+            cmaf_videos = [v for v in videos if v.get("streaming_format") == "cmaf"]
+
+            if args.video_slug:
+                cmaf_videos = [v for v in cmaf_videos if v["slug"] == args.video_slug]
+                if not cmaf_videos:
+                    print(f"Error: Video with slug '{args.video_slug}' not found or not CMAF format")
+                    sys.exit(1)
+            elif args.video_id:
+                cmaf_videos = [v for v in cmaf_videos if v["id"] == args.video_id]
+                if not cmaf_videos:
+                    print(f"Error: Video with ID {args.video_id} not found or not CMAF format")
+                    sys.exit(1)
+
+            if not cmaf_videos:
+                print("No CMAF videos found to regenerate.")
+                return
+
+            print(f"Found {len(cmaf_videos)} CMAF video(s) to regenerate manifests for:")
+            for v in cmaf_videos:
+                print(f"  - {v['slug']} (ID: {v['id']}, codec: {v.get('primary_codec', 'unknown')})")
+
+            if args.dry_run:
+                print("\n[DRY RUN] No changes made.")
+                return
+
+            print()
+
+            # Import transcoder functions
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            from worker.hwaccel import VideoCodec
+            from worker.transcoder import generate_dash_manifest, generate_master_playlist_cmaf
+
+            async def regenerate_video_manifests(video):
+                """Regenerate manifests for a single video."""
+                slug = video["slug"]
+                codec_str = video.get("primary_codec", "av1")
+                video_dir = Path(VIDEOS_DIR) / slug
+
+                if not video_dir.exists():
+                    return False, f"Video directory not found: {video_dir}"
+
+                # Map codec string to enum
+                codec_map = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}
+                codec = codec_map.get(codec_str, VideoCodec.AV1)
+
+                # Scan for qualities
+                qualities = []
+
+                # Check for original quality (TS format at root)
+                original_playlist = video_dir / "original.m3u8"
+                if original_playlist.exists():
+                    # Get original dimensions from first TS segment
+                    ts_files = list(video_dir.glob("original_*.ts"))
+                    if ts_files:
+                        result = subprocess.run(
+                            ["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                             "-of", "json", str(ts_files[0])],
+                            capture_output=True, text=True
+                        )
+                        info = json_module.loads(result.stdout)
+                        width, height = 1920, 1080  # defaults
+                        for stream in info.get("streams", []):
+                            if "width" in stream:
+                                width = stream["width"]
+                                height = stream["height"]
+                                break
+                        qualities.append({
+                            "name": "original",
+                            "width": width,
+                            "height": height,
+                            "bitrate": "10000k",
+                            "is_original": True
+                        })
+
+                # Check for CMAF qualities (subdirectories with init.mp4)
+                for subdir in sorted(video_dir.iterdir()):
+                    if subdir.is_dir():
+                        init_file = subdir / "init.mp4"
+                        if init_file.exists():
+                            result = subprocess.run(
+                                ["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                                 "-of", "json", str(init_file)],
+                                capture_output=True, text=True
+                            )
+                            info = json_module.loads(result.stdout)
+                            for stream in info.get("streams", []):
+                                if "width" in stream:
+                                    width = stream["width"]
+                                    height = stream["height"]
+                                    # Estimate bitrate based on resolution
+                                    if height >= 2160:
+                                        bitrate = "15000k"
+                                    elif height >= 1440:
+                                        bitrate = "10000k"
+                                    elif height >= 1080:
+                                        bitrate = "5000k"
+                                    elif height >= 720:
+                                        bitrate = "3000k"
+                                    elif height >= 480:
+                                        bitrate = "1500k"
+                                    else:
+                                        bitrate = "800k"
+                                    qualities.append({
+                                        "name": subdir.name,
+                                        "width": width,
+                                        "height": height,
+                                        "bitrate": bitrate
+                                    })
+                                    break
+
+                if not qualities:
+                    return False, "No qualities found"
+
+                # Regenerate master.m3u8
+                await generate_master_playlist_cmaf(video_dir, qualities, codec=codec)
+
+                # Regenerate manifest.mpd (exclude original - DASH only serves CMAF qualities)
+                cmaf_qualities = [q for q in qualities if not q.get("is_original")]
+                if cmaf_qualities:
+                    await generate_dash_manifest(video_dir, cmaf_qualities, codec=codec)
+
+                return True, f"Regenerated {len(qualities)} qualities"
+
+            # Process each video
+            success_count = 0
+            for video in cmaf_videos:
+                print(f"Regenerating: {video['slug']}...", end=" ")
+                try:
+                    success, message = asyncio.run(regenerate_video_manifests(video))
+                    if success:
+                        print(f"OK ({message})")
+                        success_count += 1
+                    else:
+                        print(f"FAILED: {message}")
+                except Exception as e:
+                    print(f"ERROR: {e}")
+
+            print()
+            print(f"Completed: {success_count}/{len(cmaf_videos)} videos regenerated successfully.")
+
+        except httpx.ConnectError:
+            print(f"Error: Could not connect to admin API at {API_BASE}")
+            sys.exit(1)
+        except httpx.TimeoutException:
+            print(f"Error: Request timed out while connecting to {API_BASE}")
+            sys.exit(1)
+        except CLIError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+
 def cmd_settings(args):
     """Settings management commands."""
     import asyncio
@@ -960,6 +1140,34 @@ def main():
     set_parser.add_argument("value", help="New value (JSON-parseable for numbers/booleans)")
 
     settings_parser.set_defaults(func=cmd_settings)
+
+    # Manifests management command
+    manifests_parser = subparsers.add_parser("manifests", help="Manage video manifests (HLS/DASH)")
+    manifests_subparsers = manifests_parser.add_subparsers(dest="manifests_command", required=True)
+
+    # manifests regenerate
+    regen_parser = manifests_subparsers.add_parser(
+        "regenerate",
+        help="Regenerate manifests for CMAF videos",
+    )
+    regen_parser.add_argument(
+        "--all", action="store_true", dest="all_videos",
+        help="Regenerate manifests for all CMAF videos"
+    )
+    regen_parser.add_argument(
+        "--video-slug", metavar="SLUG",
+        help="Regenerate manifests for a specific video by slug"
+    )
+    regen_parser.add_argument(
+        "--video-id", type=positive_int, metavar="ID",
+        help="Regenerate manifests for a specific video by ID"
+    )
+    regen_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be regenerated without making changes"
+    )
+
+    manifests_parser.set_defaults(func=cmd_manifests)
 
     args = parser.parse_args()
     args.func(args)

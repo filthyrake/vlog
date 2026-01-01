@@ -18,9 +18,13 @@ PostgreSQL errors:
 import asyncio
 import functools
 import logging
+import time
 from typing import Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# Slow query threshold in seconds (Issue #429)
+SLOW_QUERY_THRESHOLD = 1.0
 
 # Type variable for return type preservation
 T = TypeVar("T")
@@ -99,6 +103,38 @@ def is_retryable_database_error(exc: Exception) -> bool:
 is_database_locked_error = is_retryable_database_error
 
 
+def is_deadlock_error(exc: Exception) -> bool:
+    """
+    Check if an exception is specifically a deadlock error.
+
+    Deadlocks require special handling because chronic deadlocks indicate
+    a deeper problem that retries won't solve. (Issue #460)
+    """
+    error_str = str(exc).lower()
+
+    # PostgreSQL deadlock pattern
+    if "deadlock detected" in error_str:
+        return True
+
+    # Check for PostgreSQL error code 40P01 (deadlock_detected)
+    if hasattr(exc, "sqlstate"):
+        sqlstate = getattr(exc, "sqlstate", "")
+        if sqlstate == "40P01":
+            return True
+
+    # Check wrapped exceptions
+    if hasattr(exc, "__cause__") and exc.__cause__ is not None:
+        return is_deadlock_error(exc.__cause__)
+
+    return False
+
+
+class DeadlockError(DatabaseRetryableError):
+    """Raised when too many deadlocks occur, indicating a chronic problem."""
+
+    pass
+
+
 async def execute_with_retry(
     func: Callable,
     *args,
@@ -111,6 +147,7 @@ async def execute_with_retry(
     Execute an async function with retry logic for transient database errors.
 
     Uses exponential backoff with jitter to reduce contention.
+    Deadlocks have a separate, lower retry limit to detect chronic issues early.
 
     Args:
         func: Async function to execute
@@ -124,12 +161,17 @@ async def execute_with_retry(
         Result of the function
 
     Raises:
+        DeadlockError: If too many deadlocks occur (indicates chronic problem)
         DatabaseRetryableError: If all retries are exhausted
         Other exceptions: Non-retryable errors are re-raised immediately
     """
     import random
 
     last_exception: Optional[Exception] = None
+
+    # Track deadlocks separately - chronic deadlocks indicate deeper problems (Issue #460)
+    MAX_DEADLOCK_RETRIES = 3
+    deadlock_count = 0
 
     for attempt in range(max_retries + 1):
         try:
@@ -139,6 +181,16 @@ async def execute_with_retry(
                 raise
 
             last_exception = e
+
+            # Check for deadlock specifically (Issue #460)
+            if is_deadlock_error(e):
+                deadlock_count += 1
+                if deadlock_count >= 2:
+                    # Log at ERROR level after 2 consecutive deadlocks
+                    func_name = getattr(func, "__name__", str(func))
+                    logger.error(f"Chronic deadlock detected in {func_name} ({deadlock_count} consecutive deadlocks)")
+                if deadlock_count >= MAX_DEADLOCK_RETRIES:
+                    raise DeadlockError(f"Too many deadlocks ({deadlock_count}) in database operation, aborting") from e
 
             if attempt < max_retries:
                 # Calculate delay with exponential backoff and jitter
@@ -224,7 +276,14 @@ async def fetch_one_with_retry(
     from api.database import database
 
     async def _fetch():
-        return await database.fetch_one(query)
+        start_time = time.monotonic()
+        result = await database.fetch_one(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _fetch,
@@ -258,7 +317,14 @@ async def fetch_all_with_retry(
     from api.database import database
 
     async def _fetch():
-        return await database.fetch_all(query)
+        start_time = time.monotonic()
+        result = await database.fetch_all(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _fetch,
@@ -292,7 +358,14 @@ async def fetch_val_with_retry(
     from api.database import database
 
     async def _fetch():
-        return await database.fetch_val(query)
+        start_time = time.monotonic()
+        result = await database.fetch_val(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _fetch,
@@ -328,9 +401,17 @@ async def db_execute_with_retry(
     from api.database import database
 
     async def _execute():
+        start_time = time.monotonic()
         if values is not None:
-            return await database.execute(query, values)
-        return await database.execute(query)
+            result = await database.execute(query, values)
+        else:
+            result = await database.execute(query)
+        elapsed = time.monotonic() - start_time
+        if elapsed >= SLOW_QUERY_THRESHOLD:
+            # Log slow query with truncated SQL for debugging (Issue #429)
+            query_str = str(query)[:500]
+            logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
+        return result
 
     return await execute_with_retry(
         _execute,

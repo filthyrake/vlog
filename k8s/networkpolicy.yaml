@@ -55,23 +55,31 @@ spec:
     # =========================================================================
     # WORKER API EGRESS - CONFIGURATION REQUIRED
     # =========================================================================
-    # Uncomment ONE of the options below based on your deployment:
+    # Workers need to communicate with the Worker API for job polling,
+    # status updates, and file uploads. Configure this based on your deployment.
     #
-    # Option A: Worker API runs externally (specific IP/CIDR)
+    # OPTION A (enabled below): External Worker API with specific IP/CIDR
     # Replace the CIDR with your Worker API server's IP address or range.
-    # Example: 192.168.1.100/32 for a single host, or 10.0.0.0/24 for a subnet
+    # Examples:
+    #   - 192.168.1.100/32  (single host)
+    #   - 10.0.0.0/24       (entire subnet)
+    #   - 10.0.1.1/32       (your VLog server)
     #
-    # - to:
-    #     - ipBlock:
-    #         cidr: 192.168.1.100/32  # REPLACE with your Worker API IP/CIDR
-    #   ports:
-    #     - protocol: TCP
-    #       port: 9002
-    #
-    # Option B: Worker API runs in-cluster
-    # Use this if the Worker API is deployed as a Kubernetes service.
-    # Adjust the namespace and labels to match your API deployment.
-    #
+    - to:
+        - ipBlock:
+            # REQUIRED: Replace with your Worker API server IP/CIDR
+            cidr: 10.0.0.0/8  # Default: Allow entire private 10.x.x.x range
+            # Optionally exclude specific IPs within the range:
+            # except:
+            #   - 10.0.0.1/32
+      ports:
+        - protocol: TCP
+          port: 9002  # Worker API port
+        - protocol: TCP
+          port: 443   # HTTPS (if using TLS)
+
+    # OPTION B (commented): In-cluster Worker API
+    # Use this instead of Option A if the Worker API runs as a K8s service.
     # - to:
     #     - namespaceSelector:
     #         matchLabels:
@@ -85,13 +93,21 @@ spec:
     #       port: 9002
 
     # =========================================================================
-    # REDIS EGRESS - OPTIONAL
+    # REDIS EGRESS - OPTIONAL (for instant job dispatch)
     # =========================================================================
-    # Uncomment ONE of the options below if using Redis for instant job dispatch.
+    # Enable this if using Redis pub/sub for real-time job notifications.
+    # Without Redis, workers poll the API periodically (still works, just slower).
     #
-    # Option A: Redis runs in-cluster
-    # Adjust the namespace and labels to match your Redis deployment.
-    #
+    # OPTION A (enabled below): External Redis with specific IP/CIDR
+    - to:
+        - ipBlock:
+            # Replace with your Redis server IP/CIDR (or comment out if not using Redis)
+            cidr: 10.0.0.0/8  # Default: Allow entire private 10.x.x.x range
+      ports:
+        - protocol: TCP
+          port: 6379  # Redis default port
+
+    # OPTION B (commented): In-cluster Redis
     # - to:
     #     - namespaceSelector:
     #         matchLabels:
@@ -102,13 +118,18 @@ spec:
     #   ports:
     #     - protocol: TCP
     #       port: 6379
-    #
-    # Option B: Redis is external (specific IP/CIDR)
-    # Replace the CIDR with your Redis server's IP address or range.
+
+    # =========================================================================
+    # NFS/SMB STORAGE EGRESS - OPTIONAL (for NAS storage)
+    # =========================================================================
+    # If workers access video storage over NFS or SMB, enable this.
+    # Note: hostPath volumes don't require network egress.
     #
     # - to:
     #     - ipBlock:
-    #         cidr: 192.168.1.101/32  # REPLACE with your Redis IP/CIDR
+    #         cidr: 10.0.0.0/8  # Replace with your NAS IP/CIDR
     #   ports:
     #     - protocol: TCP
-    #       port: 6379
+    #       port: 2049  # NFS
+    #     - protocol: TCP
+    #       port: 445   # SMB

@@ -1,0 +1,25 @@
+{
+  "name": "vlog-admin",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/alpinejs": "^3.13.10",
+    "@types/node": "^25.0.3",
+    "@vitest/coverage-v8": "^4.0.16",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.6",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "alpinejs": "^3.14.8"
+  }
+}

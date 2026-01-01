@@ -250,7 +250,9 @@ class TestVideoManagementHTTP:
         response = admin_client.get("/api/videos")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) >= 1
+        assert len(data["videos"]) >= 1
+        assert "has_more" in data
+        assert "next_cursor" in data
 
     @pytest.mark.asyncio
     async def test_list_videos_by_status(self, admin_client, test_database, sample_category):
@@ -282,7 +284,7 @@ class TestVideoManagementHTTP:
         response = admin_client.get("/api/videos?status=pending")
         assert response.status_code == 200
         data = response.json()
-        assert all(v["status"] == "pending" for v in data)
+        assert all(v["status"] == "pending" for v in data["videos"])
 
     @pytest.mark.asyncio
     async def test_get_video_by_id(self, admin_client, sample_video):

@@ -215,6 +215,7 @@ class ReencodeWorker:
                 completed_qualities,
                 segment_duration=6,
                 codec=target_codec,
+                total_duration=duration,
             )
 
             # Copy thumbnail if it exists
@@ -442,7 +443,7 @@ class ReencodeWorker:
             "-hls_segment_type", "fmp4",
             "-hls_fmp4_init_filename", "init.mp4",
             "-hls_segment_filename", segment_pattern,
-            "-movflags", "+cmaf+faststart",
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
             str(playlist_path),
         ])
 

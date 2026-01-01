@@ -3,6 +3,7 @@ Public API - serves the video browsing interface.
 Runs on port 9000.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
+from api.analytics_cache import AnalyticsCache
 from api.common import (
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
@@ -32,10 +34,12 @@ from api.common import (
 )
 from api.database import (
     categories,
+    chapters,
     configure_database,
     custom_field_definitions,
     database,
     playback_sessions,
+    playlists,
     quality_progress,
     tags,
     transcoding_jobs,
@@ -55,13 +59,21 @@ from api.db_retry import (
 )
 from api.enums import DurationFilter, SortBy, SortOrder, TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
+from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
     CategoryResponse,
+    ChapterInfo,
+    PaginatedVideoListResponse,
     PlaybackEnd,
     PlaybackHeartbeat,
     PlaybackSessionCreate,
     PlaybackSessionResponse,
+    PlaylistDetailResponse,
+    PlaylistListResponse,
+    PlaylistResponse,
+    PlaylistVideoInfo,
     QualityProgressResponse,
+    SpriteSheetInfo,
     TagResponse,
     TranscodingProgressResponse,
     TranscriptionResponse,
@@ -100,6 +112,10 @@ logger = logging.getLogger(__name__)
 _cached_watermark_settings: Dict[str, Any] = {}
 _cached_watermark_settings_time: float = 0
 _WATERMARK_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+# Video list cache for performance (Issue #429)
+# Caches video list query results for 30 seconds to reduce database load
+_video_list_cache = AnalyticsCache(ttl_seconds=30, enabled=True, max_size=500)
 
 
 async def get_watermark_settings() -> Dict[str, Any]:
@@ -464,51 +480,67 @@ async def get_video_tags(video_ids: List[int]) -> dict:
     return result
 
 
-@app.get("/api/videos")
-@limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
-async def list_videos(
-    request: Request,
-    category: Optional[str] = None,
-    tag: Optional[str] = None,
-    search: Optional[str] = None,
-    duration: Optional[str] = Query(
-        default=None, description="Filter by duration: short (<5min), medium (5-20min), long (>20min). Comma-separated."
-    ),
-    quality: Optional[str] = Query(
-        default=None, description="Filter by available quality: 2160p, 1440p, 1080p, 720p, 480p, 360p. Comma-separated."
-    ),
-    date_from: Optional[datetime] = Query(
-        default=None, description="Filter videos published from this date (ISO 8601)"
-    ),
-    date_to: Optional[datetime] = Query(
-        default=None, description="Filter videos published until this date (ISO 8601)"
-    ),
-    has_transcription: Optional[bool] = Query(
-        default=None, description="Filter by transcription availability (true/false)"
-    ),
-    sort: Optional[str] = Query(default=None, description="Sort by: relevance, date, duration, views, title"),
-    order: Optional[str] = Query(default="desc", description="Sort order: asc or desc"),
-    limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
-    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
-) -> List[VideoListResponse]:
+async def get_video_chapters(video_ids: List[int], has_chapters_flags: Dict[int, bool] = None) -> dict:
     """
-    List all published videos with advanced filtering and sorting.
+    Get chapters for a list of video IDs. Returns a dict of video_id -> list of chapters.
 
-    Filters:
-    - category: Filter by category slug
-    - tag: Filter by tag slug
-    - search: Full-text search in title and description
-    - duration: short (<5min), medium (5-20min), long (>20min)
-    - quality: Filter by available quality variants (e.g., 1080p, 2160p)
-    - date_from/date_to: Filter by publication date range
-    - has_transcription: Filter videos with/without transcriptions
-
-    Sorting:
-    - relevance (default for text searches), date, duration, views, title
-    - order: asc (ascending) or desc (descending)
+    Args:
+        video_ids: List of video IDs to get chapters for
+        has_chapters_flags: Optional dict mapping video_id -> has_chapters bool.
+                           If provided, only queries for videos with has_chapters=True.
     """
-    # Base query with view count for sorting
+    if not video_ids:
+        return {}
+
+    # Filter to only videos that have chapters (if flag info provided)
+    if has_chapters_flags:
+        video_ids = [vid for vid in video_ids if has_chapters_flags.get(vid, False)]
+
+    if not video_ids:
+        return {}
+
     query = (
+        sa.select(
+            chapters.c.video_id,
+            chapters.c.id,
+            chapters.c.title,
+            chapters.c.start_time,
+            chapters.c.end_time,
+        )
+        .where(chapters.c.video_id.in_(video_ids))
+        .order_by(chapters.c.video_id, chapters.c.position)
+    )
+
+    rows = await fetch_all_with_retry(query)
+
+    result = {}
+    for row in rows:
+        video_id = row["video_id"]
+        if video_id not in result:
+            result[video_id] = []
+        result[video_id].append(ChapterInfo(
+            id=row["id"],
+            title=row["title"],
+            start_time=row["start_time"],
+            end_time=row["end_time"],
+        ))
+
+    return result
+
+
+# =============================================================================
+# Video List Query Helpers (Issue #437)
+# =============================================================================
+
+
+def build_base_videos_query() -> sa.Select:
+    """
+    Build the base query for listing videos with necessary joins.
+
+    Returns a query that selects video fields, category name, and view count,
+    filtered to only show published, non-deleted, ready videos.
+    """
+    return (
         sa.select(
             videos.c.id,
             videos.c.title,
@@ -530,8 +562,8 @@ async def list_videos(
             )
         )
         .where(videos.c.status == VideoStatus.READY)
-        .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
-        .where(videos.c.published_at.is_not(None))  # Only show published videos
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
         .group_by(
             videos.c.id,
             videos.c.title,
@@ -546,209 +578,296 @@ async def list_videos(
         )
     )
 
-    # Category filter
-    if category:
-        query = query.where(categories.c.slug == category)
 
-    # Tag filter
-    if tag:
-        tag_subquery = (
-            sa.select(video_tags.c.video_id)
-            .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
-            .where(tags.c.slug == tag)
+def apply_category_filter(query: sa.Select, category: Optional[str]) -> sa.Select:
+    """Apply category slug filter to the query."""
+    if not category:
+        return query
+    return query.where(categories.c.slug == category)
+
+
+def apply_tag_filter(query: sa.Select, tag: Optional[str]) -> sa.Select:
+    """Apply tag slug filter using EXISTS for better performance."""
+    if not tag:
+        return query
+    tag_exists = (
+        sa.select(sa.literal_column("1"))
+        .select_from(video_tags.join(tags, video_tags.c.tag_id == tags.c.id))
+        .where(video_tags.c.video_id == videos.c.id)
+        .where(tags.c.slug == tag)
+        .exists()
+    )
+    return query.where(tag_exists)
+
+
+def apply_search_filter(query: sa.Select, search: Optional[str]) -> sa.Select:
+    """Apply text search filter on title and description."""
+    if not search:
+        return query
+    search_term = f"%{search}%"
+    return query.where(
+        sa.or_(
+            videos.c.title.ilike(search_term),
+            videos.c.description.ilike(search_term),
         )
-        query = query.where(videos.c.id.in_(tag_subquery))
+    )
 
-    # Text search
-    if search:
-        search_term = f"%{search}%"
-        query = query.where(
-            sa.or_(
-                videos.c.title.ilike(search_term),
-                videos.c.description.ilike(search_term),
+
+def apply_duration_filter(query: sa.Select, duration: Optional[str]) -> sa.Select:
+    """
+    Apply duration filter to the query.
+
+    Args:
+        query: The current query
+        duration: Comma-separated duration values (short, medium, long)
+
+    Returns:
+        Query with duration filter applied
+
+    Raises:
+        HTTPException: If invalid duration value is provided
+    """
+    if not duration:
+        return query
+
+    duration_filters = [d.strip().lower() for d in duration.split(",")]
+    duration_conditions = []
+    valid_durations = {DurationFilter.SHORT.value, DurationFilter.MEDIUM.value, DurationFilter.LONG.value}
+
+    for df in duration_filters:
+        if df not in valid_durations:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
             )
-        )
+        if df == DurationFilter.SHORT.value:
+            duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
+        elif df == DurationFilter.MEDIUM.value:
+            duration_conditions.append(sa.and_(videos.c.duration >= 300, videos.c.duration <= 1200))  # 5-20 minutes
+        elif df == DurationFilter.LONG.value:
+            duration_conditions.append(videos.c.duration > 1200)  # > 20 minutes
 
-    # Duration filter
-    if duration:
-        duration_filters = [d.strip().lower() for d in duration.split(",")]
-        duration_conditions = []
-        valid_durations = {DurationFilter.SHORT.value, DurationFilter.MEDIUM.value, DurationFilter.LONG.value}
-        for df in duration_filters:
-            if df not in valid_durations:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
-                )
-            if df == DurationFilter.SHORT.value:
-                duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
-            elif df == DurationFilter.MEDIUM.value:
-                duration_conditions.append(sa.and_(videos.c.duration >= 300, videos.c.duration <= 1200))  # 5-20 minutes
-            elif df == DurationFilter.LONG.value:
-                duration_conditions.append(videos.c.duration > 1200)  # > 20 minutes
-        if duration_conditions:
-            query = query.where(sa.or_(*duration_conditions))
+    if duration_conditions:
+        query = query.where(sa.or_(*duration_conditions))
+    return query
 
-    # Quality filter
-    if quality:
-        quality_filters = [q.strip().lower() for q in quality.split(",")]
-        # Validate quality values against allowed qualities
-        valid_quality_filters = [q for q in quality_filters if q in QUALITY_NAMES]
-        if valid_quality_filters:
-            # Video must have at least one of the requested qualities
-            quality_subquery = (
-                sa.select(video_qualities.c.video_id)
-                .where(video_qualities.c.quality.in_(valid_quality_filters))
-                .distinct()
-            )
-            query = query.where(videos.c.id.in_(quality_subquery))
 
-    # Date range filter
+def apply_quality_filter(query: sa.Select, quality: Optional[str]) -> sa.Select:
+    """Apply quality filter using EXISTS for better performance."""
+    if not quality:
+        return query
+
+    quality_filters = [q.strip().lower() for q in quality.split(",")]
+    valid_quality_filters = [q for q in quality_filters if q in QUALITY_NAMES]
+
+    if not valid_quality_filters:
+        return query
+
+    quality_exists = (
+        sa.select(sa.literal_column("1"))
+        .where(video_qualities.c.video_id == videos.c.id)
+        .where(video_qualities.c.quality.in_(valid_quality_filters))
+        .exists()
+    )
+    return query.where(quality_exists)
+
+
+def apply_date_range_filter(query: sa.Select, date_from: Optional[datetime], date_to: Optional[datetime]) -> sa.Select:
+    """
+    Apply date range filter to the query.
+
+    Raises:
+        HTTPException: If date_from is after date_to
+    """
     if date_from and date_to and date_from > date_to:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid date range: date_from must be before or equal to date_to"
-        )
+        raise HTTPException(status_code=400, detail="Invalid date range: date_from must be before or equal to date_to")
     if date_from:
         query = query.where(videos.c.published_at >= date_from)
     if date_to:
         query = query.where(videos.c.published_at <= date_to)
+    return query
 
-    # Transcription filter
-    if has_transcription is not None:
-        if has_transcription:
-            # Has completed transcription
-            transcription_subquery = (
-                sa.select(transcriptions.c.video_id)
-                .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
-                .distinct()
-            )
-            query = query.where(videos.c.id.in_(transcription_subquery))
-        else:
-            # Does not have completed transcription
-            transcription_subquery = (
-                sa.select(transcriptions.c.video_id)
-                .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
-                .distinct()
-            )
-            query = query.where(videos.c.id.notin_(transcription_subquery))
 
-    # Custom field filter (query params like "custom.difficulty=beginner")
-    # Parse all query params starting with "custom."
-    custom_filters = {}
-    for key, value in request.query_params.items():
-        if key.startswith("custom."):
-            field_slug = key[7:]  # Remove "custom." prefix
-            if field_slug:
-                custom_filters[field_slug] = value
+def apply_transcription_filter(query: sa.Select, has_transcription: Optional[bool]) -> sa.Select:
+    """Apply transcription availability filter using EXISTS for better performance."""
+    if has_transcription is None:
+        return query
 
-    if custom_filters:
-        # Look up field definitions for these slugs
-        field_slugs = list(custom_filters.keys())
-        field_query = (
-            sa.select(
-                custom_field_definitions.c.id,
-                custom_field_definitions.c.slug,
-                custom_field_definitions.c.field_type,
-            )
-            .where(custom_field_definitions.c.slug.in_(field_slugs))
+    transcription_exists = (
+        sa.select(sa.literal_column("1"))
+        .where(transcriptions.c.video_id == videos.c.id)
+        .where(transcriptions.c.status == TranscriptionStatus.COMPLETED)
+        .exists()
+    )
+
+    if has_transcription:
+        return query.where(transcription_exists)
+    else:
+        return query.where(~transcription_exists)
+
+
+async def apply_custom_field_filters(query: sa.Select, custom_filters: Dict[str, str]) -> sa.Select:
+    """
+    Apply custom field filters to the query using EXISTS for better performance.
+
+    This function uses guard clauses to handle edge cases early and keep
+    the main logic flat (Issue #441).
+
+    Args:
+        query: The current query
+        custom_filters: Dict mapping field slugs to filter values
+
+    Returns:
+        Query with custom field filters applied
+    """
+    if not custom_filters:
+        return query
+
+    # Fetch field definitions for all requested slugs in one query
+    field_slugs = list(custom_filters.keys())
+    field_query = sa.select(
+        custom_field_definitions.c.id,
+        custom_field_definitions.c.slug,
+        custom_field_definitions.c.field_type,
+    ).where(custom_field_definitions.c.slug.in_(field_slugs))
+    field_rows = await fetch_all_with_retry(field_query)
+    fields_by_slug = {row["slug"]: row for row in field_rows}
+
+    # Apply filter for each custom field
+    for field_slug, filter_value in custom_filters.items():
+        # Guard clause: skip unknown field slugs
+        field_def = fields_by_slug.get(field_slug)
+        if not field_def:
+            continue
+
+        exists_clause = _build_custom_field_exists_clause(field_def, filter_value)
+        query = query.where(exists_clause)
+
+    return query
+
+
+def _build_custom_field_exists_clause(field_def: Dict[str, Any], filter_value: str) -> sa.Exists:
+    """
+    Build an EXISTS clause for a single custom field filter.
+
+    Args:
+        field_def: Field definition with id, slug, and field_type
+        filter_value: The value to filter by
+
+    Returns:
+        SQLAlchemy EXISTS clause for the filter
+    """
+    field_id = field_def["id"]
+    field_type = field_def["field_type"]
+
+    # Multi-select fields store JSON arrays - check if value is in the array
+    if field_type == "multi_select":
+        return (
+            sa.select(sa.literal_column("1"))
+            .where(video_custom_fields.c.video_id == videos.c.id)
+            .where(video_custom_fields.c.field_id == field_id)
+            .where(video_custom_fields.c.value.contains(f'"{filter_value}"'))
+            .exists()
         )
-        field_rows = await fetch_all_with_retry(field_query)
-        fields_by_slug = {row["slug"]: row for row in field_rows}
 
-        for field_slug, filter_value in custom_filters.items():
-            field_def = fields_by_slug.get(field_slug)
-            if not field_def:
-                # Unknown field slug - skip silently
-                continue
+    # Other types use exact JSON match
+    json_value = json.dumps(filter_value)
+    return (
+        sa.select(sa.literal_column("1"))
+        .where(video_custom_fields.c.video_id == videos.c.id)
+        .where(video_custom_fields.c.field_id == field_id)
+        .where(video_custom_fields.c.value == json_value)
+        .exists()
+    )
 
-            field_id = field_def["id"]
-            field_type = field_def["field_type"]
 
-            # Build the filter subquery
-            # For multi_select, check if the JSON array contains the value
-            # For other types, check for exact match
-            if field_type == "multi_select":
-                # JSON array contains check - the value is stored as JSON array like ["a", "b"]
-                # We need to check if the filter value is in the array
-                custom_subquery = (
-                    sa.select(video_custom_fields.c.video_id)
-                    .where(video_custom_fields.c.field_id == field_id)
-                    .where(
-                        video_custom_fields.c.value.contains(f'"{filter_value}"')
-                    )
-                )
-            else:
-                # For other types, check exact JSON match
-                # Values are stored as JSON (e.g., "beginner" for text, 5 for number)
-                json_value = json.dumps(filter_value)
-                custom_subquery = (
-                    sa.select(video_custom_fields.c.video_id)
-                    .where(video_custom_fields.c.field_id == field_id)
-                    .where(video_custom_fields.c.value == json_value)
-                )
+def parse_sort_parameters(sort: Optional[str], order: Optional[str], has_search: bool) -> tuple[SortBy, SortOrder]:
+    """
+    Parse and validate sort parameters.
 
-            query = query.where(videos.c.id.in_(custom_subquery))
+    Args:
+        sort: Sort field (relevance, date, duration, views, title)
+        order: Sort order (asc, desc)
+        has_search: Whether a search term is present (affects default sort)
 
-    # Sorting
-    # Validate and convert sort parameter to enum
+    Returns:
+        Tuple of (SortBy enum, SortOrder enum)
+
+    Raises:
+        HTTPException: If invalid sort or order value is provided
+    """
+    # Parse sort field
     if sort:
         try:
             sort_by = SortBy(sort.lower())
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid sort value: '{sort}'. Valid values are: relevance, date, duration, views, title"
+                detail=f"Invalid sort value: '{sort}'. Valid values are: relevance, date, duration, views, title",
             )
     else:
-        sort_by = SortBy.RELEVANCE if search else SortBy.DATE
+        sort_by = SortBy.RELEVANCE if has_search else SortBy.DATE
 
-    # Validate order parameter
-    order_lower = order.lower()
+    # Parse sort order
+    order_lower = (order or "desc").lower()
     if order_lower not in ("asc", "desc"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid order value: '{order}'. Valid values are: asc, desc"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid order value: '{order}'. Valid values are: asc, desc")
     sort_order = SortOrder.DESC if order_lower == "desc" else SortOrder.ASC
 
+    return sort_by, sort_order
+
+
+def apply_sorting(query: sa.Select, sort_by: SortBy, sort_order: SortOrder) -> sa.Select:
+    """
+    Apply sorting to the query.
+
+    Args:
+        query: The current query
+        sort_by: The field to sort by
+        sort_order: The sort direction
+
+    Returns:
+        Query with sorting applied
+    """
     if sort_by == SortBy.DATE:
         order_col = videos.c.published_at.desc() if sort_order == SortOrder.DESC else videos.c.published_at.asc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.DURATION:
+        return query.order_by(order_col)
+
+    if sort_by == SortBy.DURATION:
         order_col = videos.c.duration.desc() if sort_order == SortOrder.DESC else videos.c.duration.asc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.VIEWS:
-        # Use column label with desc()/asc() for type safety
+        return query.order_by(order_col)
+
+    if sort_by == SortBy.VIEWS:
         view_count_col = sa.literal_column("view_count")
         order_col = view_count_col.desc() if sort_order == SortOrder.DESC else view_count_col.asc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.TITLE:
-        # Case-insensitive sorting for better alphabetical ordering
+        return query.order_by(order_col)
+
+    if sort_by == SortBy.TITLE:
         title_lower = sa.func.lower(videos.c.title)
         order_col = title_lower.asc() if sort_order == SortOrder.ASC else title_lower.desc()
-        query = query.order_by(order_col)
-    elif sort_by == SortBy.RELEVANCE:
-        # For relevance, use published date as fallback (most recent first)
-        query = query.order_by(videos.c.published_at.desc())
-    else:
-        # Default to date descending
-        query = query.order_by(videos.c.published_at.desc())
+        return query.order_by(order_col)
 
-    # Apply pagination after sorting
-    query = query.limit(limit).offset(offset)
+    # SortBy.RELEVANCE and default: use published date descending
+    return query.order_by(videos.c.published_at.desc())
 
-    rows = await fetch_all_with_retry(query)
 
-    # Get tags for all videos in one query
-    video_ids = [row["id"] for row in rows]
-    video_tags_map = await get_video_tags(video_ids)
+def build_video_list_response(
+    rows: List[Dict[str, Any]], video_tags_map: Dict[int, List[VideoTagInfo]]
+) -> List[VideoListResponse]:
+    """
+    Build VideoListResponse objects from database rows.
 
-    def get_thumbnail_version(row):
+    Args:
+        rows: Database result rows
+        video_tags_map: Map of video_id to list of tags
+
+    Returns:
+        List of VideoListResponse objects
+    """
+
+    def get_thumbnail_version(row: Dict[str, Any]) -> int:
         """Generate cache-busting version for thumbnail URL."""
         if row["thumbnail_timestamp"]:
             return int(row["thumbnail_timestamp"] * 1000)
-        # Use hash of id + source for non-timestamp thumbnails
         source = row["thumbnail_source"] or "auto"
         return hash((row["id"], source)) % 1000000000
 
@@ -768,9 +887,301 @@ async def list_videos(
             thumbnail_source=row["thumbnail_source"] or "auto",
             thumbnail_timestamp=row["thumbnail_timestamp"],
             tags=video_tags_map.get(row["id"], []),
+            view_count=row["view_count"] if "view_count" in row._mapping else 0,  # Issue #413 Phase 3
         )
         for row in rows
     ]
+
+
+@app.get("/api/videos")
+@limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
+async def list_videos(
+    request: Request,
+    category: Optional[str] = None,
+    tag: Optional[str] = None,
+    search: Optional[str] = None,
+    duration: Optional[str] = Query(
+        default=None, description="Filter by duration: short (<5min), medium (5-20min), long (>20min). Comma-separated."
+    ),
+    quality: Optional[str] = Query(
+        default=None, description="Filter by available quality: 2160p, 1440p, 1080p, 720p, 480p, 360p. Comma-separated."
+    ),
+    date_from: Optional[datetime] = Query(
+        default=None, description="Filter videos published from this date (ISO 8601)"
+    ),
+    date_to: Optional[datetime] = Query(default=None, description="Filter videos published until this date (ISO 8601)"),
+    has_transcription: Optional[bool] = Query(
+        default=None, description="Filter by transcription availability (true/false)"
+    ),
+    featured: Optional[bool] = Query(
+        default=None, description="Filter by featured status (true = only featured videos)"
+    ),
+    sort: Optional[str] = Query(default=None, description="Sort by: relevance, date, duration, views, title"),
+    order: Optional[str] = Query(default="desc", description="Sort order: asc or desc"),
+    limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
+    offset: int = Query(default=0, ge=0, description="Number of items to skip (deprecated, use cursor)"),
+    cursor: Optional[str] = Query(
+        default=None,
+        description="Cursor for pagination (more efficient than offset for large datasets). "
+        "Use next_cursor from previous response.",
+    ),
+    include_total: bool = Query(
+        default=False, description="Include total count in response (expensive for large datasets)"
+    ),
+) -> PaginatedVideoListResponse:
+    """
+    List all published videos with advanced filtering and sorting.
+
+    Pagination:
+    - cursor: Use cursor-based pagination for efficient traversal of large datasets.
+      Pass the next_cursor from the previous response to get the next page.
+    - offset: Legacy offset-based pagination (deprecated, use cursor instead).
+      When cursor is provided, offset is ignored.
+
+    Filters:
+    - category: Filter by category slug
+    - tag: Filter by tag slug
+    - search: Full-text search in title and description
+    - duration: short (<5min), medium (5-20min), long (>20min)
+    - quality: Filter by available quality variants (e.g., 1080p, 2160p)
+    - date_from/date_to: Filter by publication date range
+    - has_transcription: Filter videos with/without transcriptions
+
+    Sorting:
+    - relevance (default for text searches), date, duration, views, title
+    - order: asc (ascending) or desc (descending)
+
+    Note: Cursor-based pagination is recommended for large datasets (Issue #463).
+    """
+    # Parse custom field filters early for cache key inclusion (Issue #429)
+    # Custom fields are query params like "custom.difficulty=beginner"
+    custom_filters = {}
+    for key, value in request.query_params.items():
+        if key.startswith("custom."):
+            field_slug = key[7:]  # Remove "custom." prefix
+            if field_slug:
+                custom_filters[field_slug] = value
+
+    # Validate and decode cursor if provided
+    cursor_data = validate_cursor(cursor)
+    using_cursor = cursor_data is not None
+
+    # Generate cache key from ALL query parameters including custom fields and cursor
+    # Use a hash to avoid collisions from delimiter conflicts in parameter values
+    # (e.g., search terms containing the delimiter character)
+    custom_filters_key = "|".join(f"{k}={v}" for k, v in sorted(custom_filters.items()))
+    pagination_key = f"cursor:{cursor}" if using_cursor else f"offset:{offset}"
+    cache_key_raw = f"{category}|{tag}|{search}|{duration}|{quality}|{date_from}|{date_to}|{has_transcription}|{featured}|{sort}|{order}|{limit}|{pagination_key}|{include_total}|{custom_filters_key}"
+    cache_key = f"videos:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
+
+    # Check cache first
+    cached_result = _video_list_cache.get(cache_key)
+    if cached_result is not None:
+        return PaginatedVideoListResponse(**cached_result)
+
+    # Build base query and apply all filters
+    query = build_base_videos_query()
+    query = apply_category_filter(query, category)
+    query = apply_tag_filter(query, tag)
+    query = apply_search_filter(query, search)
+    query = apply_duration_filter(query, duration)
+    query = apply_quality_filter(query, quality)
+    query = apply_date_range_filter(query, date_from, date_to)
+    query = apply_transcription_filter(query, has_transcription)
+    # Issue #413 Phase 3: Featured video filter
+    if featured is not None:
+        query = query.where(videos.c.is_featured == featured)
+    query = await apply_custom_field_filters(query, custom_filters)
+
+    # Apply sorting - need to know sort direction for cursor pagination
+    sort_by, sort_order = parse_sort_parameters(sort, order, has_search=bool(search))
+
+    # Apply cursor-based pagination if cursor is provided (Issue #463)
+    # Cursor pagination uses (published_at, id) for stable ordering
+    if using_cursor:
+        cursor_ts, cursor_id = cursor_data
+        # For descending order: get items where (published_at, id) < cursor
+        # For ascending order: get items where (published_at, id) > cursor
+        if sort_order == SortOrder.DESC:
+            query = query.where(
+                sa.or_(
+                    videos.c.published_at < cursor_ts,
+                    sa.and_(videos.c.published_at == cursor_ts, videos.c.id < cursor_id),
+                )
+            )
+        else:
+            query = query.where(
+                sa.or_(
+                    videos.c.published_at > cursor_ts,
+                    sa.and_(videos.c.published_at == cursor_ts, videos.c.id > cursor_id),
+                )
+            )
+
+    # Apply sorting with secondary sort by id for stable cursor pagination
+    query = apply_sorting(query, sort_by, sort_order)
+    # Add secondary sort by id for deterministic ordering with same published_at
+    if sort_order == SortOrder.DESC:
+        query = query.order_by(videos.c.id.desc())
+    else:
+        query = query.order_by(videos.c.id.asc())
+
+    # Apply pagination - fetch one extra to determine has_more
+    if not using_cursor:
+        query = query.offset(offset)
+    query = query.limit(limit + 1)
+
+    # Execute query and build response
+    rows = await fetch_all_with_retry(query)
+
+    # Determine if there are more results
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]  # Remove the extra row
+
+    video_ids = [row["id"] for row in rows]
+    video_tags_map = await get_video_tags(video_ids)
+    video_list = build_video_list_response(rows, video_tags_map)
+
+    # Generate next cursor from the last item
+    next_cursor = None
+    if has_more and rows:
+        last_row = rows[-1]
+        if last_row["published_at"]:
+            next_cursor = encode_cursor(last_row["published_at"], last_row["id"])
+
+    # Optionally get total count (expensive for large datasets)
+    total_count = None
+    if include_total:
+        count_query = build_base_videos_query()
+        count_query = apply_category_filter(count_query, category)
+        count_query = apply_tag_filter(count_query, tag)
+        count_query = apply_search_filter(count_query, search)
+        count_query = apply_duration_filter(count_query, duration)
+        count_query = apply_quality_filter(count_query, quality)
+        count_query = apply_date_range_filter(count_query, date_from, date_to)
+        count_query = apply_transcription_filter(count_query, has_transcription)
+        count_query = await apply_custom_field_filters(count_query, custom_filters)
+        # Wrap to count total
+        count_query = sa.select(sa.func.count()).select_from(count_query.subquery())
+        total_count = await fetch_val_with_retry(count_query)
+
+    result = PaginatedVideoListResponse(
+        videos=video_list,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        total_count=total_count,
+    )
+
+    # Cache the result as dict for serialization (Issue #429)
+    _video_list_cache.set(cache_key, result.model_dump())
+
+    return result
+
+
+# Maximum videos per bulk request (Issue #413 Phase 3)
+MAX_BULK_VIDEO_IDS = 20
+
+
+@app.get("/api/videos/bulk")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_videos_bulk(
+    request: Request,
+    ids: str = Query(..., description="Comma-separated video IDs (max 20)"),
+) -> List[VideoListResponse]:
+    """
+    Get multiple videos by ID in a single request.
+
+    This endpoint is optimized for fetching multiple videos efficiently,
+    useful for Continue Watching and Watch Later features.
+
+    Args:
+        ids: Comma-separated video IDs (max 20)
+
+    Returns:
+        List of VideoListResponse objects (same order as requested IDs, excluding missing/deleted)
+    """
+    # Parse and validate IDs
+    try:
+        id_list = []
+        for id_str in ids.split(","):
+            cleaned = id_str.strip()
+            if cleaned:
+                vid = int(cleaned)
+                if vid <= 0:
+                    raise HTTPException(
+                        status_code=400, detail=f"Invalid video ID: '{cleaned}' must be a positive integer"
+                    )
+                id_list.append(vid)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid video ID format: '{cleaned}' is not a valid integer")
+
+    if not id_list:
+        return []
+
+    # Deduplicate while preserving order
+    id_list = list(dict.fromkeys(id_list))
+
+    if len(id_list) > MAX_BULK_VIDEO_IDS:
+        raise HTTPException(
+            status_code=400, detail=f"Maximum {MAX_BULK_VIDEO_IDS} unique video IDs allowed per request"
+        )
+
+    # Build query for multiple videos
+    query = (
+        sa.select(
+            videos.c.id,
+            videos.c.title,
+            videos.c.slug,
+            videos.c.description,
+            videos.c.category_id,
+            videos.c.duration,
+            videos.c.status,
+            videos.c.created_at,
+            videos.c.published_at,
+            videos.c.thumbnail_source,
+            videos.c.thumbnail_timestamp,
+            videos.c.streaming_format,
+            videos.c.primary_codec,
+            categories.c.name.label("category_name"),
+            sa.func.count(sa.distinct(playback_sessions.c.id)).label("view_count"),
+        )
+        .select_from(
+            videos.outerjoin(categories, videos.c.category_id == categories.c.id).outerjoin(
+                playback_sessions, videos.c.id == playback_sessions.c.video_id
+            )
+        )
+        .where(videos.c.id.in_(id_list))
+        .where(videos.c.status == "ready")
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+        .group_by(
+            videos.c.id,
+            videos.c.title,
+            videos.c.slug,
+            videos.c.description,
+            videos.c.category_id,
+            videos.c.duration,
+            videos.c.status,
+            videos.c.created_at,
+            videos.c.published_at,
+            videos.c.thumbnail_source,
+            videos.c.thumbnail_timestamp,
+            videos.c.streaming_format,
+            videos.c.primary_codec,
+            categories.c.name,
+        )
+    )
+
+    rows = await fetch_all_with_retry(query)
+
+    # Get tags for these videos
+    video_ids = [row["id"] for row in rows]
+    video_tags_map = await get_video_tags(video_ids)
+
+    # Build response preserving original request order
+    row_map = {row["id"]: row for row in rows}
+    ordered_rows = [row_map[vid] for vid in id_list if vid in row_map]
+    return build_video_list_response(ordered_rows, video_tags_map)
 
 
 @app.get("/api/videos/{slug}")
@@ -827,6 +1238,24 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
     video_tags_map = await get_video_tags([row["id"]])
     video_tag_list = video_tags_map.get(row["id"], [])
 
+    # Get chapters for this video (only if has_chapters is True - Issue #413 Phase 7A)
+    chapter_list = []
+    if row._mapping.get("has_chapters", False):
+        video_chapters_map = await get_video_chapters([row["id"]])
+        chapter_list = video_chapters_map.get(row["id"], [])
+
+    # Build sprite sheet info if available (Issue #413 Phase 7B)
+    sprite_sheet_info = None
+    if row._mapping.get("sprite_sheet_status") == "ready" and row._mapping.get("sprite_sheet_count", 0) > 0:
+        sprite_sheet_info = SpriteSheetInfo(
+            base_url=f"/videos/{row['slug']}/sprites/sprite_",
+            count=row["sprite_sheet_count"],
+            interval=row["sprite_sheet_interval"],
+            tile_size=row["sprite_sheet_tile_size"],
+            frame_width=row["sprite_sheet_frame_width"],
+            frame_height=row["sprite_sheet_frame_height"],
+        )
+
     # Generate thumbnail version for cache busting
     thumb_version = None
     if row["status"] == VideoStatus.READY:
@@ -855,23 +1284,18 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         created_at=row["created_at"],
         published_at=row["published_at"],
         thumbnail_url=(
-            f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}"
-            if row["status"] == VideoStatus.READY
-            else None
+            f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}" if row["status"] == VideoStatus.READY else None
         ),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
         # Stream URLs use CDN if configured (Issue #222)
         stream_url=(
-            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8"
-            if row["status"] == VideoStatus.READY
-            else None
+            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None
         ),
         # DASH URL only available for CMAF format videos
         dash_url=(
             f"{video_url_prefix}/videos/{row['slug']}/manifest.mpd"
-            if row["status"] == VideoStatus.READY
-            and row._mapping.get("streaming_format") == "cmaf"
+            if row["status"] == VideoStatus.READY and row._mapping.get("streaming_format") == "cmaf"
             else None
         ),
         streaming_format=row._mapping.get("streaming_format", "hls_ts"),
@@ -880,6 +1304,8 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         transcription_status=transcription_status,
         qualities=qualities,
         tags=video_tag_list,
+        chapters=chapter_list,
+        sprite_sheet_info=sprite_sheet_info,
     )
 
 
@@ -987,6 +1413,204 @@ async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
         completed_at=transcription["completed_at"],
         error_message=sanitize_error_message(transcription["error_message"], context=f"video_slug={slug}"),
     )
+
+
+# =============================================================================
+# Related Videos API (Issue #413 Phase 5)
+# =============================================================================
+
+
+async def _fetch_related_videos_tier(
+    category_id: Optional[int],
+    tag_ids: Optional[List[int]],
+    exclude_ids: set,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch videos matching category and/or tags, excluding specified IDs.
+
+    Tiers:
+    - category_id + tag_ids: Videos with same category AND shared tags (highest relevance)
+    - category_id only: Videos in the same category
+    - tag_ids only: Videos with shared tags
+    - neither: Recent published videos (fallback)
+
+    Args:
+        category_id: Optional category ID to filter by
+        tag_ids: Optional list of tag IDs to match (uses EXISTS for any match)
+        exclude_ids: Set of video IDs to exclude from results
+        limit: Maximum number of videos to return
+
+    Returns:
+        List of video rows matching criteria
+    """
+    if limit <= 0:
+        return []
+
+    query = build_base_videos_query()
+
+    # Exclude already-found videos
+    if exclude_ids:
+        query = query.where(videos.c.id.notin_(exclude_ids))
+
+    # Apply category filter
+    if category_id is not None:
+        query = query.where(videos.c.category_id == category_id)
+
+    # Apply tag filter using EXISTS (at least one matching tag)
+    if tag_ids:
+        tag_match_exists = (
+            sa.select(sa.literal_column("1"))
+            .select_from(video_tags)
+            .where(video_tags.c.video_id == videos.c.id)
+            .where(video_tags.c.tag_id.in_(tag_ids))
+            .exists()
+        )
+        query = query.where(tag_match_exists)
+
+    # Order by published date (most recent first)
+    query = query.order_by(videos.c.published_at.desc())
+    query = query.limit(limit)
+
+    return await fetch_all_with_retry(query)
+
+
+@app.get("/api/videos/{slug}/related")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_related_videos(
+    request: Request,
+    slug: str,
+    limit: int = Query(default=12, ge=1, le=24, description="Maximum number of related videos to return"),
+) -> List[VideoListResponse]:
+    """
+    Get related videos for a given video.
+
+    Algorithm priority (with early termination when limit reached):
+    1. Same category + shared tags (highest relevance)
+    2. Same category only
+    3. Shared tags only
+    4. Recent videos (fallback)
+
+    Results are cached for 30 seconds using the video list cache.
+
+    Args:
+        slug: The video slug to find related videos for
+        limit: Maximum number of related videos (1-24, default 12)
+
+    Returns:
+        List of related videos sorted by relevance tier then recency
+    """
+    # Validate slug to prevent injection attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
+    # Build cache key with SHA256 hash to prevent cache poisoning
+    # High priority fix (Margo): Include schema version in cache key
+    RELATED_VIDEOS_CACHE_VERSION = "v1"  # Increment on schema changes
+    cache_key_raw = f"related:{RELATED_VIDEOS_CACHE_VERSION}:{slug}|{limit}"
+    cache_key = f"related:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
+
+    # Check cache first
+    cached = _video_list_cache.get(cache_key)
+    if cached is not None:
+        try:
+            return [VideoListResponse(**v) for v in cached]
+        except Exception as e:
+            # Cache schema mismatch after deploy, invalidate and regenerate
+            logger.warning(f"Cached related videos schema mismatch, invalidating: {e}")
+            _video_list_cache.delete(cache_key)
+
+    # Get the source video with its category
+    video_query = (
+        sa.select(videos.c.id, videos.c.category_id)
+        .where(videos.c.slug == slug)
+        .where(videos.c.status == VideoStatus.READY)
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_id = video["id"]
+    category_id = video["category_id"]
+
+    # Get source video's tag IDs (limit to top 10 to avoid overly complex queries)
+    tag_query = sa.select(video_tags.c.tag_id).where(video_tags.c.video_id == video_id).limit(10)
+    tag_rows = await fetch_all_with_retry(tag_query)
+    source_tag_ids = [r["tag_id"] for r in tag_rows] if tag_rows else []
+
+    # Collect related videos using tiered algorithm with early termination
+    related_videos: List[Dict[str, Any]] = []
+    seen_ids: set = {video_id}  # Always exclude the source video
+
+    # Tier 1: Same category + shared tags (highest relevance)
+    if category_id is not None and source_tag_ids:
+        tier1 = await _fetch_related_videos_tier(
+            category_id=category_id,
+            tag_ids=source_tag_ids,
+            exclude_ids=seen_ids,
+            limit=limit,
+        )
+        for v in tier1:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Tier 2: Same category only (if we need more)
+    if len(related_videos) < limit and category_id is not None:
+        remaining = limit - len(related_videos)
+        tier2 = await _fetch_related_videos_tier(
+            category_id=category_id,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=remaining,
+        )
+        for v in tier2:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Tier 3: Shared tags only (if we need more)
+    if len(related_videos) < limit and source_tag_ids:
+        remaining = limit - len(related_videos)
+        tier3 = await _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=source_tag_ids,
+            exclude_ids=seen_ids,
+            limit=remaining,
+        )
+        for v in tier3:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Tier 4: Recent videos fallback (if we still need more)
+    if len(related_videos) < limit:
+        remaining = limit - len(related_videos)
+        tier4 = await _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=remaining,
+        )
+        for v in tier4:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Get tags for all related videos
+    video_ids = [v["id"] for v in related_videos]
+    video_tags_map = await get_video_tags(video_ids)
+
+    # Build response using existing helper
+    result = build_video_list_response(related_videos, video_tags_map)
+
+    # Cache the result
+    _video_list_cache.set(cache_key, [v.model_dump() for v in result])
+
+    return result
 
 
 @app.get("/api/categories")
@@ -1121,6 +1745,226 @@ async def get_tag(request: Request, slug: str) -> TagResponse:
 
 
 # ============================================================================
+# Playlists
+# ============================================================================
+
+
+def _get_video_url_prefix() -> str:
+    """Get the URL prefix for video assets."""
+    return f"http://{NAS_STORAGE}/vlog-storage"
+
+
+# Valid playlist types for filtering
+VALID_PLAYLIST_TYPES = {"playlist", "collection", "series", "course"}
+
+
+@app.get("/api/playlists")
+@limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
+async def list_public_playlists(
+    request: Request,
+    playlist_type: Optional[str] = Query(default=None, description="Filter by type"),
+    featured: Optional[bool] = Query(default=None, description="Filter by featured status"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> PlaylistListResponse:
+    """List public playlists with video counts."""
+    # Validate playlist_type if provided
+    if playlist_type and playlist_type not in VALID_PLAYLIST_TYPES:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid playlist type. Valid options: {', '.join(sorted(VALID_PLAYLIST_TYPES))}"
+        )
+
+    # Build WHERE conditions
+    conditions = ["p.deleted_at IS NULL", "p.visibility = 'public'"]
+    filter_params: dict = {}
+
+    if playlist_type:
+        conditions.append("p.playlist_type = :playlist_type")
+        filter_params["playlist_type"] = playlist_type
+
+    if featured is not None:
+        conditions.append("p.is_featured = :is_featured")
+        filter_params["is_featured"] = featured
+
+    where_clause = " AND ".join(conditions)
+
+    # Count total (only uses filter params)
+    count_query = sa.text(f"""
+        SELECT COUNT(*) FROM playlists p WHERE {where_clause}
+    """)
+    if filter_params:
+        count_query = count_query.bindparams(**filter_params)
+    total_count = await fetch_val_with_retry(count_query)
+
+    # Get playlists with video counts (uses filter + pagination params)
+    all_params = {**filter_params, "limit": limit, "offset": offset}
+    query = sa.text(f"""
+        SELECT
+            p.*,
+            COUNT(DISTINCT CASE
+                WHEN v.status = 'ready' AND v.deleted_at IS NULL
+                AND v.published_at IS NOT NULL THEN pi.video_id
+            END) as video_count,
+            COALESCE(SUM(CASE
+                WHEN v.status = 'ready' AND v.deleted_at IS NULL
+                AND v.published_at IS NOT NULL THEN v.duration
+            END), 0) as total_duration
+        FROM playlists p
+        LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
+        LEFT JOIN videos v ON v.id = pi.video_id
+        WHERE {where_clause}
+        GROUP BY p.id
+        ORDER BY p.is_featured DESC, p.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """).bindparams(**all_params)
+    rows = await fetch_all_with_retry(query)
+
+    playlist_list = []
+    for row in rows:
+        thumbnail_url = None
+        if row.get("thumbnail_path"):
+            thumbnail_url = f"{_get_video_url_prefix()}/{row['thumbnail_path']}"
+
+        playlist_list.append(
+            PlaylistResponse(
+                id=row["id"],
+                title=row["title"],
+                slug=row["slug"],
+                description=row.get("description"),
+                thumbnail_url=thumbnail_url,
+                visibility=row["visibility"],
+                playlist_type=row["playlist_type"],
+                is_featured=row["is_featured"],
+                video_count=row["video_count"] or 0,
+                total_duration=row["total_duration"] or 0,
+                created_at=row["created_at"],
+                updated_at=row.get("updated_at"),
+            )
+        )
+
+    return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
+
+
+@app.get("/api/playlists/{slug}")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResponse:
+    """Get a public playlist by slug with its videos."""
+    # Validate slug
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+
+    # Get playlist (only public or unlisted)
+    playlist = await fetch_one_with_retry(
+        playlists.select()
+        .where(playlists.c.slug == slug)
+        .where(playlists.c.deleted_at.is_(None))
+        .where(playlists.c.visibility.in_(["public", "unlisted"]))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get videos (only ready, published, non-deleted)
+    video_query = sa.text("""
+        SELECT
+            v.id, v.title, v.slug, v.duration, v.status,
+            pi.position
+        FROM playlist_items pi
+        JOIN videos v ON v.id = pi.video_id
+        WHERE pi.playlist_id = :playlist_id
+          AND v.status = 'ready'
+          AND v.deleted_at IS NULL
+          AND v.published_at IS NOT NULL
+        ORDER BY pi.position ASC
+    """).bindparams(playlist_id=playlist["id"])
+    video_rows = await fetch_all_with_retry(video_query)
+
+    video_list = []
+    total_duration = 0.0
+    for vrow in video_rows:
+        thumbnail_url = f"{_get_video_url_prefix()}/videos/{vrow['slug']}/thumbnail.jpg"
+        video_list.append(
+            PlaylistVideoInfo(
+                id=vrow["id"],
+                title=vrow["title"],
+                slug=vrow["slug"],
+                thumbnail_url=thumbnail_url,
+                duration=vrow["duration"] or 0,
+                position=vrow["position"],
+                status=vrow["status"],
+            )
+        )
+        total_duration += vrow["duration"] or 0
+
+    # Build thumbnail URL
+    thumbnail_url = None
+    if playlist.get("thumbnail_path"):
+        thumbnail_url = f"{_get_video_url_prefix()}/{playlist['thumbnail_path']}"
+
+    return PlaylistDetailResponse(
+        id=playlist["id"],
+        title=playlist["title"],
+        slug=playlist["slug"],
+        description=playlist.get("description"),
+        thumbnail_url=thumbnail_url,
+        visibility=playlist["visibility"],
+        playlist_type=playlist["playlist_type"],
+        is_featured=playlist["is_featured"],
+        video_count=len(video_list),
+        total_duration=total_duration,
+        created_at=playlist["created_at"],
+        updated_at=playlist.get("updated_at"),
+        videos=video_list,
+    )
+
+
+@app.get("/api/playlists/{slug}/videos")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_playlist_videos(request: Request, slug: str) -> List[PlaylistVideoInfo]:
+    """Get videos in a public playlist."""
+    # Validate slug
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+
+    # Get playlist (only public or unlisted)
+    playlist = await fetch_one_with_retry(
+        playlists.select()
+        .where(playlists.c.slug == slug)
+        .where(playlists.c.deleted_at.is_(None))
+        .where(playlists.c.visibility.in_(["public", "unlisted"]))
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    # Get videos
+    query = sa.text("""
+        SELECT
+            v.id, v.title, v.slug, v.duration, v.status,
+            pi.position
+        FROM playlist_items pi
+        JOIN videos v ON v.id = pi.video_id
+        WHERE pi.playlist_id = :playlist_id
+          AND v.status = 'ready'
+          AND v.deleted_at IS NULL
+          AND v.published_at IS NOT NULL
+        ORDER BY pi.position ASC
+    """).bindparams(playlist_id=playlist["id"])
+    rows = await fetch_all_with_retry(query)
+
+    return [
+        PlaylistVideoInfo(
+            id=row["id"],
+            title=row["title"],
+            slug=row["slug"],
+            thumbnail_url=f"{_get_video_url_prefix()}/videos/{row['slug']}/thumbnail.jpg",
+            duration=row["duration"] or 0,
+            position=row["position"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+
+
+# ============================================================================
 # Watermark Configuration
 # ============================================================================
 
@@ -1211,6 +2055,71 @@ async def get_watermark_image(request: Request):
         media_type=content_type,
         headers={"Cache-Control": "public, max-age=86400"},  # Cache for 1 day
     )
+
+
+# ============================================================================
+# Display Configuration
+# ============================================================================
+
+# Cached display settings (refreshed every 60 seconds)
+_cached_display_settings: Dict[str, Any] = {}
+_cached_display_settings_time: float = 0
+_DISPLAY_SETTINGS_CACHE_TTL = 60  # seconds
+
+
+async def get_display_settings() -> Dict[str, Any]:
+    """
+    Get display settings from database with caching.
+
+    Returns dict with:
+    - show_view_counts: bool (default True)
+    - show_tagline: bool (default True)
+    - tagline: str (default empty)
+    """
+    import time
+
+    global _cached_display_settings, _cached_display_settings_time
+
+    now = time.time()
+    if _cached_display_settings and (now - _cached_display_settings_time) < _DISPLAY_SETTINGS_CACHE_TTL:
+        return _cached_display_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "show_view_counts": await service.get("display.show_view_counts", True),
+            "show_tagline": await service.get("display.show_tagline", True),
+            "tagline": await service.get("display.tagline", ""),
+        }
+
+        _cached_display_settings = settings
+        _cached_display_settings_time = now
+
+    except Exception as e:
+        logger.debug(f"Failed to get display settings from DB, using defaults: {e}")
+        _cached_display_settings = {
+            "show_view_counts": True,
+            "show_tagline": True,
+            "tagline": "",
+        }
+        _cached_display_settings_time = now
+
+    return _cached_display_settings
+
+
+@app.get("/api/config/display")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_display_config(request: Request):
+    """
+    Get display configuration for the public UI.
+
+    Returns display settings like whether to show view counts.
+    """
+    settings = await get_display_settings()
+    return settings
 
 
 # ============================================================================

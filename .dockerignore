@@ -1,0 +1,76 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+coverage.xml
+*.egg-info
+.eggs
+*.egg
+venv
+.venv
+*.whl
+
+# IDE/Editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Tests (not needed in production container)
+tests/
+pytest.ini
+conftest.py
+TESTING.md
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Build artifacts
+dist/
+build/
+
+# Local data
+*.db
+*.sqlite
+*.log
+uploads/
+
+# Node.js (if present)
+node_modules/
+package-lock.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose*.yaml
+Dockerfile*
+!Dockerfile.worker.gpu
+!Dockerfile.worker-cpu-only
+
+# K8s manifests (not needed in container)
+k8s/
+
+# Backups
+*.backup
+*.backup.*
+
+# Web admin (separate build context)
+web/

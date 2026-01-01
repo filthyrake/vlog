@@ -174,6 +174,8 @@ class VideoResponse(BaseModel):
     transcription_status: Optional[str] = None  # pending, processing, completed, failed
     qualities: List[VideoQualityResponse] = []
     tags: List[VideoTagInfo] = []
+    chapters: List["ChapterInfo"] = []  # Issue #413 Phase 7A
+    sprite_sheet_info: Optional["SpriteSheetInfo"] = None  # Issue #413 Phase 7B
 
     @field_validator("description", mode="before")
     @classmethod
@@ -212,7 +214,10 @@ class VideoListResponse(BaseModel):
     thumbnail_url: Optional[str] = None
     thumbnail_source: str = "auto"  # auto, selected, custom
     thumbnail_timestamp: Optional[float] = None  # timestamp for selected thumbnails
+    streaming_format: str = "hls_ts"  # hls_ts (legacy) or cmaf (modern fMP4)
+    primary_codec: str = "h264"  # h264, hevc, or av1
     tags: List[VideoTagInfo] = []
+    view_count: int = 0  # Total playback sessions (Issue #413 Phase 3)
 
     @field_validator("description", mode="before")
     @classmethod
@@ -225,6 +230,40 @@ class VideoListResponse(BaseModel):
         from datetime import timezone
 
         return v if v is not None else datetime.now(timezone.utc)
+
+    @field_validator("streaming_format", mode="before")
+    @classmethod
+    def default_streaming_format(cls, v):
+        return v if v is not None else "hls_ts"
+
+    @field_validator("primary_codec", mode="before")
+    @classmethod
+    def default_primary_codec(cls, v):
+        return v if v is not None else "h264"
+
+
+# Cursor-based pagination response (Issue #463)
+class PaginatedVideoListResponse(BaseModel):
+    """
+    Paginated video list response with cursor-based navigation.
+
+    Cursor-based pagination is more efficient than offset-based pagination
+    for large datasets, as it doesn't require scanning/discarding rows.
+    """
+
+    videos: List[VideoListResponse]
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description="Cursor for the next page. None if no more results.",
+    )
+    has_more: bool = Field(
+        default=False,
+        description="Whether there are more results after this page.",
+    )
+    total_count: Optional[int] = Field(
+        default=None,
+        description="Total count of matching items (optional, expensive for large datasets).",
+    )
 
 
 # Analytics request models
@@ -561,6 +600,9 @@ class WorkerDashboardStatus(BaseModel):
     hwaccel_enabled: bool = False
     hwaccel_type: Optional[str] = None
     gpu_name: Optional[str] = None
+    # Version tracking (Issue #410)
+    code_version: Optional[str] = None
+    deployment_type: Optional[str] = None  # kubernetes, systemd, docker, manual
     # Stats
     jobs_completed: int = 0
     jobs_failed: int = 0
@@ -814,9 +856,7 @@ class CustomFieldCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Display name for the field")
     field_type: str = Field(..., description="Field type: text, number, date, select, multi_select, url")
     options: Optional[List[str]] = Field(
-        default=None,
-        description="Options for select/multi_select fields",
-        max_length=100
+        default=None, description="Options for select/multi_select fields", max_length=100
     )
     required: bool = Field(default=False, description="Whether the field is required")
     category_id: Optional[int] = Field(default=None, description="Category ID (null for global field)")
@@ -913,10 +953,7 @@ class VideoCustomFieldValue(BaseModel):
 class VideoCustomFieldsUpdate(BaseModel):
     """Request to update custom field values for a video."""
 
-    values: dict[int, Any] = Field(
-        ...,
-        description="Map of field_id to value. Use null to clear a field value."
-    )
+    values: dict[int, Any] = Field(..., description="Map of field_id to value. Use null to clear a field value.")
 
 
 class VideoCustomFieldsResponse(BaseModel):
@@ -930,10 +967,7 @@ class BulkCustomFieldsUpdate(BaseModel):
     """Request to update custom field values for multiple videos."""
 
     video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
-    values: dict[int, Any] = Field(
-        ...,
-        description="Map of field_id to value. Applied to all specified videos."
-    )
+    values: dict[int, Any] = Field(..., description="Map of field_id to value. Applied to all specified videos.")
 
 
 class BulkCustomFieldsResponse(BaseModel):
@@ -943,3 +977,285 @@ class BulkCustomFieldsResponse(BaseModel):
     updated: int
     failed: int
     results: List[BulkOperationResult]
+
+
+# ============ Playlist Models ============
+
+# Valid visibility options for playlists
+PLAYLIST_VISIBILITY_OPTIONS = {"public", "private", "unlisted"}
+
+# Valid playlist types
+PLAYLIST_TYPE_OPTIONS = {"playlist", "collection", "series", "course"}
+
+
+class PlaylistCreate(BaseModel):
+    """Request to create a new playlist."""
+
+    title: str = Field(..., min_length=1, max_length=255, description="Playlist title")
+    description: Optional[str] = Field(default=None, max_length=5000, description="Playlist description")
+    visibility: str = Field(default="public", description="Visibility: public, private, unlisted")
+    playlist_type: str = Field(default="playlist", description="Type: playlist, collection, series, course")
+    is_featured: bool = Field(default=False, description="Whether to feature this playlist")
+
+    @field_validator("visibility")
+    @classmethod
+    def validate_visibility(cls, v: str) -> str:
+        if v not in PLAYLIST_VISIBILITY_OPTIONS:
+            opts = ", ".join(sorted(PLAYLIST_VISIBILITY_OPTIONS))
+            raise ValueError(f"Invalid visibility '{v}'. Valid options: {opts}")
+        return v
+
+    @field_validator("playlist_type")
+    @classmethod
+    def validate_playlist_type(cls, v: str) -> str:
+        if v not in PLAYLIST_TYPE_OPTIONS:
+            raise ValueError(f"Invalid playlist_type '{v}'. Valid options: {', '.join(sorted(PLAYLIST_TYPE_OPTIONS))}")
+        return v
+
+
+class PlaylistUpdate(BaseModel):
+    """Request to update a playlist."""
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=5000)
+    visibility: Optional[str] = None
+    playlist_type: Optional[str] = None
+    is_featured: Optional[bool] = None
+
+    @field_validator("visibility")
+    @classmethod
+    def validate_visibility(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in PLAYLIST_VISIBILITY_OPTIONS:
+            opts = ", ".join(sorted(PLAYLIST_VISIBILITY_OPTIONS))
+            raise ValueError(f"Invalid visibility '{v}'. Valid options: {opts}")
+        return v
+
+    @field_validator("playlist_type")
+    @classmethod
+    def validate_playlist_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in PLAYLIST_TYPE_OPTIONS:
+            raise ValueError(f"Invalid playlist_type '{v}'. Valid options: {', '.join(sorted(PLAYLIST_TYPE_OPTIONS))}")
+        return v
+
+
+class PlaylistVideoInfo(BaseModel):
+    """Video info included in playlist responses."""
+
+    id: int
+    title: str
+    slug: str
+    thumbnail_url: Optional[str] = None
+    duration: float = 0
+    position: int
+    status: str = "ready"
+
+
+class PlaylistResponse(BaseModel):
+    """Response for a single playlist."""
+
+    id: int
+    title: str
+    slug: str
+    description: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    visibility: str
+    playlist_type: str
+    is_featured: bool
+    video_count: int = 0
+    total_duration: float = 0  # Sum of all video durations in seconds
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class PlaylistDetailResponse(PlaylistResponse):
+    """Response for playlist with videos included."""
+
+    videos: List[PlaylistVideoInfo] = []
+
+
+class PlaylistListResponse(BaseModel):
+    """Response for playlist listing."""
+
+    playlists: List[PlaylistResponse]
+    total_count: int
+
+
+class AddVideoToPlaylistRequest(BaseModel):
+    """Request to add a video to a playlist."""
+
+    video_id: int = Field(..., description="ID of the video to add")
+    position: Optional[int] = Field(default=None, ge=0, description="Position in playlist (append if not specified)")
+
+
+class ReorderPlaylistRequest(BaseModel):
+    """Request to reorder videos in a playlist."""
+
+    video_ids: List[int] = Field(..., min_length=1, description="Video IDs in new order")
+
+
+# ============ Chapter Models (Issue #413 Phase 7) ============
+
+# Maximum chapters per video (per reviewer feedback)
+MAX_CHAPTERS_PER_VIDEO = 50
+
+
+class ChapterCreate(BaseModel):
+    """Request to create a new chapter."""
+
+    title: str = Field(..., min_length=1, max_length=255, description="Chapter title")
+    description: Optional[str] = Field(default=None, max_length=1000, description="Optional chapter description")
+    start_time: float = Field(..., ge=0, description="Start time in seconds")
+    end_time: Optional[float] = Field(default=None, description="Optional end time in seconds")
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_finite(cls, v: Optional[float]) -> Optional[float]:
+        """Ensure time values are finite (not NaN, Infinity, or -Infinity)."""
+        if v is not None and not math.isfinite(v):
+            raise ValueError("Time value must be a finite number")
+        return v
+
+    @field_validator("end_time")
+    @classmethod
+    def validate_end_time(cls, v: Optional[float], info) -> Optional[float]:
+        """Ensure end_time > start_time if provided."""
+        if v is not None:
+            start_time = info.data.get("start_time")
+            if start_time is not None and v <= start_time:
+                raise ValueError("end_time must be greater than start_time")
+        return v
+
+
+class ChapterUpdate(BaseModel):
+    """Request to update an existing chapter."""
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    start_time: Optional[float] = Field(default=None, ge=0)
+    end_time: Optional[float] = None
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_finite(cls, v: Optional[float]) -> Optional[float]:
+        """Ensure time values are finite (not NaN, Infinity, or -Infinity)."""
+        if v is not None and not math.isfinite(v):
+            raise ValueError("Time value must be a finite number")
+        return v
+
+    @field_validator("end_time")
+    @classmethod
+    def validate_end_time(cls, v: Optional[float], info) -> Optional[float]:
+        """Ensure end_time > start_time if provided."""
+        if v is not None:
+            start_time = info.data.get("start_time")
+            if start_time is not None and v <= start_time:
+                raise ValueError("end_time must be greater than start_time")
+        return v
+
+
+class ChapterResponse(BaseModel):
+    """Response for a single chapter."""
+
+    id: int
+    video_id: int
+    title: str
+    description: Optional[str] = None
+    start_time: float
+    end_time: Optional[float] = None
+    position: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class ChapterListResponse(BaseModel):
+    """Response for listing chapters of a video."""
+
+    chapters: List[ChapterResponse]
+    video_id: int
+    total_count: int
+
+
+class ChapterInfo(BaseModel):
+    """Simplified chapter info for public video responses."""
+
+    id: int
+    title: str
+    start_time: float
+    end_time: Optional[float] = None
+
+
+class ReorderChaptersRequest(BaseModel):
+    """Request to reorder chapters."""
+
+    chapter_ids: List[int] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_CHAPTERS_PER_VIDEO,
+        description="Chapter IDs in new order",
+    )
+
+
+# ============ Sprite Sheet Models (Issue #413 Phase 7B) ============
+
+
+class SpriteSheetInfo(BaseModel):
+    """Sprite sheet info for timeline thumbnail previews."""
+
+    base_url: str = Field(..., description="Base URL for sprite sheets (e.g., /videos/{slug}/sprites/sprite_)")
+    count: int = Field(..., ge=0, description="Number of sprite sheets")
+    interval: int = Field(..., ge=1, description="Seconds between frames")
+    tile_size: int = Field(..., ge=1, description="Grid size (e.g., 10 for 10x10)")
+    frame_width: int = Field(..., ge=1, description="Width of each thumbnail frame in pixels")
+    frame_height: int = Field(..., ge=1, description="Height of each thumbnail frame in pixels")
+
+
+class SpriteGenerationRequest(BaseModel):
+    """Request to generate sprites for a video."""
+
+    priority: str = Field(default="normal", pattern="^(high|normal|low)$", description="Queue priority")
+
+
+class SpriteStatusResponse(BaseModel):
+    """Response for sprite sheet status."""
+
+    video_id: int
+    status: Optional[str] = None  # pending, generating, ready, failed, or None if never requested
+    error: Optional[str] = None
+    count: int = 0
+    interval: Optional[int] = None
+    tile_size: Optional[int] = None
+    frame_width: Optional[int] = None
+    frame_height: Optional[int] = None
+
+
+class SpriteQueueStatusResponse(BaseModel):
+    """Response for sprite queue status overview."""
+
+    pending: int = 0
+    processing: int = 0
+    completed: int = 0
+    failed: int = 0
+    total: int = 0
+
+
+class SpriteQueueJob(BaseModel):
+    """A single sprite generation job in the queue."""
+
+    id: int
+    video_id: int
+    video_slug: str
+    video_title: str
+    priority: str
+    status: str
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+
+class SpriteQueueJobsResponse(BaseModel):
+    """Response for listing sprite queue jobs."""
+
+    jobs: List[SpriteQueueJob]
+    count: int
+    total: int

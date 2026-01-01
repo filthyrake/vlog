@@ -31,6 +31,9 @@ Thumbs.db
 # Node
 node_modules/
 
+# Build output
+web/admin/dist/
+
 # Local config
 .claude/
 test_env/
@@ -47,3 +50,10 @@ systemd/*.service
 k8s/secret.yaml
 k8s/*-secret.yaml
 CLAUDE.md
+
+# Code review oversight tooling (internal)
+.oversight/
+
+# Accessibility testing artifacts
+pa11y-screenshots/
+lighthouse-report.json

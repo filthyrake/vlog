@@ -1,0 +1,146 @@
+# PostgreSQL Database Backup CronJob
+#
+# This CronJob performs automated daily backups of the VLog PostgreSQL database.
+# Backups are compressed and stored on the NAS with a retention policy.
+#
+# Prerequisites:
+# 1. PostgreSQL credentials in a Secret (see below for creation)
+# 2. NAS storage mounted for backup storage
+#
+# Create the secret (run once):
+#   kubectl create secret generic postgres-backup-credentials \
+#     --namespace vlog \
+#     --from-literal=PGHOST=your-postgres-host \
+#     --from-literal=PGPORT=5432 \
+#     --from-literal=PGDATABASE=vlog \
+#     --from-literal=PGUSER=vlog \
+#     --from-literal=PGPASSWORD=your-password
+#
+# Backup files are stored as: /backups/vlog-YYYY-MM-DD-HHMMSS.sql.gz
+# Old backups beyond BACKUP_RETENTION_DAYS are automatically deleted.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: vlog
+  labels:
+    app: vlog
+    component: backup
+spec:
+  # Run daily at 2:00 AM UTC
+  schedule: "0 2 * * *"
+  # Don't allow concurrent backup jobs
+  concurrencyPolicy: Forbid
+  # Keep last 3 successful and 3 failed job records
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  # Start job even if it missed the schedule (within 100 seconds)
+  startingDeadlineSeconds: 100
+  jobTemplate:
+    spec:
+      # Clean up completed job after 1 day
+      ttlSecondsAfterFinished: 86400
+      # Don't retry failed jobs automatically
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: vlog
+            component: backup
+        spec:
+          restartPolicy: OnFailure
+          # Security context for the pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: backup
+            # Use official PostgreSQL image for pg_dump
+            image: postgres:16-alpine
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            envFrom:
+            - secretRef:
+                name: postgres-backup-credentials
+            env:
+            # Number of days to retain backups
+            - name: BACKUP_RETENTION_DAYS
+              value: "7"
+            # Backup storage path (mounted volume)
+            - name: BACKUP_PATH
+              value: "/backups"
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -eo pipefail
+
+              echo "Starting PostgreSQL backup at $(date -Iseconds)"
+
+              # Generate timestamp for backup filename
+              TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
+              # Use .dump extension for pg custom format (already compressed internally)
+              BACKUP_FILE="${BACKUP_PATH}/vlog-${TIMESTAMP}.dump"
+
+              # Perform the backup with custom format (includes built-in compression)
+              echo "Creating backup: ${BACKUP_FILE}"
+              pg_dump --no-password --format=custom --compress=6 > "${BACKUP_FILE}"
+
+              # Verify backup was created and has content
+              if [ ! -s "${BACKUP_FILE}" ]; then
+                echo "ERROR: Backup file is empty or not created"
+                exit 1
+              fi
+
+              # Verify backup integrity by listing contents (catches corruption)
+              echo "Verifying backup integrity..."
+              if ! pg_restore --list "${BACKUP_FILE}" > /dev/null 2>&1; then
+                echo "ERROR: Backup file is corrupted or invalid"
+                rm -f "${BACKUP_FILE}"
+                exit 1
+              fi
+
+              BACKUP_SIZE=$(du -h "${BACKUP_FILE}" | cut -f1)
+              echo "Backup completed and verified: ${BACKUP_FILE} (${BACKUP_SIZE})"
+
+              # Clean up old backups beyond retention period
+              echo "Cleaning up backups older than ${BACKUP_RETENTION_DAYS} days..."
+              find "${BACKUP_PATH}" -name "vlog-*.dump" -type f -mtime +${BACKUP_RETENTION_DAYS} -delete -print
+
+              # List current backups
+              echo "Current backups:"
+              ls -lh "${BACKUP_PATH}"/vlog-*.dump 2>/dev/null || echo "  (none found)"
+
+              echo "Backup job completed at $(date -Iseconds)"
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /backups
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          # Backup storage - mount your NAS backup directory here
+          # Customize the path based on your NAS configuration
+          - name: backup-storage
+            hostPath:
+              path: /mnt/nas/vlog-storage/backups
+              type: DirectoryOrCreate
+          # Temp directory for pg_dump
+          - name: tmp
+            emptyDir: {}

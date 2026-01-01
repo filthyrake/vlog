@@ -1,0 +1,148 @@
+/**
+ * VLog Footer Component
+ * Site footer with navigation and info
+ *
+ * Used by: All public pages
+ * Dependencies: design-tokens.css
+ *
+ * Structure:
+ *   <footer class="site-footer">
+ *     <div class="site-footer__container">
+ *       <div class="site-footer__content">
+ *         <div class="site-footer__brand">...</div>
+ *         <nav class="site-footer__nav">...</nav>
+ *       </div>
+ *       <div class="site-footer__bottom">...</div>
+ *     </div>
+ *   </footer>
+ */
+
+@layer components {
+    .site-footer {
+        background-color: var(--vlog-bg-secondary, #0f172a);
+        border-top: 1px solid var(--vlog-bg-tertiary, #1e293b);
+        margin-top: auto;
+    }
+
+    .site-footer__container {
+        max-width: 80rem;
+        margin: 0 auto;
+        padding: 2rem 1rem;
+    }
+
+    .site-footer__content {
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+    }
+
+    @media (min-width: 640px) {
+        .site-footer__content {
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+    }
+
+    .site-footer__brand {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .site-footer__logo {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: var(--vlog-text-primary, #f1f5f9);
+        text-decoration: none;
+    }
+
+    .site-footer__logo:hover {
+        color: var(--vlog-primary-light, #60a5fa);
+    }
+
+    .site-footer__tagline {
+        color: var(--vlog-text-muted, #94a3b8);
+        font-size: 0.875rem;
+    }
+
+    .site-footer__nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem 2rem;
+    }
+
+    .site-footer__nav-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .site-footer__nav-title {
+        color: var(--vlog-text-secondary, #cbd5e1);
+        font-size: 0.875rem;
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+    }
+
+    .site-footer__nav-link {
+        color: var(--vlog-text-muted, #94a3b8);
+        font-size: 0.875rem;
+        text-decoration: none;
+        transition: color var(--vlog-transition-fast, 150ms ease);
+    }
+
+    .site-footer__nav-link:hover {
+        color: var(--vlog-primary-light, #60a5fa);
+    }
+
+    .site-footer__nav-link:focus-visible {
+        outline: var(--vlog-focus-ring-width, 2px) solid var(--vlog-focus-ring-color, #3b82f6);
+        outline-offset: var(--vlog-focus-ring-offset, 2px);
+        border-radius: var(--vlog-radius-sm, 0.25rem);
+    }
+
+    .site-footer__bottom {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--vlog-bg-tertiary, #1e293b);
+    }
+
+    @media (min-width: 640px) {
+        .site-footer__bottom {
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: center;
+        }
+    }
+
+    .site-footer__copyright {
+        color: var(--vlog-text-disabled, #64748b);
+        font-size: 0.75rem;
+    }
+
+    .site-footer__links {
+        display: flex;
+        gap: 1rem;
+    }
+
+    .site-footer__links a {
+        color: var(--vlog-text-disabled, #64748b);
+        font-size: 0.75rem;
+        text-decoration: none;
+        transition: color var(--vlog-transition-fast, 150ms ease);
+    }
+
+    .site-footer__links a:hover {
+        color: var(--vlog-text-muted, #94a3b8);
+    }
+
+    .site-footer__links a:focus-visible {
+        outline: var(--vlog-focus-ring-width, 2px) solid var(--vlog-focus-ring-color, #3b82f6);
+        outline-offset: var(--vlog-focus-ring-offset, 2px);
+        border-radius: var(--vlog-radius-sm, 0.25rem);
+    }
+}

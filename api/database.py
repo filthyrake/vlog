@@ -7,7 +7,8 @@ from config import DATABASE_URL
 
 # Create database instance - works with PostgreSQL or SQLite
 # PostgreSQL is the default and recommended database
-database = Database(DATABASE_URL)
+# Connection pool limits prevent exhausting PostgreSQL's max_connections (Issue #429)
+database = Database(DATABASE_URL, min_size=5, max_size=20)
 metadata = sa.MetaData()
 
 
@@ -84,12 +85,34 @@ videos = sa.Table(
         ),
         default="h264"
     ),  # Video codec used
+    # Featured video columns (Issue #413 Phase 3)
+    sa.Column("is_featured", sa.Boolean, default=False),  # Admin-curated featured flag
+    sa.Column("featured_at", sa.DateTime(timezone=True), nullable=True),  # When marked featured
+    # Chapter optimization (Issue #413 Phase 7)
+    sa.Column("has_chapters", sa.Boolean, default=False),  # Avoids chapter query for most videos
+    # Sprite sheet columns (Issue #413 Phase 7B)
+    sa.Column(
+        "sprite_sheet_status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "sprite_sheet_status IS NULL OR sprite_sheet_status IN ('pending', 'generating', 'ready', 'failed')",
+            name="ck_videos_sprite_sheet_status"
+        ),
+        nullable=True,
+    ),  # pending, generating, ready, failed
+    sa.Column("sprite_sheet_error", sa.Text, nullable=True),  # Error message if failed
+    sa.Column("sprite_sheet_count", sa.Integer, nullable=True, default=0),  # Number of sprite sheets
+    sa.Column("sprite_sheet_interval", sa.Integer, nullable=True),  # Seconds between frames
+    sa.Column("sprite_sheet_tile_size", sa.Integer, nullable=True),  # Grid size (e.g., 10 for 10x10)
+    sa.Column("sprite_sheet_frame_width", sa.Integer, nullable=True),  # Width of each frame
+    sa.Column("sprite_sheet_frame_height", sa.Integer, nullable=True),  # Height of each frame
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
     sa.Index("ix_videos_published_at", "published_at"),
     sa.Index("ix_videos_deleted_at", "deleted_at"),
     sa.Index("ix_videos_streaming_format", "streaming_format"),
+    sa.Index("ix_videos_sprite_sheet_status", "sprite_sheet_status"),
 )
 
 # Available quality variants for each video
@@ -461,6 +484,41 @@ worker_api_keys = sa.Table(
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
 )
 
+# Deployment events for worker management (Issue #410)
+deployment_events = sa.Table(
+    "deployment_events",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("worker_id", sa.String(36), nullable=False),  # UUID of worker
+    sa.Column("worker_name", sa.String(100), nullable=True),
+    sa.Column(
+        "event_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "event_type IN ('restart', 'stop', 'update', 'deploy', 'rollback', 'version_change')",
+            name="ck_deployment_events_type"
+        ),
+        nullable=False,
+    ),  # Type of deployment event
+    sa.Column("old_version", sa.String(64), nullable=True),  # Previous version
+    sa.Column("new_version", sa.String(64), nullable=True),  # New version after event
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'in_progress', 'completed', 'failed')",
+            name="ck_deployment_events_status"
+        ),
+        default="pending",
+    ),  # Status of the deployment
+    sa.Column("triggered_by", sa.String(100), nullable=True),  # Who triggered (user, system)
+    sa.Column("details", sa.Text, nullable=True),  # JSON details (error message, etc.)
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_deployment_events_worker_id", "worker_id"),
+    sa.Index("ix_deployment_events_created_at", "created_at"),
+)
+
 # Tags for granular content organization
 tags = sa.Table(
     "tags",
@@ -644,6 +702,121 @@ settings = sa.Table(
     sa.Index("ix_settings_category", "category"),
 )
 
+# Playlists for organizing videos into ordered collections
+# Supports playlists, collections, series, and courses
+#
+# VISIBILITY:
+# -----------
+# - public: Anyone can view
+# - private: Only admin can view (future: owner)
+# - unlisted: Viewable with direct link, not in listings
+#
+# PLAYLIST TYPES:
+# ---------------
+# - playlist: General purpose ordered list
+# - collection: Curated featured content
+# - series: Multi-part video series (episodes)
+# - course: Educational content with ordered lessons
+#
+# See: https://github.com/filthyrake/vlog/issues/223
+playlists = sa.Table(
+    "playlists",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("title", sa.String(255), nullable=False),
+    sa.Column("slug", sa.String(255), unique=True, nullable=False),
+    sa.Column("description", sa.Text, nullable=True),
+    sa.Column("thumbnail_path", sa.String(500), nullable=True),
+    sa.Column(
+        "visibility",
+        sa.String(20),
+        sa.CheckConstraint(
+            "visibility IN ('public', 'private', 'unlisted')",
+            name="ck_playlists_visibility",
+        ),
+        default="public",
+    ),
+    sa.Column(
+        "playlist_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "playlist_type IN ('playlist', 'collection', 'series', 'course')",
+            name="ck_playlists_type",
+        ),
+        default="playlist",
+    ),
+    sa.Column("is_featured", sa.Boolean, default=False),
+    sa.Column("user_id", sa.String(100), nullable=True),  # Future: user playlists
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    sa.Index("ix_playlists_slug", "slug"),
+    sa.Index("ix_playlists_visibility", "visibility"),
+    sa.Index("ix_playlists_is_featured", "is_featured"),
+    sa.Index("ix_playlists_deleted_at", "deleted_at"),
+    sa.Index("ix_playlists_playlist_type", "playlist_type"),
+)
+
+# Many-to-many relationship between playlists and videos with ordering
+playlist_items = sa.Table(
+    "playlist_items",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "playlist_id",
+        sa.Integer,
+        sa.ForeignKey("playlists.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("position", sa.Integer, default=0, nullable=False),
+    sa.Column("added_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("playlist_id", "video_id", name="uq_playlist_video"),
+    sa.Index("ix_playlist_items_playlist_id", "playlist_id"),
+    sa.Index("ix_playlist_items_video_id", "video_id"),
+    sa.Index("ix_playlist_items_position", "position"),
+    # Composite index for efficient ordered retrieval: WHERE playlist_id = ? ORDER BY position
+    sa.Index("ix_playlist_items_playlist_position", "playlist_id", "position"),
+)
+
+# Video chapters for timeline navigation
+# Chapters allow users to jump to specific sections of a video
+# See: https://github.com/filthyrake/vlog/issues/413 Phase 7
+chapters = sa.Table(
+    "chapters",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("title", sa.String(255), nullable=False),
+    sa.Column("description", sa.Text, nullable=True),
+    sa.Column("start_time", sa.Float, nullable=False),  # seconds
+    sa.Column("end_time", sa.Float, nullable=True),  # seconds (optional)
+    sa.Column("position", sa.Integer, default=0, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    # Constraints per reviewer feedback
+    sa.CheckConstraint("start_time >= 0", name="ck_chapters_start_time_positive"),
+    sa.CheckConstraint(
+        "end_time IS NULL OR end_time > start_time",
+        name="ck_chapters_end_time_valid"
+    ),
+    sa.UniqueConstraint("video_id", "position", name="uq_chapter_video_position"),
+    sa.Index("ix_chapters_video_id", "video_id"),
+    sa.Index("ix_chapters_position", "position"),
+    # Composite index for efficient ordered retrieval: WHERE video_id = ? ORDER BY position
+    sa.Index("ix_chapters_video_position", "video_id", "position"),
+)
+
 # Re-encode queue for background conversion to CMAF format
 reencode_queue = sa.Table(
     "reencode_queue",
@@ -704,6 +877,51 @@ reencode_queue = sa.Table(
     sa.Index("ix_reencode_queue_status", "status"),
     sa.Index("ix_reencode_queue_video_id", "video_id"),
     sa.Index("ix_reencode_queue_priority_created", "priority", "created_at"),
+)
+
+
+# Sprite generation queue (Issue #413 Phase 7B)
+# Background queue for generating sprite sheets for timeline thumbnails
+sprite_queue = sa.Table(
+    "sprite_queue",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "priority",
+        sa.String(10),
+        sa.CheckConstraint(
+            "priority IN ('high', 'normal', 'low')",
+            name="ck_sprite_queue_priority"
+        ),
+        default="normal",
+    ),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')",
+            name="ck_sprite_queue_status"
+        ),
+        default="pending",
+    ),
+    sa.Column("error_message", sa.Text, nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    ),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("processed_by_worker_id", sa.Integer, nullable=True),
+    sa.Index("ix_sprite_queue_status", "status"),
+    sa.Index("ix_sprite_queue_video_id", "video_id"),
+    sa.Index("ix_sprite_queue_priority_created", "priority", "created_at"),
 )
 
 

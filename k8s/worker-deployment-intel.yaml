@@ -5,8 +5,8 @@
 # 1. Intel GPU device plugin installed (intel/intel-device-plugins-for-kubernetes)
 # 2. Nodes labeled with intel.feature.node.kubernetes.io/gpu=true
 # 3. Build and push GPU worker image:
-#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:latest .
-#    docker push your-registry/vlog-worker-gpu:latest
+#    docker build -f Dockerfile.worker.gpu -t your-registry/vlog-worker-gpu:v1.0.0 .
+#    docker push your-registry/vlog-worker-gpu:v1.0.0
 # 4. Create the secret with your API key (see secret.yaml)
 # 5. Update the ConfigMap with your API URL (see configmap.yaml)
 
@@ -41,6 +41,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 44  # video group
+        seccompProfile:
+          type: RuntimeDefault
 
       containers:
       - name: worker
@@ -69,6 +71,9 @@ spec:
         # Intel Media Driver (iHD) for Arc GPUs
         - name: LIBVA_DRIVER_NAME
           value: "iHD"
+        # Work directory - must have adequate disk space (NOT /tmp!)
+        - name: VLOG_WORKER_WORK_DIR
+          value: "/home/vlog-worker"
 
         # Resource limits
         resources:
@@ -81,35 +86,39 @@ spec:
             cpu: "2000m"
             gpu.intel.com/xe: 1
 
-        # Mount volumes
+        # Mount volumes - use /home for persistent storage with adequate disk space
         volumeMounts:
         - name: work-dir
-          mountPath: /tmp/vlog-worker
+          mountPath: /home/vlog-worker
         # DRI device access for VAAPI
         - name: dri
           mountPath: /dev/dri
 
         # Liveness probe - worker process is alive
         # Checks /health endpoint on built-in health server (port 8080)
+        # Note: Increased failureThreshold to tolerate blocking I/O during large file
+        # tar.gz creation (28GB+ videos can block event loop for 15+ minutes)
+        # TODO: Remove after implementing streaming segment uploads (Issue #478)
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
           initialDelaySeconds: 30
           periodSeconds: 60
-          timeoutSeconds: 5
-          failureThreshold: 3
+          timeoutSeconds: 30
+          failureThreshold: 30
 
         # Readiness probe - worker can accept jobs
         # Checks /ready endpoint which verifies API connection and FFmpeg availability
+        # Note: Increased failureThreshold to match liveness probe tolerance
         readinessProbe:
           httpGet:
             path: /ready
             port: 8080
           initialDelaySeconds: 15
           periodSeconds: 30
-          timeoutSeconds: 5
-          failureThreshold: 3
+          timeoutSeconds: 30
+          failureThreshold: 30
 
         # Security context
         securityContext:
@@ -122,8 +131,9 @@ spec:
       # Volumes
       volumes:
       - name: work-dir
-        emptyDir:
-          sizeLimit: 150Gi
+        hostPath:
+          path: /home/vlog-worker
+          type: DirectoryOrCreate
       # Host path for GPU device access
       - name: dri
         hostPath:

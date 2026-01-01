@@ -13,6 +13,7 @@ Priority queue support with three levels:
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -98,6 +99,11 @@ class JobDispatch:
         return job
 
 
+# Rate limit for abandoned message checking (Issue #429)
+# Only check for abandoned messages every 30 seconds instead of every claim
+ABANDONED_CHECK_INTERVAL_SECONDS = 30
+
+
 class JobQueue:
     """Job queue manager supporting database and Redis backends."""
 
@@ -105,6 +111,7 @@ class JobQueue:
         self._redis_available: bool = False
         self._consumer_name: Optional[str] = None
         self._initialized: bool = False
+        self._last_abandoned_check: float = 0  # Timestamp of last abandoned check
 
     async def initialize(self, consumer_name: str) -> None:
         """
@@ -200,10 +207,14 @@ class JobQueue:
             return None
 
         try:
-            # First, try to recover abandoned messages from any priority
-            recovered = await self._recover_abandoned_messages(redis)
-            if recovered:
-                return recovered
+            # Rate-limit abandoned message checking (Issue #429)
+            # Only check every ABANDONED_CHECK_INTERVAL_SECONDS to reduce Redis round-trips
+            now = time.monotonic()
+            if now - self._last_abandoned_check >= ABANDONED_CHECK_INTERVAL_SECONDS:
+                self._last_abandoned_check = now
+                recovered = await self._recover_abandoned_messages(redis)
+                if recovered:
+                    return recovered
 
             # Check each priority stream in order
             for priority in STREAM_PRIORITIES:

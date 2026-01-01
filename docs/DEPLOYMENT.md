@@ -983,3 +983,295 @@ top -p $(pgrep -f transcoder)
 # Disk usage
 df -h /mnt/nas/vlog-storage
 ```
+
+### Prometheus Metrics
+
+VLog exposes Prometheus metrics for comprehensive monitoring:
+
+```bash
+# Admin API metrics
+curl -s http://localhost:9001/metrics
+
+# Worker API metrics
+curl -s http://localhost:9002/api/metrics
+```
+
+Add to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'vlog'
+    static_configs:
+      - targets: ['your-vlog-server:9001', 'your-vlog-server:9002']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
+
+See [MONITORING.md](MONITORING.md) for complete metrics documentation and Grafana dashboards.
+
+---
+
+## CDN Configuration
+
+VLog supports serving video content through a CDN for improved performance and reduced origin server load.
+
+### Enabling CDN
+
+CDN settings are managed via the database-backed settings system:
+
+```bash
+# Enable CDN via CLI
+vlog settings set cdn.enabled true
+vlog settings set cdn.base_url https://cdn.yourdomain.com
+```
+
+Or via the Admin UI: Settings > CDN Configuration.
+
+### CDN Requirements
+
+Your CDN should be configured to:
+
+1. **Origin:** Point to your VLog server (port 9000)
+2. **Cache Rules:**
+   - Cache video segments (`.ts`, `.m4s`) for long periods (1 year)
+   - Cache manifests (`.m3u8`, `.mpd`) for short periods (10 seconds)
+   - Cache thumbnails (`.jpg`) for medium periods (1 day)
+3. **Headers:** Preserve CORS headers from origin
+
+### Example CDN Configuration (Cloudflare)
+
+```
+Page Rule: cdn.yourdomain.com/videos/*.ts
+  - Cache Level: Cache Everything
+  - Edge Cache TTL: 1 month
+  - Browser Cache TTL: 1 year
+
+Page Rule: cdn.yourdomain.com/videos/*.m3u8
+  - Cache Level: Cache Everything
+  - Edge Cache TTL: 10 seconds
+  - Browser Cache TTL: 10 seconds
+```
+
+### nginx CDN Proxy (Self-Hosted)
+
+For a self-hosted CDN/caching layer:
+
+```nginx
+# /etc/nginx/conf.d/vlog-cdn.conf
+proxy_cache_path /var/cache/nginx/vlog levels=1:2 keys_zone=vlog_cache:100m max_size=50g inactive=60d;
+
+server {
+    listen 80;
+    server_name cdn.yourdomain.com;
+
+    location /videos/ {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_cache vlog_cache;
+
+        # Cache video segments for 1 year
+        proxy_cache_valid 200 365d;
+
+        # Cache manifests for 10 seconds
+        location ~ \.(m3u8|mpd)$ {
+            proxy_pass http://127.0.0.1:9000;
+            proxy_cache vlog_cache;
+            proxy_cache_valid 200 10s;
+        }
+
+        add_header X-Cache-Status $upstream_cache_status;
+    }
+}
+```
+
+---
+
+## Backup Strategy
+
+### Database Backups
+
+#### Manual Backup
+
+```bash
+# Create compressed backup
+pg_dump -U vlog -Fc vlog > /backup/vlog-$(date +%Y%m%d).dump
+
+# Verify backup
+pg_restore --list /backup/vlog-*.dump | head
+
+# Restore from backup
+pg_restore -U vlog -d vlog --clean /backup/vlog.dump
+```
+
+#### Automated Backups (Kubernetes)
+
+For Kubernetes deployments, use the provided CronJob:
+
+```bash
+# Create backup credentials secret
+kubectl create secret generic postgres-backup-credentials \
+  --namespace vlog \
+  --from-literal=PGHOST=your-postgres-host \
+  --from-literal=PGPORT=5432 \
+  --from-literal=PGDATABASE=vlog \
+  --from-literal=PGUSER=vlog \
+  --from-literal=PGPASSWORD=your-password
+
+# Deploy backup CronJob
+kubectl apply -f k8s/backup-cronjob.yaml
+```
+
+The CronJob:
+- Runs daily at 2:00 AM UTC
+- Creates compressed dumps using `pg_dump --format=custom`
+- Verifies backup integrity
+- Retains 7 days of backups
+- Stores backups on NAS (`/mnt/nas/vlog-storage/backups/`)
+
+#### Automated Backups (Systemd)
+
+For systemd deployments, create a backup script:
+
+```bash
+#!/bin/bash
+# /usr/local/bin/vlog-backup.sh
+
+BACKUP_DIR=/mnt/nas/vlog-storage/backups
+RETENTION_DAYS=7
+DATE=$(date +%Y-%m-%d-%H%M%S)
+
+# Create backup
+pg_dump -U vlog -Fc vlog > "${BACKUP_DIR}/vlog-${DATE}.dump"
+
+# Verify backup
+if ! pg_restore --list "${BACKUP_DIR}/vlog-${DATE}.dump" > /dev/null 2>&1; then
+    echo "Backup verification failed!"
+    rm -f "${BACKUP_DIR}/vlog-${DATE}.dump"
+    exit 1
+fi
+
+# Clean old backups
+find "${BACKUP_DIR}" -name "vlog-*.dump" -mtime +${RETENTION_DAYS} -delete
+
+echo "Backup completed: vlog-${DATE}.dump"
+```
+
+Add to crontab:
+```bash
+0 2 * * * /usr/local/bin/vlog-backup.sh >> /var/log/vlog-backup.log 2>&1
+```
+
+### Video File Backups
+
+Video files on NAS should be backed up using your NAS's backup features:
+- RAID for redundancy
+- Periodic snapshots
+- Off-site replication for disaster recovery
+
+**Important:** Video files can be regenerated from source files, but source files in `uploads/` are deleted after transcoding. Consider keeping source files if re-encoding might be needed.
+
+---
+
+## Audit Logging
+
+VLog logs security-relevant operations for compliance and troubleshooting.
+
+### Audit Log Location
+
+By default: `/var/log/vlog/audit.log`
+
+Configure via environment variables:
+```bash
+VLOG_AUDIT_LOG_ENABLED=true
+VLOG_AUDIT_LOG_PATH=/var/log/vlog/audit.log
+VLOG_AUDIT_LOG_LEVEL=INFO
+```
+
+### Audited Events
+
+| Event | Description |
+|-------|-------------|
+| `auth.login` | Admin login attempts |
+| `auth.logout` | Admin logout |
+| `video.upload` | Video upload initiated |
+| `video.delete` | Video deleted |
+| `video.restore` | Video restored from archive |
+| `settings.update` | Runtime setting changed |
+| `worker.register` | New worker registered |
+| `worker.revoke` | Worker API key revoked |
+
+### Log Format
+
+```json
+{
+  "timestamp": "2025-12-27T10:30:00Z",
+  "event": "video.delete",
+  "user": "admin",
+  "ip": "192.168.1.100",
+  "details": {
+    "video_id": 123,
+    "video_title": "Example Video"
+  }
+}
+```
+
+### Log Rotation
+
+Audit logs use `RotatingFileHandler` with automatic rotation:
+
+```bash
+VLOG_AUDIT_LOG_MAX_BYTES=10485760    # 10 MB per file
+VLOG_AUDIT_LOG_BACKUP_COUNT=5        # Keep 5 backup files
+```
+
+For systemd/journald, logs are automatically managed. Configure retention in `/etc/systemd/journald.conf`:
+
+```ini
+[Journal]
+SystemMaxUse=1G
+MaxRetentionSec=90days
+```
+
+### Viewing Audit Logs
+
+```bash
+# View recent audit entries
+tail -f /var/log/vlog/audit.log | jq .
+
+# Search for specific events
+grep '"event":"settings.update"' /var/log/vlog/audit.log | jq .
+
+# Filter by date
+grep '2025-12-27' /var/log/vlog/audit.log | jq .
+```
+
+---
+
+## Production Checklist
+
+Before going to production, verify:
+
+### Security
+- [ ] Admin API (9001) not exposed to internet
+- [ ] `VLOG_ADMIN_API_SECRET` is set
+- [ ] `VLOG_WORKER_ADMIN_SECRET` is set
+- [ ] HTTPS enabled via reverse proxy
+- [ ] Rate limiting enabled
+- [ ] Firewall rules configured
+
+### Reliability
+- [ ] PostgreSQL backups configured
+- [ ] Log rotation configured
+- [ ] Health checks responding
+- [ ] Monitoring/alerting set up
+
+### Performance
+- [ ] Redis enabled for job queue
+- [ ] CDN configured (if needed)
+- [ ] GPU workers deployed (if available)
+- [ ] NAS storage adequate
+
+### Operations
+- [ ] Systemd services enabled
+- [ ] Prometheus scraping configured
+- [ ] Runbooks documented
+- [ ] On-call procedures defined

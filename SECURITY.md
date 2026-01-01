@@ -82,6 +82,93 @@ When deploying VLog, please follow these recommendations:
 - Monitor security advisories for Python packages
 - Subscribe to GitHub security alerts
 
+---
+
+## Security Features
+
+### CI/CD Security Scanning
+
+VLog's GitHub Actions pipeline includes automated security scanning:
+
+| Tool | Purpose | When |
+|------|---------|------|
+| **Trivy** | Container image vulnerability scanning | On Docker builds |
+| **pip-audit** | Python dependency vulnerability detection | On every PR |
+| **Bandit** | Python static security analysis | On every PR |
+
+Scans run automatically on pull requests and block merging if critical vulnerabilities are found.
+
+### Container Security
+
+Production container images include:
+
+- **Multi-stage builds:** Smaller attack surface, no build tools in production
+- **Non-root user:** Containers run as UID 1000, not root
+- **Read-only filesystem:** Prevents runtime modifications
+- **Dropped capabilities:** All Linux capabilities dropped
+- **Seccomp profile:** RuntimeDefault seccomp profile applied
+
+Example security context:
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop: ["ALL"]
+```
+
+### Kubernetes Security
+
+For Kubernetes deployments:
+
+- **NetworkPolicy:** Restricts pod-to-pod communication
+- **PodDisruptionBudgets:** Ensures availability during updates
+- **Resource limits:** Prevents resource exhaustion
+- **Pinned image versions:** No `latest` tags in production
+- **Secrets management:** Secrets via kubectl, never in git
+
+### Audit Logging
+
+VLog maintains audit logs for security-relevant operations:
+
+- Admin authentication (login/logout)
+- Video uploads and deletions
+- Settings changes
+- Worker registration and revocation
+
+Audit logs include:
+- Timestamp
+- Event type
+- User/IP information
+- Operation details
+
+Configure via:
+```bash
+VLOG_AUDIT_LOG_ENABLED=true
+VLOG_AUDIT_LOG_PATH=/var/log/vlog/audit.log
+VLOG_AUDIT_LOG_MAX_BYTES=10485760  # 10 MB rotation
+```
+
+### Input Validation
+
+- File uploads validated for type and size
+- SQL injection prevented via parameterized queries (SQLAlchemy)
+- XSS prevented via Content Security Policy headers
+- Path traversal prevented in file operations
+
+### Secret Management
+
+- API secrets stored as SHA-256 hashes
+- Session tokens use cryptographically secure generation
+- HTTP-only cookies for browser sessions
+- Environment variables for sensitive configuration
+
+---
+
 ## Disclosure Policy
 
 - We will coordinate disclosure timing with the reporter

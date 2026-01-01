@@ -6,43 +6,246 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self';">
     <title>Damen's VLog</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
+    <link rel="stylesheet" href="/static/css/bundle.css">
+    <style>[x-cloak] { display: none !important; }</style>
     <script src="/static/js/utils.js"></script>
     <script defer src="/static/vendor/alpine.min.js"></script>
-    <style>
-        [x-cloak] { display: none !important; }
-    </style>
 </head>
-<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="app()">
+<body class="bg-dark-950 text-dark-100 min-h-screen flex flex-col" x-data="app()">
+    <!-- Skip to main content link -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Screen reader announcements -->
+    <div role="status" aria-live="polite" aria-atomic="true" class="sr-only" x-text="announcement"></div>
+
     <!-- Header -->
-    <header class="bg-dark-900 border-b border-dark-800 sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 py-4">
-            <div class="flex items-center justify-between">
-                <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
-                <div class="flex-1 max-w-xl mx-8">
-                    <input
-                        type="text"
-                        placeholder="Search videos..."
-                        class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-white"
-                        x-model="searchQuery"
-                        @input.debounce.300ms="loadVideos()"
-                    >
-                </div>
-                <nav class="flex gap-4">
-                    <a href="/" class="text-dark-300 hover:text-white">Home</a>
-                </nav>
+    <header class="site-header">
+        <div class="site-header__container">
+            <a href="/" class="site-header__logo">Damen's VLog</a>
+
+            <!-- Search -->
+            <div role="search" class="site-header__search">
+                <label for="search-input" class="sr-only">Search videos</label>
+                <input
+                    id="search-input"
+                    type="search"
+                    placeholder="Search videos..."
+                    class="site-header__search-input"
+                    x-model="searchQuery"
+                    @input.debounce.300ms="loadVideos()"
+                    @keydown.escape="clearSearch()"
+                >
+                <!-- Result count -->
+                <span
+                    class="site-header__search-count"
+                    :class="{ 'site-header__search-count--has-clear': searchQuery }"
+                    x-show="searchQuery && !loading"
+                    x-text="videos.length + ' result' + (videos.length === 1 ? '' : 's')"
+                ></span>
+                <!-- Clear button -->
+                <button
+                    type="button"
+                    class="site-header__search-clear"
+                    :class="{ 'site-header__search-clear--visible': searchQuery }"
+                    @click="clearSearch()"
+                    aria-label="Clear search"
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
             </div>
+
+            <!-- Mobile menu button -->
+            <button
+                type="button"
+                class="site-header__menu-btn"
+                @click="openMobileNav()"
+                aria-label="Open menu"
+                :aria-expanded="mobileNavOpen.toString()"
+                aria-controls="mobile-nav-drawer"
+                x-ref="menuBtn"
+            >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
+
+            <!-- Desktop nav -->
+            <nav class="site-header__nav">
+                <a href="/" class="site-header__nav-link site-header__nav-link--active">Home</a>
+            </nav>
         </div>
     </header>
 
-    <main class="max-w-7xl mx-auto px-4 py-8">
+    <!-- Mobile Navigation Drawer -->
+    <div
+        class="mobile-nav"
+        :class="{ 'mobile-nav--open': mobileNavOpen }"
+        x-show="mobileNavOpen"
+        x-cloak
+        @keydown.escape.window="closeMobileNav()"
+    >
+        <div class="mobile-nav__backdrop" @click="closeMobileNav()"></div>
+        <div id="mobile-nav-drawer" class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
+            <div class="mobile-nav__header">
+                <span class="mobile-nav__title">Menu</span>
+                <button
+                    type="button"
+                    class="mobile-nav__close"
+                    @click="closeMobileNav()"
+                    aria-label="Close menu"
+                    x-ref="closeBtn"
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <nav class="mobile-nav__content">
+                <div class="mobile-nav__section">
+                    <div class="mobile-nav__section-title">Navigation</div>
+                    <a href="/" class="mobile-nav__link mobile-nav__link--active">Home</a>
+                </div>
+                <div class="mobile-nav__section" x-show="categories.length > 0">
+                    <div class="mobile-nav__section-title">Categories</div>
+                    <template x-for="cat in categories" :key="cat.id">
+                        <a
+                            :href="'/category/' + cat.slug"
+                            class="mobile-nav__link"
+                            x-text="cat.name"
+                        ></a>
+                    </template>
+                </div>
+            </nav>
+        </div>
+    </div>
+
+    <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Hero Section: Featured Video -->
+        <section class="mb-8" x-show="featuredVideo && !searchQuery" x-cloak>
+            <a
+                :href="'/watch/' + featuredVideo?.slug"
+                class="block relative rounded-xl overflow-hidden group"
+                :aria-label="'Featured: ' + featuredVideo?.title"
+            >
+                <div class="aspect-[21/9] md:aspect-[21/9] bg-dark-900 relative">
+                    <img
+                        :src="featuredVideo?.thumbnail_url"
+                        :alt="featuredVideo?.title"
+                        class="absolute inset-0 w-full h-full object-cover"
+                        loading="eager"
+                    >
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent"></div>
+                    <!-- Play button overlay -->
+                    <div class="absolute inset-0 flex items-center justify-center">
+                        <div class="w-16 h-16 md:w-20 md:h-20 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center group-hover:bg-white/30 transition">
+                            <svg class="w-8 h-8 md:w-10 md:h-10 text-white ml-1" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M8 5v14l11-7z"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <!-- Info overlay -->
+                    <div class="absolute bottom-0 left-0 right-0 p-4 md:p-6">
+                        <span class="inline-block px-2 py-1 bg-blue-600 text-white text-xs font-medium rounded mb-2">Featured</span>
+                        <h2 class="text-xl md:text-2xl lg:text-3xl font-bold text-white mb-2 line-clamp-2" x-text="featuredVideo?.title"></h2>
+                        <div class="flex items-center gap-4 text-white/70 text-sm">
+                            <span x-text="featuredVideo?.category_name || 'Uncategorized'"></span>
+                            <span x-text="formatDuration(featuredVideo?.duration)"></span>
+                            <span x-show="showViewCounts && featuredVideo?.view_count > 0" x-text="formatViewCount(featuredVideo?.view_count)"></span>
+                        </div>
+                    </div>
+                </div>
+            </a>
+        </section>
+
+        <!-- Continue Watching Section -->
+        <!-- Skeleton while loading -->
+        <section class="mb-8" x-show="continueWatchingLoading && !searchQuery" x-cloak>
+            <div class="flex items-center justify-between mb-4">
+                <div class="skeleton skeleton-text--lg" style="width: 180px;"></div>
+            </div>
+            <div class="flex gap-4 overflow-x-auto pb-4" role="status" aria-label="Loading continue watching">
+                <template x-for="i in 4" :key="i">
+                    <div class="skeleton-card flex-shrink-0 w-[280px] sm:w-[320px]" :style="'animation-delay:' + (i * 100) + 'ms'">
+                        <div class="skeleton skeleton-card__thumbnail"></div>
+                        <div class="skeleton-card__info">
+                            <div class="skeleton skeleton-card__title"></div>
+                            <div class="skeleton skeleton-card__meta"></div>
+                        </div>
+                    </div>
+                </template>
+                <span class="sr-only">Loading continue watching videos</span>
+            </div>
+        </section>
+        <!-- Error state -->
+        <section class="mb-8" x-show="continueWatchingError && !searchQuery" x-cloak role="alert">
+            <div class="flex items-center gap-3 p-4 bg-dark-900/50 rounded-lg border border-dark-700">
+                <svg class="w-5 h-5 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <p class="text-dark-300 text-sm">Couldn't load continue watching. <button @click="loadContinueWatching()" class="text-blue-400 hover:text-blue-300 underline underline-offset-2">Try again</button></p>
+            </div>
+        </section>
+        <!-- Actual content -->
+        <section class="mb-8" x-show="!continueWatchingLoading && !continueWatchingError && continueWatching.length > 0 && !searchQuery" x-cloak>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold">Continue Watching</h2>
+                <button
+                    @click="clearAllWatchHistory()"
+                    class="text-sm text-dark-400 hover:text-dark-200 transition"
+                    aria-label="Clear watch history"
+                >
+                    Clear all
+                </button>
+            </div>
+            <div class="flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scrollbar-hide" role="list" aria-label="Continue watching videos">
+                <template x-for="item in continueWatching" :key="item.video.id">
+                    <article class="video-card flex-shrink-0 w-[280px] sm:w-[320px] snap-start" role="listitem">
+                        <a
+                            :href="'/watch/' + item.video.slug + '?t=' + Math.floor(item.position)"
+                            :aria-label="item.video.title + ', ' + formatDuration(item.video.duration) + ', ' + Math.round(100 - item.percentage) + '% remaining'"
+                        >
+                            <div class="video-card__thumbnail">
+                                <img
+                                    :src="item.video.thumbnail_url"
+                                    :alt="item.video.title"
+                                    loading="lazy"
+                                    @error="$el.style.display='none'"
+                                >
+                                <span class="video-card__duration" x-text="formatDuration(item.video.duration)"></span>
+                                <!-- Progress bar -->
+                                <div class="video-card__progress">
+                                    <div class="video-card__progress-bar" :style="'width:' + item.percentage + '%'"></div>
+                                </div>
+                                <!-- Time remaining badge -->
+                                <span class="absolute bottom-6 left-2 bg-black/80 text-white text-xs px-2 py-1 rounded">
+                                    <span x-text="formatDuration(item.video.duration - item.position)"></span> left
+                                </span>
+                            </div>
+                            <div class="video-card__info">
+                                <h3 class="video-card__title" x-text="item.video.title"></h3>
+                                <p class="video-card__meta" x-text="item.video.category_name || 'Uncategorized'"></p>
+                            </div>
+                        </a>
+                    </article>
+                </template>
+            </div>
+        </section>
+
         <!-- Categories -->
         <section class="mb-8" x-show="categories.length > 0">
             <h2 class="text-xl font-semibold mb-4">Categories</h2>
-            <div class="flex flex-wrap gap-3">
+            <div class="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory md:flex-wrap md:overflow-visible scrollbar-hide" role="group" aria-label="Filter by category">
                 <button
                     @click="selectedCategory = null; loadVideos()"
                     :class="selectedCategory === null ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
-                    class="px-4 py-2 rounded-lg transition"
+                    class="px-4 py-2 rounded-lg transition flex-shrink-0 snap-start"
+                    :aria-pressed="(selectedCategory === null).toString()"
                 >
                     All
                 </button>
@@ -50,7 +253,8 @@
                     <button
                         @click="selectedCategory = cat.slug; loadVideos()"
                         :class="selectedCategory === cat.slug ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
-                        class="px-4 py-2 rounded-lg transition"
+                        class="px-4 py-2 rounded-lg transition flex-shrink-0 snap-start whitespace-nowrap"
+                        :aria-pressed="(selectedCategory === cat.slug).toString()"
                     >
                         <span x-text="cat.name"></span>
                         <span class="text-dark-400 ml-1" x-text="'(' + cat.video_count + ')'"></span>
@@ -61,45 +265,214 @@
 
         <!-- Videos Grid -->
         <section>
-            <h2 class="text-xl font-semibold mb-4" x-text="selectedCategory ? 'Videos' : 'Latest Videos'"></h2>
-
-            <div x-show="loading" class="flex justify-center py-12">
-                <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold" x-text="selectedCategory ? 'Videos' : 'Latest Videos'"></h2>
             </div>
 
-            <div x-show="!loading && videos.length === 0" class="text-center py-12 text-dark-400">
-                No videos found.
+            <!-- Filter/Sort Bar -->
+            <div class="filter-bar" x-show="videos.length > 0 || loading">
+                <div class="filter-bar__group">
+                    <label for="sort-select" class="filter-bar__label">Sort by</label>
+                    <select
+                        id="sort-select"
+                        class="filter-bar__select"
+                        x-model="sortBy"
+                        @change="loadVideos()"
+                    >
+                        <option value="date-desc">Newest first</option>
+                        <option value="date-asc">Oldest first</option>
+                        <option value="views-desc">Most viewed</option>
+                        <option value="duration-desc">Longest</option>
+                        <option value="duration-asc">Shortest</option>
+                        <option value="title-asc">A-Z</option>
+                        <option value="title-desc">Z-A</option>
+                    </select>
+                </div>
+                <div class="filter-bar__group">
+                    <label for="duration-filter" class="filter-bar__label">Duration</label>
+                    <select
+                        id="duration-filter"
+                        class="filter-bar__select"
+                        x-model="durationFilter"
+                        @change="loadVideos()"
+                    >
+                        <option value="">All</option>
+                        <option value="short">Short (&lt;5m)</option>
+                        <option value="medium">Medium (5-20m)</option>
+                        <option value="long">Long (&gt;20m)</option>
+                    </select>
+                </div>
+                <div class="filter-bar__spacer"></div>
+                <!-- View Mode Toggle -->
+                <div class="filter-bar__toggles" role="group" aria-label="View mode">
+                    <button
+                        type="button"
+                        class="filter-bar__toggle"
+                        :class="{ 'filter-bar__toggle--active': viewMode === 'grid' }"
+                        @click="setViewMode('grid')"
+                        :aria-pressed="(viewMode === 'grid').toString()"
+                        aria-label="Grid view"
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="7" height="7"></rect>
+                            <rect x="14" y="3" width="7" height="7"></rect>
+                            <rect x="3" y="14" width="7" height="7"></rect>
+                            <rect x="14" y="14" width="7" height="7"></rect>
+                        </svg>
+                    </button>
+                    <button
+                        type="button"
+                        class="filter-bar__toggle"
+                        :class="{ 'filter-bar__toggle--active': viewMode === 'list' }"
+                        @click="setViewMode('list')"
+                        :aria-pressed="(viewMode === 'list').toString()"
+                        aria-label="List view"
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="8" y1="6" x2="21" y2="6"></line>
+                            <line x1="8" y1="12" x2="21" y2="12"></line>
+                            <line x1="8" y1="18" x2="21" y2="18"></line>
+                            <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                            <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                            <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                        </svg>
+                    </button>
+                </div>
             </div>
 
-            <div x-show="!loading && videos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <!-- Skeleton Loaders -->
+            <div x-show="loading" class="skeleton-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" role="status" aria-label="Loading videos">
+                <template x-for="i in 8" :key="i">
+                    <div class="skeleton-card">
+                        <div class="skeleton skeleton-card__thumbnail"></div>
+                        <div class="skeleton-card__info">
+                            <div class="skeleton skeleton-card__title"></div>
+                            <div class="skeleton skeleton-card__title skeleton-card__title--short"></div>
+                            <div class="skeleton skeleton-card__meta"></div>
+                        </div>
+                    </div>
+                </template>
+                <span class="sr-only">Loading videos...</span>
+            </div>
+
+            <!-- Empty State -->
+            <div x-show="!loading && videos.length === 0" class="text-center py-12">
+                <svg class="mx-auto h-16 w-16 text-dark-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
+                    <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
+                </svg>
+                <h3 class="text-lg font-medium text-dark-300 mb-2" x-text="searchQuery ? 'No videos match your search' : 'No videos found'"></h3>
+                <p class="text-dark-500 mb-4" x-text="searchQuery ? 'Try adjusting your search terms or browse all videos.' : 'Check back soon for new content!'"></p>
+                <button
+                    x-show="searchQuery"
+                    @click="clearSearch()"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-dark-800 hover:bg-dark-700 text-dark-300 rounded-lg transition"
+                >
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                    Clear search
+                </button>
+            </div>
+
+            <!-- Video Grid/List -->
+            <div
+                x-show="!loading && videos.length > 0"
+                :class="viewMode === 'list' ? 'flex flex-col gap-4' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6'"
+            >
                 <template x-for="video in videos" :key="video.id">
-                    <a :href="'/watch/' + video.slug" class="group">
-                        <div class="bg-dark-800 rounded-xl overflow-hidden hover:ring-2 hover:ring-blue-500 transition">
-                            <div class="aspect-video bg-dark-900 relative">
+                    <article class="video-card" :class="{ 'video-card--list': viewMode === 'list' }">
+                        <a
+                            :href="'/watch/' + video.slug"
+                            :aria-label="video.title + ', ' + formatDuration(video.duration) + (showViewCounts && video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
+                        >
+                            <div class="video-card__thumbnail">
+                                <!-- Placeholder icon -->
+                                <svg class="absolute inset-0 m-auto w-12 h-12 text-dark-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                                    <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
+                                    <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
+                                </svg>
                                 <img
                                     :src="video.thumbnail_url"
                                     :alt="video.title"
-                                    class="w-full h-full object-cover"
                                     loading="lazy"
                                     @error="$el.style.display='none'"
                                 >
-                                <div class="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-sm">
-                                    <span x-text="formatDuration(video.duration)"></span>
+                                <span class="video-card__duration" x-text="formatDuration(video.duration)"></span>
+                                <!-- Watch progress bar (if partially watched) -->
+                                <template x-if="getWatchProgress(video.id)">
+                                    <div class="video-card__progress">
+                                        <div class="video-card__progress-bar" :style="'width:' + getWatchProgress(video.id) + '%'"></div>
+                                    </div>
+                                </template>
+                                <!-- Hover actions -->
+                                <div class="video-card__actions">
+                                    <button
+                                        type="button"
+                                        class="video-card__action"
+                                        :class="{ 'video-card__action--active': isInWatchLater(video.id) }"
+                                        @click.prevent.stop="toggleWatchLater(video.id)"
+                                        :aria-label="isInWatchLater(video.id) ? 'Remove from Watch Later' : 'Add to Watch Later'"
+                                        :aria-pressed="isInWatchLater(video.id).toString()"
+                                    >
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="10"></circle>
+                                            <polyline points="12 6 12 12 16 14"></polyline>
+                                        </svg>
+                                    </button>
                                 </div>
                             </div>
-                            <div class="p-4">
-                                <h3 class="font-medium text-white group-hover:text-blue-400 line-clamp-2" x-text="video.title"></h3>
-                                <p class="text-dark-400 text-sm mt-1" x-text="video.category_name || 'Uncategorized'"></p>
-                                <p class="text-dark-500 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
+                            <div class="video-card__info">
+                                <h3 class="video-card__title" x-text="video.title"></h3>
+                                <p class="video-card__meta">
+                                    <span x-text="video.category_name || 'Uncategorized'"></span>
+                                    <template x-if="showViewCounts && video.view_count > 0">
+                                        <span>
+                                            &bull;
+                                            <span class="video-card__views">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                                    <circle cx="12" cy="12" r="3"></circle>
+                                                </svg>
+                                                <span x-text="formatViewCount(video.view_count)"></span>
+                                            </span>
+                                        </span>
+                                    </template>
+                                </p>
+                                <p class="video-card__meta" x-text="formatDate(video.published_at)"></p>
                             </div>
-                        </div>
-                    </a>
+                        </a>
+                    </article>
                 </template>
             </div>
         </section>
     </main>
 
+    <!-- Footer -->
+    <footer class="site-footer">
+        <div class="site-footer__container">
+            <div class="site-footer__content">
+                <div class="site-footer__brand">
+                    <a href="/" class="site-footer__logo">Damen's VLog</a>
+                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
+                </div>
+                <nav class="site-footer__nav" aria-label="Footer navigation">
+                    <div class="site-footer__nav-group">
+                        <div class="site-footer__nav-title">Browse</div>
+                        <a href="/" class="site-footer__nav-link">All Videos</a>
+                    </div>
+                </nav>
+            </div>
+            <div class="site-footer__bottom">
+                <p class="site-footer__copyright">&copy; <span x-text="new Date().getFullYear()"></span> Damen's VLog. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+
     <script>
+        const MAX_SEARCH_LENGTH = 200;
+
         function app() {
             return {
                 videos: [],
@@ -107,12 +480,79 @@
                 loading: true,
                 searchQuery: '',
                 selectedCategory: null,
+                announcement: '', // For screen reader announcements
+                mobileNavOpen: false,
+                previousFocus: null, // For focus restoration
+                featuredVideo: null, // Hero section featured video
+                continueWatching: [], // Continue watching videos with metadata
+                continueWatchingLoading: false, // Loading state for continue watching section
+                continueWatchingError: false, // Error state for retry failures
+                watchLaterIds: new Set(), // Track watch later IDs for UI state
+                watchProgressMap: {}, // Map of videoId -> percentage watched
+                // Filter/sort state (Issue #413 Phase 3)
+                sortBy: 'date-desc',
+                durationFilter: '',
+                viewMode: 'grid',
+                // Display settings from API
+                showViewCounts: true,
+                showTagline: true,
+                tagline: '',
 
                 async init() {
+                    // Load display config
+                    this.loadDisplayConfig();
+                    // Check for search param from URL (e.g., from watch page search)
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const searchParam = urlParams.get('search') || urlParams.get('q');
+                    if (searchParam) {
+                        // Limit search length for safety
+                        this.searchQuery = searchParam.slice(0, MAX_SEARCH_LENGTH);
+                        // Clean URL without reloading
+                        window.history.replaceState({}, '', '/');
+                    }
+
+                    // Load watch later IDs from storage
+                    this.watchLaterIds = new Set(VLogUtils.watchLater.getVideoIds());
+
+                    // Load watch progress map for showing progress bars
+                    this.watchProgressMap = VLogUtils.watchHistory.getProgressMap();
+
+                    // Load saved preferences
+                    this.sortBy = VLogUtils.preferences.get('sortBy', 'date-desc');
+                    this.durationFilter = VLogUtils.preferences.get('durationFilter', '');
+                    this.viewMode = VLogUtils.preferences.get('viewMode', 'grid');
+
+                    // Load main content
                     await Promise.all([
                         this.loadCategories(),
-                        this.loadVideos()
+                        this.loadVideos(),
+                        this.loadFeaturedVideo()
                     ]);
+
+                    // Load continue watching after main content (progressive loading)
+                    this.loadContinueWatching();
+                },
+
+                openMobileNav() {
+                    this.previousFocus = document.activeElement;
+                    this.mobileNavOpen = true;
+                    document.body.style.overflow = 'hidden';
+                    // Focus close button after drawer opens
+                    this.$nextTick(() => {
+                        this.$refs.closeBtn?.focus();
+                    });
+                },
+
+                closeMobileNav() {
+                    this.mobileNavOpen = false;
+                    document.body.style.overflow = '';
+                    // Restore focus to menu button
+                    this.$nextTick(() => {
+                        if (this.previousFocus) {
+                            this.previousFocus.focus();
+                            this.previousFocus = null;
+                        }
+                    });
                 },
 
                 async loadCategories() {
@@ -136,18 +576,141 @@
                             url += `category=${this.selectedCategory}&`;
                         }
                         if (this.searchQuery) {
-                            url += `search=${encodeURIComponent(this.searchQuery)}&`;
+                            // Limit search length
+                            const query = this.searchQuery.slice(0, MAX_SEARCH_LENGTH);
+                            url += `search=${encodeURIComponent(query)}&`;
                         }
+                        // Add sort parameter
+                        const [sortField, sortOrder] = this.sortBy.split('-');
+                        url += `sort=${sortField}&order=${sortOrder}&`;
+                        // Save sort preference
+                        VLogUtils.preferences.set('sortBy', this.sortBy);
+
+                        // Add duration filter
+                        if (this.durationFilter) {
+                            if (this.durationFilter === 'short') {
+                                url += 'duration_max=300&'; // <5 minutes
+                            } else if (this.durationFilter === 'medium') {
+                                url += 'duration_min=300&duration_max=1200&'; // 5-20 minutes
+                            } else if (this.durationFilter === 'long') {
+                                url += 'duration_min=1200&'; // >20 minutes
+                            }
+                            VLogUtils.preferences.set('durationFilter', this.durationFilter);
+                        } else {
+                            VLogUtils.preferences.set('durationFilter', '');
+                        }
+
                         const res = await VLogUtils.fetchWithTimeout(url, {}, 10000);
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
-                        this.videos = await res.json();
+                        const data = await res.json();
+                        this.videos = data.videos || [];
+                        // Announce results to screen readers
+                        this.announcement = `${this.videos.length} video${this.videos.length === 1 ? '' : 's'} found`;
                     } catch (e) {
                         console.error('Failed to load videos:', e);
                         this.videos = [];
+                        this.announcement = 'Failed to load videos';
                     } finally {
                         this.loading = false;
+                    }
+                },
+
+                setViewMode(mode) {
+                    this.viewMode = mode;
+                    VLogUtils.preferences.set('viewMode', mode);
+                    this.announcement = mode === 'grid' ? 'Grid view' : 'List view';
+                },
+
+                async loadFeaturedVideo() {
+                    try {
+                        const res = await VLogUtils.fetchWithTimeout('/api/videos?featured=true&limit=1', {}, 10000);
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
+                        const data = await res.json();
+                        const videos = data.videos || [];
+                        this.featuredVideo = videos.length > 0 ? videos[0] : null;
+                    } catch (e) {
+                        console.error('Failed to load featured video:', e);
+                        this.featuredVideo = null;
+                    }
+                },
+
+                async loadDisplayConfig() {
+                    try {
+                        const res = await VLogUtils.fetchWithTimeout('/api/config/display', {}, 5000);
+                        if (res.ok) {
+                            const config = await res.json();
+                            this.showViewCounts = config.show_view_counts !== false;
+                            this.showTagline = config.show_tagline !== false;
+                            this.tagline = config.tagline || '';
+                        }
+                    } catch (e) {
+                        // Use defaults on error
+                        console.debug('Failed to load display config, using defaults');
+                    }
+                },
+
+                async loadContinueWatching(retryCount = 0) {
+                    const MAX_RETRIES = 2;
+                    const RETRY_DELAYS = [0, 1000, 3000]; // Exponential backoff
+
+                    // Set loading state only on first attempt, reset error
+                    if (retryCount === 0) {
+                        this.continueWatchingLoading = true;
+                        this.continueWatchingError = false;
+                    }
+
+                    try {
+                        // Get partially watched videos from localStorage
+                        const watchedItems = VLogUtils.watchHistory.getContinueWatching(10);
+                        if (watchedItems.length === 0) {
+                            this.continueWatching = [];
+                            this.continueWatchingLoading = false;
+                            return;
+                        }
+
+                        // Fetch video metadata using bulk endpoint
+                        const ids = watchedItems.map(item => item.videoId).join(',');
+                        const res = await VLogUtils.fetchWithTimeout(`/api/videos/bulk?ids=${ids}`, {}, 10000);
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
+                        const videos = await res.json();
+
+                        // Create a map for quick lookup
+                        const videoMap = new Map(videos.map(v => [v.id, v]));
+
+                        // Clean up stale IDs (videos that no longer exist)
+                        const validIds = videos.map(v => v.id);
+                        VLogUtils.watchHistory.cleanupStale(validIds);
+
+                        // Merge watch progress with video metadata, preserving order
+                        this.continueWatching = watchedItems
+                            .filter(item => videoMap.has(item.videoId))
+                            .map(item => ({
+                                video: videoMap.get(item.videoId),
+                                position: item.position,
+                                duration: item.duration,
+                                percentage: item.percentage
+                            }));
+                        this.continueWatchingLoading = false;
+                    } catch (e) {
+                        console.error(`Failed to load continue watching (attempt ${retryCount + 1}/${MAX_RETRIES + 1}):`, e);
+
+                        if (retryCount < MAX_RETRIES) {
+                            const delay = RETRY_DELAYS[retryCount + 1];
+                            console.log(`Retrying in ${delay}ms...`);
+                            setTimeout(() => this.loadContinueWatching(retryCount + 1), delay);
+                        } else {
+                            // All retries exhausted - show error state
+                            this.continueWatching = [];
+                            this.continueWatchingLoading = false;
+                            this.continueWatchingError = true;
+                            console.error('Continue Watching unavailable - all retries failed');
+                        }
                     }
                 },
 
@@ -157,6 +720,49 @@
 
                 formatDate(dateStr) {
                     return VLogUtils.formatDate(dateStr);
+                },
+
+                formatViewCount(count) {
+                    return VLogUtils.formatViewCount(count);
+                },
+
+                getWatchProgress(videoId) {
+                    return this.watchProgressMap[videoId] || 0;
+                },
+
+                isInWatchLater(videoId) {
+                    return this.watchLaterIds.has(videoId);
+                },
+
+                toggleWatchLater(videoId) {
+                    const result = VLogUtils.watchLater.toggle(videoId);
+                    if (result.success) {
+                        if (result.inQueue) {
+                            this.watchLaterIds.add(videoId);
+                            this.announcement = 'Added to Watch Later';
+                        } else {
+                            this.watchLaterIds.delete(videoId);
+                            this.announcement = 'Removed from Watch Later';
+                        }
+                        // Force reactivity update
+                        this.watchLaterIds = new Set(this.watchLaterIds);
+                    } else {
+                        this.announcement = 'Unable to save - storage unavailable or full';
+                        console.error('Watch Later toggle failed for video', videoId);
+                    }
+                },
+
+                clearAllWatchHistory() {
+                    VLogUtils.storage.remove('vlog_watch_history');
+                    this.continueWatching = [];
+                    this.watchProgressMap = {};
+                    this.announcement = 'Watch history cleared';
+                },
+
+                clearSearch() {
+                    this.searchQuery = '';
+                    this.loadVideos();
+                    document.getElementById('search-input')?.focus();
                 }
             };
         }

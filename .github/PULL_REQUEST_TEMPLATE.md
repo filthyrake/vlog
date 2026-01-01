@@ -1,6 +1,11 @@
 ## Description
 Brief description of what this PR does.
 
+## Target Branch
+<!-- PRs should target `dev` unless this is a release or hotfix -->
+- [ ] This PR targets `dev` (default for most changes)
+- [ ] This PR targets `main` (releases/hotfixes only)
+
 ## Related Issues
 Fixes #(issue number)
 

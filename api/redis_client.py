@@ -171,16 +171,24 @@ class RedisClient:
 
     def _record_failure(self) -> None:
         """Record a failure and potentially open circuit breaker."""
-        self._consecutive_failures += 1
+        import random
+
+        # Cap consecutive failures to prevent unbounded growth during prolonged outages
+        # This ensures backoff calculation stays reasonable and recovery behaves predictably
+        MAX_CONSECUTIVE_FAILURES = 10
+        self._consecutive_failures = min(self._consecutive_failures + 1, MAX_CONSECUTIVE_FAILURES)
         self._healthy = False
 
         if self._consecutive_failures >= 3:
             self._circuit_open = True
             # Exponential backoff: 30s, 60s, 120s, 240s, max 300s
             backoff = min(300, 30 * (2 ** (self._consecutive_failures - 3)))
+            # Add jitter (±20%) to prevent thundering herd when Redis recovers
+            jitter = backoff * 0.2 * (2 * random.random() - 1)
+            backoff = max(30, backoff + jitter)  # Ensure minimum 30s backoff
             self._circuit_open_until = datetime.now(timezone.utc) + timedelta(seconds=backoff)
             logger.warning(
-                f"Redis circuit breaker opened for {backoff}s (consecutive failures: {self._consecutive_failures})"
+                f"Redis circuit breaker opened for {backoff:.1f}s (consecutive failures: {self._consecutive_failures})"
             )
 
     def _record_success(self) -> None:
