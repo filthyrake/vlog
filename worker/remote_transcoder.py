@@ -637,10 +637,13 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
                     # Track segment upload progress (Issue #478 Phase 5)
                     # This callback is called from sync context, so we use create_task for async updates
+                    # Note: We track segment progress locally but don't send separate HTTP updates.
+                    # The overall job progress is updated via update_quality_progress callback from FFmpeg,
+                    # which calculates the correct average across all qualities.
                     segment_progress_state = {"count": 0, "bytes": 0, "last_update": 0.0}
 
                     def on_segment_progress(segments_completed: int, bytes_uploaded: int) -> None:
-                        """Callback for segment upload progress - updates quality_progress_list."""
+                        """Callback for segment upload progress - updates local tracking only."""
                         segment_progress_state["count"] = segments_completed
                         segment_progress_state["bytes"] = bytes_uploaded
                         # Rate limit updates to avoid flooding (update at most every 2 seconds)
@@ -649,7 +652,9 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                             return
                         segment_progress_state["last_update"] = now
 
-                        # Schedule async update (callback is sync, so we use create_task)
+                        # Schedule async update to quality_progress_list only (no HTTP call)
+                        # The main transcode progress callback handles the HTTP progress updates
+                        # to avoid conflicting progress values (fixes progress oscillation bug)
                         async def update_segment_progress():
                             async with progress_list_lock:
                                 quality_progress_list[quality_idx] = {
@@ -658,12 +663,6 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                                     "progress": quality_progress_list[quality_idx].get("progress", 0),
                                     "segments_completed": segments_completed,
                                 }
-                            try:
-                                await check_claim_expiration(
-                                    client.update_progress(job_id, "transcode", 90, quality_progress_list)
-                                )
-                            except Exception as e:
-                                logger.debug(f"Segment progress update failed: {e}")
 
                         asyncio.create_task(update_segment_progress())
 
