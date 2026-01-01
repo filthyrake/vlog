@@ -96,6 +96,12 @@
         color: var(--vlog-primary-light, #60a5fa);
     }
 
+    .site-footer__nav-link:focus-visible {
+        outline: var(--vlog-focus-ring-width, 2px) solid var(--vlog-focus-ring-color, #3b82f6);
+        outline-offset: var(--vlog-focus-ring-offset, 2px);
+        border-radius: var(--vlog-radius-sm, 0.25rem);
+    }
+
     .site-footer__bottom {
         display: flex;
         flex-direction: column;
@@ -132,5 +138,11 @@
 
     .site-footer__links a:hover {
         color: var(--vlog-text-muted, #94a3b8);
+    }
+
+    .site-footer__links a:focus-visible {
+        outline: var(--vlog-focus-ring-width, 2px) solid var(--vlog-focus-ring-color, #3b82f6);
+        outline-offset: var(--vlog-focus-ring-offset, 2px);
+        border-radius: var(--vlog-radius-sm, 0.25rem);
     }
 }

@@ -44,9 +44,11 @@
             <button
                 type="button"
                 class="site-header__menu-btn"
-                @click="mobileNavOpen = true"
+                @click="openMobileNav()"
                 aria-label="Open menu"
-                :aria-expanded="mobileNavOpen"
+                :aria-expanded="mobileNavOpen.toString()"
+                aria-controls="mobile-nav-drawer"
+                x-ref="menuBtn"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -68,17 +70,18 @@
         :class="{ 'mobile-nav--open': mobileNavOpen }"
         x-show="mobileNavOpen"
         x-cloak
-        @keydown.escape.window="mobileNavOpen = false"
+        @keydown.escape.window="closeMobileNav()"
     >
-        <div class="mobile-nav__backdrop" @click="mobileNavOpen = false"></div>
-        <div class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
+        <div class="mobile-nav__backdrop" @click="closeMobileNav()"></div>
+        <div id="mobile-nav-drawer" class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
             <div class="mobile-nav__header">
                 <span class="mobile-nav__title">Menu</span>
                 <button
                     type="button"
                     class="mobile-nav__close"
-                    @click="mobileNavOpen = false"
+                    @click="closeMobileNav()"
                     aria-label="Close menu"
+                    x-ref="closeBtn"
                 >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -105,8 +108,9 @@
 
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8 flex-1">
         <!-- Loading -->
-        <div x-show="loading" class="flex justify-center py-12">
+        <div x-show="loading" class="flex justify-center py-12" role="status" aria-label="Loading video">
             <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+            <span class="sr-only">Loading video...</span>
         </div>
 
         <!-- Error -->

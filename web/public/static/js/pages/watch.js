@@ -12,6 +12,9 @@ function debugLog(...args) {
     if (DEBUG_MODE) console.log(...args);
 }
 
+// Slug validation pattern
+const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 /**
  * Playback analytics tracker
  * Tracks watch sessions and sends heartbeats to the analytics API
@@ -139,12 +142,34 @@ function watchPage() {
         captionsTrack: null,
         watermark: null,
         mobileNavOpen: false,
+        previousFocus: null,
         searchQuery: '',
 
         navigateToSearch() {
-            if (this.searchQuery.trim()) {
-                window.location.href = '/?search=' + encodeURIComponent(this.searchQuery.trim());
+            const query = this.searchQuery?.trim();
+            if (query) {
+                window.location.href = '/?search=' + encodeURIComponent(query);
             }
+        },
+
+        openMobileNav() {
+            this.previousFocus = document.activeElement;
+            this.mobileNavOpen = true;
+            document.body.style.overflow = 'hidden';
+            this.$nextTick(() => {
+                this.$refs.closeBtn?.focus();
+            });
+        },
+
+        closeMobileNav() {
+            this.mobileNavOpen = false;
+            document.body.style.overflow = '';
+            this.$nextTick(() => {
+                if (this.previousFocus) {
+                    this.previousFocus.focus();
+                    this.previousFocus = null;
+                }
+            });
         },
 
         async init() {
@@ -152,14 +177,14 @@ function watchPage() {
             this.loadWatermarkConfig();
 
             const slug = window.location.pathname.split('/').pop();
-            if (!slug) {
+            if (!slug || !SLUG_PATTERN.test(slug)) {
                 this.error = 'Video not found';
                 this.loading = false;
                 return;
             }
 
             try {
-                const res = await VLogUtils.fetchWithTimeout(`/api/videos/${slug}`, {}, 10000);
+                const res = await VLogUtils.fetchWithTimeout(`/api/videos/${encodeURIComponent(slug)}`, {}, 10000);
                 if (!res.ok) {
                     throw new Error('Video not found');
                 }

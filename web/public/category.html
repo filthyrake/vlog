@@ -40,7 +40,7 @@
                     class="site-header__search-count"
                     :class="{ 'site-header__search-count--has-clear': searchQuery }"
                     x-show="searchQuery && !loading"
-                    x-text="filteredVideos.length + ' result' + (filteredVideos.length === 1 ? '' : 's')"
+                    x-text="resultCount + ' result' + (resultCount === 1 ? '' : 's')"
                 ></span>
                 <!-- Clear button -->
                 <button
@@ -61,9 +61,11 @@
             <button
                 type="button"
                 class="site-header__menu-btn"
-                @click="mobileNavOpen = true"
+                @click="openMobileNav()"
                 aria-label="Open menu"
-                :aria-expanded="mobileNavOpen"
+                :aria-expanded="mobileNavOpen.toString()"
+                aria-controls="mobile-nav-drawer"
+                x-ref="menuBtn"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -85,17 +87,18 @@
         :class="{ 'mobile-nav--open': mobileNavOpen }"
         x-show="mobileNavOpen"
         x-cloak
-        @keydown.escape.window="mobileNavOpen = false"
+        @keydown.escape.window="closeMobileNav()"
     >
-        <div class="mobile-nav__backdrop" @click="mobileNavOpen = false"></div>
-        <div class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
+        <div class="mobile-nav__backdrop" @click="closeMobileNav()"></div>
+        <div id="mobile-nav-drawer" class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
             <div class="mobile-nav__header">
                 <span class="mobile-nav__title">Menu</span>
                 <button
                     type="button"
                     class="mobile-nav__close"
-                    @click="mobileNavOpen = false"
+                    @click="closeMobileNav()"
                     aria-label="Close menu"
+                    x-ref="closeBtn"
                 >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -114,8 +117,22 @@
 
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8 flex-1">
         <!-- Loading -->
-        <div x-show="loading" class="flex justify-center py-12">
+        <div x-show="loading" class="flex justify-center py-12" role="status" aria-label="Loading category">
             <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+            <span class="sr-only">Loading category...</span>
+        </div>
+
+        <!-- Error State -->
+        <div x-show="!loading && error" class="text-center py-12">
+            <svg class="mx-auto h-16 w-16 text-red-500 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <h3 class="text-lg font-medium text-dark-300 mb-2" x-text="error"></h3>
+            <a href="/" class="inline-flex items-center gap-2 px-4 py-2 bg-dark-800 hover:bg-dark-700 text-dark-300 rounded-lg transition">
+                Back to Home
+            </a>
         </div>
 
         <!-- Breadcrumb -->
@@ -135,11 +152,11 @@
         <div x-show="!loading && category" class="mb-8">
             <h1 class="text-3xl font-bold text-white mb-2" x-text="category?.name"></h1>
             <p class="text-dark-400" x-text="category?.description"></p>
-            <p class="text-dark-400 mt-2" x-text="(searchQuery ? filteredVideos.length : category?.video_count) + ' video' + ((searchQuery ? filteredVideos.length : category?.video_count) === 1 ? '' : 's')"></p>
+            <p class="text-dark-400 mt-2" x-text="(searchQuery ? resultCount : category?.video_count) + ' video' + ((searchQuery ? resultCount : category?.video_count) === 1 ? '' : 's')"></p>
         </div>
 
         <!-- Videos Grid -->
-        <div x-show="!loading && filteredVideos.length === 0" class="text-center py-12">
+        <div x-show="!loading && !error && resultCount === 0" class="text-center py-12">
             <svg class="mx-auto h-16 w-16 text-dark-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
                 <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
@@ -159,17 +176,21 @@
             </button>
         </div>
 
-        <div x-show="!loading && filteredVideos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            <template x-for="video in filteredVideos" :key="video.id">
+        <div x-show="!loading && _filteredVideos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <template x-for="video in _filteredVideos" :key="video.id">
                 <a :href="'/watch/' + video.slug" class="group">
                     <div class="bg-dark-800 rounded-xl overflow-hidden hover:ring-2 hover:ring-blue-500 transition">
-                        <div class="aspect-video bg-dark-900 relative">
+                        <div class="aspect-video bg-dark-900 relative flex items-center justify-center">
+                            <svg class="absolute w-12 h-12 text-dark-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                                <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
+                                <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
+                            </svg>
                             <img
                                 :src="video.thumbnail_url"
                                 :alt="video.title"
-                                class="w-full h-full object-cover"
+                                class="absolute inset-0 w-full h-full object-cover"
                                 loading="lazy"
-                                @error="$el.style.display='none'"
+                                @error="$el.remove()"
                             >
                             <div class="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-sm">
                                 <span x-text="formatDuration(video.duration)"></span>
@@ -207,39 +228,46 @@
     </footer>
 
     <script>
+        const MAX_SEARCH_LENGTH = 200;
+        const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
         function categoryPage() {
             return {
                 category: null,
                 videos: [],
+                _filteredVideos: [],
                 loading: true,
+                error: null,
                 announcement: '', // For screen reader announcements
                 mobileNavOpen: false,
+                previousFocus: null, // For focus restoration
                 searchQuery: '',
 
-                get filteredVideos() {
-                    if (!this.searchQuery) return this.videos;
-                    const query = this.searchQuery.toLowerCase();
-                    return this.videos.filter(v =>
-                        v.title.toLowerCase().includes(query) ||
-                        (v.description && v.description.toLowerCase().includes(query))
-                    );
+                get resultCount() {
+                    return this._filteredVideos.length;
                 },
 
                 async init() {
+                    // Watch for changes to searchQuery and videos to update cached filteredVideos
+                    this.$watch('searchQuery', () => this.updateFilteredVideos());
+                    this.$watch('videos', () => this.updateFilteredVideos());
+
                     const slug = window.location.pathname.split('/').pop();
-                    if (!slug) {
-                        window.location.href = '/';
+                    if (!slug || !SLUG_PATTERN.test(slug)) {
+                        this.error = 'Invalid category';
+                        this.loading = false;
                         return;
                     }
 
                     try {
                         const [catRes, videosRes] = await Promise.all([
-                            VLogUtils.fetchWithTimeout(`/api/categories/${slug}`, {}, 10000),
-                            VLogUtils.fetchWithTimeout(`/api/videos?category=${slug}`, {}, 10000)
+                            VLogUtils.fetchWithTimeout(`/api/categories/${encodeURIComponent(slug)}`, {}, 10000),
+                            VLogUtils.fetchWithTimeout(`/api/videos?category=${encodeURIComponent(slug)}`, {}, 10000)
                         ]);
 
                         if (!catRes.ok) {
-                            window.location.href = '/';
+                            this.error = catRes.status === 404 ? 'Category not found' : 'Failed to load category';
+                            this.loading = false;
                             return;
                         }
 
@@ -255,15 +283,48 @@
                         document.title = `${this.category.name} - Damen's VLog`;
                     } catch (e) {
                         console.error('Failed to load category:', e);
+                        this.error = 'Failed to load category';
                         this.announcement = 'Failed to load category';
                     } finally {
                         this.loading = false;
                     }
                 },
 
+                updateFilteredVideos() {
+                    if (!this.searchQuery) {
+                        this._filteredVideos = this.videos;
+                    } else {
+                        const query = this.searchQuery.slice(0, MAX_SEARCH_LENGTH).toLowerCase();
+                        this._filteredVideos = this.videos.filter(v =>
+                            (v.title?.toLowerCase() || '').includes(query) ||
+                            (v.description?.toLowerCase() || '').includes(query)
+                        );
+                    }
+                },
+
                 filterVideos() {
-                    const count = this.filteredVideos.length;
-                    this.announcement = `${count} video${count === 1 ? '' : 's'} found`;
+                    this.updateFilteredVideos();
+                    this.announcement = `${this.resultCount} video${this.resultCount === 1 ? '' : 's'} found`;
+                },
+
+                openMobileNav() {
+                    this.previousFocus = document.activeElement;
+                    this.mobileNavOpen = true;
+                    document.body.style.overflow = 'hidden';
+                    this.$nextTick(() => {
+                        this.$refs.closeBtn?.focus();
+                    });
+                },
+
+                closeMobileNav() {
+                    this.mobileNavOpen = false;
+                    document.body.style.overflow = '';
+                    this.$nextTick(() => {
+                        if (this.previousFocus) {
+                            this.previousFocus.focus();
+                            this.previousFocus = null;
+                        }
+                    });
                 },
 
                 clearSearch() {

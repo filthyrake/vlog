@@ -61,10 +61,11 @@
             <button
                 type="button"
                 class="site-header__menu-btn"
-                @click="mobileNavOpen = true"
+                @click="openMobileNav()"
                 aria-label="Open menu"
-                aria-expanded="false"
-                :aria-expanded="mobileNavOpen"
+                :aria-expanded="mobileNavOpen.toString()"
+                aria-controls="mobile-nav-drawer"
+                x-ref="menuBtn"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -86,17 +87,18 @@
         :class="{ 'mobile-nav--open': mobileNavOpen }"
         x-show="mobileNavOpen"
         x-cloak
-        @keydown.escape.window="mobileNavOpen = false"
+        @keydown.escape.window="closeMobileNav()"
     >
-        <div class="mobile-nav__backdrop" @click="mobileNavOpen = false"></div>
-        <div class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
+        <div class="mobile-nav__backdrop" @click="closeMobileNav()"></div>
+        <div id="mobile-nav-drawer" class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
             <div class="mobile-nav__header">
                 <span class="mobile-nav__title">Menu</span>
                 <button
                     type="button"
                     class="mobile-nav__close"
-                    @click="mobileNavOpen = false"
+                    @click="closeMobileNav()"
                     aria-label="Close menu"
+                    x-ref="closeBtn"
                 >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -127,11 +129,12 @@
         <!-- Categories -->
         <section class="mb-8" x-show="categories.length > 0">
             <h2 class="text-xl font-semibold mb-4">Categories</h2>
-            <div class="flex flex-wrap gap-3">
+            <div class="flex flex-wrap gap-3" role="group" aria-label="Filter by category">
                 <button
                     @click="selectedCategory = null; loadVideos()"
                     :class="selectedCategory === null ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
                     class="px-4 py-2 rounded-lg transition"
+                    :aria-pressed="(selectedCategory === null).toString()"
                 >
                     All
                 </button>
@@ -140,6 +143,7 @@
                         @click="selectedCategory = cat.slug; loadVideos()"
                         :class="selectedCategory === cat.slug ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
                         class="px-4 py-2 rounded-lg transition"
+                        :aria-pressed="(selectedCategory === cat.slug).toString()"
                     >
                         <span x-text="cat.name"></span>
                         <span class="text-dark-400 ml-1" x-text="'(' + cat.video_count + ')'"></span>
@@ -152,8 +156,9 @@
         <section>
             <h2 class="text-xl font-semibold mb-4" x-text="selectedCategory ? 'Videos' : 'Latest Videos'"></h2>
 
-            <div x-show="loading" class="flex justify-center py-12">
+            <div x-show="loading" class="flex justify-center py-12" role="status" aria-label="Loading videos">
                 <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+                <span class="sr-only">Loading videos...</span>
             </div>
 
             <div x-show="!loading && videos.length === 0" class="text-center py-12">
@@ -180,13 +185,17 @@
                 <template x-for="video in videos" :key="video.id">
                     <a :href="'/watch/' + video.slug" class="group">
                         <div class="bg-dark-800 rounded-xl overflow-hidden hover:ring-2 hover:ring-blue-500 transition">
-                            <div class="aspect-video bg-dark-900 relative">
+                            <div class="aspect-video bg-dark-900 relative flex items-center justify-center">
+                                <svg class="absolute w-12 h-12 text-dark-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                                    <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
+                                    <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
+                                </svg>
                                 <img
                                     :src="video.thumbnail_url"
                                     :alt="video.title"
-                                    class="w-full h-full object-cover"
+                                    class="absolute inset-0 w-full h-full object-cover"
                                     loading="lazy"
-                                    @error="$el.style.display='none'"
+                                    @error="$el.remove()"
                                 >
                                 <div class="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-sm">
                                     <span x-text="formatDuration(video.duration)"></span>
@@ -226,6 +235,8 @@
     </footer>
 
     <script>
+        const MAX_SEARCH_LENGTH = 200;
+
         function app() {
             return {
                 videos: [],
@@ -235,13 +246,15 @@
                 selectedCategory: null,
                 announcement: '', // For screen reader announcements
                 mobileNavOpen: false,
+                previousFocus: null, // For focus restoration
 
                 async init() {
                     // Check for search param from URL (e.g., from watch page search)
                     const urlParams = new URLSearchParams(window.location.search);
                     const searchParam = urlParams.get('search') || urlParams.get('q');
                     if (searchParam) {
-                        this.searchQuery = searchParam;
+                        // Limit search length for safety
+                        this.searchQuery = searchParam.slice(0, MAX_SEARCH_LENGTH);
                         // Clean URL without reloading
                         window.history.replaceState({}, '', '/');
                     }
@@ -250,6 +263,28 @@
                         this.loadCategories(),
                         this.loadVideos()
                     ]);
+                },
+
+                openMobileNav() {
+                    this.previousFocus = document.activeElement;
+                    this.mobileNavOpen = true;
+                    document.body.style.overflow = 'hidden';
+                    // Focus close button after drawer opens
+                    this.$nextTick(() => {
+                        this.$refs.closeBtn?.focus();
+                    });
+                },
+
+                closeMobileNav() {
+                    this.mobileNavOpen = false;
+                    document.body.style.overflow = '';
+                    // Restore focus to menu button
+                    this.$nextTick(() => {
+                        if (this.previousFocus) {
+                            this.previousFocus.focus();
+                            this.previousFocus = null;
+                        }
+                    });
                 },
 
                 async loadCategories() {
@@ -273,7 +308,9 @@
                             url += `category=${this.selectedCategory}&`;
                         }
                         if (this.searchQuery) {
-                            url += `search=${encodeURIComponent(this.searchQuery)}&`;
+                            // Limit search length
+                            const query = this.searchQuery.slice(0, MAX_SEARCH_LENGTH);
+                            url += `search=${encodeURIComponent(query)}&`;
                         }
                         const res = await VLogUtils.fetchWithTimeout(url, {}, 10000);
                         if (!res.ok) {
