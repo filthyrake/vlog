@@ -83,6 +83,104 @@ vlog worker status
 
 ## Version-Specific Upgrade Notes
 
+### Upgrading to v0.0.3
+
+This version adds significant new features: playlists, chapters, sprite sheets, advanced player features, and reliability improvements.
+
+**New Features:**
+- **Playlists & Collections** - Organize videos into playlists, collections, series, or courses
+- **Video Chapters** - Timeline navigation with chapter markers (max 50 per video)
+- **Sprite Sheets** - Thumbnail previews for timeline scrubbing
+- **Featured Videos** - Mark videos as featured for homepage prominence
+- **Display Settings** - Configurable public UI settings
+- **Cursor-based Pagination** - Improved API performance for large datasets
+- **Table Partitioning** - `playback_sessions` partitioned by month for analytics performance
+- **Streaming Segment Upload** - Progressive upload during transcoding (optional)
+- **Circuit Breaker** - Worker HTTP client resilience pattern
+
+**Database Migrations:**
+
+```bash
+# Run all migrations (020-025)
+alembic upgrade head
+
+# Migrations included:
+# 020 - playlists and playlist_items tables
+# 021 - playback_sessions table partitioning
+# 022 - is_featured column on videos
+# 023 - playback_sessions composite index
+# 024 - chapters table and has_chapters column
+# 025 - sprite_queue table and sprite sheet columns
+```
+
+**New Environment Variables (all optional):**
+
+```bash
+# Display settings
+VLOG_DISPLAY_SHOW_VIEW_COUNTS=true
+VLOG_DISPLAY_SHOW_TAGLINE=true
+VLOG_DISPLAY_TAGLINE="Your video platform"
+
+# Circuit breaker
+VLOG_HTTP_CIRCUIT_BREAKER_FAILURE_THRESHOLD=5
+VLOG_HTTP_CIRCUIT_BREAKER_RECOVERY_TIMEOUT=30
+VLOG_HTTP_CIRCUIT_BREAKER_SUCCESS_THRESHOLD=2
+
+# Streaming segment upload (optional, default off)
+VLOG_WORKER_STREAMING_UPLOAD=false
+
+# Sprite sheet generation
+VLOG_SPRITE_INTERVAL=10
+VLOG_SPRITE_TILE_SIZE=10
+VLOG_SPRITE_FRAME_WIDTH=160
+
+# Worker version gating (optional)
+VLOG_WORKER_VERSION_CHECK_ENABLED=false
+VLOG_REQUIRED_WORKER_VERSION=0.0.3
+```
+
+**New API Endpoints:**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET/POST /api/playlists` | Playlist management |
+| `GET/POST /api/playlists/{id}/videos` | Playlist video management |
+| `GET/POST /api/videos/{id}/chapters` | Chapter management |
+| `GET/POST /api/videos/{id}/sprites` | Sprite sheet management |
+| `GET /api/config/display` | Public display settings |
+
+**Worker Container Update:**
+
+```bash
+# Rebuild worker containers with new dependencies
+docker build -f Dockerfile.worker.gpu -t vlog-worker-gpu:rocky10 .
+
+# Deploy to Kubernetes
+kubectl rollout restart deployment/vlog-worker-nvidia -n vlog
+kubectl rollout restart deployment/vlog-worker-intel -n vlog
+```
+
+**Post-Upgrade Steps:**
+
+1. Verify new tables exist:
+   ```bash
+   psql -U vlog -d vlog -c "\dt playlists; \dt chapters; \dt sprite_queue;"
+   ```
+
+2. Verify API endpoints work:
+   ```bash
+   curl http://localhost:9001/api/playlists
+   curl http://localhost:9000/api/config/display
+   ```
+
+3. Optional: Configure display settings:
+   ```bash
+   vlog settings set display.show_view_counts true
+   vlog settings set display.tagline "My Video Platform"
+   ```
+
+---
+
 ### Upgrading to v0.1.x (Database-Backed Settings)
 
 This version introduces the database-backed settings system.
@@ -325,6 +423,12 @@ kubectl rollout undo deployment/vlog-worker-intel -n vlog
 
 | Version | Migration | Description |
 |---------|-----------|-------------|
+| 0.0.3 | 020_add_playlists | playlists and playlist_items tables |
+| 0.0.3 | 021_partition_playback_sessions | Partitioned playback_sessions by month |
+| 0.0.3 | 022_add_featured_video_columns | is_featured column on videos |
+| 0.0.3 | 023_add_playback_sessions_composite_index | Composite index optimization |
+| 0.0.3 | 024_add_chapters | chapters table, has_chapters on videos |
+| 0.0.3 | 025_add_sprite_sheets | sprite_queue table, sprite columns on videos |
 | 0.1.x | 012_add_settings | Database-backed settings system |
 | 0.1.x | 013_add_streaming_format | streaming_format, primary_codec columns |
 | 0.1.x | 014_add_reencode_queue | Re-encode queue table |
@@ -334,6 +438,12 @@ kubectl rollout undo deployment/vlog-worker-intel -n vlog
 
 | Version | Endpoint | Change |
 |---------|----------|--------|
+| 0.0.3 | `/api/playlists` | Added (Public & Admin) |
+| 0.0.3 | `/api/playlists/{id}/videos` | Added (Admin) |
+| 0.0.3 | `/api/videos/{id}/chapters` | Added (Admin) |
+| 0.0.3 | `/api/videos/{id}/sprites` | Added (Admin) |
+| 0.0.3 | `/api/config/display` | Added (Public) |
+| 0.0.3 | `/api/videos?featured=` | Added featured filter |
 | 0.1.x | `/metrics` | Added (Admin API) |
 | 0.1.x | `/api/metrics` | Added (Worker API) |
 | 0.1.x | `/api/reencode/*` | Added (Admin API) |
@@ -343,6 +453,11 @@ kubectl rollout undo deployment/vlog-worker-intel -n vlog
 
 | Version | Setting | Change |
 |---------|---------|--------|
+| 0.0.3 | `VLOG_DISPLAY_*` | Added (display settings) |
+| 0.0.3 | `VLOG_HTTP_CIRCUIT_BREAKER_*` | Added (circuit breaker) |
+| 0.0.3 | `VLOG_WORKER_STREAMING_UPLOAD` | Added (streaming upload) |
+| 0.0.3 | `VLOG_SPRITE_*` | Added (sprite sheet settings) |
+| 0.0.3 | `VLOG_WORKER_VERSION_CHECK_*` | Added (version gating) |
 | 0.1.x | `VLOG_STREAMING_FORMAT` | Added (default: cmaf) |
 | 0.1.x | `VLOG_STREAMING_CODEC` | Added (default: hevc) |
 | 0.1.x | `VLOG_CDN_ENABLED` | Added |

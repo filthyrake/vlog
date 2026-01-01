@@ -17,6 +17,10 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 - **Crash Recovery** - Checkpoint-based resumable transcoding
 
 ### Content Management
+- **Playlists & Collections** - Organize videos into playlists, collections, series, or courses
+- **Video Chapters** - Timeline navigation with chapter markers (up to 50 per video)
+- **Sprite Sheet Previews** - Thumbnail previews for timeline scrubbing
+- **Featured Videos** - Mark videos as featured for homepage prominence
 - **Custom Metadata Fields** - Define custom fields per category (text, number, date, select, URL)
 - **Custom Thumbnails** - Select from video frames or upload custom images
 - **Soft-Delete** - Deleted videos go to archive with configurable retention period
@@ -29,11 +33,18 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 
 ### Admin & Operations
 - **Modern Admin UI** - TypeScript-based admin interface with mobile support
+- **Display Settings** - Configurable public UI (view counts, tagline)
 - **Prometheus Metrics** - Full observability with `/metrics` endpoints
 - **Automated Backups** - Kubernetes CronJob for PostgreSQL backups
 - **Audit Logging** - Security event logging with rotation
 - **Database-Backed Settings** - Runtime configuration via Admin UI or CLI
 - **CLI + Web Upload** - Upload via command line or web interface
+
+### Reliability
+- **Circuit Breaker** - Worker HTTP client resilience pattern
+- **Streaming Segment Upload** - Progressive upload during transcoding (optional)
+- **Worker Version Gating** - Prevent stale workers from processing jobs
+- **Table Partitioning** - Analytics table partitioned by month for performance
 
 ### Security & Infrastructure
 - **Admin Authentication** - Secure admin API with API keys and HTTP-only cookie sessions
@@ -173,7 +184,10 @@ vlog/
 │       ├── 1080p.m3u8    # Legacy HLS quality playlist
 │       ├── 1080p_0000.ts # Legacy HLS segments (MPEG-TS)
 │       ├── thumbnail.jpg
-│       └── captions.vtt  # WebVTT subtitles
+│       ├── captions.vtt  # WebVTT subtitles
+│       └── sprites/      # Timeline preview sprites
+│           ├── sprite_0.jpg
+│           └── ...
 ├── archive/              # Soft-deleted videos
 │   └── {slug}/
 └── backups/              # PostgreSQL database backups

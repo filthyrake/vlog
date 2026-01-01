@@ -12,12 +12,13 @@ If authentication is enabled (`VLOG_ADMIN_API_SECRET` is set), you'll be prompte
 
 ## Navigation
 
-The admin interface has six main tabs:
+The admin interface has seven main tabs:
 
 | Tab | Purpose |
 |-----|---------|
 | **Videos** | Browse, search, edit, and manage all videos |
 | **Categories** | Create and manage video categories |
+| **Playlists** | Create and manage playlists and collections |
 | **Upload** | Upload new videos with metadata |
 | **Workers** | Monitor transcoding workers and job status |
 | **Analytics** | View playback statistics and trends |
@@ -136,6 +137,68 @@ Field: director (text) - "Director"
 Field: genre (multi_select) - "Genre" [Action, Comedy, Drama, ...]
 Field: imdb_link (url) - "IMDb Page"
 ```
+
+---
+
+## Playlists Tab
+
+Playlists allow you to organize videos into curated collections, series, or courses.
+
+### Creating a Playlist
+
+1. Click "New Playlist"
+2. Enter a title (required)
+3. Add an optional description
+4. Select playlist type:
+   - **Playlist** - General purpose
+   - **Collection** - Curated collection
+   - **Series** - Sequential series (numbered)
+   - **Course** - Educational course
+5. Set visibility:
+   - **Public** - Visible to all viewers
+   - **Private** - Admin-only
+   - **Unlisted** - Accessible by direct link
+6. Toggle "Featured" to highlight on homepage
+7. Click "Create"
+
+### Managing Playlist Videos
+
+**Adding Videos:**
+1. Open a playlist
+2. Click "Add Videos"
+3. Search or browse videos
+4. Select videos to add
+5. Click "Add Selected"
+
+**Reordering Videos:**
+1. Open the playlist
+2. Drag and drop videos to reorder
+3. Changes save automatically
+
+**Removing Videos:**
+1. Hover over a video in the playlist
+2. Click the remove button (X)
+3. Confirm removal
+
+### Playlist Settings
+
+| Setting | Description |
+|---------|-------------|
+| **Title** | Display name for the playlist |
+| **Description** | Optional description shown on playlist page |
+| **Thumbnail** | Uses first video's thumbnail (auto) or custom |
+| **Type** | playlist, collection, series, course |
+| **Visibility** | public, private, unlisted |
+| **Featured** | Show on homepage featured section |
+
+### Playlist Types
+
+| Type | Best For | Display |
+|------|----------|---------|
+| **Playlist** | Loose grouping | Grid layout |
+| **Collection** | Related content | Grid layout |
+| **Series** | Sequential viewing | Numbered list |
+| **Course** | Learning paths | Numbered list with progress |
 
 ---
 

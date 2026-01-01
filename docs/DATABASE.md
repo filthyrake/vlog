@@ -43,6 +43,17 @@ Core video metadata and processing status.
 | error_message | TEXT | NULLABLE | Error details if failed |
 | thumbnail_source | VARCHAR(20) | DEFAULT 'auto' | Thumbnail source: 'auto', 'selected', 'custom' |
 | thumbnail_timestamp | FLOAT | NULLABLE | Timestamp for 'selected' thumbnails |
+| is_featured | BOOLEAN | DEFAULT FALSE | Featured on homepage |
+| has_chapters | BOOLEAN | DEFAULT FALSE | Has chapter markers |
+| streaming_format | VARCHAR(20) | NULLABLE | Streaming format: hls, cmaf |
+| primary_codec | VARCHAR(20) | NULLABLE | Primary codec: h264, hevc, av1 |
+| sprite_sheet_status | VARCHAR(20) | NULLABLE | pending, generating, ready, failed |
+| sprite_sheet_error | TEXT | NULLABLE | Sprite generation error |
+| sprite_sheet_count | INTEGER | DEFAULT 0 | Number of sprite sheets |
+| sprite_sheet_interval | INTEGER | NULLABLE | Seconds between frames |
+| sprite_sheet_tile_size | INTEGER | NULLABLE | Grid size (e.g., 10 for 10x10) |
+| sprite_sheet_frame_width | INTEGER | NULLABLE | Frame width in pixels |
+| sprite_sheet_frame_height | INTEGER | NULLABLE | Frame height in pixels |
 | created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Upload timestamp |
 | published_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Publication timestamp |
 | deleted_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Soft-delete timestamp (NULL = not deleted) |
@@ -338,6 +349,122 @@ Many-to-many relationship between videos and tags.
 
 **Cascade Behavior:** Deleting a video or tag removes the association.
 
+### playlists
+
+Playlists and collections for organizing videos.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| title | VARCHAR(255) | NOT NULL | Playlist title |
+| slug | VARCHAR(255) | UNIQUE, NOT NULL | URL-safe identifier |
+| description | TEXT | NULLABLE | Playlist description |
+| thumbnail_path | VARCHAR(500) | NULLABLE | Custom thumbnail path |
+| visibility | VARCHAR(20) | CHECK, DEFAULT 'public' | public, private, unlisted |
+| playlist_type | VARCHAR(20) | CHECK, DEFAULT 'playlist' | playlist, collection, series, course |
+| is_featured | BOOLEAN | DEFAULT FALSE | Featured on homepage |
+| user_id | VARCHAR(100) | NULLABLE | Future: user ownership |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL | Creation timestamp |
+| updated_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Last update timestamp |
+| deleted_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Soft-delete timestamp |
+
+**Indexes:**
+- `ix_playlists_slug` - URL lookups
+- `ix_playlists_visibility` - Visibility filtering
+- `ix_playlists_is_featured` - Featured filtering
+- `ix_playlists_deleted_at` - Soft-delete filtering
+- `ix_playlists_playlist_type` - Type filtering
+
+**Visibility Options:**
+- `public` - Visible to everyone
+- `private` - Admin-only access
+- `unlisted` - Accessible by direct link
+
+**Playlist Types:**
+- `playlist` - General purpose playlist
+- `collection` - Curated collection
+- `series` - Sequential series
+- `course` - Educational course
+
+### playlist_items
+
+Many-to-many relationship between playlists and videos with ordering.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| playlist_id | INTEGER | FK(playlists.id) CASCADE | Parent playlist |
+| video_id | INTEGER | FK(videos.id) CASCADE | Video reference |
+| position | INTEGER | DEFAULT 0 | Order position |
+| added_at | TIMESTAMP WITH TIME ZONE | NULLABLE | When video was added |
+
+**Indexes:**
+- `ix_playlist_items_playlist_id` - Find items for playlist
+- `ix_playlist_items_video_id` - Find playlists containing video
+- `ix_playlist_items_position` - Ordering queries
+- `ix_playlist_items_playlist_position` - Composite for ordered retrieval
+
+**Unique Constraint:** `uq_playlist_video` (playlist_id, video_id)
+
+**Cascade Behavior:** Deleting playlist or video removes the association.
+
+### chapters
+
+Video chapters for timeline navigation.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| video_id | INTEGER | FK(videos.id) CASCADE | Parent video |
+| title | VARCHAR(255) | NOT NULL | Chapter title |
+| description | TEXT | NULLABLE | Chapter description |
+| start_time | FLOAT | NOT NULL, >= 0 | Start time in seconds |
+| end_time | FLOAT | NULLABLE, > start_time | End time in seconds |
+| position | INTEGER | DEFAULT 0 | Display order |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL | Creation timestamp |
+| updated_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Last update timestamp |
+
+**Indexes:**
+- `ix_chapters_video_id` - Find chapters for video
+- `ix_chapters_position` - Ordering queries
+- `ix_chapters_video_position` - Composite for ordered retrieval
+
+**Constraints:**
+- `ck_chapters_start_time_positive` - start_time >= 0
+- `ck_chapters_end_time_valid` - end_time IS NULL OR end_time > start_time
+- `uq_chapter_video_position` - Unique (video_id, position)
+
+**Note:** Videos have a `has_chapters` boolean column for performance optimization.
+
+### sprite_queue
+
+Background job queue for sprite sheet generation.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| video_id | INTEGER | FK(videos.id) CASCADE | Target video |
+| priority | VARCHAR(10) | CHECK, DEFAULT 'normal' | high, normal, low |
+| status | VARCHAR(20) | CHECK, DEFAULT 'pending' | pending, processing, completed, failed, cancelled |
+| error_message | TEXT | NULLABLE | Error details if failed |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Queue timestamp |
+| started_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Processing start |
+| completed_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Completion timestamp |
+| processed_by_worker_id | INTEGER | NULLABLE | Worker that processed job |
+
+**Indexes:**
+- `ix_sprite_queue_status` - Status filtering
+- `ix_sprite_queue_video_id` - Video lookups
+- `ix_sprite_queue_priority_created` - Priority ordering
+- `ix_sprite_queue_pending_priority` - Partial index for pending jobs
+
+**Status Values:**
+- `pending` - Waiting in queue
+- `processing` - Currently generating
+- `completed` - Successfully completed
+- `failed` - Generation failed
+- `cancelled` - Cancelled before processing
+
 ### custom_field_definitions
 
 User-defined metadata fields for videos (Issue #224).
@@ -398,8 +525,13 @@ videos (1) ───────────────────────
 videos (1) ─────────────────────────────── (N) playback_sessions
 videos (1) ─────────────────────────────── (1) transcoding_jobs
 videos (1) ─────────────────────────────── (1) transcriptions
+videos (1) ─────────────────────────────── (N) chapters
+videos (1) ─────────────────────────────── (N) sprite_queue
 videos (N) ─────────────────────────────── (N) tags (via video_tags)
+videos (N) ─────────────────────────────── (N) playlists (via playlist_items)
 videos (N) ─────────────────────────────── (N) custom_field_definitions (via video_custom_fields)
+                                                │
+playlists (1) ─────────────────────────── (N) playlist_items
                                                 │
 transcoding_jobs (1) ──────────────────── (N) quality_progress
 transcoding_jobs (N) ──────────────────── (1) workers
@@ -423,6 +555,10 @@ settings ───────────────────────�
 | videos | transcoding_jobs | CASCADE |
 | videos | transcriptions | CASCADE |
 | videos | video_tags | CASCADE |
+| videos | chapters | CASCADE |
+| videos | sprite_queue | CASCADE |
+| videos | playlist_items | CASCADE |
+| playlists | playlist_items | CASCADE |
 | tags | video_tags | CASCADE |
 | videos | video_custom_fields | CASCADE |
 | custom_field_definitions | video_custom_fields | CASCADE |
