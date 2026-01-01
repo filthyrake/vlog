@@ -126,14 +126,97 @@
     </div>
 
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Hero Section: Featured Video -->
+        <section class="mb-8" x-show="featuredVideo && !searchQuery" x-cloak>
+            <a
+                :href="'/watch/' + featuredVideo?.slug"
+                class="block relative rounded-xl overflow-hidden group"
+                :aria-label="'Featured: ' + featuredVideo?.title"
+            >
+                <div class="aspect-[21/9] md:aspect-[21/9] bg-dark-900 relative">
+                    <img
+                        :src="featuredVideo?.thumbnail_url"
+                        :alt="featuredVideo?.title"
+                        class="absolute inset-0 w-full h-full object-cover"
+                        loading="eager"
+                    >
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent"></div>
+                    <!-- Play button overlay -->
+                    <div class="absolute inset-0 flex items-center justify-center">
+                        <div class="w-16 h-16 md:w-20 md:h-20 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center group-hover:bg-white/30 transition">
+                            <svg class="w-8 h-8 md:w-10 md:h-10 text-white ml-1" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M8 5v14l11-7z"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <!-- Info overlay -->
+                    <div class="absolute bottom-0 left-0 right-0 p-4 md:p-6">
+                        <span class="inline-block px-2 py-1 bg-blue-600 text-white text-xs font-medium rounded mb-2">Featured</span>
+                        <h2 class="text-xl md:text-2xl lg:text-3xl font-bold text-white mb-2 line-clamp-2" x-text="featuredVideo?.title"></h2>
+                        <div class="flex items-center gap-4 text-white/70 text-sm">
+                            <span x-text="featuredVideo?.category_name || 'Uncategorized'"></span>
+                            <span x-text="formatDuration(featuredVideo?.duration)"></span>
+                            <span x-show="featuredVideo?.view_count > 0" x-text="formatViewCount(featuredVideo?.view_count)"></span>
+                        </div>
+                    </div>
+                </div>
+            </a>
+        </section>
+
+        <!-- Continue Watching Section -->
+        <section class="mb-8" x-show="continueWatching.length > 0 && !searchQuery" x-cloak>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold">Continue Watching</h2>
+                <button
+                    @click="clearAllWatchHistory()"
+                    class="text-sm text-dark-400 hover:text-dark-200 transition"
+                    aria-label="Clear watch history"
+                >
+                    Clear all
+                </button>
+            </div>
+            <div class="flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scrollbar-hide" role="list" aria-label="Continue watching videos">
+                <template x-for="item in continueWatching" :key="item.video.id">
+                    <article class="video-card flex-shrink-0 w-[280px] sm:w-[320px] snap-start" role="listitem">
+                        <a
+                            :href="'/watch/' + item.video.slug + '?t=' + Math.floor(item.position)"
+                            :aria-label="item.video.title + ', ' + formatDuration(item.video.duration) + ', ' + Math.round(100 - item.percentage) + '% remaining'"
+                        >
+                            <div class="video-card__thumbnail">
+                                <img
+                                    :src="item.video.thumbnail_url"
+                                    :alt="item.video.title"
+                                    loading="lazy"
+                                    @error="$el.style.display='none'"
+                                >
+                                <span class="video-card__duration" x-text="formatDuration(item.video.duration)"></span>
+                                <!-- Progress bar -->
+                                <div class="video-card__progress">
+                                    <div class="video-card__progress-bar" :style="'width:' + item.percentage + '%'"></div>
+                                </div>
+                                <!-- Time remaining badge -->
+                                <span class="absolute bottom-6 left-2 bg-black/80 text-white text-xs px-2 py-1 rounded">
+                                    <span x-text="formatDuration(item.video.duration - item.position)"></span> left
+                                </span>
+                            </div>
+                            <div class="video-card__info">
+                                <h3 class="video-card__title" x-text="item.video.title"></h3>
+                                <p class="video-card__meta" x-text="item.video.category_name || 'Uncategorized'"></p>
+                            </div>
+                        </a>
+                    </article>
+                </template>
+            </div>
+        </section>
+
         <!-- Categories -->
         <section class="mb-8" x-show="categories.length > 0">
             <h2 class="text-xl font-semibold mb-4">Categories</h2>
-            <div class="flex flex-wrap gap-3" role="group" aria-label="Filter by category">
+            <div class="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory md:flex-wrap md:overflow-visible scrollbar-hide" role="group" aria-label="Filter by category">
                 <button
                     @click="selectedCategory = null; loadVideos()"
                     :class="selectedCategory === null ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
-                    class="px-4 py-2 rounded-lg transition"
+                    class="px-4 py-2 rounded-lg transition flex-shrink-0 snap-start"
                     :aria-pressed="(selectedCategory === null).toString()"
                 >
                     All
@@ -142,7 +225,7 @@
                     <button
                         @click="selectedCategory = cat.slug; loadVideos()"
                         :class="selectedCategory === cat.slug ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
-                        class="px-4 py-2 rounded-lg transition"
+                        class="px-4 py-2 rounded-lg transition flex-shrink-0 snap-start whitespace-nowrap"
                         :aria-pressed="(selectedCategory === cat.slug).toString()"
                     >
                         <span x-text="cat.name"></span>
@@ -154,13 +237,97 @@
 
         <!-- Videos Grid -->
         <section>
-            <h2 class="text-xl font-semibold mb-4" x-text="selectedCategory ? 'Videos' : 'Latest Videos'"></h2>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold" x-text="selectedCategory ? 'Videos' : 'Latest Videos'"></h2>
+            </div>
 
-            <div x-show="loading" class="flex justify-center py-12" role="status" aria-label="Loading videos">
-                <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+            <!-- Filter/Sort Bar -->
+            <div class="filter-bar" x-show="videos.length > 0 || loading">
+                <div class="filter-bar__group">
+                    <label for="sort-select" class="filter-bar__label">Sort by</label>
+                    <select
+                        id="sort-select"
+                        class="filter-bar__select"
+                        x-model="sortBy"
+                        @change="loadVideos()"
+                    >
+                        <option value="date-desc">Newest first</option>
+                        <option value="date-asc">Oldest first</option>
+                        <option value="views-desc">Most viewed</option>
+                        <option value="duration-desc">Longest</option>
+                        <option value="duration-asc">Shortest</option>
+                        <option value="title-asc">A-Z</option>
+                        <option value="title-desc">Z-A</option>
+                    </select>
+                </div>
+                <div class="filter-bar__group">
+                    <label for="duration-filter" class="filter-bar__label">Duration</label>
+                    <select
+                        id="duration-filter"
+                        class="filter-bar__select"
+                        x-model="durationFilter"
+                        @change="loadVideos()"
+                    >
+                        <option value="">All</option>
+                        <option value="short">Short (&lt;5m)</option>
+                        <option value="medium">Medium (5-20m)</option>
+                        <option value="long">Long (&gt;20m)</option>
+                    </select>
+                </div>
+                <div class="filter-bar__spacer"></div>
+                <!-- View Mode Toggle -->
+                <div class="filter-bar__toggles" role="group" aria-label="View mode">
+                    <button
+                        type="button"
+                        class="filter-bar__toggle"
+                        :class="{ 'filter-bar__toggle--active': viewMode === 'grid' }"
+                        @click="setViewMode('grid')"
+                        :aria-pressed="(viewMode === 'grid').toString()"
+                        aria-label="Grid view"
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="7" height="7"></rect>
+                            <rect x="14" y="3" width="7" height="7"></rect>
+                            <rect x="3" y="14" width="7" height="7"></rect>
+                            <rect x="14" y="14" width="7" height="7"></rect>
+                        </svg>
+                    </button>
+                    <button
+                        type="button"
+                        class="filter-bar__toggle"
+                        :class="{ 'filter-bar__toggle--active': viewMode === 'list' }"
+                        @click="setViewMode('list')"
+                        :aria-pressed="(viewMode === 'list').toString()"
+                        aria-label="List view"
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="8" y1="6" x2="21" y2="6"></line>
+                            <line x1="8" y1="12" x2="21" y2="12"></line>
+                            <line x1="8" y1="18" x2="21" y2="18"></line>
+                            <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                            <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                            <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Skeleton Loaders -->
+            <div x-show="loading" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" role="status" aria-label="Loading videos">
+                <template x-for="i in 8" :key="i">
+                    <div class="skeleton-card">
+                        <div class="skeleton skeleton-card__thumbnail"></div>
+                        <div class="skeleton-card__info">
+                            <div class="skeleton skeleton-card__title"></div>
+                            <div class="skeleton skeleton-card__title skeleton-card__title--short"></div>
+                            <div class="skeleton skeleton-card__meta"></div>
+                        </div>
+                    </div>
+                </template>
                 <span class="sr-only">Loading videos...</span>
             </div>
 
+            <!-- Empty State -->
             <div x-show="!loading && videos.length === 0" class="text-center py-12">
                 <svg class="mx-auto h-16 w-16 text-dark-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                     <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
@@ -181,33 +348,74 @@
                 </button>
             </div>
 
-            <div x-show="!loading && videos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <!-- Video Grid/List -->
+            <div
+                x-show="!loading && videos.length > 0"
+                :class="viewMode === 'list' ? 'flex flex-col gap-4' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6'"
+            >
                 <template x-for="video in videos" :key="video.id">
-                    <a :href="'/watch/' + video.slug" class="group">
-                        <div class="bg-dark-800 rounded-xl overflow-hidden hover:ring-2 hover:ring-blue-500 transition">
-                            <div class="aspect-video bg-dark-900 relative flex items-center justify-center">
-                                <svg class="absolute w-12 h-12 text-dark-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                    <article class="video-card" :class="{ 'video-card--list': viewMode === 'list' }">
+                        <a
+                            :href="'/watch/' + video.slug"
+                            :aria-label="video.title + ', ' + formatDuration(video.duration) + (video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
+                        >
+                            <div class="video-card__thumbnail">
+                                <!-- Placeholder icon -->
+                                <svg class="absolute inset-0 m-auto w-12 h-12 text-dark-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
                                     <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
                                     <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
                                 </svg>
                                 <img
                                     :src="video.thumbnail_url"
                                     :alt="video.title"
-                                    class="absolute inset-0 w-full h-full object-cover"
                                     loading="lazy"
-                                    @error="$el.remove()"
+                                    @error="$el.style.display='none'"
                                 >
-                                <div class="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-sm">
-                                    <span x-text="formatDuration(video.duration)"></span>
+                                <span class="video-card__duration" x-text="formatDuration(video.duration)"></span>
+                                <!-- Watch progress bar (if partially watched) -->
+                                <template x-if="getWatchProgress(video.id)">
+                                    <div class="video-card__progress">
+                                        <div class="video-card__progress-bar" :style="'width:' + getWatchProgress(video.id) + '%'"></div>
+                                    </div>
+                                </template>
+                                <!-- Hover actions -->
+                                <div class="video-card__actions">
+                                    <button
+                                        type="button"
+                                        class="video-card__action"
+                                        :class="{ 'video-card__action--active': isInWatchLater(video.id) }"
+                                        @click.prevent.stop="toggleWatchLater(video.id)"
+                                        :aria-label="isInWatchLater(video.id) ? 'Remove from Watch Later' : 'Add to Watch Later'"
+                                        :aria-pressed="isInWatchLater(video.id).toString()"
+                                    >
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="10"></circle>
+                                            <polyline points="12 6 12 12 16 14"></polyline>
+                                        </svg>
+                                    </button>
                                 </div>
                             </div>
-                            <div class="p-4">
-                                <h3 class="font-medium text-white group-hover:text-blue-400 line-clamp-2" x-text="video.title"></h3>
-                                <p class="text-dark-400 text-sm mt-1" x-text="video.category_name || 'Uncategorized'"></p>
-                                <p class="text-dark-400 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
+                            <div class="video-card__info">
+                                <h3 class="video-card__title" x-text="video.title"></h3>
+                                <p class="video-card__meta">
+                                    <span x-text="video.category_name || 'Uncategorized'"></span>
+                                    <template x-if="video.view_count > 0">
+                                        <span>
+                                            &bull;
+                                            <span class="video-card__views">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                                    <circle cx="12" cy="12" r="3"></circle>
+                                                </svg>
+                                                <span x-text="formatViewCount(video.view_count)"></span>
+                                            </span>
+                                        </span>
+                                    </template>
+                                </p>
+                                <p class="video-card__meta" x-text="formatDate(video.published_at)"></p>
                             </div>
-                        </div>
-                    </a>
+                        </a>
+                    </article>
                 </template>
             </div>
         </section>
@@ -247,6 +455,14 @@
                 announcement: '', // For screen reader announcements
                 mobileNavOpen: false,
                 previousFocus: null, // For focus restoration
+                featuredVideo: null, // Hero section featured video
+                continueWatching: [], // Continue watching videos with metadata
+                watchLaterIds: new Set(), // Track watch later IDs for UI state
+                watchProgressMap: {}, // Map of videoId -> percentage watched
+                // Filter/sort state (Issue #413 Phase 3)
+                sortBy: 'date-desc',
+                durationFilter: '',
+                viewMode: 'grid',
 
                 async init() {
                     // Check for search param from URL (e.g., from watch page search)
@@ -259,10 +475,31 @@
                         window.history.replaceState({}, '', '/');
                     }
 
+                    // Load watch later IDs from storage
+                    this.watchLaterIds = new Set(VLogUtils.watchLater.getVideoIds());
+
+                    // Load watch progress map for showing progress bars
+                    const history = VLogUtils.watchHistory.getAll();
+                    for (const [videoId, data] of Object.entries(history)) {
+                        if (data.percentage > 5 && data.percentage < 95) {
+                            this.watchProgressMap[videoId] = data.percentage;
+                        }
+                    }
+
+                    // Load saved preferences
+                    this.sortBy = VLogUtils.preferences.get('sortBy', 'date-desc');
+                    this.durationFilter = VLogUtils.preferences.get('durationFilter', '');
+                    this.viewMode = VLogUtils.preferences.get('viewMode', 'grid');
+
+                    // Load main content
                     await Promise.all([
                         this.loadCategories(),
-                        this.loadVideos()
+                        this.loadVideos(),
+                        this.loadFeaturedVideo()
                     ]);
+
+                    // Load continue watching after main content (progressive loading)
+                    this.loadContinueWatching();
                 },
 
                 openMobileNav() {
@@ -312,6 +549,26 @@
                             const query = this.searchQuery.slice(0, MAX_SEARCH_LENGTH);
                             url += `search=${encodeURIComponent(query)}&`;
                         }
+                        // Add sort parameter
+                        const [sortField, sortOrder] = this.sortBy.split('-');
+                        url += `sort=${sortField}&order=${sortOrder}&`;
+                        // Save sort preference
+                        VLogUtils.preferences.set('sortBy', this.sortBy);
+
+                        // Add duration filter
+                        if (this.durationFilter) {
+                            if (this.durationFilter === 'short') {
+                                url += 'duration_max=300&'; // <5 minutes
+                            } else if (this.durationFilter === 'medium') {
+                                url += 'duration_min=300&duration_max=1200&'; // 5-20 minutes
+                            } else if (this.durationFilter === 'long') {
+                                url += 'duration_min=1200&'; // >20 minutes
+                            }
+                            VLogUtils.preferences.set('durationFilter', this.durationFilter);
+                        } else {
+                            VLogUtils.preferences.set('durationFilter', '');
+                        }
+
                         const res = await VLogUtils.fetchWithTimeout(url, {}, 10000);
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -328,12 +585,103 @@
                     }
                 },
 
+                setViewMode(mode) {
+                    this.viewMode = mode;
+                    VLogUtils.preferences.set('viewMode', mode);
+                    this.announcement = mode === 'grid' ? 'Grid view' : 'List view';
+                },
+
+                async loadFeaturedVideo() {
+                    try {
+                        const res = await VLogUtils.fetchWithTimeout('/api/videos?featured=true&limit=1', {}, 10000);
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
+                        const videos = await res.json();
+                        this.featuredVideo = videos.length > 0 ? videos[0] : null;
+                    } catch (e) {
+                        console.error('Failed to load featured video:', e);
+                        this.featuredVideo = null;
+                    }
+                },
+
+                async loadContinueWatching() {
+                    try {
+                        // Get partially watched videos from localStorage
+                        const watchedItems = VLogUtils.watchHistory.getContinueWatching(10);
+                        if (watchedItems.length === 0) {
+                            this.continueWatching = [];
+                            return;
+                        }
+
+                        // Fetch video metadata using bulk endpoint
+                        const ids = watchedItems.map(item => item.videoId).join(',');
+                        const res = await VLogUtils.fetchWithTimeout(`/api/videos/bulk?ids=${ids}`, {}, 10000);
+                        if (!res.ok) {
+                            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                        }
+                        const videos = await res.json();
+
+                        // Create a map for quick lookup
+                        const videoMap = new Map(videos.map(v => [v.id, v]));
+
+                        // Clean up stale IDs (videos that no longer exist)
+                        const validIds = videos.map(v => v.id);
+                        VLogUtils.watchHistory.cleanupStale(validIds);
+
+                        // Merge watch progress with video metadata, preserving order
+                        this.continueWatching = watchedItems
+                            .filter(item => videoMap.has(item.videoId))
+                            .map(item => ({
+                                video: videoMap.get(item.videoId),
+                                position: item.position,
+                                duration: item.duration,
+                                percentage: item.percentage
+                            }));
+                    } catch (e) {
+                        console.error('Failed to load continue watching:', e);
+                        this.continueWatching = [];
+                    }
+                },
+
                 formatDuration(seconds) {
                     return VLogUtils.formatDuration(seconds);
                 },
 
                 formatDate(dateStr) {
                     return VLogUtils.formatDate(dateStr);
+                },
+
+                formatViewCount(count) {
+                    return VLogUtils.formatViewCount(count);
+                },
+
+                getWatchProgress(videoId) {
+                    return this.watchProgressMap[videoId] || 0;
+                },
+
+                isInWatchLater(videoId) {
+                    return this.watchLaterIds.has(videoId);
+                },
+
+                toggleWatchLater(videoId) {
+                    const isNowInQueue = VLogUtils.watchLater.toggle(videoId);
+                    if (isNowInQueue) {
+                        this.watchLaterIds.add(videoId);
+                        this.announcement = 'Added to Watch Later';
+                    } else {
+                        this.watchLaterIds.delete(videoId);
+                        this.announcement = 'Removed from Watch Later';
+                    }
+                    // Force reactivity update
+                    this.watchLaterIds = new Set(this.watchLaterIds);
+                },
+
+                clearAllWatchHistory() {
+                    VLogUtils.storage.remove('vlog_watch_history');
+                    this.continueWatching = [];
+                    this.watchProgressMap = {};
+                    this.announcement = 'Watch history cleared';
                 },
 
                 clearSearch() {

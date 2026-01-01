@@ -116,9 +116,31 @@
     </div>
 
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8 flex-1">
-        <!-- Loading -->
-        <div x-show="loading" class="flex justify-center py-12" role="status" aria-label="Loading category">
-            <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
+        <!-- Skeleton Loading State -->
+        <div x-show="loading" role="status" aria-label="Loading category">
+            <!-- Skeleton breadcrumb -->
+            <div class="mb-4">
+                <div class="skeleton skeleton-text skeleton--w-1/4" style="height: 1rem;"></div>
+            </div>
+            <!-- Skeleton header -->
+            <div class="mb-8">
+                <div class="skeleton skeleton-text--lg skeleton--w-1/3 mb-2" style="height: 2rem;"></div>
+                <div class="skeleton skeleton-text skeleton--w-1/2 mb-2"></div>
+                <div class="skeleton skeleton-text skeleton--w-1/4" style="height: 0.875rem;"></div>
+            </div>
+            <!-- Skeleton grid -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                <template x-for="i in 8" :key="i">
+                    <div class="skeleton-card">
+                        <div class="skeleton skeleton-card__thumbnail"></div>
+                        <div class="skeleton-card__info">
+                            <div class="skeleton skeleton-card__title"></div>
+                            <div class="skeleton skeleton-card__title skeleton-card__title--short"></div>
+                            <div class="skeleton skeleton-card__meta"></div>
+                        </div>
+                    </div>
+                </template>
+            </div>
             <span class="sr-only">Loading category...</span>
         </div>
 
@@ -155,7 +177,7 @@
             <p class="text-dark-400 mt-2" x-text="(searchQuery ? resultCount : category?.video_count) + ' video' + ((searchQuery ? resultCount : category?.video_count) === 1 ? '' : 's')"></p>
         </div>
 
-        <!-- Videos Grid -->
+        <!-- Empty State -->
         <div x-show="!loading && !error && resultCount === 0" class="text-center py-12">
             <svg class="mx-auto h-16 w-16 text-dark-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
@@ -176,32 +198,70 @@
             </button>
         </div>
 
+        <!-- Video Grid -->
         <div x-show="!loading && _filteredVideos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             <template x-for="video in _filteredVideos" :key="video.id">
-                <a :href="'/watch/' + video.slug" class="group">
-                    <div class="bg-dark-800 rounded-xl overflow-hidden hover:ring-2 hover:ring-blue-500 transition">
-                        <div class="aspect-video bg-dark-900 relative flex items-center justify-center">
-                            <svg class="absolute w-12 h-12 text-dark-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <article class="video-card">
+                    <a
+                        :href="'/watch/' + video.slug"
+                        :aria-label="video.title + ', ' + formatDuration(video.duration) + (video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
+                    >
+                        <div class="video-card__thumbnail">
+                            <!-- Placeholder icon -->
+                            <svg class="absolute inset-0 m-auto w-12 h-12 text-dark-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
                                 <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
                                 <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
                             </svg>
                             <img
                                 :src="video.thumbnail_url"
                                 :alt="video.title"
-                                class="absolute inset-0 w-full h-full object-cover"
                                 loading="lazy"
-                                @error="$el.remove()"
+                                @error="$el.style.display='none'"
                             >
-                            <div class="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-sm">
-                                <span x-text="formatDuration(video.duration)"></span>
+                            <span class="video-card__duration" x-text="formatDuration(video.duration)"></span>
+                            <!-- Watch progress bar (if partially watched) -->
+                            <template x-if="getWatchProgress(video.id)">
+                                <div class="video-card__progress">
+                                    <div class="video-card__progress-bar" :style="'width:' + getWatchProgress(video.id) + '%'"></div>
+                                </div>
+                            </template>
+                            <!-- Hover actions -->
+                            <div class="video-card__actions">
+                                <button
+                                    type="button"
+                                    class="video-card__action"
+                                    :class="{ 'video-card__action--active': isInWatchLater(video.id) }"
+                                    @click.prevent.stop="toggleWatchLater(video.id)"
+                                    :aria-label="isInWatchLater(video.id) ? 'Remove from Watch Later' : 'Add to Watch Later'"
+                                    :aria-pressed="isInWatchLater(video.id).toString()"
+                                >
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <circle cx="12" cy="12" r="10"></circle>
+                                        <polyline points="12 6 12 12 16 14"></polyline>
+                                    </svg>
+                                </button>
                             </div>
                         </div>
-                        <div class="p-4">
-                            <h3 class="font-medium text-white group-hover:text-blue-400 line-clamp-2" x-text="video.title"></h3>
-                            <p class="text-dark-400 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
+                        <div class="video-card__info">
+                            <h3 class="video-card__title" x-text="video.title"></h3>
+                            <p class="video-card__meta">
+                                <span x-text="formatDate(video.published_at)"></span>
+                                <template x-if="video.view_count > 0">
+                                    <span>
+                                        &bull;
+                                        <span class="video-card__views">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                                <circle cx="12" cy="12" r="3"></circle>
+                                            </svg>
+                                            <span x-text="formatViewCount(video.view_count)"></span>
+                                        </span>
+                                    </span>
+                                </template>
+                            </p>
                         </div>
-                    </div>
-                </a>
+                    </a>
+                </article>
             </template>
         </div>
     </main>
@@ -242,6 +302,8 @@
                 mobileNavOpen: false,
                 previousFocus: null, // For focus restoration
                 searchQuery: '',
+                watchLaterIds: new Set(), // Track watch later IDs for UI state
+                watchProgressMap: {}, // Map of videoId -> percentage watched
 
                 get resultCount() {
                     return this._filteredVideos.length;
@@ -251,6 +313,17 @@
                     // Watch for changes to searchQuery and videos to update cached filteredVideos
                     this.$watch('searchQuery', () => this.updateFilteredVideos());
                     this.$watch('videos', () => this.updateFilteredVideos());
+
+                    // Load watch later IDs from storage
+                    this.watchLaterIds = new Set(VLogUtils.watchLater.getVideoIds());
+
+                    // Load watch progress map for showing progress bars
+                    const history = VLogUtils.watchHistory.getAll();
+                    for (const [videoId, data] of Object.entries(history)) {
+                        if (data.percentage > 5 && data.percentage < 95) {
+                            this.watchProgressMap[videoId] = data.percentage;
+                        }
+                    }
 
                     const slug = window.location.pathname.split('/').pop();
                     if (!slug || !SLUG_PATTERN.test(slug)) {
@@ -338,6 +411,31 @@
 
                 formatDate(dateStr) {
                     return VLogUtils.formatDate(dateStr);
+                },
+
+                formatViewCount(count) {
+                    return VLogUtils.formatViewCount(count);
+                },
+
+                getWatchProgress(videoId) {
+                    return this.watchProgressMap[videoId] || 0;
+                },
+
+                isInWatchLater(videoId) {
+                    return this.watchLaterIds.has(videoId);
+                },
+
+                toggleWatchLater(videoId) {
+                    const isNowInQueue = VLogUtils.watchLater.toggle(videoId);
+                    if (isNowInQueue) {
+                        this.watchLaterIds.add(videoId);
+                        this.announcement = 'Added to Watch Later';
+                    } else {
+                        this.watchLaterIds.delete(videoId);
+                        this.announcement = 'Removed from Watch Later';
+                    }
+                    // Force reactivity update
+                    this.watchLaterIds = new Set(this.watchLaterIds);
                 }
             };
         }

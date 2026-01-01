@@ -39,6 +39,8 @@ export interface Video {
   primary_codec?: 'h264' | 'hevc' | 'av1';
   current_step?: string;
   current_progress?: number;
+  is_featured?: boolean; // Issue #413 Phase 3
+  featured_at?: string;  // Issue #413 Phase 3
 }
 
 export interface VideoProgress {
