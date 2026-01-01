@@ -2058,6 +2058,71 @@ async def get_watermark_image(request: Request):
 
 
 # ============================================================================
+# Display Configuration
+# ============================================================================
+
+# Cached display settings (refreshed every 60 seconds)
+_cached_display_settings: Dict[str, Any] = {}
+_cached_display_settings_time: float = 0
+_DISPLAY_SETTINGS_CACHE_TTL = 60  # seconds
+
+
+async def get_display_settings() -> Dict[str, Any]:
+    """
+    Get display settings from database with caching.
+
+    Returns dict with:
+    - show_view_counts: bool (default True)
+    - show_tagline: bool (default True)
+    - tagline: str (default empty)
+    """
+    import time
+
+    global _cached_display_settings, _cached_display_settings_time
+
+    now = time.time()
+    if _cached_display_settings and (now - _cached_display_settings_time) < _DISPLAY_SETTINGS_CACHE_TTL:
+        return _cached_display_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "show_view_counts": await service.get("display.show_view_counts", True),
+            "show_tagline": await service.get("display.show_tagline", True),
+            "tagline": await service.get("display.tagline", ""),
+        }
+
+        _cached_display_settings = settings
+        _cached_display_settings_time = now
+
+    except Exception as e:
+        logger.debug(f"Failed to get display settings from DB, using defaults: {e}")
+        _cached_display_settings = {
+            "show_view_counts": True,
+            "show_tagline": True,
+            "tagline": "",
+        }
+        _cached_display_settings_time = now
+
+    return _cached_display_settings
+
+
+@app.get("/api/config/display")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_display_config(request: Request):
+    """
+    Get display configuration for the public UI.
+
+    Returns display settings like whether to show view counts.
+    """
+    settings = await get_display_settings()
+    return settings
+
+
+# ============================================================================
 # Analytics Endpoints
 # ============================================================================
 

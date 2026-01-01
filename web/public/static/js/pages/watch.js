@@ -152,6 +152,25 @@ function watchPage() {
         relatedError: false,
         _relatedAbortController: null,
 
+        // Display settings from API
+        showViewCounts: true,
+        showTagline: true,
+        tagline: '',
+
+        async loadDisplayConfig() {
+            try {
+                const res = await VLogUtils.fetchWithTimeout('/api/config/display', {}, 5000);
+                if (res.ok) {
+                    const config = await res.json();
+                    this.showViewCounts = config.show_view_counts !== false;
+                    this.showTagline = config.show_tagline !== false;
+                    this.tagline = config.tagline || '';
+                }
+            } catch (e) {
+                // Use defaults on error
+            }
+        },
+
         navigateToSearch() {
             const query = this.searchQuery?.trim();
             if (query) {
@@ -233,8 +252,9 @@ function watchPage() {
         },
 
         async init() {
-            // Fetch watermark config (non-blocking)
+            // Fetch configs (non-blocking)
             this.loadWatermarkConfig();
+            this.loadDisplayConfig();
 
             const slug = window.location.pathname.split('/').pop();
             if (!slug || !SLUG_PATTERN.test(slug)) {

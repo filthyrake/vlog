@@ -156,7 +156,7 @@
                         <div class="flex items-center gap-4 text-white/70 text-sm">
                             <span x-text="featuredVideo?.category_name || 'Uncategorized'"></span>
                             <span x-text="formatDuration(featuredVideo?.duration)"></span>
-                            <span x-show="featuredVideo?.view_count > 0" x-text="formatViewCount(featuredVideo?.view_count)"></span>
+                            <span x-show="showViewCounts && featuredVideo?.view_count > 0" x-text="formatViewCount(featuredVideo?.view_count)"></span>
                         </div>
                     </div>
                 </div>
@@ -385,7 +385,7 @@
                     <article class="video-card" :class="{ 'video-card--list': viewMode === 'list' }">
                         <a
                             :href="'/watch/' + video.slug"
-                            :aria-label="video.title + ', ' + formatDuration(video.duration) + (video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
+                            :aria-label="video.title + ', ' + formatDuration(video.duration) + (showViewCounts && video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
                         >
                             <div class="video-card__thumbnail">
                                 <!-- Placeholder icon -->
@@ -427,7 +427,7 @@
                                 <h3 class="video-card__title" x-text="video.title"></h3>
                                 <p class="video-card__meta">
                                     <span x-text="video.category_name || 'Uncategorized'"></span>
-                                    <template x-if="video.view_count > 0">
+                                    <template x-if="showViewCounts && video.view_count > 0">
                                         <span>
                                             &bull;
                                             <span class="video-card__views">
@@ -455,7 +455,7 @@
             <div class="site-footer__content">
                 <div class="site-footer__brand">
                     <a href="/" class="site-footer__logo">Damen's VLog</a>
-                    <p class="site-footer__tagline">Automotive adventures and insights</p>
+                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
                     <div class="site-footer__nav-group">
@@ -493,8 +493,14 @@
                 sortBy: 'date-desc',
                 durationFilter: '',
                 viewMode: 'grid',
+                // Display settings from API
+                showViewCounts: true,
+                showTagline: true,
+                tagline: '',
 
                 async init() {
+                    // Load display config
+                    this.loadDisplayConfig();
                     // Check for search param from URL (e.g., from watch page search)
                     const urlParams = new URLSearchParams(window.location.search);
                     const searchParam = urlParams.get('search') || urlParams.get('q');
@@ -629,6 +635,21 @@
                     } catch (e) {
                         console.error('Failed to load featured video:', e);
                         this.featuredVideo = null;
+                    }
+                },
+
+                async loadDisplayConfig() {
+                    try {
+                        const res = await VLogUtils.fetchWithTimeout('/api/config/display', {}, 5000);
+                        if (res.ok) {
+                            const config = await res.json();
+                            this.showViewCounts = config.show_view_counts !== false;
+                            this.showTagline = config.show_tagline !== false;
+                            this.tagline = config.tagline || '';
+                        }
+                    } catch (e) {
+                        // Use defaults on error
+                        console.debug('Failed to load display config, using defaults');
                     }
                 },
 

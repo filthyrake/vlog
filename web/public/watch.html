@@ -274,7 +274,7 @@
                             <div class="video-card--list__info">
                                 <h3 class="video-card--list__title" x-text="related.title"></h3>
                                 <p class="video-card--list__meta" x-text="related.category_name || 'Uncategorized'"></p>
-                                <p class="video-card--list__views text-dark-500 text-xs" x-text="VLogUtils.formatViewCount(related.view_count)"></p>
+                                <p x-show="showViewCounts" class="video-card--list__views text-dark-500 text-xs" x-text="VLogUtils.formatViewCount(related.view_count)"></p>
                             </div>
                         </a>
                     </template>
@@ -294,7 +294,7 @@
             <div class="site-footer__content">
                 <div class="site-footer__brand">
                     <a href="/" class="site-footer__logo">Damen's VLog</a>
-                    <p class="site-footer__tagline">Automotive adventures and insights</p>
+                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
                     <div class="site-footer__nav-group">

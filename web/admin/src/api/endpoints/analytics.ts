@@ -31,8 +31,9 @@ export const analyticsApi = {
       sortBy = 'views',
     } = options;
 
-    return apiClient.fetch<VideoAnalytics[]>(
+    const response = await apiClient.fetch<{ videos: VideoAnalytics[]; total_count: number }>(
       `/api/analytics/videos?period=${period}&limit=${limit}&sort_by=${sortBy}`
     );
+    return response.videos || [];
   },
 };

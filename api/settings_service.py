@@ -980,6 +980,28 @@ KNOWN_SETTINGS = [
         "Upload segments individually during transcoding (eliminates tar.gz blocking)",
         None,
     ),
+    # Display settings
+    (
+        "display.show_view_counts",
+        "display",
+        "boolean",
+        "Show view counts on video cards in the public UI",
+        None,
+    ),
+    (
+        "display.show_tagline",
+        "display",
+        "boolean",
+        "Show tagline in the footer",
+        None,
+    ),
+    (
+        "display.tagline",
+        "display",
+        "string",
+        "Footer tagline text",
+        {"max_length": 100},
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1034,6 +1056,10 @@ SETTING_TO_ENV_MAP = {
     "reencode.priority_threshold_views": "VLOG_REENCODE_PRIORITY_THRESHOLD",
     # Streaming segment upload (Issue #478)
     "workers.streaming_upload": "VLOG_WORKER_STREAMING_UPLOAD",
+    # Display settings
+    "display.show_view_counts": "VLOG_DISPLAY_SHOW_VIEW_COUNTS",
+    "display.show_tagline": "VLOG_DISPLAY_SHOW_TAGLINE",
+    "display.tagline": "VLOG_DISPLAY_TAGLINE",
 }
 
 

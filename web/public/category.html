@@ -204,7 +204,7 @@
                 <article class="video-card">
                     <a
                         :href="'/watch/' + video.slug"
-                        :aria-label="video.title + ', ' + formatDuration(video.duration) + (video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
+                        :aria-label="video.title + ', ' + formatDuration(video.duration) + (showViewCounts && video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
                     >
                         <div class="video-card__thumbnail">
                             <!-- Placeholder icon -->
@@ -246,7 +246,7 @@
                             <h3 class="video-card__title" x-text="video.title"></h3>
                             <p class="video-card__meta">
                                 <span x-text="formatDate(video.published_at)"></span>
-                                <template x-if="video.view_count > 0">
+                                <template x-if="showViewCounts && video.view_count > 0">
                                     <span>
                                         &bull;
                                         <span class="video-card__views">
@@ -272,7 +272,7 @@
             <div class="site-footer__content">
                 <div class="site-footer__brand">
                     <a href="/" class="site-footer__logo">Damen's VLog</a>
-                    <p class="site-footer__tagline">Automotive adventures and insights</p>
+                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
                     <div class="site-footer__nav-group">
@@ -304,12 +304,19 @@
                 searchQuery: '',
                 watchLaterIds: new Set(), // Track watch later IDs for UI state
                 watchProgressMap: {}, // Map of videoId -> percentage watched
+                // Display settings from API
+                showViewCounts: true,
+                showTagline: true,
+                tagline: '',
 
                 get resultCount() {
                     return this._filteredVideos.length;
                 },
 
                 async init() {
+                    // Load display config
+                    this.loadDisplayConfig();
+
                     // Watch for changes to searchQuery and videos to update cached filteredVideos
                     this.$watch('searchQuery', () => this.updateFilteredVideos());
                     this.$watch('videos', () => this.updateFilteredVideos());
@@ -374,6 +381,20 @@
                 filterVideos() {
                     this.updateFilteredVideos();
                     this.announcement = `${this.resultCount} video${this.resultCount === 1 ? '' : 's'} found`;
+                },
+
+                async loadDisplayConfig() {
+                    try {
+                        const res = await VLogUtils.fetchWithTimeout('/api/config/display', {}, 5000);
+                        if (res.ok) {
+                            const config = await res.json();
+                            this.showViewCounts = config.show_view_counts !== false;
+                            this.showTagline = config.show_tagline !== false;
+                            this.tagline = config.tagline || '';
+                        }
+                    } catch (e) {
+                        console.debug('Failed to load display config, using defaults');
+                    }
                 },
 
                 openMobileNav() {
