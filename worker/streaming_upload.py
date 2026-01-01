@@ -848,6 +848,8 @@ async def streaming_transcode_and_upload_quality(
                 await watcher_task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.warning(f"Error during watcher task cleanup: {e}")
 
         if not upload_task.done():
             upload_task.cancel()
@@ -855,3 +857,5 @@ async def streaming_transcode_and_upload_quality(
                 await upload_task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.warning(f"Error during upload task cleanup: {e}")

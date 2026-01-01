@@ -172,6 +172,8 @@ TS_MAGIC_BYTE = b"\x47"
 FTYP_MAGIC = b"ftyp"
 MOOF_MAGIC = b"moof"
 STYP_MAGIC = b"styp"  # Segment type box (common in CMAF)
+SIDX_MAGIC = b"sidx"  # Segment index box (code review fix)
+EMSG_MAGIC = b"emsg"  # Event message box (code review fix)
 
 
 def validate_segment_filename(filename: str) -> bool:
@@ -254,7 +256,7 @@ def validate_segment_magic_bytes(data: bytes, filename: str) -> bool:
         # fMP4 segment: check for 'ftyp', 'moof', or 'styp' at offset 4
         # ISO base media file format: [size (4 bytes)][type (4 bytes)]
         box_type = data[4:8]
-        return box_type in (FTYP_MAGIC, MOOF_MAGIC, STYP_MAGIC)
+        return box_type in (FTYP_MAGIC, MOOF_MAGIC, STYP_MAGIC, SIDX_MAGIC, EMSG_MAGIC)
 
     if filename.endswith(".mp4"):
         # MP4 init segment: check for 'ftyp' at offset 4
@@ -2355,12 +2357,16 @@ async def upload_segment(
         logger.warning(f"Path traversal attempt blocked: {dest_path}")
         raise HTTPException(status_code=400, detail="Invalid request")
 
-    # Read the raw body
-    data = await request.body()
-
-    # Check file size limits
-    if len(data) > MAX_HLS_SINGLE_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File too large")
+    # Stream the raw body with size limit (code review fix - prevents memory exhaustion)
+    # Don't use request.body() which loads everything into memory before size check
+    chunks = []
+    total_size = 0
+    async for chunk in request.stream():
+        total_size += len(chunk)
+        if total_size > MAX_HLS_SINGLE_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="File too large")
+        chunks.append(chunk)
+    data = b"".join(chunks)
 
     # Validate magic bytes (Bruce's recommendation)
     if not validate_segment_magic_bytes(data, filename):
@@ -2378,11 +2384,20 @@ async def upload_segment(
     loop = asyncio.get_event_loop()
     dest_exists = await loop.run_in_executor(_io_executor, dest_path.exists)
     if dest_exists:
-        existing_checksum = await loop.run_in_executor(
-            _io_executor,
-            lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()
-        )
-        if existing_checksum == checksum:
+        try:
+            # Add timeout to handle NFS hangs (code review fix)
+            existing_checksum = await asyncio.wait_for(
+                loop.run_in_executor(
+                    _io_executor,
+                    lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()
+                ),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout reading existing segment {filename}, treating as non-existent")
+            dest_exists = False
+            existing_checksum = None
+        if dest_exists and existing_checksum == checksum:
             logger.debug(f"Segment {filename} already exists with matching checksum")
             return SegmentUploadResponse(
                 status="ok",
@@ -2463,6 +2478,15 @@ async def get_segments_status(
     )
     if not job:
         raise HTTPException(status_code=403, detail="Not your job")
+
+    # Check if claim has expired (code review fix - consistency with other endpoints)
+    now = datetime.now(timezone.utc)
+    if job["claim_expires_at"]:
+        claim_expiry = job["claim_expires_at"]
+        if claim_expiry.tzinfo is None:
+            claim_expiry = claim_expiry.replace(tzinfo=timezone.utc)
+        if claim_expiry < now:
+            raise HTTPException(status_code=409, detail="Claim expired")
 
     # Get video slug
     video = await database.fetch_one(videos.select().where(videos.c.id == video_id))
