@@ -863,6 +863,135 @@
     font-size: 14px;
 }
 
+/* Share modal (Issue #413 Phase 5) */
+.player-share-modal {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--vlog-z-modal, 40);
+    display: none;
+}
+
+.player-share-modal.visible {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.share-modal-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+}
+
+.share-modal-content {
+    position: relative;
+    background: var(--vlog-bg-tertiary, #1f2937);
+    border-radius: var(--vlog-radius-lg, 12px);
+    min-width: 320px;
+    max-width: 90%;
+    overflow: hidden;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+.share-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: white;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.share-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    color: var(--vlog-text-secondary, #a1a1aa);
+    cursor: pointer;
+    border-radius: var(--vlog-radius-sm, 4px);
+    transition: background-color var(--vlog-transition-base, 0.2s ease),
+                color var(--vlog-transition-base, 0.2s ease);
+}
+
+.share-close-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.share-close-btn svg {
+    width: 20px;
+    height: 20px;
+}
+
+.share-modal-body {
+    padding: 16px;
+    display: flex;
+    gap: 8px;
+}
+
+.share-modal-input {
+    flex: 1;
+    background: var(--vlog-bg-secondary, #111827);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--vlog-radius-sm, 4px);
+    padding: 10px 12px;
+    color: white;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+}
+
+.share-modal-input:focus {
+    border-color: var(--vlog-primary, #3b82f6);
+}
+
+.share-modal-copy {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    background: var(--vlog-primary, #3b82f6);
+    border: none;
+    border-radius: var(--vlog-radius-sm, 4px);
+    color: white;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color var(--vlog-transition-base, 0.2s ease);
+    white-space: nowrap;
+}
+
+.share-modal-copy:hover {
+    background: var(--vlog-primary-light, #60a5fa);
+}
+
+.share-modal-copy:focus-visible {
+    outline: 2px solid var(--vlog-primary, #3b82f6);
+    outline-offset: 2px;
+}
+
+.share-modal-copy.copied {
+    background: #22c55e;
+}
+
+.share-modal-copy svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
 /* Mobile responsive */
 @media (max-width: 640px) {
     .player-control-bar {
@@ -1014,6 +1143,186 @@ body.player-theater-active::after {
     background: rgba(0, 0, 0, 0.8);
     z-index: 99;
     pointer-events: none;
+}
+
+/* =============================================================================
+   Watch Page Layout with Related Videos Sidebar (Issue #413 Phase 5)
+   ============================================================================= */
+
+.watch-page {
+    max-width: 100%;
+    padding: 0 1rem;
+    flex: 1;
+}
+
+.watch-layout {
+    --sidebar-width: 360px;
+    --sidebar-gap: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 2rem 0;
+}
+
+.watch-layout__main {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Sidebar hidden on mobile */
+.watch-layout__sidebar {
+    display: none;
+}
+
+/* Mobile related videos section */
+.watch-layout__related--mobile {
+    margin-top: 2rem;
+    padding-top: 2rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Desktop: sidebar layout */
+@media (min-width: 1024px) {
+    .watch-layout {
+        flex-direction: row;
+    }
+
+    .watch-layout__main {
+        flex: 1;
+        max-width: calc(100% - var(--sidebar-width) - var(--sidebar-gap));
+    }
+
+    .watch-layout__sidebar {
+        display: block;
+        width: var(--sidebar-width);
+        flex-shrink: 0;
+    }
+
+    .watch-layout__related--mobile {
+        display: none;
+    }
+}
+
+/* Horizontal video card (for sidebar/related videos) */
+.video-card--list {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.5rem;
+    border-radius: var(--vlog-radius-md, 8px);
+    transition: background-color var(--vlog-transition-base, 0.2s ease);
+    text-decoration: none;
+}
+
+.video-card--list:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.video-card--list__thumbnail {
+    position: relative;
+    width: 160px;
+    flex-shrink: 0;
+    border-radius: var(--vlog-radius-sm, 4px);
+    overflow: hidden;
+    background: var(--vlog-bg-secondary, #18181b);
+}
+
+.video-card--list__img {
+    width: 100%;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+}
+
+.video-card--list .video-card__duration {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 2px 4px;
+    border-radius: 2px;
+    font-size: 11px;
+    color: white;
+}
+
+.video-card--list__info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.video-card--list__title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--vlog-text-primary, #f4f4f5);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-height: 1.3;
+}
+
+.video-card--list__meta {
+    font-size: 12px;
+    color: var(--vlog-text-secondary, #a1a1aa);
+}
+
+.video-card--list__views {
+    font-size: 11px;
+    color: var(--vlog-text-muted, #71717a);
+}
+
+/* Skeleton loading for horizontal cards */
+.skeleton-card--horizontal {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.5rem;
+}
+
+.skeleton-card__thumbnail--small {
+    width: 160px;
+    aspect-ratio: 16/9;
+    border-radius: var(--vlog-radius-sm, 4px);
+    background: linear-gradient(90deg, #27272a 25%, #3f3f46 50%, #27272a 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite;
+}
+
+.skeleton-card--horizontal .skeleton-card__info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 4px;
+}
+
+.skeleton-card--horizontal .skeleton-card__title {
+    height: 14px;
+    width: 80%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #27272a 25%, #3f3f46 50%, #27272a 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite;
+}
+
+.skeleton-card--horizontal .skeleton-card__meta {
+    height: 12px;
+    width: 50%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #27272a 25%, #3f3f46 50%, #27272a 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite;
+}
+
+@keyframes skeleton-shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
 }
 
 } /* End @layer pages */

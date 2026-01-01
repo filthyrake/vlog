@@ -1058,15 +1058,11 @@ async def get_videos_bulk(
                 vid = int(cleaned)
                 if vid <= 0:
                     raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid video ID: '{cleaned}' must be a positive integer"
+                        status_code=400, detail=f"Invalid video ID: '{cleaned}' must be a positive integer"
                     )
                 id_list.append(vid)
     except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid video ID format: '{cleaned}' is not a valid integer"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid video ID format: '{cleaned}' is not a valid integer")
 
     if not id_list:
         return []
@@ -1076,8 +1072,7 @@ async def get_videos_bulk(
 
     if len(id_list) > MAX_BULK_VIDEO_IDS:
         raise HTTPException(
-            status_code=400,
-            detail=f"Maximum {MAX_BULK_VIDEO_IDS} unique video IDs allowed per request"
+            status_code=400, detail=f"Maximum {MAX_BULK_VIDEO_IDS} unique video IDs allowed per request"
         )
 
     # Build query for multiple videos
@@ -1347,6 +1342,197 @@ async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
         completed_at=transcription["completed_at"],
         error_message=sanitize_error_message(transcription["error_message"], context=f"video_slug={slug}"),
     )
+
+
+# =============================================================================
+# Related Videos API (Issue #413 Phase 5)
+# =============================================================================
+
+
+async def _fetch_related_videos_tier(
+    category_id: Optional[int],
+    tag_ids: Optional[List[int]],
+    exclude_ids: set,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch videos matching category and/or tags, excluding specified IDs.
+
+    Tiers:
+    - category_id + tag_ids: Videos with same category AND shared tags (highest relevance)
+    - category_id only: Videos in the same category
+    - tag_ids only: Videos with shared tags
+    - neither: Recent published videos (fallback)
+
+    Args:
+        category_id: Optional category ID to filter by
+        tag_ids: Optional list of tag IDs to match (uses EXISTS for any match)
+        exclude_ids: Set of video IDs to exclude from results
+        limit: Maximum number of videos to return
+
+    Returns:
+        List of video rows matching criteria
+    """
+    if limit <= 0:
+        return []
+
+    query = build_base_videos_query()
+
+    # Exclude already-found videos
+    if exclude_ids:
+        query = query.where(videos.c.id.notin_(exclude_ids))
+
+    # Apply category filter
+    if category_id is not None:
+        query = query.where(videos.c.category_id == category_id)
+
+    # Apply tag filter using EXISTS (at least one matching tag)
+    if tag_ids:
+        tag_match_exists = (
+            sa.select(sa.literal_column("1"))
+            .select_from(video_tags)
+            .where(video_tags.c.video_id == videos.c.id)
+            .where(video_tags.c.tag_id.in_(tag_ids))
+            .exists()
+        )
+        query = query.where(tag_match_exists)
+
+    # Order by published date (most recent first)
+    query = query.order_by(videos.c.published_at.desc())
+    query = query.limit(limit)
+
+    return await fetch_all_with_retry(query)
+
+
+@app.get("/api/videos/{slug}/related")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_related_videos(
+    request: Request,
+    slug: str,
+    limit: int = Query(default=12, ge=1, le=24, description="Maximum number of related videos to return"),
+) -> List[VideoListResponse]:
+    """
+    Get related videos for a given video.
+
+    Algorithm priority (with early termination when limit reached):
+    1. Same category + shared tags (highest relevance)
+    2. Same category only
+    3. Shared tags only
+    4. Recent videos (fallback)
+
+    Results are cached for 30 seconds using the video list cache.
+
+    Args:
+        slug: The video slug to find related videos for
+        limit: Maximum number of related videos (1-24, default 12)
+
+    Returns:
+        List of related videos sorted by relevance tier then recency
+    """
+    # Validate slug to prevent injection attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
+    # Build cache key with SHA256 hash to prevent cache poisoning
+    cache_key_raw = f"related:{slug}|{limit}"
+    cache_key = f"related:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
+
+    # Check cache first
+    cached = _video_list_cache.get(cache_key)
+    if cached is not None:
+        return [VideoListResponse(**v) for v in cached]
+
+    # Get the source video with its category
+    video_query = (
+        sa.select(videos.c.id, videos.c.category_id)
+        .where(videos.c.slug == slug)
+        .where(videos.c.status == VideoStatus.READY)
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_id = video["id"]
+    category_id = video["category_id"]
+
+    # Get source video's tag IDs (limit to top 10 to avoid overly complex queries)
+    tag_query = sa.select(video_tags.c.tag_id).where(video_tags.c.video_id == video_id).limit(10)
+    tag_rows = await fetch_all_with_retry(tag_query)
+    source_tag_ids = [r["tag_id"] for r in tag_rows] if tag_rows else []
+
+    # Collect related videos using tiered algorithm with early termination
+    related_videos: List[Dict[str, Any]] = []
+    seen_ids: set = {video_id}  # Always exclude the source video
+
+    # Tier 1: Same category + shared tags (highest relevance)
+    if category_id is not None and source_tag_ids:
+        tier1 = await _fetch_related_videos_tier(
+            category_id=category_id,
+            tag_ids=source_tag_ids,
+            exclude_ids=seen_ids,
+            limit=limit,
+        )
+        for v in tier1:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Tier 2: Same category only (if we need more)
+    if len(related_videos) < limit and category_id is not None:
+        remaining = limit - len(related_videos)
+        tier2 = await _fetch_related_videos_tier(
+            category_id=category_id,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=remaining,
+        )
+        for v in tier2:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Tier 3: Shared tags only (if we need more)
+    if len(related_videos) < limit and source_tag_ids:
+        remaining = limit - len(related_videos)
+        tier3 = await _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=source_tag_ids,
+            exclude_ids=seen_ids,
+            limit=remaining,
+        )
+        for v in tier3:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Tier 4: Recent videos fallback (if we still need more)
+    if len(related_videos) < limit:
+        remaining = limit - len(related_videos)
+        tier4 = await _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=remaining,
+        )
+        for v in tier4:
+            if len(related_videos) < limit:
+                related_videos.append(v)
+                seen_ids.add(v["id"])
+
+    # Get tags for all related videos
+    video_ids = [v["id"] for v in related_videos]
+    video_tags_map = await get_video_tags(video_ids)
+
+    # Build response using existing helper
+    result = build_video_list_response(related_videos, video_tags_map)
+
+    # Cache the result
+    _video_list_cache.set(cache_key, [v.model_dump() for v in result])
+
+    return result
 
 
 @app.get("/api/categories")

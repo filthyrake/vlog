@@ -106,7 +106,7 @@
         </div>
     </div>
 
-    <main id="main-content" class="max-w-7xl mx-auto px-4 py-8 flex-1">
+    <main id="main-content" class="watch-page">
         <!-- Loading -->
         <div x-show="loading" class="flex justify-center py-12" role="status" aria-label="Loading video">
             <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
@@ -119,10 +119,12 @@
             <a href="/" class="text-blue-400 hover:underline mt-4 inline-block">Back to Home</a>
         </div>
 
-        <!-- Video Content -->
-        <div x-show="!loading && !error && video" x-cloak>
-            <!-- Breadcrumb -->
-            <nav class="breadcrumb" aria-label="Breadcrumb">
+        <!-- Video Content with Related Videos Sidebar -->
+        <div x-show="!loading && !error && video" x-cloak class="watch-layout">
+            <!-- Main Column -->
+            <div class="watch-layout__main">
+                <!-- Breadcrumb -->
+                <nav class="breadcrumb" aria-label="Breadcrumb">
                 <ol class="breadcrumb__list">
                     <li class="breadcrumb__item">
                         <a href="/" class="breadcrumb__link">Home</a>
@@ -215,6 +217,74 @@
                     <p class="text-dark-300 whitespace-pre-wrap" x-text="video?.description"></p>
                 </div>
             </div>
+
+                <!-- Related Videos - Mobile (below video info) -->
+                <div class="watch-layout__related--mobile" x-show="relatedVideos.length > 0">
+                    <h2 class="text-lg font-semibold text-white mb-4">Related Videos</h2>
+                    <div class="flex flex-col gap-3">
+                        <template x-for="related in relatedVideos.slice(0, 6)" :key="related.id">
+                            <a :href="'/watch/' + related.slug" class="video-card video-card--list group">
+                                <div class="video-card--list__thumbnail">
+                                    <img :src="related.thumbnail_url" :alt="related.title" loading="lazy" class="video-card--list__img">
+                                    <span class="video-card__duration" x-text="formatDuration(related.duration)"></span>
+                                </div>
+                                <div class="video-card--list__info">
+                                    <h3 class="video-card--list__title" x-text="related.title"></h3>
+                                    <p class="video-card--list__meta" x-text="related.category_name || 'Uncategorized'"></p>
+                                </div>
+                            </a>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Related Videos Sidebar - Desktop -->
+            <aside class="watch-layout__sidebar" x-show="!loadingRelated || relatedVideos.length > 0">
+                <h2 class="text-lg font-semibold text-white mb-4">Related Videos</h2>
+
+                <!-- Loading skeleton -->
+                <div x-show="loadingRelated && relatedVideos.length === 0" class="flex flex-col gap-3">
+                    <template x-for="i in 6" :key="i">
+                        <div class="skeleton-card skeleton-card--horizontal">
+                            <div class="skeleton skeleton-card__thumbnail--small"></div>
+                            <div class="skeleton-card__info">
+                                <div class="skeleton skeleton-card__title"></div>
+                                <div class="skeleton skeleton-card__meta"></div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Error state with retry -->
+                <div x-show="relatedError && relatedVideos.length === 0" class="text-center py-4">
+                    <p class="text-dark-400 text-sm mb-2">Failed to load related videos</p>
+                    <button @click="loadRelatedVideos(video.slug)" class="text-blue-400 hover:underline text-sm">
+                        Try again
+                    </button>
+                </div>
+
+                <!-- Related videos list -->
+                <div x-show="!loadingRelated && relatedVideos.length > 0" class="flex flex-col gap-3">
+                    <template x-for="related in relatedVideos" :key="related.id">
+                        <a :href="'/watch/' + related.slug" class="video-card video-card--list group">
+                            <div class="video-card--list__thumbnail">
+                                <img :src="related.thumbnail_url" :alt="related.title" loading="lazy" class="video-card--list__img">
+                                <span class="video-card__duration" x-text="formatDuration(related.duration)"></span>
+                            </div>
+                            <div class="video-card--list__info">
+                                <h3 class="video-card--list__title" x-text="related.title"></h3>
+                                <p class="video-card--list__meta" x-text="related.category_name || 'Uncategorized'"></p>
+                                <p class="video-card--list__views text-dark-500 text-xs" x-text="formatViews(related.view_count) + ' views'"></p>
+                            </div>
+                        </a>
+                    </template>
+                </div>
+
+                <!-- Empty state -->
+                <div x-show="!loadingRelated && !relatedError && relatedVideos.length === 0" class="text-center py-4">
+                    <p class="text-dark-400 text-sm">No related videos found</p>
+                </div>
+            </aside>
         </div>
     </main>
 

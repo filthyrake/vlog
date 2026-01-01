@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from api.database import categories, playback_sessions, transcriptions, video_qualities, videos
+from api.database import categories, playback_sessions, transcriptions, video_qualities, video_tags, videos
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation
 
@@ -808,3 +808,278 @@ class TestSecurityHeaders:
         """Test that Permissions-Policy header is present."""
         response = public_client.get("/health")
         assert "Permissions-Policy" in response.headers
+
+
+# ============================================================================
+# Related Videos Tests
+# ============================================================================
+
+
+class TestRelatedVideosHTTP:
+    """HTTP-level tests for related videos endpoint."""
+
+    def test_related_videos_not_found(self, public_client):
+        """Test related videos returns 404 for non-existent video."""
+        response = public_client.get("/api/videos/nonexistent-slug/related")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Video not found"
+
+    @pytest.mark.asyncio
+    async def test_related_videos_excludes_deleted(self, public_client, sample_deleted_video):
+        """Test related videos returns 404 for deleted video."""
+        response = public_client.get(f"/api/videos/{sample_deleted_video['slug']}/related")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Video not found"
+
+    @pytest.mark.asyncio
+    async def test_related_videos_empty_when_no_related(self, public_client, sample_video):
+        """Test related videos returns empty list when no related videos exist."""
+        response = public_client.get(f"/api/videos/{sample_video['slug']}/related")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) == 0
+
+    @pytest.mark.asyncio
+    async def test_related_videos_same_category(self, public_client, test_database, sample_video, sample_category):
+        """Test related videos returns videos from same category."""
+        now = datetime.now(timezone.utc)
+        # Create another video in the same category
+        await test_database.execute(
+            videos.insert().values(
+                title="Related Video",
+                slug="related-video",
+                description="Another video in the same category",
+                category_id=sample_category["id"],
+                duration=90.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+            )
+        )
+
+        response = public_client.get(f"/api/videos/{sample_video['slug']}/related")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["slug"] == "related-video"
+
+    @pytest.mark.asyncio
+    async def test_related_videos_excludes_current_video(
+        self, public_client, test_database, sample_video, sample_category
+    ):
+        """Test related videos excludes the current video from results."""
+        now = datetime.now(timezone.utc)
+        # Create another video in the same category
+        await test_database.execute(
+            videos.insert().values(
+                title="Related Video",
+                slug="related-video",
+                description="Another video",
+                category_id=sample_category["id"],
+                duration=90.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+            )
+        )
+
+        response = public_client.get(f"/api/videos/{sample_video['slug']}/related")
+        assert response.status_code == 200
+        data = response.json()
+        # Should only have the related video, not the current one
+        slugs = [v["slug"] for v in data]
+        assert sample_video["slug"] not in slugs
+        assert "related-video" in slugs
+
+    @pytest.mark.asyncio
+    async def test_related_videos_shared_tags(self, public_client, test_database, sample_video_with_tag, sample_tag):
+        """Test related videos returns videos with shared tags."""
+        now = datetime.now(timezone.utc)
+        # Create a video in a different category (or no category)
+        video_id = await test_database.execute(
+            videos.insert().values(
+                title="Tagged Video",
+                slug="tagged-video",
+                description="A video with the same tag",
+                category_id=None,  # Different category
+                duration=60.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+            )
+        )
+        # Attach the same tag
+        await test_database.execute(
+            video_tags.insert().values(
+                video_id=video_id,
+                tag_id=sample_tag["id"],
+            )
+        )
+
+        response = public_client.get(f"/api/videos/{sample_video_with_tag['slug']}/related")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) >= 1
+        slugs = [v["slug"] for v in data]
+        assert "tagged-video" in slugs
+
+    @pytest.mark.asyncio
+    async def test_related_videos_excludes_deleted_videos(
+        self, public_client, test_database, sample_video, sample_category
+    ):
+        """Test related videos excludes soft-deleted videos from results."""
+        now = datetime.now(timezone.utc)
+        # Create a deleted video in the same category
+        await test_database.execute(
+            videos.insert().values(
+                title="Deleted Related Video",
+                slug="deleted-related",
+                description="A deleted video",
+                category_id=sample_category["id"],
+                duration=90.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+                deleted_at=now,  # Soft deleted
+            )
+        )
+
+        response = public_client.get(f"/api/videos/{sample_video['slug']}/related")
+        assert response.status_code == 200
+        data = response.json()
+        slugs = [v["slug"] for v in data]
+        assert "deleted-related" not in slugs
+
+    @pytest.mark.asyncio
+    async def test_related_videos_excludes_non_ready_videos(
+        self, public_client, test_database, sample_video, sample_category
+    ):
+        """Test related videos excludes non-ready (pending/processing) videos."""
+        now = datetime.now(timezone.utc)
+        # Create a pending video in the same category
+        await test_database.execute(
+            videos.insert().values(
+                title="Pending Related Video",
+                slug="pending-related",
+                description="A pending video",
+                category_id=sample_category["id"],
+                duration=0,
+                status=VideoStatus.PENDING,
+                created_at=now,
+            )
+        )
+
+        response = public_client.get(f"/api/videos/{sample_video['slug']}/related")
+        assert response.status_code == 200
+        data = response.json()
+        slugs = [v["slug"] for v in data]
+        assert "pending-related" not in slugs
+
+    @pytest.mark.asyncio
+    async def test_related_videos_limit_parameter(self, public_client, test_database, sample_video, sample_category):
+        """Test related videos respects limit parameter."""
+        now = datetime.now(timezone.utc)
+        # Create multiple videos in the same category
+        for i in range(5):
+            await test_database.execute(
+                videos.insert().values(
+                    title=f"Related Video {i}",
+                    slug=f"related-video-{i}",
+                    description=f"Related video {i}",
+                    category_id=sample_category["id"],
+                    duration=60.0,
+                    status=VideoStatus.READY,
+                    created_at=now,
+                    published_at=now,
+                )
+            )
+
+        # Test with limit=2
+        response = public_client.get(f"/api/videos/{sample_video['slug']}/related?limit=2")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+
+    def test_related_videos_limit_min_bound(self, public_client, sample_video):
+        """Test related videos rejects limit below minimum (1)."""
+        response = public_client.get("/api/videos/test-video/related?limit=0")
+        assert response.status_code == 422  # Validation error
+
+    def test_related_videos_limit_max_bound(self, public_client, sample_video):
+        """Test related videos rejects limit above maximum (24)."""
+        response = public_client.get("/api/videos/test-video/related?limit=25")
+        assert response.status_code == 422  # Validation error
+
+    @pytest.mark.asyncio
+    async def test_related_videos_returns_correct_fields(
+        self, public_client, test_database, sample_video, sample_category
+    ):
+        """Test related videos returns expected fields."""
+        now = datetime.now(timezone.utc)
+        await test_database.execute(
+            videos.insert().values(
+                title="Related Video",
+                slug="related-video",
+                description="A related video",
+                category_id=sample_category["id"],
+                duration=120.0,
+                source_width=1920,
+                source_height=1080,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+            )
+        )
+
+        response = public_client.get(f"/api/videos/{sample_video['slug']}/related")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+
+        video = data[0]
+        # Check expected fields are present
+        assert "id" in video
+        assert "title" in video
+        assert "slug" in video
+        assert "duration" in video
+        assert video["title"] == "Related Video"
+        assert video["slug"] == "related-video"
+
+    @pytest.mark.asyncio
+    async def test_related_videos_fallback_to_recent(self, public_client, test_database, sample_category):
+        """Test related videos falls back to recent videos when no matches."""
+        now = datetime.now(timezone.utc)
+        # Create a video with no category or tags
+        await test_database.execute(
+            videos.insert().values(
+                title="Isolated Video",
+                slug="isolated-video",
+                description="A video with no category",
+                category_id=None,
+                duration=60.0,
+                status=VideoStatus.READY,
+                created_at=now,
+                published_at=now,
+            )
+        )
+        # Create some recent videos
+        for i in range(3):
+            await test_database.execute(
+                videos.insert().values(
+                    title=f"Recent Video {i}",
+                    slug=f"recent-video-{i}",
+                    description=f"Recent video {i}",
+                    category_id=sample_category["id"],
+                    duration=60.0,
+                    status=VideoStatus.READY,
+                    created_at=now,
+                    published_at=now,
+                )
+            )
+
+        response = public_client.get("/api/videos/isolated-video/related")
+        assert response.status_code == 200
+        data = response.json()
+        # Should return recent videos as fallback
+        assert len(data) >= 1

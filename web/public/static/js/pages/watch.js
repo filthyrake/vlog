@@ -146,6 +146,12 @@ function watchPage() {
         previousFocus: null,
         searchQuery: '',
 
+        // Related videos state (Issue #413 Phase 5)
+        relatedVideos: [],
+        loadingRelated: false,
+        relatedError: false,
+        _relatedAbortController: null,
+
         navigateToSearch() {
             const query = this.searchQuery?.trim();
             if (query) {
@@ -171,6 +177,54 @@ function watchPage() {
                     this.previousFocus = null;
                 }
             });
+        },
+
+        // Load related videos (Issue #413 Phase 5)
+        async loadRelatedVideos(slug) {
+            if (!slug) return;
+
+            // Cancel any in-flight request
+            if (this._relatedAbortController) {
+                this._relatedAbortController.abort();
+            }
+            this._relatedAbortController = new AbortController();
+
+            this.loadingRelated = true;
+            this.relatedError = false;
+
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/related?limit=12`,
+                    { signal: this._relatedAbortController.signal },
+                    5000  // 5 second timeout
+                );
+
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+                const data = await res.json();
+                if (!Array.isArray(data)) throw new Error('Invalid response');
+
+                this.relatedVideos = data;
+            } catch (e) {
+                if (e.name !== 'AbortError') {
+                    console.warn('Failed to load related videos:', e);
+                    this.relatedError = true;
+                }
+            } finally {
+                this.loadingRelated = false;
+            }
+        },
+
+        // Format view count for display
+        formatViews(count) {
+            if (!count || count < 0) return '0';
+            if (count >= 1000000) {
+                return (count / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+            }
+            if (count >= 1000) {
+                return (count / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+            }
+            return count.toString();
         },
 
         async init() {
@@ -204,6 +258,9 @@ function watchPage() {
                 this.$nextTick(() => {
                     this.initPlayer();
                 });
+
+                // Load related videos (non-blocking, don't wait)
+                this.loadRelatedVideos(slug);
             } catch (e) {
                 this.error = e.message;
                 this.loading = false;
@@ -301,9 +358,59 @@ function watchPage() {
                 self.analytics.startSession(quality);
             }, { once: true });
 
+            // =================================================================
+            // Resume Playback (Issue #413 Phase 5)
+            // =================================================================
+
+            // Resume from saved position (silent, no prompt)
+            const savedProgress = VLogUtils.watchHistory.get(this.video.id);
+            if (savedProgress &&
+                typeof savedProgress.position === 'number' &&
+                Number.isFinite(savedProgress.position) &&
+                savedProgress.percentage >= 5 &&
+                savedProgress.percentage <= 95) {
+
+                const seekToPosition = () => {
+                    // Validate position is within video duration (handle re-encoded videos)
+                    const safePosition = Math.min(savedProgress.position, video.duration - 1);
+                    if (safePosition > 0 && Number.isFinite(safePosition)) {
+                        video.currentTime = safePosition;
+                        debugLog('Resumed playback from', safePosition.toFixed(1), 'seconds');
+                    }
+                };
+
+                // Handle both: metadata not yet loaded AND already loaded (cached video)
+                if (video.readyState >= 1) {
+                    seekToPosition();
+                } else {
+                    video.addEventListener('loadedmetadata', seekToPosition, { once: true });
+                }
+            }
+
+            // Save watch progress periodically (throttled to every 5 seconds)
+            let lastSavedPosition = -1;
+            const WATCH_SAVE_INTERVAL = 5000; // 5 seconds
+            let lastSaveTime = 0;
+
+            video.addEventListener('timeupdate', () => {
+                const now = Date.now();
+                // Only save if enough time has passed and position changed meaningfully
+                if (now - lastSaveTime >= WATCH_SAVE_INTERVAL &&
+                    video.duration > 0 &&
+                    Math.abs(video.currentTime - lastSavedPosition) > 1) {
+                    VLogUtils.watchHistory.save(self.video.id, video.currentTime, video.duration);
+                    lastSavedPosition = video.currentTime;
+                    lastSaveTime = now;
+                }
+            });
+
             // End session on video complete
             video.addEventListener('ended', () => {
                 this.analytics.endSession(true);
+                // Clear watch history when video completes (prevents resuming completed videos)
+                lastSavedPosition = -1; // Prevent save after clear (race guard)
+                VLogUtils.watchHistory.clear(this.video.id);
+                debugLog('Video completed, cleared watch history');
             });
 
             // Handle page unload
