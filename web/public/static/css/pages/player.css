@@ -6,6 +6,8 @@
  * Dependencies: design-tokens.css
  */
 
+@layer pages {
+
 /* Player element */
 #player {
     width: 100%;
@@ -706,3 +708,5 @@
         opacity: 1;
     }
 }
+
+} /* End @layer pages */

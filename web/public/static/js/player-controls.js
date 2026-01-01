@@ -329,6 +329,8 @@ class VLogPlayerControls {
         }, { passive: false });
         this.progressContainer.addEventListener('mousemove', (e) => this.showProgressTooltip(e));
         this.progressContainer.addEventListener('mouseleave', () => this.hideProgressTooltip());
+        this._boundHandlers.onProgressSliderKeyDown = (e) => this.handleProgressSliderKeyboard(e);
+        this.progressContainer.addEventListener('keydown', this._boundHandlers.onProgressSliderKeyDown);
 
         // Quality modal
         this.qualityModal.querySelector('.quality-modal-backdrop').addEventListener('click', () => {
@@ -589,6 +591,40 @@ class VLogPlayerControls {
             e.preventDefault();
             e.stopPropagation();
             this.setVolume(1);
+        }
+    }
+
+    handleProgressSliderKeyboard(e) {
+        // Arrow keys for seeking (5 seconds per press)
+        const seekStep = 5;
+        const duration = this.video.duration || 0;
+        if (!duration) return;
+
+        if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.min(duration, this.video.currentTime + seekStep);
+        } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.max(0, this.video.currentTime - seekStep);
+        } else if (e.key === 'ArrowUp') {
+            // Larger seek (30 seconds)
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.min(duration, this.video.currentTime + 30);
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = Math.max(0, this.video.currentTime - 30);
+        } else if (e.key === 'Home') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = 0;
+        } else if (e.key === 'End') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.video.currentTime = duration;
         }
     }
 

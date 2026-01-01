@@ -23,7 +23,7 @@
         <div class="max-w-7xl mx-auto px-4 py-4">
             <div class="flex items-center justify-between">
                 <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
-                <search role="search" class="flex-1 max-w-xl mx-8">
+                <div role="search" class="flex-1 max-w-xl mx-8">
                     <label for="search-input" class="sr-only">Search videos</label>
                     <input
                         id="search-input"
@@ -33,7 +33,7 @@
                         x-model="searchQuery"
                         @input.debounce.300ms="loadVideos()"
                     >
-                </search>
+                </div>
                 <nav class="flex gap-4">
                     <a href="/" class="text-dark-300 hover:text-white">Home</a>
                 </nav>

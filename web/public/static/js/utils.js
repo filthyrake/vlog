@@ -86,7 +86,7 @@ window.VLogUtils = {
                 history[videoId] = {
                     position,
                     duration,
-                    percentage: (position / duration) * 100,
+                    percentage: duration > 0 ? (position / duration) * 100 : 0,
                     timestamp: Date.now()
                 };
                 // Prune old entries if exceeding max
@@ -129,9 +129,13 @@ window.VLogUtils = {
          * @param {number} videoId - The video ID to clear
          */
         clear(videoId) {
-            const history = this.getAll();
-            delete history[videoId];
-            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(history));
+            try {
+                const history = this.getAll();
+                delete history[videoId];
+                localStorage.setItem(this.STORAGE_KEY, JSON.stringify(history));
+            } catch (e) {
+                console.warn('Failed to clear watch history:', e);
+            }
         }
     }
 };
