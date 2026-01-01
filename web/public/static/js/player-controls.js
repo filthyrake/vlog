@@ -197,6 +197,11 @@ class VLogPlayerControls {
                         <path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z"/>
                     </svg>
                 </button>
+                <button class="player-btn share-btn" title="Share" aria-label="Share video" aria-haspopup="true" aria-expanded="false">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/>
+                    </svg>
+                </button>
                 <button class="player-btn theater-btn" title="Theater mode (T)" aria-label="Enter theater mode" aria-pressed="false">
                     <svg viewBox="0 0 24 24" fill="currentColor" class="theater-enter" aria-hidden="true">
                         <path d="M19 6H5c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 10H5V8h14v8z"/>
@@ -299,6 +304,37 @@ class VLogPlayerControls {
         `;
         this.container.appendChild(this.shortcutsModal);
 
+        // Share modal (Issue #413 Phase 5)
+        this.shareModal = document.createElement('div');
+        this.shareModal.className = 'player-share-modal';
+        this.shareModal.setAttribute('role', 'dialog');
+        this.shareModal.setAttribute('aria-label', 'Share video');
+        this.shareModal.setAttribute('aria-modal', 'true');
+        this.shareModal.setAttribute('aria-hidden', 'true');
+        this.shareModal.innerHTML = `
+            <div class="share-modal-backdrop" aria-hidden="true"></div>
+            <div class="share-modal-content">
+                <div class="share-modal-header">
+                    <span>Share</span>
+                    <button class="share-close-btn" aria-label="Close share dialog">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="share-modal-body">
+                    <input type="text" class="share-modal-input" readonly aria-label="Video URL">
+                    <button class="share-modal-copy" aria-label="Copy link">
+                        <svg viewBox="0 0 24 24" fill="currentColor" class="share-copy-icon">
+                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                        </svg>
+                        <span class="share-modal-copy-text">Copy</span>
+                    </button>
+                </div>
+            </div>
+        `;
+        this.container.appendChild(this.shareModal);
+
         // Cache DOM references
         this.playPauseBtn = this.controlBar.querySelector('.play-pause-btn');
         this.progressContainer = this.controlBar.querySelector('.player-progress-container');
@@ -325,6 +361,12 @@ class VLogPlayerControls {
         this.fullscreenBtn = this.controlBar.querySelector('.fullscreen-btn');
         this.qualityModalOptions = this.qualityModal.querySelector('.quality-modal-options');
         this.speedModalOptions = this.speedModal.querySelector('.speed-modal-options');
+
+        // Share modal references (Issue #413 Phase 5)
+        this.shareBtn = this.controlBar.querySelector('.share-btn');
+        this.shareInput = this.shareModal.querySelector('.share-modal-input');
+        this.shareCopyBtn = this.shareModal.querySelector('.share-modal-copy');
+        this.shareCloseBtn = this.shareModal.querySelector('.share-close-btn');
     }
 
     bindEvents() {
@@ -433,6 +475,21 @@ class VLogPlayerControls {
         // Speed modal
         this.speedModal.querySelector('.speed-modal-backdrop').addEventListener('click', () => {
             this.hideSpeedModal();
+        });
+
+        // Share button and modal (Issue #413 Phase 5)
+        this.shareBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.showShareModal();
+        });
+        this.shareModal.querySelector('.share-modal-backdrop').addEventListener('click', () => {
+            this.hideShareModal();
+        });
+        this.shareCloseBtn.addEventListener('click', () => {
+            this.hideShareModal();
+        });
+        this.shareCopyBtn.addEventListener('click', () => {
+            this.copyShareLink();
         });
 
         // Shortcuts modal
@@ -949,6 +1006,75 @@ class VLogPlayerControls {
         this._restoreFocus();
     }
 
+    // Share modal (Issue #413 Phase 5)
+    showShareModal() {
+        this._hideAllModals();
+        this._lastFocusedElement = document.activeElement;
+
+        // Set canonical URL (excludes query params/fragments for security)
+        const shareUrl = window.location.origin + window.location.pathname;
+        this.shareInput.value = shareUrl;
+
+        this.shareModal.classList.add('visible');
+        this.shareModal.setAttribute('aria-hidden', 'false');
+        this.shareBtn.setAttribute('aria-expanded', 'true');
+
+        // Focus the copy button for accessibility
+        this.shareCopyBtn.focus();
+        this._trapFocus(this.shareModal);
+    }
+
+    hideShareModal() {
+        this.shareModal.classList.remove('visible');
+        this.shareModal.setAttribute('aria-hidden', 'true');
+        this.shareBtn.setAttribute('aria-expanded', 'false');
+        this._removeFocusTrap();
+        this._restoreFocus();
+    }
+
+    async copyShareLink() {
+        const url = this.shareInput.value;
+        const copyText = this.shareCopyBtn.querySelector('.share-modal-copy-text');
+
+        try {
+            // Feature detect clipboard API (requires HTTPS or localhost)
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(url);
+            } else {
+                // Fallback for HTTP or older browsers
+                this.shareInput.select();
+                this.shareInput.setSelectionRange(0, 99999); // Mobile support
+                // Critical fix (Margo): Check execCommand return value
+                const success = document.execCommand('copy');
+                if (!success) {
+                    throw new Error('execCommand copy returned false');
+                }
+            }
+
+            copyText.textContent = 'Copied!';
+            this.shareCopyBtn.classList.add('copied');
+            this._announce('Link copied to clipboard');
+
+            // Reset after 2 seconds
+            setTimeout(() => {
+                copyText.textContent = 'Copy';
+                this.shareCopyBtn.classList.remove('copied');
+            }, 2000);
+        } catch (err) {
+            console.error('Copy failed:', err);
+
+            // Provide more specific error messages
+            const message = err.name === 'NotAllowedError'
+                ? 'Permission denied'
+                : 'Copy failed';
+            copyText.textContent = message;
+
+            setTimeout(() => {
+                copyText.textContent = 'Copy';
+            }, 2000);
+        }
+    }
+
     // Helper: Hide all modals
     _hideAllModals() {
         if (this.qualityModal.classList.contains('visible')) {
@@ -964,6 +1090,11 @@ class VLogPlayerControls {
         if (this.shortcutsModal.classList.contains('visible')) {
             this.shortcutsModal.classList.remove('visible');
             this.shortcutsModal.setAttribute('aria-hidden', 'true');
+        }
+        if (this.shareModal.classList.contains('visible')) {
+            this.shareModal.classList.remove('visible');
+            this.shareModal.setAttribute('aria-hidden', 'true');
+            this.shareBtn.setAttribute('aria-expanded', 'false');
         }
         this._removeFocusTrap();
     }
@@ -1382,6 +1513,11 @@ class VLogPlayerControls {
         if (e.key === 'Escape') {
             if (this.shortcutsModal.classList.contains('visible')) {
                 this.hideShortcutsModal();
+                e.preventDefault();
+                return;
+            }
+            if (this.shareModal.classList.contains('visible')) {
+                this.hideShareModal();
                 e.preventDefault();
                 return;
             }
