@@ -96,6 +96,7 @@ from api.database import (
     database,
     quality_progress,
     reencode_queue,
+    sprite_queue,
     transcoding_jobs,
     transcriptions,
     video_qualities,
@@ -140,6 +141,8 @@ from config import (
     RATE_LIMIT_WORKER_DEFAULT,
     RATE_LIMIT_WORKER_PROGRESS,
     RATE_LIMIT_WORKER_REGISTER,
+    SPRITE_SHEET_AUTO_GENERATE,
+    SPRITE_SHEET_ENABLED,
     STALE_JOB_CHECK_INTERVAL,
     SUPPORTED_VIDEO_EXTENSIONS,
     TAR_EXTRACTION_TIMEOUT,
@@ -1819,6 +1822,34 @@ async def complete_job(
     # Publish job completion to Redis pub/sub for real-time UI updates
     video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
     worker_name = worker["worker_name"] or worker["worker_id"][:8]
+
+    # Queue sprite sheet generation if enabled (Issue #413 Phase 7B)
+    if SPRITE_SHEET_ENABLED and SPRITE_SHEET_AUTO_GENERATE:
+        try:
+            # Check if sprite job already exists for this video
+            existing_sprite = await database.fetch_one(
+                sa.text(
+                    "SELECT id FROM sprite_queue WHERE video_id = :video_id AND status IN ('pending', 'processing')"
+                ).bindparams(video_id=job["video_id"])
+            )
+            if not existing_sprite:
+                await database.execute(
+                    sprite_queue.insert().values(
+                        video_id=job["video_id"],
+                        priority="normal",
+                        status="pending",
+                        created_at=datetime.now(timezone.utc),
+                    )
+                )
+                await database.execute(
+                    videos.update().where(videos.c.id == job["video_id"]).values(
+                        sprite_sheet_status="pending",
+                        sprite_sheet_error=None,
+                    )
+                )
+                logger.info(f"Queued sprite sheet generation for video {job['video_id']}")
+        except Exception as sprite_err:
+            logger.warning(f"Failed to queue sprite generation: {sprite_err}")
 
     await Publisher.publish_job_completed(
         job_id=job_id,

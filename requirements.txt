@@ -22,3 +22,6 @@ watchdog>=3.0.0
 
 # Rate limiting
 slowapi>=0.1.9
+
+# System resource monitoring
+psutil>=5.9.0

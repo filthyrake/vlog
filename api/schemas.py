@@ -174,6 +174,8 @@ class VideoResponse(BaseModel):
     transcription_status: Optional[str] = None  # pending, processing, completed, failed
     qualities: List[VideoQualityResponse] = []
     tags: List[VideoTagInfo] = []
+    chapters: List["ChapterInfo"] = []  # Issue #413 Phase 7A
+    sprite_sheet_info: Optional["SpriteSheetInfo"] = None  # Issue #413 Phase 7B
 
     @field_validator("description", mode="before")
     @classmethod
@@ -1089,3 +1091,171 @@ class ReorderPlaylistRequest(BaseModel):
     """Request to reorder videos in a playlist."""
 
     video_ids: List[int] = Field(..., min_length=1, description="Video IDs in new order")
+
+
+# ============ Chapter Models (Issue #413 Phase 7) ============
+
+# Maximum chapters per video (per reviewer feedback)
+MAX_CHAPTERS_PER_VIDEO = 50
+
+
+class ChapterCreate(BaseModel):
+    """Request to create a new chapter."""
+
+    title: str = Field(..., min_length=1, max_length=255, description="Chapter title")
+    description: Optional[str] = Field(default=None, max_length=1000, description="Optional chapter description")
+    start_time: float = Field(..., ge=0, description="Start time in seconds")
+    end_time: Optional[float] = Field(default=None, description="Optional end time in seconds")
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_finite(cls, v: Optional[float]) -> Optional[float]:
+        """Ensure time values are finite (not NaN, Infinity, or -Infinity)."""
+        if v is not None and not math.isfinite(v):
+            raise ValueError("Time value must be a finite number")
+        return v
+
+    @field_validator("end_time")
+    @classmethod
+    def validate_end_time(cls, v: Optional[float], info) -> Optional[float]:
+        """Ensure end_time > start_time if provided."""
+        if v is not None:
+            start_time = info.data.get("start_time")
+            if start_time is not None and v <= start_time:
+                raise ValueError("end_time must be greater than start_time")
+        return v
+
+
+class ChapterUpdate(BaseModel):
+    """Request to update an existing chapter."""
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    start_time: Optional[float] = Field(default=None, ge=0)
+    end_time: Optional[float] = None
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_finite(cls, v: Optional[float]) -> Optional[float]:
+        """Ensure time values are finite (not NaN, Infinity, or -Infinity)."""
+        if v is not None and not math.isfinite(v):
+            raise ValueError("Time value must be a finite number")
+        return v
+
+    @field_validator("end_time")
+    @classmethod
+    def validate_end_time(cls, v: Optional[float], info) -> Optional[float]:
+        """Ensure end_time > start_time if provided."""
+        if v is not None:
+            start_time = info.data.get("start_time")
+            if start_time is not None and v <= start_time:
+                raise ValueError("end_time must be greater than start_time")
+        return v
+
+
+class ChapterResponse(BaseModel):
+    """Response for a single chapter."""
+
+    id: int
+    video_id: int
+    title: str
+    description: Optional[str] = None
+    start_time: float
+    end_time: Optional[float] = None
+    position: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class ChapterListResponse(BaseModel):
+    """Response for listing chapters of a video."""
+
+    chapters: List[ChapterResponse]
+    video_id: int
+    total_count: int
+
+
+class ChapterInfo(BaseModel):
+    """Simplified chapter info for public video responses."""
+
+    id: int
+    title: str
+    start_time: float
+    end_time: Optional[float] = None
+
+
+class ReorderChaptersRequest(BaseModel):
+    """Request to reorder chapters."""
+
+    chapter_ids: List[int] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_CHAPTERS_PER_VIDEO,
+        description="Chapter IDs in new order",
+    )
+
+
+# ============ Sprite Sheet Models (Issue #413 Phase 7B) ============
+
+
+class SpriteSheetInfo(BaseModel):
+    """Sprite sheet info for timeline thumbnail previews."""
+
+    base_url: str = Field(..., description="Base URL for sprite sheets (e.g., /videos/{slug}/sprites/sprite_)")
+    count: int = Field(..., ge=0, description="Number of sprite sheets")
+    interval: int = Field(..., ge=1, description="Seconds between frames")
+    tile_size: int = Field(..., ge=1, description="Grid size (e.g., 10 for 10x10)")
+    frame_width: int = Field(..., ge=1, description="Width of each thumbnail frame in pixels")
+    frame_height: int = Field(..., ge=1, description="Height of each thumbnail frame in pixels")
+
+
+class SpriteGenerationRequest(BaseModel):
+    """Request to generate sprites for a video."""
+
+    priority: str = Field(default="normal", pattern="^(high|normal|low)$", description="Queue priority")
+
+
+class SpriteStatusResponse(BaseModel):
+    """Response for sprite sheet status."""
+
+    video_id: int
+    status: Optional[str] = None  # pending, generating, ready, failed, or None if never requested
+    error: Optional[str] = None
+    count: int = 0
+    interval: Optional[int] = None
+    tile_size: Optional[int] = None
+    frame_width: Optional[int] = None
+    frame_height: Optional[int] = None
+
+
+class SpriteQueueStatusResponse(BaseModel):
+    """Response for sprite queue status overview."""
+
+    pending: int = 0
+    processing: int = 0
+    completed: int = 0
+    failed: int = 0
+    total: int = 0
+
+
+class SpriteQueueJob(BaseModel):
+    """A single sprite generation job in the queue."""
+
+    id: int
+    video_id: int
+    video_slug: str
+    video_title: str
+    priority: str
+    status: str
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+
+class SpriteQueueJobsResponse(BaseModel):
+    """Response for listing sprite queue jobs."""
+
+    jobs: List[SpriteQueueJob]
+    count: int
+    total: int

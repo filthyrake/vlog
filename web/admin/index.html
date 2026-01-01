@@ -326,7 +326,7 @@
                                 <td class="px-4 py-3 text-dark-400" x-text="formatDuration(video.duration)"></td>
                                 <td class="px-4 py-3">
                                     <div class="flex gap-1 flex-wrap">
-                                        <vlog-button variant="ghost" size="sm" @click="openEditModal(video)">Edit</vlog-button>
+                                        <vlog-button variant="ghost" size="sm" @click="openEditModalWithChapters(video)">Edit</vlog-button>
                                         <vlog-button variant="ghost" size="sm" x-show="video.status !== 'processing'" @click="openReuploadModal(video)">Re-upload</vlog-button>
                                         <!-- Re-transcode dropdown -->
                                         <div class="relative" x-data="{ open: false }">
@@ -349,6 +349,7 @@
                                         <vlog-button variant="ghost" size="sm" x-show="video.status === 'failed'" @click="retryVideo(video.id)">Retry</vlog-button>
                                         <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click="togglePublish(video)" x-text="video.published_at ? 'Unpublish' : 'Publish'"></vlog-button>
                                         <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click="openThumbnailModal(video)">Thumbnail</vlog-button>
+                                        <vlog-button variant="ghost" size="sm" x-show="video.status === 'ready'" @click="generateSprites(video)" :disabled="video.sprite_sheet_status === 'generating' || video.sprite_sheet_status === 'pending'" x-text="video.sprite_sheet_status === 'generating' ? 'Generating...' : video.sprite_sheet_status === 'pending' ? 'Queued' : video.sprite_sheet_status === 'ready' ? 'Regenerate Sprites' : 'Generate Sprites'"></vlog-button>
                                         <vlog-button variant="ghost-danger" size="sm" @click="deleteVideo(video.id)">Delete</vlog-button>
                                     </div>
                                 </td>
@@ -411,7 +412,7 @@
                         :thumbnail="video.thumbnail_url"
                         :status="video.status"
                         :duration="formatDuration(video.duration)"
-                        @card-click="openEditModal(video)"
+                        @card-click="openEditModalWithChapters(video)"
                         always-visible
                     >
                         <div slot="meta" class="flex items-center gap-2">
@@ -421,7 +422,7 @@
                             </svg>
                         </div>
                         <div slot="actions" class="flex flex-wrap gap-1">
-                            <vlog-button variant="ghost" size="sm" @click.stop="openEditModal(video)">Edit</vlog-button>
+                            <vlog-button variant="ghost" size="sm" @click.stop="openEditModalWithChapters(video)">Edit</vlog-button>
                             <vlog-button variant="ghost" size="sm" x-show="video.status !== 'processing'" @click.stop="openReuploadModal(video)">Re-upload</vlog-button>
                             <vlog-button variant="ghost" size="sm" @click.stop="retranscodeAll(video)">Re-transcode</vlog-button>
                             <vlog-button variant="ghost" size="sm" x-show="video.status === 'failed'" @click.stop="retryVideo(video.id)">Retry</vlog-button>
@@ -1756,9 +1757,31 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
     </main>
 
     <!-- Edit Video Modal -->
-    <vlog-modal :open="editModal" @close="editModal = false" size="md">
+    <vlog-modal :open="editModal" @close="editModal = false; editModalTab = 'details'" size="lg">
         <span slot="header">Edit Video</span>
-        <form @submit.prevent="saveVideo" class="space-y-4">
+
+        <!-- Tab Navigation -->
+        <div class="flex border-b border-dark-700 mb-4">
+            <button
+                type="button"
+                @click="editModalTab = 'details'"
+                :class="editModalTab === 'details' ? 'text-blue-400 border-blue-400' : 'text-dark-400 border-transparent hover:text-white'"
+                class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors"
+            >Details</button>
+            <button
+                type="button"
+                @click="editModalTab = 'chapters'"
+                :class="editModalTab === 'chapters' ? 'text-blue-400 border-blue-400' : 'text-dark-400 border-transparent hover:text-white'"
+                class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors"
+            >
+                Chapters
+                <span x-show="chapters.length > 0" class="ml-1 px-1.5 py-0.5 text-xs bg-dark-700 rounded-full" x-text="chapters.length"></span>
+            </button>
+        </div>
+
+        <!-- Details Tab -->
+        <div x-show="editModalTab === 'details'">
+            <form @submit.prevent="saveVideo" class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium mb-2">Title</label>
                     <input
@@ -1928,6 +1951,209 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     >Save</vlog-button>
                 </div>
             </form>
+        </div>
+
+        <!-- Chapters Tab -->
+        <div x-show="editModalTab === 'chapters'" class="space-y-4">
+            <!-- Loading State -->
+            <div x-show="chaptersLoading" class="flex items-center justify-center py-8">
+                <svg class="animate-spin h-6 w-6 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span class="ml-2 text-dark-400">Loading chapters...</span>
+            </div>
+
+            <!-- Error State -->
+            <vlog-alert x-show="chaptersError" variant="error" x-text="chaptersError"></vlog-alert>
+
+            <!-- Chapters Content -->
+            <div x-show="!chaptersLoading">
+                <!-- Add Chapter Form -->
+                <div class="bg-dark-800 rounded-lg p-4 mb-4">
+                    <h4 class="text-sm font-medium mb-3">Add New Chapter</h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="col-span-2">
+                            <label class="block text-xs text-dark-400 mb-1">Title *</label>
+                            <input
+                                type="text"
+                                x-model="newChapterTitle"
+                                placeholder="Chapter title"
+                                class="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-xs text-dark-400 mb-1">Start Time * (MM:SS)</label>
+                            <input
+                                type="text"
+                                x-model="newChapterStartTime"
+                                placeholder="0:00"
+                                pattern="^(\d+:)?[0-5]?\d:[0-5]\d$"
+                                class="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-xs text-dark-400 mb-1">End Time (optional)</label>
+                            <input
+                                type="text"
+                                x-model="newChapterEndTime"
+                                placeholder="0:00"
+                                pattern="^(\d+:)?[0-5]?\d:[0-5]\d$"
+                                class="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-xs text-dark-400 mb-1">Description (optional)</label>
+                            <input
+                                type="text"
+                                x-model="newChapterDescription"
+                                placeholder="Brief description"
+                                class="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                            >
+                        </div>
+                    </div>
+                    <div class="mt-3 flex justify-end">
+                        <vlog-button
+                            variant="primary"
+                            size="sm"
+                            @click="createChapter()"
+                            :disabled="!newChapterTitle.trim() || !newChapterStartTime || chaptersSaving"
+                            :loading="chaptersSaving"
+                        >Add Chapter</vlog-button>
+                    </div>
+                </div>
+
+                <!-- Chapters List -->
+                <div class="space-y-2">
+                    <h4 class="text-sm font-medium text-dark-400">
+                        <span x-text="chapters.length"></span> Chapter<span x-show="chapters.length !== 1">s</span>
+                    </h4>
+
+                    <!-- Empty State -->
+                    <div x-show="chapters.length === 0" class="text-center py-8 text-dark-400">
+                        <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                        </svg>
+                        <p>No chapters yet</p>
+                        <p class="text-xs mt-1">Add chapters to help viewers navigate your video</p>
+                    </div>
+
+                    <!-- Chapter Items -->
+                    <template x-for="(chapter, index) in chapters" :key="chapter.id">
+                        <div class="bg-dark-800 rounded-lg p-3 flex items-start gap-3">
+                            <!-- Reorder Buttons -->
+                            <div class="flex flex-col gap-1">
+                                <button
+                                    type="button"
+                                    @click="moveChapterUp(chapter.id)"
+                                    :disabled="index === 0"
+                                    class="p-1 text-dark-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move up"
+                                >
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path>
+                                    </svg>
+                                </button>
+                                <button
+                                    type="button"
+                                    @click="moveChapterDown(chapter.id)"
+                                    :disabled="index === chapters.length - 1"
+                                    class="p-1 text-dark-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="Move down"
+                                >
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </button>
+                            </div>
+
+                            <!-- Chapter Content -->
+                            <div class="flex-1 min-w-0">
+                                <!-- View Mode -->
+                                <template x-if="!editingChapter || editingChapter.id !== chapter.id">
+                                    <div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="text-xs font-mono bg-dark-700 px-2 py-0.5 rounded" x-text="formatSecondsToTime(chapter.start_time)"></span>
+                                            <span x-show="chapter.end_time" class="text-xs text-dark-500">-</span>
+                                            <span x-show="chapter.end_time" class="text-xs font-mono bg-dark-700 px-2 py-0.5 rounded" x-text="formatSecondsToTime(chapter.end_time)"></span>
+                                        </div>
+                                        <h5 class="font-medium mt-1" x-text="chapter.title"></h5>
+                                        <p x-show="chapter.description" class="text-sm text-dark-400 mt-0.5" x-text="chapter.description"></p>
+                                    </div>
+                                </template>
+
+                                <!-- Edit Mode -->
+                                <template x-if="editingChapter && editingChapter.id === chapter.id">
+                                    <div class="space-y-2">
+                                        <input
+                                            type="text"
+                                            x-model="editChapterTitle"
+                                            class="w-full px-2 py-1 bg-dark-700 border border-dark-600 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                            placeholder="Title"
+                                        >
+                                        <div class="flex gap-2">
+                                            <input
+                                                type="text"
+                                                x-model="editChapterStartTime"
+                                                class="w-24 px-2 py-1 bg-dark-700 border border-dark-600 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                placeholder="Start"
+                                            >
+                                            <input
+                                                type="text"
+                                                x-model="editChapterEndTime"
+                                                class="w-24 px-2 py-1 bg-dark-700 border border-dark-600 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                placeholder="End"
+                                            >
+                                        </div>
+                                        <input
+                                            type="text"
+                                            x-model="editChapterDescription"
+                                            class="w-full px-2 py-1 bg-dark-700 border border-dark-600 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                            placeholder="Description (optional)"
+                                        >
+                                        <div class="flex gap-2">
+                                            <vlog-button variant="primary" size="sm" @click="saveChapterEdits()" :loading="chaptersSaving">Save</vlog-button>
+                                            <vlog-button variant="ghost" size="sm" @click="cancelChapterEdit()">Cancel</vlog-button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Actions (View Mode Only) -->
+                            <template x-if="!editingChapter || editingChapter.id !== chapter.id">
+                                <div class="flex gap-1">
+                                    <button
+                                        type="button"
+                                        @click="startEditChapter(chapter)"
+                                        class="p-1.5 text-dark-400 hover:text-blue-400 rounded"
+                                        title="Edit chapter"
+                                    >
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                                        </svg>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        @click="deleteChapter(chapter.id)"
+                                        class="p-1.5 text-dark-400 hover:text-red-400 rounded"
+                                        title="Delete chapter"
+                                    >
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Close Button -->
+                <div class="flex justify-end pt-4 border-t border-dark-700 mt-4">
+                    <vlog-button variant="secondary" @click="editModal = false">Close</vlog-button>
+                </div>
+            </div>
+        </div>
     </vlog-modal>
 
     <!-- Re-upload Video Modal -->

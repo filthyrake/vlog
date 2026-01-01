@@ -32,6 +32,7 @@ from api.database import (
     database,
     playback_sessions,
     quality_progress,
+    sprite_queue,
     transcoding_jobs,
     transcriptions,
     video_qualities,
@@ -59,6 +60,8 @@ from config import (
     PROGRESS_UPDATE_INTERVAL,
     QUALITY_NAMES,
     QUALITY_PRESETS,
+    SPRITE_SHEET_AUTO_GENERATE,
+    SPRITE_SHEET_ENABLED,
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
     VIDEOS_DIR,
@@ -2765,6 +2768,35 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
         # Mark job completed
         await mark_job_completed(job_id)
+
+        # Queue sprite sheet generation if enabled (Issue #413 Phase 7B)
+        if SPRITE_SHEET_ENABLED and SPRITE_SHEET_AUTO_GENERATE:
+            try:
+                # Check if already queued or has sprites
+                existing_sprite = await database.fetch_one(
+                    sa.text(
+                        "SELECT id FROM sprite_queue WHERE video_id = :video_id AND status IN ('pending', 'processing')"
+                    ).bindparams(video_id=video_id)
+                )
+                if not existing_sprite:
+                    await database.execute(
+                        sprite_queue.insert().values(
+                            video_id=video_id,
+                            priority="normal",
+                            status="pending",
+                            created_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    await database.execute(
+                        videos.update().where(videos.c.id == video_id).values(
+                            sprite_sheet_status="pending",
+                            sprite_sheet_error=None,
+                        )
+                    )
+                    print(f"  Queued sprite sheet generation for video {video_id}")
+            except Exception as sprite_err:
+                # Don't fail the transcode if sprite queueing fails
+                print(f"  Warning: Failed to queue sprite generation: {sprite_err}")
 
         # NOTE: Source file is intentionally kept for potential future re-transcoding
         # (e.g., if new quality presets are added or original quality is needed)

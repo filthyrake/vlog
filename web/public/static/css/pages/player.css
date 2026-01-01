@@ -599,6 +599,46 @@
     opacity: 1;
 }
 
+/* Timeline Thumbnail Preview (Issue #413 Phase 7B) */
+.player-thumbnail-preview {
+    position: absolute;
+    bottom: 100%;
+    transform: translateX(-50%);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--vlog-transition-base, 0.2s ease);
+    margin-bottom: 32px; /* Above the tooltip */
+    z-index: calc(var(--vlog-z-overlay, 30) + 1);
+}
+
+.player-thumbnail-preview.visible {
+    opacity: 1;
+}
+
+.player-thumbnail-preview-inner {
+    background-color: #000;
+    background-repeat: no-repeat;
+    border: 2px solid white;
+    border-radius: var(--vlog-radius-sm, 4px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* Ensure thumbnail stays within viewport bounds */
+.player-thumbnail-preview {
+    /* Constrain to progress container bounds via JavaScript positioning */
+}
+
+/* Mobile responsive thumbnail size handled in JavaScript */
+@media (max-width: 767px) {
+    .player-thumbnail-preview {
+        margin-bottom: 28px;
+    }
+
+    .player-thumbnail-preview-inner {
+        border-width: 1px;
+    }
+}
+
 /* Time display */
 .player-time-display {
     font-size: 12px;
@@ -1333,6 +1373,224 @@ body.player-theater-active::after {
     .skeleton-card--horizontal .skeleton-card__title,
     .skeleton-card--horizontal .skeleton-card__meta {
         animation: none;
+    }
+}
+
+/* =============================================================================
+   Video Chapters (Issue #413 Phase 7)
+   ============================================================================= */
+
+/* Chapter markers container on progress bar */
+.player-chapter-markers {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    z-index: 3;
+}
+
+/* Individual chapter marker */
+.player-chapter-marker {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    margin-left: -1.5px;
+    background: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    pointer-events: auto;
+    transition: background-color 0.2s ease, transform 0.2s ease;
+    z-index: 4;
+}
+
+.player-chapter-marker::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    bottom: -4px;
+    left: -6px;
+    right: -6px;
+    /* Increase hit area for easier clicking */
+}
+
+.player-chapter-marker:hover {
+    background: var(--vlog-primary, #3b82f6);
+    transform: scaleX(1.5);
+}
+
+.player-chapter-marker.active {
+    background: var(--vlog-primary, #3b82f6);
+}
+
+/* Chapters button in control bar */
+.chapters-btn svg {
+    width: 20px;
+    height: 20px;
+}
+
+.chapters-btn[aria-pressed="true"] {
+    color: var(--vlog-primary, #3b82f6);
+}
+
+/* Chapters panel */
+.player-chapters-panel {
+    position: absolute;
+    right: 10px;
+    bottom: 60px;
+    width: 320px;
+    max-width: calc(100% - 20px);
+    max-height: 50vh;
+    background: var(--vlog-bg-tertiary, #1f2937);
+    border-radius: var(--vlog-radius-lg, 12px);
+    z-index: var(--vlog-z-modal, 40);
+    display: none;
+    flex-direction: column;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.player-chapters-panel.visible {
+    display: flex;
+}
+
+.chapters-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.chapters-panel-header span {
+    font-size: 14px;
+    font-weight: 600;
+    color: white;
+}
+
+.chapters-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: none;
+    color: var(--vlog-text-secondary, #a1a1aa);
+    cursor: pointer;
+    border-radius: var(--vlog-radius-sm, 4px);
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.chapters-close-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.chapters-close-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+.chapters-panel-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+
+/* Chapter list item */
+.chapters-panel-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px 16px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    color: inherit;
+    font-family: inherit;
+}
+
+.chapters-panel-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.chapters-panel-item:focus-visible {
+    outline: 2px solid var(--vlog-primary, #3b82f6);
+    outline-offset: -2px;
+}
+
+.chapters-panel-item.active {
+    background: rgba(59, 130, 246, 0.15);
+}
+
+.chapters-panel-item.active .chapter-title {
+    color: var(--vlog-primary, #3b82f6);
+}
+
+.chapter-time {
+    flex-shrink: 0;
+    font-size: 12px;
+    font-family: var(--vlog-font-mono, 'SF Mono', 'Consolas', monospace);
+    color: var(--vlog-text-secondary, #a1a1aa);
+    background: rgba(255, 255, 255, 0.05);
+    padding: 4px 8px;
+    border-radius: var(--vlog-radius-sm, 4px);
+    min-width: 48px;
+    text-align: center;
+}
+
+.chapter-title {
+    flex: 1;
+    font-size: 13px;
+    color: var(--vlog-text-primary, #f4f4f5);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Mobile responsive for chapters */
+@media (max-width: 640px) {
+    .player-chapters-panel {
+        right: 5px;
+        bottom: 55px;
+        width: calc(100% - 10px);
+        max-height: 40vh;
+    }
+
+    .chapters-panel-item {
+        padding: 12px 14px;
+        min-height: 48px;
+    }
+
+    .chapter-time {
+        font-size: 11px;
+        padding: 3px 6px;
+    }
+
+    .chapter-title {
+        font-size: 14px;
+    }
+
+    /* Hide chapters button on very small screens if needed */
+    .chapters-btn {
+        min-width: 44px;
+        min-height: 44px;
+    }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+    .player-chapter-marker {
+        transition: none;
+    }
+
+    .chapters-panel-item {
+        transition: none;
     }
 }
 

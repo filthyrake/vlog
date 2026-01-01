@@ -532,3 +532,53 @@ WATERMARK_OPACITY = get_float_env("VLOG_WATERMARK_OPACITY", 0.5, min_val=0.0, ma
 WATERMARK_PADDING = get_int_env("VLOG_WATERMARK_PADDING", 16, min_val=0)
 # Maximum width as percentage of video player (keeps watermark proportional, for images only)
 WATERMARK_MAX_WIDTH_PERCENT = get_int_env("VLOG_WATERMARK_MAX_WIDTH_PERCENT", 15, min_val=1, max_val=50)
+
+# =============================================================================
+# Sprite Sheet Configuration (Issue #413 Phase 7B)
+# Timeline thumbnail previews on video progress bar hover
+# =============================================================================
+
+# Enable/disable sprite sheet generation for timeline thumbnails
+SPRITE_SHEET_ENABLED = os.getenv("VLOG_SPRITE_SHEET_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Seconds between frames in sprite sheet (default: 5 seconds)
+# Lower values = more frames = larger file size but smoother preview
+SPRITE_SHEET_FRAME_INTERVAL = get_int_env("VLOG_SPRITE_SHEET_FRAME_INTERVAL", 5, min_val=1, max_val=30)
+
+# Width of each thumbnail frame in pixels (height auto-calculated from aspect ratio)
+# Smaller = smaller file size, larger = clearer preview
+SPRITE_SHEET_THUMBNAIL_WIDTH = get_int_env("VLOG_SPRITE_SHEET_THUMBNAIL_WIDTH", 160, min_val=80, max_val=320)
+
+# Number of frames per row/column in sprite sheet grid (e.g., 10 = 10x10 = 100 frames per sheet)
+SPRITE_SHEET_TILE_SIZE = get_int_env("VLOG_SPRITE_SHEET_TILE_SIZE", 10, min_val=5, max_val=20)
+
+# JPEG quality for sprite sheets (lower = smaller files, 60 recommended per reviewer feedback)
+# Range: 1-100, with 60-75 being good quality/size tradeoff
+SPRITE_SHEET_JPEG_QUALITY = get_int_env("VLOG_SPRITE_SHEET_JPEG_QUALITY", 60, min_val=30, max_val=95)
+
+# Maximum number of sprite sheets per video (prevents excessive storage for very long videos)
+# 100 sheets × 100 frames/sheet × 5 sec/frame = ~14 hours of video coverage
+SPRITE_SHEET_MAX_SHEETS = get_int_env("VLOG_SPRITE_SHEET_MAX_SHEETS", 100, min_val=1, max_val=1000)
+
+# Timeout multiplier for sprite generation (relative to video duration)
+# e.g., 0.5 = sprite gen timeout is 50% of video duration
+SPRITE_SHEET_TIMEOUT_MULTIPLIER = get_float_env("VLOG_SPRITE_SHEET_TIMEOUT_MULTIPLIER", 0.5, min_val=0.1, max_val=2.0)
+
+# Minimum and maximum timeout for sprite generation (seconds)
+SPRITE_SHEET_TIMEOUT_MINIMUM = get_int_env("VLOG_SPRITE_SHEET_TIMEOUT_MINIMUM", 60, min_val=30)
+SPRITE_SHEET_TIMEOUT_MAXIMUM = get_int_env("VLOG_SPRITE_SHEET_TIMEOUT_MAXIMUM", 600, min_val=120)
+
+# Auto-generate sprites after successful transcode (set to false to only generate on-demand)
+SPRITE_SHEET_AUTO_GENERATE = os.getenv("VLOG_SPRITE_SHEET_AUTO_GENERATE", "false").lower() in ("true", "1", "yes")
+
+# Memory threshold for sprite generation (percentage of available memory)
+# Worker will skip job if available memory is below this percentage
+SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT = get_int_env(
+    "VLOG_SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT", 20, min_val=5, max_val=50
+)
+
+# Maximum video duration (in seconds) that the sprite worker will process
+# Videos longer than this will be skipped to prevent OOM (default: 4 hours)
+SPRITE_SHEET_MAX_VIDEO_DURATION = get_int_env(
+    "VLOG_SPRITE_SHEET_MAX_VIDEO_DURATION", 14400, min_val=600
+)

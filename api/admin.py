@@ -44,6 +44,7 @@ from api.common import (
 from api.database import (
     admin_sessions,
     categories,
+    chapters,
     configure_database,
     create_tables,
     custom_field_definitions,
@@ -53,6 +54,7 @@ from api.database import (
     playlists,
     quality_progress,
     reencode_queue,
+    sprite_queue,
     tags,
     transcoding_jobs,
     transcriptions,
@@ -80,6 +82,7 @@ from api.public import get_video_url_prefix, get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
 from api.schemas import (
+    MAX_CHAPTERS_PER_VIDEO,
     ActiveJobsResponse,
     ActiveJobWithWorker,
     AddVideoToPlaylistRequest,
@@ -97,6 +100,10 @@ from api.schemas import (
     BulkUpdateResponse,
     CategoryCreate,
     CategoryResponse,
+    ChapterCreate,
+    ChapterListResponse,
+    ChapterResponse,
+    ChapterUpdate,
     CustomFieldCreate,
     CustomFieldListResponse,
     CustomFieldResponse,
@@ -111,6 +118,7 @@ from api.schemas import (
     PlaylistVideoInfo,
     QualityBreakdown,
     QualityProgressResponse,
+    ReorderChaptersRequest,
     ReorderPlaylistRequest,
     RetranscodeRequest,
     RetranscodeResponse,
@@ -121,6 +129,11 @@ from api.schemas import (
     SettingsExport,
     SettingsImport,
     SettingUpdate,
+    SpriteGenerationRequest,
+    SpriteQueueJob,
+    SpriteQueueJobsResponse,
+    SpriteQueueStatusResponse,
+    SpriteStatusResponse,
     TagCreate,
     TagResponse,
     TagUpdate,
@@ -7835,6 +7848,680 @@ async def reorder_playlist(request: Request, playlist_id: int, data: ReorderPlay
     )
 
     return {"status": "ok"}
+
+
+# ============ Chapter Endpoints (Issue #413 Phase 7) ============
+
+
+@app.get("/api/videos/{video_id}/chapters")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_chapters(request: Request, video_id: int):
+    """List all chapters for a video, ordered by position."""
+    # Verify video exists
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Fetch chapters ordered by position
+    chapter_rows = await fetch_all_with_retry(
+        chapters.select()
+        .where(chapters.c.video_id == video_id)
+        .order_by(chapters.c.position)
+    )
+
+    chapter_list = [
+        ChapterResponse(
+            id=row["id"],
+            video_id=row["video_id"],
+            title=row["title"],
+            description=row["description"],
+            start_time=row["start_time"],
+            end_time=row["end_time"],
+            position=row["position"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+        for row in chapter_rows
+    ]
+
+    return ChapterListResponse(
+        chapters=chapter_list,
+        video_id=video_id,
+        total_count=len(chapter_list),
+    )
+
+
+@app.post("/api/videos/{video_id}/chapters")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
+    """Create a new chapter for a video."""
+    # Verify video exists
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Validate start_time against video duration
+    if video["duration"] and data.start_time >= video["duration"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)"
+        )
+
+    # Check chapter limit
+    chapter_count = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
+    )
+    if chapter_count >= MAX_CHAPTERS_PER_VIDEO:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum chapters per video ({MAX_CHAPTERS_PER_VIDEO}) reached"
+        )
+
+    async with database.transaction():
+        # Get next position with FOR UPDATE to prevent race conditions
+        max_pos_result = await database.fetch_one(
+            sa.text("""
+                SELECT COALESCE(MAX(position), -1) as max_pos
+                FROM chapters
+                WHERE video_id = :video_id
+                FOR UPDATE
+            """),
+            {"video_id": video_id},
+        )
+        next_position = (max_pos_result["max_pos"] if max_pos_result else -1) + 1
+
+        # Insert chapter
+        now = datetime.now(timezone.utc)
+        result = await database.execute(
+            chapters.insert().values(
+                video_id=video_id,
+                title=data.title,
+                description=data.description,
+                start_time=data.start_time,
+                end_time=data.end_time,
+                position=next_position,
+                created_at=now,
+            )
+        )
+        chapter_id = result
+
+        # Update has_chapters flag on video
+        await database.execute(
+            videos.update().where(videos.c.id == video_id).values(has_chapters=True)
+        )
+
+    # Fetch the created chapter
+    new_chapter = await fetch_one_with_retry(
+        chapters.select().where(chapters.c.id == chapter_id)
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="chapter",
+        resource_id=chapter_id,
+        resource_name=data.title,
+        details={"video_id": video_id, "start_time": data.start_time},
+    )
+
+    return ChapterResponse(
+        id=new_chapter["id"],
+        video_id=new_chapter["video_id"],
+        title=new_chapter["title"],
+        description=new_chapter["description"],
+        start_time=new_chapter["start_time"],
+        end_time=new_chapter["end_time"],
+        position=new_chapter["position"],
+        created_at=new_chapter["created_at"],
+        updated_at=new_chapter["updated_at"],
+    )
+
+
+@app.get("/api/videos/{video_id}/chapters/{chapter_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_chapter(request: Request, video_id: int, chapter_id: int):
+    """Get a specific chapter."""
+    chapter = await fetch_one_with_retry(
+        chapters.select()
+        .where(chapters.c.id == chapter_id)
+        .where(chapters.c.video_id == video_id)
+    )
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    return ChapterResponse(
+        id=chapter["id"],
+        video_id=chapter["video_id"],
+        title=chapter["title"],
+        description=chapter["description"],
+        start_time=chapter["start_time"],
+        end_time=chapter["end_time"],
+        position=chapter["position"],
+        created_at=chapter["created_at"],
+        updated_at=chapter["updated_at"],
+    )
+
+
+@app.put("/api/videos/{video_id}/chapters/{chapter_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_chapter(request: Request, video_id: int, chapter_id: int, data: ChapterUpdate):
+    """Update an existing chapter."""
+    # Verify chapter exists
+    chapter = await fetch_one_with_retry(
+        chapters.select()
+        .where(chapters.c.id == chapter_id)
+        .where(chapters.c.video_id == video_id)
+    )
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    # Build update values
+    update_values = {"updated_at": datetime.now(timezone.utc)}
+    if data.title is not None:
+        update_values["title"] = data.title
+    if data.description is not None:
+        update_values["description"] = data.description
+    if data.start_time is not None:
+        # Validate against video duration
+        video = await fetch_one_with_retry(
+            videos.select().where(videos.c.id == video_id)
+        )
+        if video["duration"] and data.start_time >= video["duration"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)"
+            )
+        update_values["start_time"] = data.start_time
+    if data.end_time is not None:
+        # Validate end_time > start_time
+        start_time = data.start_time if data.start_time is not None else chapter["start_time"]
+        if data.end_time <= start_time:
+            raise HTTPException(status_code=400, detail="end_time must be greater than start_time")
+        update_values["end_time"] = data.end_time
+
+    # Update chapter
+    await db_execute_with_retry(
+        chapters.update().where(chapters.c.id == chapter_id).values(**update_values)
+    )
+
+    # Fetch updated chapter
+    updated_chapter = await fetch_one_with_retry(
+        chapters.select().where(chapters.c.id == chapter_id)
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="chapter",
+        resource_id=chapter_id,
+        resource_name=updated_chapter["title"],
+        details={"video_id": video_id, "changes": update_values},
+    )
+
+    return ChapterResponse(
+        id=updated_chapter["id"],
+        video_id=updated_chapter["video_id"],
+        title=updated_chapter["title"],
+        description=updated_chapter["description"],
+        start_time=updated_chapter["start_time"],
+        end_time=updated_chapter["end_time"],
+        position=updated_chapter["position"],
+        created_at=updated_chapter["created_at"],
+        updated_at=updated_chapter["updated_at"],
+    )
+
+
+@app.delete("/api/videos/{video_id}/chapters/{chapter_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_chapter(request: Request, video_id: int, chapter_id: int):
+    """Delete a chapter and reorder remaining chapters."""
+    # Verify chapter exists
+    chapter = await fetch_one_with_retry(
+        chapters.select()
+        .where(chapters.c.id == chapter_id)
+        .where(chapters.c.video_id == video_id)
+    )
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    removed_position = chapter["position"]
+
+    async with database.transaction():
+        # Delete the chapter
+        await database.execute(
+            chapters.delete().where(chapters.c.id == chapter_id)
+        )
+
+        # Reorder remaining chapters (compact positions)
+        await database.execute(
+            sa.text("""
+                UPDATE chapters
+                SET position = position - 1
+                WHERE video_id = :video_id AND position > :removed_position
+            """),
+            {"video_id": video_id, "removed_position": removed_position},
+        )
+
+        # Check if any chapters remain
+        remaining_count = await database.fetch_val(
+            sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
+        )
+
+        # Update has_chapters flag if no chapters remain
+        if remaining_count == 0:
+            await database.execute(
+                videos.update().where(videos.c.id == video_id).values(has_chapters=False)
+            )
+
+    # Audit log
+    log_audit(
+        AuditAction.DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="chapter",
+        resource_id=chapter_id,
+        resource_name=chapter["title"],
+        details={"video_id": video_id},
+    )
+
+    return {"status": "ok"}
+
+
+@app.post("/api/videos/{video_id}/chapters/reorder")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def reorder_chapters(request: Request, video_id: int, data: ReorderChaptersRequest):
+    """Reorder chapters in a video."""
+    # Validate no duplicate IDs in request (prevents position corruption)
+    if len(data.chapter_ids) != len(set(data.chapter_ids)):
+        raise HTTPException(
+            status_code=400,
+            detail="Duplicate chapter IDs provided in reorder request",
+        )
+
+    # Verify video exists
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    async with database.transaction():
+        # Verify all chapter_ids belong to this video with row locking
+        existing_chapters = await database.fetch_all(
+            sa.text("""
+                SELECT id FROM chapters
+                WHERE video_id = :video_id
+                FOR UPDATE
+            """),
+            {"video_id": video_id},
+        )
+        existing_ids = {row["id"] for row in existing_chapters}
+
+        # Check for missing or extra IDs
+        provided_ids = set(data.chapter_ids)
+        if provided_ids != existing_ids:
+            missing = existing_ids - provided_ids
+            extra = provided_ids - existing_ids
+            detail = []
+            if missing:
+                detail.append(f"Missing chapter IDs: {sorted(missing)}")
+            if extra:
+                detail.append(f"Invalid chapter IDs: {sorted(extra)}")
+            raise HTTPException(status_code=400, detail="; ".join(detail))
+
+        # Update positions using batch approach
+        # Use generate_series or array_unnest to get new positions
+        await database.execute(
+            sa.text("""
+                UPDATE chapters
+                SET position = batch.new_pos
+                FROM (
+                    SELECT
+                        unnest(:chapter_ids::integer[]) as chapter_id,
+                        generate_series(0, :count - 1) as new_pos
+                ) batch
+                WHERE chapters.id = batch.chapter_id
+                  AND chapters.video_id = :video_id
+            """),
+            {
+                "video_id": video_id,
+                "chapter_ids": data.chapter_ids,
+                "count": len(data.chapter_ids),
+            },
+        )
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="chapter",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"action": "reorder", "new_order": data.chapter_ids},
+    )
+
+    return {"status": "ok"}
+
+
+# =============================================================================
+# Sprite Sheet Queue (Issue #413 Phase 7B)
+# =============================================================================
+
+
+@app.get("/api/sprites/status")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_sprite_queue_status(request: Request) -> SpriteQueueStatusResponse:
+    """
+    Get the status of the sprite generation queue.
+
+    Returns counts for each job status.
+    """
+    query = sa.text("""
+        SELECT
+            status,
+            COUNT(*) as count
+        FROM sprite_queue
+        GROUP BY status
+    """)
+    rows = await fetch_all_with_retry(query)
+
+    result = SpriteQueueStatusResponse()
+    for row in rows:
+        status = row["status"]
+        count = row["count"]
+        if status == "pending":
+            result.pending = count
+        elif status == "processing":
+            result.processing = count
+        elif status == "completed":
+            result.completed = count
+        elif status == "failed":
+            result.failed = count
+        result.total += count
+
+    return result
+
+
+@app.post("/api/videos/{video_id}/sprites/generate")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def queue_sprite_generation(
+    request: Request,
+    video_id: int,
+    data: SpriteGenerationRequest = SpriteGenerationRequest(),
+) -> dict:
+    """
+    Queue a video for sprite sheet generation.
+
+    The sprite generator worker will process the job asynchronously.
+    """
+    # Verify video exists and is ready
+    video = await fetch_one_with_retry(
+        videos.select()
+        .where(videos.c.id == video_id)
+        .where(videos.c.deleted_at.is_(None))
+    )
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if video["status"] != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video must be in 'ready' status (current: {video['status']})"
+        )
+
+    # Check if already queued and pending
+    existing = await fetch_one_with_retry(
+        sa.text("SELECT id FROM sprite_queue WHERE video_id = :video_id AND status = 'pending'").bindparams(
+            video_id=video_id
+        )
+    )
+
+    if existing:
+        return {
+            "status": "already_queued",
+            "message": "Video is already queued for sprite generation",
+            "job_id": existing["id"],
+        }
+
+    # Queue the video
+    job_id = await db_execute_with_retry(
+        sprite_queue.insert().values(
+            video_id=video_id,
+            priority=data.priority,
+            status="pending",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    # Update video sprite status to pending
+    await db_execute_with_retry(
+        videos.update().where(videos.c.id == video_id).values(
+            sprite_sheet_status="pending",
+            sprite_sheet_error=None,
+        )
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="video",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={"action": "queue_sprite_generation", "priority": data.priority, "job_id": job_id},
+    )
+
+    return {
+        "status": "queued",
+        "message": "Video queued for sprite generation",
+        "job_id": job_id,
+    }
+
+
+@app.post("/api/sprites/queue-all")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def queue_all_for_sprites(
+    request: Request,
+    priority: str = Query("low", pattern="^(high|normal|low)$"),
+) -> dict:
+    """
+    Queue all ready videos without sprites for sprite generation.
+
+    Uses low priority by default to not interfere with individual requests.
+    """
+    # Find all ready videos without sprite sheets and not already queued
+    query = sa.text("""
+        SELECT v.id
+        FROM videos v
+        LEFT JOIN sprite_queue sq ON v.id = sq.video_id AND sq.status = 'pending'
+        WHERE v.status = 'ready'
+        AND v.deleted_at IS NULL
+        AND (v.sprite_sheet_status IS NULL OR v.sprite_sheet_status = 'failed')
+        AND sq.id IS NULL
+    """)
+    rows = await fetch_all_with_retry(query)
+
+    queued_count = 0
+    for row in rows:
+        await db_execute_with_retry(
+            sprite_queue.insert().values(
+                video_id=row["id"],
+                priority=priority,
+                status="pending",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        await db_execute_with_retry(
+            videos.update().where(videos.c.id == row["id"]).values(
+                sprite_sheet_status="pending",
+                sprite_sheet_error=None,
+            )
+        )
+        queued_count += 1
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="sprite_queue",
+        resource_id=None,
+        resource_name="bulk",
+        details={"action": "queue_all_for_sprites", "priority": priority, "queued_count": queued_count},
+    )
+
+    return {
+        "status": "ok",
+        "queued": queued_count,
+        "message": f"Queued {queued_count} videos for sprite generation",
+    }
+
+
+@app.get("/api/sprites/jobs")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_sprite_jobs(
+    request: Request,
+    status: Optional[str] = Query(None, pattern="^(pending|processing|completed|failed|cancelled)$"),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> SpriteQueueJobsResponse:
+    """
+    List sprite generation jobs.
+
+    Supports filtering by status and pagination.
+    """
+    where_clause = ""
+    count_params = {}
+
+    if status:
+        where_clause = "WHERE sq.status = :status"
+        count_params["status"] = status
+
+    # Get total count
+    count_query = sa.text(f"""
+        SELECT COUNT(*) as total
+        FROM sprite_queue sq
+        {where_clause}
+    """)
+    if count_params:
+        count_query = count_query.bindparams(**count_params)
+    total = await fetch_val_with_retry(count_query)
+
+    # Get jobs with video info
+    query = sa.text(f"""
+        SELECT
+            sq.id,
+            sq.video_id,
+            v.slug as video_slug,
+            v.title as video_title,
+            sq.priority,
+            sq.status,
+            sq.created_at,
+            sq.started_at,
+            sq.completed_at,
+            sq.error_message
+        FROM sprite_queue sq
+        JOIN videos v ON sq.video_id = v.id
+        {where_clause}
+        ORDER BY sq.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    if count_params:
+        query = query.bindparams(**count_params, limit=limit, offset=offset)
+    else:
+        query = query.bindparams(limit=limit, offset=offset)
+
+    rows = await fetch_all_with_retry(query)
+
+    jobs = [
+        SpriteQueueJob(
+            id=row["id"],
+            video_id=row["video_id"],
+            video_slug=row["video_slug"],
+            video_title=row["video_title"],
+            priority=row["priority"],
+            status=row["status"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            error_message=row["error_message"],
+        )
+        for row in rows
+    ]
+
+    return SpriteQueueJobsResponse(jobs=jobs, count=len(jobs), total=total)
+
+
+@app.get("/api/videos/{video_id}/sprites")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_video_sprite_status(request: Request, video_id: int) -> SpriteStatusResponse:
+    """
+    Get sprite sheet status for a specific video.
+    """
+    video = await fetch_one_with_retry(
+        videos.select()
+        .where(videos.c.id == video_id)
+        .where(videos.c.deleted_at.is_(None))
+    )
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    return SpriteStatusResponse(
+        video_id=video_id,
+        status=video["sprite_sheet_status"],
+        error=video["sprite_sheet_error"],
+        count=video["sprite_sheet_count"] or 0,
+        interval=video["sprite_sheet_interval"],
+        tile_size=video["sprite_sheet_tile_size"],
+        frame_width=video["sprite_sheet_frame_width"],
+        frame_height=video["sprite_sheet_frame_height"],
+    )
+
+
+@app.delete("/api/sprites/jobs/{job_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def cancel_sprite_job(request: Request, job_id: int) -> dict:
+    """
+    Cancel a pending sprite generation job.
+
+    Only pending jobs can be cancelled.
+    """
+    # Check current status
+    job = await fetch_one_with_retry(
+        sa.text("SELECT id, video_id, status FROM sprite_queue WHERE id = :id").bindparams(id=job_id)
+    )
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Cannot cancel job with status '{job['status']}'")
+
+    await db_execute_with_retry(
+        sprite_queue.update().where(sprite_queue.c.id == job_id).values(status="cancelled")
+    )
+
+    # Reset video sprite status
+    await db_execute_with_retry(
+        videos.update().where(videos.c.id == job["video_id"]).values(
+            sprite_sheet_status=None,
+            sprite_sheet_error=None,
+        )
+    )
+
+    return {"status": "ok", "message": f"Job {job_id} cancelled"}
 
 
 if __name__ == "__main__":
