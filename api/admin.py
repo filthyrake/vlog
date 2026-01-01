@@ -1767,6 +1767,7 @@ async def update_video(
     description: Optional[str] = Form(None),
     category_id: Optional[int] = Form(None),
     published_at: Optional[str] = Form(None),
+    is_featured: Optional[bool] = Form(None),  # Issue #413 Phase 3
 ):
     """Update video metadata."""
     update_data = {}
@@ -1801,6 +1802,16 @@ async def update_video(
                 update_data["published_at"] = datetime.fromisoformat(published_at)
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM)")
+
+    # Issue #413 Phase 3: Featured video support
+    if is_featured is not None:
+        update_data["is_featured"] = is_featured
+        if is_featured:
+            # Set featured_at timestamp when marking as featured
+            update_data["featured_at"] = datetime.now(timezone.utc)
+        else:
+            # Clear featured_at when unfeaturing
+            update_data["featured_at"] = None
 
     if update_data:
         await database.execute(videos.update().where(videos.c.id == video_id).values(**update_data))

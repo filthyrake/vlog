@@ -215,6 +215,7 @@ class VideoListResponse(BaseModel):
     streaming_format: str = "hls_ts"  # hls_ts (legacy) or cmaf (modern fMP4)
     primary_codec: str = "h264"  # h264, hevc, or av1
     tags: List[VideoTagInfo] = []
+    view_count: int = 0  # Total playback sessions (Issue #413 Phase 3)
 
     @field_validator("description", mode="before")
     @classmethod

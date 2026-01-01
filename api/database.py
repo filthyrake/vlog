@@ -85,6 +85,9 @@ videos = sa.Table(
         ),
         default="h264"
     ),  # Video codec used
+    # Featured video columns (Issue #413 Phase 3)
+    sa.Column("is_featured", sa.Boolean, default=False),  # Admin-curated featured flag
+    sa.Column("featured_at", sa.DateTime(timezone=True), nullable=True),  # When marked featured
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
