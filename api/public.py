@@ -3,6 +3,7 @@ Public API - serves the video browsing interface.
 Runs on port 9000.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -57,8 +58,10 @@ from api.db_retry import (
 )
 from api.enums import DurationFilter, SortBy, SortOrder, TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
+from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
     CategoryResponse,
+    PaginatedVideoListResponse,
     PlaybackEnd,
     PlaybackHeartbeat,
     PlaybackSessionCreate,
@@ -583,8 +586,7 @@ def apply_duration_filter(query: sa.Select, duration: Optional[str]) -> sa.Selec
     for df in duration_filters:
         if df not in valid_durations:
             raise HTTPException(
-                status_code=400,
-                detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
+                status_code=400, detail=f"Invalid duration value: '{df}'. Valid values are: short, medium, long"
             )
         if df == DurationFilter.SHORT.value:
             duration_conditions.append(videos.c.duration < 300)  # < 5 minutes
@@ -618,11 +620,7 @@ def apply_quality_filter(query: sa.Select, quality: Optional[str]) -> sa.Select:
     return query.where(quality_exists)
 
 
-def apply_date_range_filter(
-    query: sa.Select,
-    date_from: Optional[datetime],
-    date_to: Optional[datetime]
-) -> sa.Select:
+def apply_date_range_filter(query: sa.Select, date_from: Optional[datetime], date_to: Optional[datetime]) -> sa.Select:
     """
     Apply date range filter to the query.
 
@@ -630,10 +628,7 @@ def apply_date_range_filter(
         HTTPException: If date_from is after date_to
     """
     if date_from and date_to and date_from > date_to:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid date range: date_from must be before or equal to date_to"
-        )
+        raise HTTPException(status_code=400, detail="Invalid date range: date_from must be before or equal to date_to")
     if date_from:
         query = query.where(videos.c.published_at >= date_from)
     if date_to:
@@ -659,10 +654,7 @@ def apply_transcription_filter(query: sa.Select, has_transcription: Optional[boo
         return query.where(~transcription_exists)
 
 
-async def apply_custom_field_filters(
-    query: sa.Select,
-    custom_filters: Dict[str, str]
-) -> sa.Select:
+async def apply_custom_field_filters(query: sa.Select, custom_filters: Dict[str, str]) -> sa.Select:
     """
     Apply custom field filters to the query using EXISTS for better performance.
 
@@ -681,14 +673,11 @@ async def apply_custom_field_filters(
 
     # Fetch field definitions for all requested slugs in one query
     field_slugs = list(custom_filters.keys())
-    field_query = (
-        sa.select(
-            custom_field_definitions.c.id,
-            custom_field_definitions.c.slug,
-            custom_field_definitions.c.field_type,
-        )
-        .where(custom_field_definitions.c.slug.in_(field_slugs))
-    )
+    field_query = sa.select(
+        custom_field_definitions.c.id,
+        custom_field_definitions.c.slug,
+        custom_field_definitions.c.field_type,
+    ).where(custom_field_definitions.c.slug.in_(field_slugs))
     field_rows = await fetch_all_with_retry(field_query)
     fields_by_slug = {row["slug"]: row for row in field_rows}
 
@@ -705,10 +694,7 @@ async def apply_custom_field_filters(
     return query
 
 
-def _build_custom_field_exists_clause(
-    field_def: Dict[str, Any],
-    filter_value: str
-) -> sa.Exists:
+def _build_custom_field_exists_clause(field_def: Dict[str, Any], filter_value: str) -> sa.Exists:
     """
     Build an EXISTS clause for a single custom field filter.
 
@@ -743,11 +729,7 @@ def _build_custom_field_exists_clause(
     )
 
 
-def parse_sort_parameters(
-    sort: Optional[str],
-    order: Optional[str],
-    has_search: bool
-) -> tuple[SortBy, SortOrder]:
+def parse_sort_parameters(sort: Optional[str], order: Optional[str], has_search: bool) -> tuple[SortBy, SortOrder]:
     """
     Parse and validate sort parameters.
 
@@ -769,7 +751,7 @@ def parse_sort_parameters(
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid sort value: '{sort}'. Valid values are: relevance, date, duration, views, title"
+                detail=f"Invalid sort value: '{sort}'. Valid values are: relevance, date, duration, views, title",
             )
     else:
         sort_by = SortBy.RELEVANCE if has_search else SortBy.DATE
@@ -777,10 +759,7 @@ def parse_sort_parameters(
     # Parse sort order
     order_lower = (order or "desc").lower()
     if order_lower not in ("asc", "desc"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid order value: '{order}'. Valid values are: asc, desc"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid order value: '{order}'. Valid values are: asc, desc")
     sort_order = SortOrder.DESC if order_lower == "desc" else SortOrder.ASC
 
     return sort_by, sort_order
@@ -821,8 +800,7 @@ def apply_sorting(query: sa.Select, sort_by: SortBy, sort_order: SortOrder) -> s
 
 
 def build_video_list_response(
-    rows: List[Dict[str, Any]],
-    video_tags_map: Dict[int, List[VideoTagInfo]]
+    rows: List[Dict[str, Any]], video_tags_map: Dict[int, List[VideoTagInfo]]
 ) -> List[VideoListResponse]:
     """
     Build VideoListResponse objects from database rows.
@@ -834,6 +812,7 @@ def build_video_list_response(
     Returns:
         List of VideoListResponse objects
     """
+
     def get_thumbnail_version(row: Dict[str, Any]) -> int:
         """Generate cache-busting version for thumbnail URL."""
         if row["thumbnail_timestamp"]:
@@ -878,19 +857,31 @@ async def list_videos(
     date_from: Optional[datetime] = Query(
         default=None, description="Filter videos published from this date (ISO 8601)"
     ),
-    date_to: Optional[datetime] = Query(
-        default=None, description="Filter videos published until this date (ISO 8601)"
-    ),
+    date_to: Optional[datetime] = Query(default=None, description="Filter videos published until this date (ISO 8601)"),
     has_transcription: Optional[bool] = Query(
         default=None, description="Filter by transcription availability (true/false)"
     ),
     sort: Optional[str] = Query(default=None, description="Sort by: relevance, date, duration, views, title"),
     order: Optional[str] = Query(default="desc", description="Sort order: asc or desc"),
     limit: int = Query(default=50, ge=1, le=100, description="Max items per page"),
-    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
-) -> List[VideoListResponse]:
+    offset: int = Query(default=0, ge=0, description="Number of items to skip (deprecated, use cursor)"),
+    cursor: Optional[str] = Query(
+        default=None,
+        description="Cursor for pagination (more efficient than offset for large datasets). "
+        "Use next_cursor from previous response.",
+    ),
+    include_total: bool = Query(
+        default=False, description="Include total count in response (expensive for large datasets)"
+    ),
+) -> PaginatedVideoListResponse:
     """
     List all published videos with advanced filtering and sorting.
+
+    Pagination:
+    - cursor: Use cursor-based pagination for efficient traversal of large datasets.
+      Pass the next_cursor from the previous response to get the next page.
+    - offset: Legacy offset-based pagination (deprecated, use cursor instead).
+      When cursor is provided, offset is ignored.
 
     Filters:
     - category: Filter by category slug
@@ -904,6 +895,8 @@ async def list_videos(
     Sorting:
     - relevance (default for text searches), date, duration, views, title
     - order: asc (ascending) or desc (descending)
+
+    Note: Cursor-based pagination is recommended for large datasets (Issue #463).
     """
     # Parse custom field filters early for cache key inclusion (Issue #429)
     # Custom fields are query params like "custom.difficulty=beginner"
@@ -914,16 +907,22 @@ async def list_videos(
             if field_slug:
                 custom_filters[field_slug] = value
 
-    # Generate cache key from ALL query parameters including custom fields
-    # Sort custom filters by key for consistent cache keys
-    custom_filters_key = ":".join(f"{k}={v}" for k, v in sorted(custom_filters.items()))
-    cache_key = f"videos:{category}:{tag}:{search}:{duration}:{quality}:{date_from}:{date_to}:{has_transcription}:{sort}:{order}:{limit}:{offset}:{custom_filters_key}"
+    # Validate and decode cursor if provided
+    cursor_data = validate_cursor(cursor)
+    using_cursor = cursor_data is not None
+
+    # Generate cache key from ALL query parameters including custom fields and cursor
+    # Use a hash to avoid collisions from delimiter conflicts in parameter values
+    # (e.g., search terms containing the delimiter character)
+    custom_filters_key = "|".join(f"{k}={v}" for k, v in sorted(custom_filters.items()))
+    pagination_key = f"cursor:{cursor}" if using_cursor else f"offset:{offset}"
+    cache_key_raw = f"{category}|{tag}|{search}|{duration}|{quality}|{date_from}|{date_to}|{has_transcription}|{sort}|{order}|{limit}|{pagination_key}|{include_total}|{custom_filters_key}"
+    cache_key = f"videos:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
 
     # Check cache first
     cached_result = _video_list_cache.get(cache_key)
     if cached_result is not None:
-        # Convert cached dicts back to response objects
-        return [VideoListResponse(**item) for item in cached_result]
+        return PaginatedVideoListResponse(**cached_result)
 
     # Build base query and apply all filters
     query = build_base_videos_query()
@@ -936,21 +935,87 @@ async def list_videos(
     query = apply_transcription_filter(query, has_transcription)
     query = await apply_custom_field_filters(query, custom_filters)
 
-    # Apply sorting
+    # Apply sorting - need to know sort direction for cursor pagination
     sort_by, sort_order = parse_sort_parameters(sort, order, has_search=bool(search))
-    query = apply_sorting(query, sort_by, sort_order)
 
-    # Apply pagination
-    query = query.limit(limit).offset(offset)
+    # Apply cursor-based pagination if cursor is provided (Issue #463)
+    # Cursor pagination uses (published_at, id) for stable ordering
+    if using_cursor:
+        cursor_ts, cursor_id = cursor_data
+        # For descending order: get items where (published_at, id) < cursor
+        # For ascending order: get items where (published_at, id) > cursor
+        if sort_order == SortOrder.DESC:
+            query = query.where(
+                sa.or_(
+                    videos.c.published_at < cursor_ts,
+                    sa.and_(videos.c.published_at == cursor_ts, videos.c.id < cursor_id),
+                )
+            )
+        else:
+            query = query.where(
+                sa.or_(
+                    videos.c.published_at > cursor_ts,
+                    sa.and_(videos.c.published_at == cursor_ts, videos.c.id > cursor_id),
+                )
+            )
+
+    # Apply sorting with secondary sort by id for stable cursor pagination
+    query = apply_sorting(query, sort_by, sort_order)
+    # Add secondary sort by id for deterministic ordering with same published_at
+    if sort_order == SortOrder.DESC:
+        query = query.order_by(videos.c.id.desc())
+    else:
+        query = query.order_by(videos.c.id.asc())
+
+    # Apply pagination - fetch one extra to determine has_more
+    if not using_cursor:
+        query = query.offset(offset)
+    query = query.limit(limit + 1)
 
     # Execute query and build response
     rows = await fetch_all_with_retry(query)
+
+    # Determine if there are more results
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]  # Remove the extra row
+
     video_ids = [row["id"] for row in rows]
     video_tags_map = await get_video_tags(video_ids)
-    result = build_video_list_response(rows, video_tags_map)
+    video_list = build_video_list_response(rows, video_tags_map)
 
-    # Cache the result as dicts for serialization (Issue #429)
-    _video_list_cache.set(cache_key, [item.model_dump() for item in result])
+    # Generate next cursor from the last item
+    next_cursor = None
+    if has_more and rows:
+        last_row = rows[-1]
+        if last_row["published_at"]:
+            next_cursor = encode_cursor(last_row["published_at"], last_row["id"])
+
+    # Optionally get total count (expensive for large datasets)
+    total_count = None
+    if include_total:
+        count_query = build_base_videos_query()
+        count_query = apply_category_filter(count_query, category)
+        count_query = apply_tag_filter(count_query, tag)
+        count_query = apply_search_filter(count_query, search)
+        count_query = apply_duration_filter(count_query, duration)
+        count_query = apply_quality_filter(count_query, quality)
+        count_query = apply_date_range_filter(count_query, date_from, date_to)
+        count_query = apply_transcription_filter(count_query, has_transcription)
+        count_query = await apply_custom_field_filters(count_query, custom_filters)
+        # Wrap to count total
+        count_query = sa.select(sa.func.count()).select_from(count_query.subquery())
+        total_count = await fetch_val_with_retry(count_query)
+
+    result = PaginatedVideoListResponse(
+        videos=video_list,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        total_count=total_count,
+    )
+
+    # Cache the result as dict for serialization (Issue #429)
+    _video_list_cache.set(cache_key, result.model_dump())
 
     return result
 
@@ -1037,23 +1102,18 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
         created_at=row["created_at"],
         published_at=row["published_at"],
         thumbnail_url=(
-            f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}"
-            if row["status"] == VideoStatus.READY
-            else None
+            f"/videos/{row['slug']}/thumbnail.jpg?v={thumb_version}" if row["status"] == VideoStatus.READY else None
         ),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
         # Stream URLs use CDN if configured (Issue #222)
         stream_url=(
-            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8"
-            if row["status"] == VideoStatus.READY
-            else None
+            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None
         ),
         # DASH URL only available for CMAF format videos
         dash_url=(
             f"{video_url_prefix}/videos/{row['slug']}/manifest.mpd"
-            if row["status"] == VideoStatus.READY
-            and row._mapping.get("streaming_format") == "cmaf"
+            if row["status"] == VideoStatus.READY and row._mapping.get("streaming_format") == "cmaf"
             else None
         ),
         streaming_format=row._mapping.get("streaming_format", "hls_ts"),
@@ -1329,8 +1389,7 @@ async def list_public_playlists(
     # Validate playlist_type if provided
     if playlist_type and playlist_type not in VALID_PLAYLIST_TYPES:
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid playlist type. Valid options: {', '.join(sorted(VALID_PLAYLIST_TYPES))}"
+            status_code=400, detail=f"Invalid playlist type. Valid options: {', '.join(sorted(VALID_PLAYLIST_TYPES))}"
         )
 
     # Build WHERE conditions
@@ -1384,20 +1443,22 @@ async def list_public_playlists(
         if row.get("thumbnail_path"):
             thumbnail_url = f"{_get_video_url_prefix()}/{row['thumbnail_path']}"
 
-        playlist_list.append(PlaylistResponse(
-            id=row["id"],
-            title=row["title"],
-            slug=row["slug"],
-            description=row.get("description"),
-            thumbnail_url=thumbnail_url,
-            visibility=row["visibility"],
-            playlist_type=row["playlist_type"],
-            is_featured=row["is_featured"],
-            video_count=row["video_count"] or 0,
-            total_duration=row["total_duration"] or 0,
-            created_at=row["created_at"],
-            updated_at=row.get("updated_at"),
-        ))
+        playlist_list.append(
+            PlaylistResponse(
+                id=row["id"],
+                title=row["title"],
+                slug=row["slug"],
+                description=row.get("description"),
+                thumbnail_url=thumbnail_url,
+                visibility=row["visibility"],
+                playlist_type=row["playlist_type"],
+                is_featured=row["is_featured"],
+                video_count=row["video_count"] or 0,
+                total_duration=row["total_duration"] or 0,
+                created_at=row["created_at"],
+                updated_at=row.get("updated_at"),
+            )
+        )
 
     return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
 
@@ -1439,15 +1500,17 @@ async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResp
     total_duration = 0.0
     for vrow in video_rows:
         thumbnail_url = f"{_get_video_url_prefix()}/videos/{vrow['slug']}/thumbnail.jpg"
-        video_list.append(PlaylistVideoInfo(
-            id=vrow["id"],
-            title=vrow["title"],
-            slug=vrow["slug"],
-            thumbnail_url=thumbnail_url,
-            duration=vrow["duration"] or 0,
-            position=vrow["position"],
-            status=vrow["status"],
-        ))
+        video_list.append(
+            PlaylistVideoInfo(
+                id=vrow["id"],
+                title=vrow["title"],
+                slug=vrow["slug"],
+                thumbnail_url=thumbnail_url,
+                duration=vrow["duration"] or 0,
+                position=vrow["position"],
+                status=vrow["status"],
+            )
+        )
         total_duration += vrow["duration"] or 0
 
     # Build thumbnail URL

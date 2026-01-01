@@ -239,6 +239,30 @@ class VideoListResponse(BaseModel):
         return v if v is not None else "h264"
 
 
+# Cursor-based pagination response (Issue #463)
+class PaginatedVideoListResponse(BaseModel):
+    """
+    Paginated video list response with cursor-based navigation.
+
+    Cursor-based pagination is more efficient than offset-based pagination
+    for large datasets, as it doesn't require scanning/discarding rows.
+    """
+
+    videos: List[VideoListResponse]
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description="Cursor for the next page. None if no more results.",
+    )
+    has_more: bool = Field(
+        default=False,
+        description="Whether there are more results after this page.",
+    )
+    total_count: Optional[int] = Field(
+        default=None,
+        description="Total count of matching items (optional, expensive for large datasets).",
+    )
+
+
 # Analytics request models
 class PlaybackSessionCreate(BaseModel):
     video_id: int
@@ -829,9 +853,7 @@ class CustomFieldCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Display name for the field")
     field_type: str = Field(..., description="Field type: text, number, date, select, multi_select, url")
     options: Optional[List[str]] = Field(
-        default=None,
-        description="Options for select/multi_select fields",
-        max_length=100
+        default=None, description="Options for select/multi_select fields", max_length=100
     )
     required: bool = Field(default=False, description="Whether the field is required")
     category_id: Optional[int] = Field(default=None, description="Category ID (null for global field)")
@@ -928,10 +950,7 @@ class VideoCustomFieldValue(BaseModel):
 class VideoCustomFieldsUpdate(BaseModel):
     """Request to update custom field values for a video."""
 
-    values: dict[int, Any] = Field(
-        ...,
-        description="Map of field_id to value. Use null to clear a field value."
-    )
+    values: dict[int, Any] = Field(..., description="Map of field_id to value. Use null to clear a field value.")
 
 
 class VideoCustomFieldsResponse(BaseModel):
@@ -945,10 +964,7 @@ class BulkCustomFieldsUpdate(BaseModel):
     """Request to update custom field values for multiple videos."""
 
     video_ids: List[int] = Field(..., min_length=1, max_length=MAX_BULK_VIDEOS)
-    values: dict[int, Any] = Field(
-        ...,
-        description="Map of field_id to value. Applied to all specified videos."
-    )
+    values: dict[int, Any] = Field(..., description="Map of field_id to value. Applied to all specified videos.")
 
 
 class BulkCustomFieldsResponse(BaseModel):

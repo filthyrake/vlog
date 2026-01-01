@@ -74,6 +74,8 @@ from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
 from api.metrics import get_metrics, init_app_info
+from api.pagination import encode_cursor, validate_cursor
+from api.partition_manager import ensure_partitions_exist, is_table_partitioned
 from api.public import get_video_url_prefix, get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
@@ -100,6 +102,7 @@ from api.schemas import (
     CustomFieldResponse,
     CustomFieldUpdate,
     DailyViews,
+    PaginatedVideoListResponse,
     PlaylistCreate,
     PlaylistDetailResponse,
     PlaylistListResponse,
@@ -656,12 +659,14 @@ def build_retranscode_metadata(
     Returns:
         JSON string with cleanup instructions
     """
-    return json.dumps({
-        "retranscode_all": retranscode_all,
-        "qualities_to_delete": qualities_to_delete,
-        "delete_transcription": retranscode_all,
-        "video_dir": str(video_output_dir),
-    })
+    return json.dumps(
+        {
+            "retranscode_all": retranscode_all,
+            "qualities_to_delete": qualities_to_delete,
+            "delete_transcription": retranscode_all,
+            "video_dir": str(video_output_dir),
+        }
+    )
 
 
 async def create_or_reset_transcoding_job(
@@ -834,6 +839,18 @@ async def lifespan(app: FastAPI):
 
     # Clean up any orphaned transcoding jobs from previous crashes/bugs
     await cleanup_orphaned_jobs()
+
+    # Ensure future partitions exist for playback_sessions table (Issue #463)
+    # This creates partitions for the current month plus 3 months ahead
+    try:
+        if await is_table_partitioned():
+            created = await ensure_partitions_exist()
+            if created:
+                logger.info(f"Created {len(created)} new partitions for playback_sessions: {created}")
+        else:
+            logger.debug("playback_sessions table is not partitioned, skipping partition creation")
+    except Exception as e:
+        logger.warning(f"Failed to ensure partitions exist: {e}")
 
     # Clean up expired sessions on startup
     expired_count = await cleanup_expired_sessions()
@@ -1354,9 +1371,31 @@ async def list_all_videos(
     request: Request,
     status: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=500, description="Max items per page"),
-    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
-) -> List[VideoListResponse]:
-    """List all videos (including non-ready ones for admin)."""
+    offset: int = Query(default=0, ge=0, description="Number of items to skip (deprecated, use cursor)"),
+    cursor: Optional[str] = Query(
+        default=None,
+        description="Cursor for pagination (more efficient than offset for large datasets). "
+        "Use next_cursor from previous response.",
+    ),
+    include_total: bool = Query(
+        default=False, description="Include total count in response (expensive for large datasets)"
+    ),
+) -> PaginatedVideoListResponse:
+    """
+    List all videos (including non-ready ones for admin).
+
+    Pagination:
+    - cursor: Use cursor-based pagination for efficient traversal of large datasets.
+      Pass the next_cursor from the previous response to get the next page.
+    - offset: Legacy offset-based pagination (deprecated, use cursor instead).
+      When cursor is provided, offset is ignored.
+
+    Note: Cursor-based pagination is recommended for large datasets (Issue #463).
+    """
+    # Validate and decode cursor if provided
+    cursor_data = validate_cursor(cursor)
+    using_cursor = cursor_data is not None
+
     query = (
         sa.select(
             videos.c.id,
@@ -1376,17 +1415,36 @@ async def list_all_videos(
         )
         .select_from(videos.outerjoin(categories, videos.c.category_id == categories.c.id))
         .where(videos.c.deleted_at.is_(None))  # Exclude soft-deleted videos
-        .order_by(videos.c.created_at.desc())
-        .limit(limit)
-        .offset(offset)
     )
 
     if status:
         query = query.where(videos.c.status == status)
 
+    # Apply cursor-based pagination if cursor is provided (Issue #463)
+    # Admin uses created_at for sorting (descending by default)
+    if using_cursor:
+        cursor_ts, cursor_id = cursor_data
+        # For descending order: get items where (created_at, id) < cursor
+        query = query.where(
+            sa.or_(videos.c.created_at < cursor_ts, sa.and_(videos.c.created_at == cursor_ts, videos.c.id < cursor_id))
+        )
+
+    # Apply sorting with secondary sort by id for stable cursor pagination
+    query = query.order_by(videos.c.created_at.desc(), videos.c.id.desc())
+
+    # Apply pagination - fetch one extra to determine has_more
+    if not using_cursor:
+        query = query.offset(offset)
+    query = query.limit(limit + 1)
+
     rows = await fetch_all_with_retry(query)
 
-    return [
+    # Determine if there are more results
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]  # Remove the extra row
+
+    video_list = [
         VideoListResponse(
             id=row["id"],
             title=row["title"],
@@ -1406,6 +1464,28 @@ async def list_all_videos(
         )
         for row in rows
     ]
+
+    # Generate next cursor from the last item (using created_at for admin)
+    next_cursor = None
+    if has_more and rows:
+        last_row = rows[-1]
+        if last_row["created_at"]:
+            next_cursor = encode_cursor(last_row["created_at"], last_row["id"])
+
+    # Optionally get total count (expensive for large datasets)
+    total_count = None
+    if include_total:
+        count_query = sa.select(sa.func.count()).select_from(videos).where(videos.c.deleted_at.is_(None))
+        if status:
+            count_query = count_query.where(videos.c.status == status)
+        total_count = await fetch_val_with_retry(count_query)
+
+    return PaginatedVideoListResponse(
+        videos=video_list,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        total_count=total_count,
+    )
 
 
 @app.get("/api/videos/archived")
@@ -1494,22 +1574,17 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
         error_message=sanitize_error_message(row["error_message"], context=f"video_id={video_id}"),
         created_at=row["created_at"],
         published_at=row["published_at"],
-        thumbnail_url=(
-            f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None
-        ),
+        thumbnail_url=(f"/videos/{row['slug']}/thumbnail.jpg" if row["status"] == VideoStatus.READY else None),
         thumbnail_source=row["thumbnail_source"] or "auto",
         thumbnail_timestamp=row["thumbnail_timestamp"],
         # Stream URLs use CDN if configured (Issue #222)
         stream_url=(
-            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8"
-            if row["status"] == VideoStatus.READY
-            else None
+            f"{video_url_prefix}/videos/{row['slug']}/master.m3u8" if row["status"] == VideoStatus.READY else None
         ),
         # DASH URL only available for CMAF format videos
         dash_url=(
             f"{video_url_prefix}/videos/{row['slug']}/manifest.mpd"
-            if row["status"] == VideoStatus.READY
-            and row._mapping.get("streaming_format") == "cmaf"
+            if row["status"] == VideoStatus.READY and row._mapping.get("streaming_format") == "cmaf"
             else None
         ),
         streaming_format=row._mapping.get("streaming_format", "hls_ts"),
@@ -4608,9 +4683,7 @@ async def restart_worker(request: Request, worker_id: str):
     # Check if Redis is available
     redis = await get_redis()
     if not redis:
-        raise HTTPException(
-            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
-        )
+        raise HTTPException(status_code=503, detail="Redis not available - worker commands require Redis pub/sub")
 
     # Get current version from capabilities if available
     caps = parse_worker_capabilities(worker.get("capabilities"))
@@ -4665,9 +4738,7 @@ async def stop_worker(request: Request, worker_id: str):
     # Check if Redis is available
     redis = await get_redis()
     if not redis:
-        raise HTTPException(
-            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
-        )
+        raise HTTPException(status_code=503, detail="Redis not available - worker commands require Redis pub/sub")
 
     # Get current version from capabilities if available
     caps = parse_worker_capabilities(worker.get("capabilities"))
@@ -4717,14 +4788,10 @@ async def restart_all_workers(request: Request):
     # Check if Redis is available
     redis = await get_redis()
     if not redis:
-        raise HTTPException(
-            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
-        )
+        raise HTTPException(status_code=503, detail="Redis not available - worker commands require Redis pub/sub")
 
     # Get all online workers for deployment logging
-    online_workers = await fetch_all_with_retry(
-        workers.select().where(workers.c.status.in_(["active", "idle"]))
-    )
+    online_workers = await fetch_all_with_retry(workers.select().where(workers.c.status.in_(["active", "idle"])))
 
     # Publish broadcast restart command
     success = await publish_worker_command("all", "restart")
@@ -4784,9 +4851,7 @@ async def update_worker(request: Request, worker_id: str):
     # Check if Redis is available
     redis = await get_redis()
     if not redis:
-        raise HTTPException(
-            status_code=503, detail="Redis not available - worker commands require Redis pub/sub"
-        )
+        raise HTTPException(status_code=503, detail="Redis not available - worker commands require Redis pub/sub")
 
     # Get current version from capabilities if available
     caps = parse_worker_capabilities(worker.get("capabilities"))
@@ -4934,9 +4999,7 @@ async def get_worker_logs(
     # Check if Redis is available
     redis = await get_redis()
     if not redis:
-        raise HTTPException(
-            status_code=503, detail="Redis not available - worker logs require Redis pub/sub"
-        )
+        raise HTTPException(status_code=503, detail="Redis not available - worker logs require Redis pub/sub")
 
     # Request logs from worker
     response = await request_worker_response(
@@ -4994,9 +5057,7 @@ async def get_worker_metrics(request: Request, worker_id: str):
     # Check if Redis is available
     redis = await get_redis()
     if not redis:
-        raise HTTPException(
-            status_code=503, detail="Redis not available - worker metrics require Redis pub/sub"
-        )
+        raise HTTPException(status_code=503, detail="Redis not available - worker metrics require Redis pub/sub")
 
     # Request metrics from worker
     response = await request_worker_response(
@@ -6074,17 +6135,14 @@ async def queue_videos_for_reencode(
             continue
 
         if video["status"] != "ready":
-            errors.append(
-                {"video_id": video_id, "error": f"Video status is {video['status']}"}
-            )
+            errors.append({"video_id": video_id, "error": f"Video status is {video['status']}"})
             continue
 
         # Check if already queued and pending
         existing = await fetch_one_with_retry(
-            sa.text(
-                "SELECT id FROM reencode_queue "
-                "WHERE video_id = :video_id AND status = 'pending'"
-            ).bindparams(video_id=video_id)
+            sa.text("SELECT id FROM reencode_queue WHERE video_id = :video_id AND status = 'pending'").bindparams(
+                video_id=video_id
+            )
         )
 
         if existing:
@@ -6261,16 +6319,11 @@ async def cancel_reencode_job(request: Request, job_id: int):
         raise HTTPException(status_code=404, detail="Job not found")
 
     if job["status"] != "pending":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot cancel job with status '{job['status']}'"
-        )
+        raise HTTPException(status_code=400, detail=f"Cannot cancel job with status '{job['status']}'")
 
     await db_execute_with_retry(
         database,
-        reencode_queue.update()
-        .where(reencode_queue.c.id == job_id)
-        .values(status="cancelled"),
+        reencode_queue.update().where(reencode_queue.c.id == job_id).values(status="cancelled"),
     )
 
     return {"status": "ok", "message": f"Job {job_id} cancelled"}
@@ -6380,10 +6433,7 @@ async def update_reencode_job(
     # Validate status value if provided
     valid_statuses = {"pending", "in_progress", "completed", "failed", "cancelled"}
     if status and status not in valid_statuses:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
 
     # Build update values
     values = {}
@@ -6401,9 +6451,7 @@ async def update_reencode_job(
 
     await db_execute_with_retry(
         database,
-        reencode_queue.update()
-        .where(reencode_queue.c.id == job_id)
-        .values(**values),
+        reencode_queue.update().where(reencode_queue.c.id == job_id).values(**values),
     )
 
     return {"status": "ok", "job_id": job_id}
@@ -6417,8 +6465,7 @@ async def update_reencode_job(
 async def list_custom_fields(
     request: Request,
     category_id: Optional[int] = Query(
-        default=None,
-        description="Filter by category. Use 0 for global fields only, or omit for all fields."
+        default=None, description="Filter by category. Use 0 for global fields only, or omit for all fields."
     ),
 ) -> CustomFieldListResponse:
     """
@@ -6444,10 +6491,7 @@ async def list_custom_fields(
             categories.c.name.label("category_name"),
         )
         .select_from(
-            custom_field_definitions.outerjoin(
-                categories,
-                custom_field_definitions.c.category_id == categories.c.id
-            )
+            custom_field_definitions.outerjoin(categories, custom_field_definitions.c.category_id == categories.c.id)
         )
         .order_by(custom_field_definitions.c.position, custom_field_definitions.c.name)
     )
@@ -6516,33 +6560,22 @@ async def create_custom_field(
     # Validate category exists if provided
     category_name = None
     if data.category_id is not None:
-        category = await fetch_one_with_retry(
-            categories.select().where(categories.c.id == data.category_id)
-        )
+        category = await fetch_one_with_retry(categories.select().where(categories.c.id == data.category_id))
         if not category:
             raise HTTPException(status_code=400, detail="Category not found")
         category_name = category["name"]
 
     # Check for duplicate slug in same scope
-    duplicate_query = custom_field_definitions.select().where(
-        custom_field_definitions.c.slug == slug
-    )
+    duplicate_query = custom_field_definitions.select().where(custom_field_definitions.c.slug == slug)
     if data.category_id is not None:
-        duplicate_query = duplicate_query.where(
-            custom_field_definitions.c.category_id == data.category_id
-        )
+        duplicate_query = duplicate_query.where(custom_field_definitions.c.category_id == data.category_id)
     else:
-        duplicate_query = duplicate_query.where(
-            custom_field_definitions.c.category_id.is_(None)
-        )
+        duplicate_query = duplicate_query.where(custom_field_definitions.c.category_id.is_(None))
 
     existing = await fetch_one_with_retry(duplicate_query)
     if existing:
         scope = f"category '{category_name}'" if data.category_id else "global fields"
-        raise HTTPException(
-            status_code=400,
-            detail=f"A field with this name already exists in {scope}"
-        )
+        raise HTTPException(status_code=400, detail=f"A field with this name already exists in {scope}")
 
     # Validate and serialize options and constraints to JSON
     options_json = json.dumps(data.options) if data.options else None
@@ -6551,21 +6584,20 @@ async def create_custom_field(
         constraints_dict = data.constraints.model_dump(exclude_none=True)
 
         # min/max only valid for number fields
-        if (constraints_dict.get("min") is not None or constraints_dict.get("max") is not None):
+        if constraints_dict.get("min") is not None or constraints_dict.get("max") is not None:
             if data.field_type != "number":
-                raise HTTPException(
-                    status_code=400,
-                    detail="min/max constraints are only valid for number fields"
-                )
+                raise HTTPException(status_code=400, detail="min/max constraints are only valid for number fields")
 
         # min_length/max_length/pattern only valid for text/url fields
-        if (constraints_dict.get("min_length") is not None or
-            constraints_dict.get("max_length") is not None or
-            constraints_dict.get("pattern") is not None):
+        if (
+            constraints_dict.get("min_length") is not None
+            or constraints_dict.get("max_length") is not None
+            or constraints_dict.get("pattern") is not None
+        ):
             if data.field_type not in ("text", "url"):
                 raise HTTPException(
                     status_code=400,
-                    detail="min_length/max_length/pattern constraints are only valid for text/url fields"
+                    detail="min_length/max_length/pattern constraints are only valid for text/url fields",
                 )
 
         # Validate pattern is a valid regex
@@ -6573,10 +6605,7 @@ async def create_custom_field(
             try:
                 re.compile(constraints_dict["pattern"])
             except re.error as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid regex pattern: {e}"
-                )
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
 
         constraints_json = json.dumps(constraints_dict)
 
@@ -6650,10 +6679,7 @@ async def get_custom_field(
             categories.c.name.label("category_name"),
         )
         .select_from(
-            custom_field_definitions.outerjoin(
-                categories,
-                custom_field_definitions.c.category_id == categories.c.id
-            )
+            custom_field_definitions.outerjoin(categories, custom_field_definitions.c.category_id == categories.c.id)
         )
         .where(custom_field_definitions.c.id == field_id)
     )
@@ -6725,20 +6751,13 @@ async def update_custom_field(
             .where(custom_field_definitions.c.id != field_id)
         )
         if existing["category_id"] is not None:
-            duplicate_query = duplicate_query.where(
-                custom_field_definitions.c.category_id == existing["category_id"]
-            )
+            duplicate_query = duplicate_query.where(custom_field_definitions.c.category_id == existing["category_id"])
         else:
-            duplicate_query = duplicate_query.where(
-                custom_field_definitions.c.category_id.is_(None)
-            )
+            duplicate_query = duplicate_query.where(custom_field_definitions.c.category_id.is_(None))
 
         duplicate = await fetch_one_with_retry(duplicate_query)
         if duplicate:
-            raise HTTPException(
-                status_code=400,
-                detail="A field with this name already exists in the same scope"
-            )
+            raise HTTPException(status_code=400, detail="A field with this name already exists in the same scope")
 
         update_values["name"] = data.name
         update_values["slug"] = new_slug
@@ -6746,10 +6765,7 @@ async def update_custom_field(
     if data.options is not None:
         # Validate options for select/multi_select fields
         if existing["field_type"] not in ("select", "multi_select"):
-            raise HTTPException(
-                status_code=400,
-                detail="Options can only be updated for select/multi_select fields"
-            )
+            raise HTTPException(status_code=400, detail="Options can only be updated for select/multi_select fields")
         update_values["options"] = json.dumps(data.options)
 
     if data.required is not None:
@@ -6764,21 +6780,20 @@ async def update_custom_field(
         constraints_dict = data.constraints.model_dump(exclude_none=True)
 
         # min/max only valid for number fields
-        if (constraints_dict.get("min") is not None or constraints_dict.get("max") is not None):
+        if constraints_dict.get("min") is not None or constraints_dict.get("max") is not None:
             if field_type != "number":
-                raise HTTPException(
-                    status_code=400,
-                    detail="min/max constraints are only valid for number fields"
-                )
+                raise HTTPException(status_code=400, detail="min/max constraints are only valid for number fields")
 
         # min_length/max_length/pattern only valid for text/url fields
-        if (constraints_dict.get("min_length") is not None or
-            constraints_dict.get("max_length") is not None or
-            constraints_dict.get("pattern") is not None):
+        if (
+            constraints_dict.get("min_length") is not None
+            or constraints_dict.get("max_length") is not None
+            or constraints_dict.get("pattern") is not None
+        ):
             if field_type not in ("text", "url"):
                 raise HTTPException(
                     status_code=400,
-                    detail="min_length/max_length/pattern constraints are only valid for text/url fields"
+                    detail="min_length/max_length/pattern constraints are only valid for text/url fields",
                 )
 
         # Validate pattern is a valid regex
@@ -6786,10 +6801,7 @@ async def update_custom_field(
             try:
                 re.compile(constraints_dict["pattern"])
             except re.error as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid regex pattern: {e}"
-                )
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
 
         update_values["constraints"] = json.dumps(constraints_dict)
 
@@ -6800,9 +6812,7 @@ async def update_custom_field(
         raise HTTPException(status_code=400, detail="No update values provided")
 
     await db_execute_with_retry(
-        custom_field_definitions.update()
-        .where(custom_field_definitions.c.id == field_id)
-        .values(**update_values)
+        custom_field_definitions.update().where(custom_field_definitions.c.id == field_id).values(**update_values)
     )
 
     # Audit log
@@ -6836,15 +6846,11 @@ async def delete_custom_field(request: Request, field_id: int):
         raise HTTPException(status_code=404, detail="Custom field not found")
 
     # Count affected videos
-    count_query = sa.select(sa.func.count()).where(
-        video_custom_fields.c.field_id == field_id
-    )
+    count_query = sa.select(sa.func.count()).where(video_custom_fields.c.field_id == field_id)
     affected_count = await fetch_val_with_retry(count_query)
 
     # Delete field (CASCADE will delete video_custom_fields entries)
-    await db_execute_with_retry(
-        custom_field_definitions.delete().where(custom_field_definitions.c.id == field_id)
-    )
+    await db_execute_with_retry(custom_field_definitions.delete().where(custom_field_definitions.c.id == field_id))
 
     # Audit log
     log_audit(
@@ -6952,9 +6958,7 @@ async def get_video_custom_fields(
     Fields without values return null.
     """
     # Verify video exists and get its category
-    video = await fetch_one_with_retry(
-        videos.select().where(videos.c.id == video_id)
-    )
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -6980,13 +6984,10 @@ async def get_video_custom_fields(
     field_rows = await fetch_all_with_retry(field_query)
 
     # Get existing values for this video
-    values_query = (
-        sa.select(
-            video_custom_fields.c.field_id,
-            video_custom_fields.c.value,
-        )
-        .where(video_custom_fields.c.video_id == video_id)
-    )
+    values_query = sa.select(
+        video_custom_fields.c.field_id,
+        video_custom_fields.c.value,
+    ).where(video_custom_fields.c.video_id == video_id)
     value_rows = await fetch_all_with_retry(values_query)
     values_map = {row["field_id"]: row["value"] for row in value_rows}
 
@@ -7037,9 +7038,7 @@ async def set_video_custom_fields(
     Use null to clear a field value.
     """
     # Verify video exists and get its category
-    video = await fetch_one_with_retry(
-        videos.select().where(videos.c.id == video_id)
-    )
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -7048,10 +7047,7 @@ async def set_video_custom_fields(
     if not field_ids:
         return await get_video_custom_fields(request, video_id)
 
-    field_query = (
-        custom_field_definitions.select()
-        .where(custom_field_definitions.c.id.in_(field_ids))
-    )
+    field_query = custom_field_definitions.select().where(custom_field_definitions.c.id.in_(field_ids))
     field_rows = await fetch_all_with_retry(field_query)
     fields_map = {row["id"]: row for row in field_rows}
 
@@ -7147,10 +7143,7 @@ async def bulk_update_custom_fields(
     if not field_ids:
         raise HTTPException(status_code=400, detail="No field values provided")
 
-    field_query = (
-        custom_field_definitions.select()
-        .where(custom_field_definitions.c.id.in_(field_ids))
-    )
+    field_query = custom_field_definitions.select().where(custom_field_definitions.c.id.in_(field_ids))
     field_rows = await fetch_all_with_retry(field_query)
     fields_map = {row["id"]: row for row in field_rows}
 
@@ -7172,10 +7165,7 @@ async def bulk_update_custom_fields(
                 constraints=constraints,
             )
         except ValueError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid value for field '{field['name']}': {e}"
-            )
+            raise HTTPException(status_code=400, detail=f"Invalid value for field '{field['name']}': {e}")
 
     # Get videos and validate they exist
     video_query = (
@@ -7193,11 +7183,7 @@ async def bulk_update_custom_fields(
     for video_id in data.video_ids:
         video = videos_map.get(video_id)
         if not video:
-            results.append(BulkOperationResult(
-                video_id=video_id,
-                success=False,
-                error="Video not found"
-            ))
+            results.append(BulkOperationResult(video_id=video_id, success=False, error="Video not found"))
             failed += 1
             continue
 
@@ -7209,11 +7195,11 @@ async def bulk_update_custom_fields(
                 skip_fields.append(field["name"])
 
         if skip_fields:
-            results.append(BulkOperationResult(
-                video_id=video_id,
-                success=False,
-                error=f"Fields not applicable: {', '.join(skip_fields)}"
-            ))
+            results.append(
+                BulkOperationResult(
+                    video_id=video_id, success=False, error=f"Fields not applicable: {', '.join(skip_fields)}"
+                )
+            )
             failed += 1
             continue
 
@@ -7262,18 +7248,14 @@ async def bulk_update_custom_fields(
                 error_str = str(e).lower()
                 # Retry on transient database errors
                 if attempt < max_retries - 1 and (
-                    "database is locked" in error_str or
-                    "deadlock" in error_str or
-                    "lock wait timeout" in error_str
+                    "database is locked" in error_str or "deadlock" in error_str or "lock wait timeout" in error_str
                 ):
                     await asyncio.sleep(0.1 * (attempt + 1))
                     continue
                 # Non-retryable error or max retries reached
-                results.append(BulkOperationResult(
-                    video_id=video_id,
-                    success=False,
-                    error=sanitize_error_message(str(last_error))
-                ))
+                results.append(
+                    BulkOperationResult(video_id=video_id, success=False, error=sanitize_error_message(str(last_error)))
+                )
                 failed += 1
                 break
 
@@ -7354,10 +7336,7 @@ async def list_playlists(
     """).bindparams(limit=limit, offset=offset)
     rows = await fetch_all_with_retry(query)
 
-    playlist_list = [
-        _build_playlist_response(row, row["video_count"], row["total_duration"])
-        for row in rows
-    ]
+    playlist_list = [_build_playlist_response(row, row["video_count"], row["total_duration"]) for row in rows]
 
     return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
 
@@ -7447,15 +7426,17 @@ async def get_playlist(request: Request, playlist_id: int) -> PlaylistDetailResp
     total_duration = 0.0
     for vrow in video_rows:
         thumbnail_url = f"{get_video_url_prefix()}/videos/{vrow['slug']}/thumbnail.jpg"
-        video_list.append(PlaylistVideoInfo(
-            id=vrow["id"],
-            title=vrow["title"],
-            slug=vrow["slug"],
-            thumbnail_url=thumbnail_url,
-            duration=vrow["duration"] or 0,
-            position=vrow["position"],
-            status=vrow["status"],
-        ))
+        video_list.append(
+            PlaylistVideoInfo(
+                id=vrow["id"],
+                title=vrow["title"],
+                slug=vrow["slug"],
+                thumbnail_url=thumbnail_url,
+                duration=vrow["duration"] or 0,
+                position=vrow["position"],
+                status=vrow["status"],
+            )
+        )
         total_duration += vrow["duration"] or 0
 
     # Build thumbnail URL
@@ -7526,9 +7507,7 @@ async def update_playlist(request: Request, playlist_id: int, data: PlaylistUpda
         update_values["is_featured"] = data.is_featured
         changes["is_featured"] = {"old": existing["is_featured"], "new": data.is_featured}
 
-    await db_execute_with_retry(
-        playlists.update().where(playlists.c.id == playlist_id).values(**update_values)
-    )
+    await db_execute_with_retry(playlists.update().where(playlists.c.id == playlist_id).values(**update_values))
 
     # Get video count and total duration
     count_query = sa.text("""
@@ -7584,9 +7563,7 @@ async def delete_playlist(request: Request, playlist_id: int):
 
     # Soft delete
     await db_execute_with_retry(
-        playlists.update()
-        .where(playlists.c.id == playlist_id)
-        .values(deleted_at=datetime.now(timezone.utc))
+        playlists.update().where(playlists.c.id == playlist_id).values(deleted_at=datetime.now(timezone.utc))
     )
 
     # Audit log
@@ -7679,7 +7656,7 @@ async def add_video_to_playlist(request: Request, playlist_id: int, data: AddVid
                     WHERE playlist_id = :playlist_id
                     FOR UPDATE
                 """),
-                {"playlist_id": playlist_id}
+                {"playlist_id": playlist_id},
             )
             position = (max_pos_result["max_pos"] if max_pos_result else -1) + 1
         else:
@@ -7690,7 +7667,7 @@ async def add_video_to_playlist(request: Request, playlist_id: int, data: AddVid
                     SET position = position + 1
                     WHERE playlist_id = :playlist_id AND position >= :position
                 """),
-                {"playlist_id": playlist_id, "position": position}
+                {"playlist_id": playlist_id, "position": position},
             )
 
         # Insert the item
@@ -7705,9 +7682,7 @@ async def add_video_to_playlist(request: Request, playlist_id: int, data: AddVid
 
         # Update playlist updated_at
         await database.execute(
-            playlists.update()
-            .where(playlists.c.id == playlist_id)
-            .values(updated_at=datetime.now(timezone.utc))
+            playlists.update().where(playlists.c.id == playlist_id).values(updated_at=datetime.now(timezone.utc))
         )
 
     # Audit log
@@ -7760,7 +7735,7 @@ async def remove_video_from_playlist(request: Request, playlist_id: int, video_i
                 SET position = position - 1
                 WHERE playlist_id = :playlist_id AND position > :removed_position
             """),
-            {"playlist_id": playlist_id, "removed_position": removed_position}
+            {"playlist_id": playlist_id, "removed_position": removed_position},
         )
 
     # Update playlist updated_at
@@ -7829,14 +7804,12 @@ async def reorder_playlist(request: Request, playlist_id: int, data: ReorderPlay
                 "playlist_id": playlist_id,
                 "video_ids": data.video_ids,
                 "count": len(data.video_ids),
-            }
+            },
         )
 
         # Update playlist updated_at
         await database.execute(
-            playlists.update()
-            .where(playlists.c.id == playlist_id)
-            .values(updated_at=datetime.now(timezone.utc))
+            playlists.update().where(playlists.c.id == playlist_id).values(updated_at=datetime.now(timezone.utc))
         )
 
     # Audit log

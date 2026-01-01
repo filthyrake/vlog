@@ -18,6 +18,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",
     "python-slugify>=8.0.0",
+    "python-dateutil>=2.8.0",  # Required for partition management
     "aiofiles>=23.0.0",
     "httpx>=0.25.0",
     "faster-whisper>=1.0.0",

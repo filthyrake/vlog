@@ -50,8 +50,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?duration=short")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["slug"] == "short-video"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["slug"] == "short-video"
 
     @pytest.mark.asyncio
     async def test_duration_filter_medium(self, public_client, test_database):
@@ -89,8 +89,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?duration=medium")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "medium-video-1" in slugs
         assert "medium-video-2" in slugs
 
@@ -121,8 +121,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?duration=long")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["slug"] == "long-video"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["slug"] == "long-video"
 
     @pytest.mark.asyncio
     async def test_duration_filter_multiple(self, public_client, test_database):
@@ -160,8 +160,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?duration=short,long")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "short-video" in slugs
         assert "long-video" in slugs
         assert "medium-video" not in slugs
@@ -207,7 +207,9 @@ class TestSearchFilters:
             )
         )
         await test_database.execute(
-            video_qualities.insert().values(video_id=video_4k_id, quality="2160p", width=3840, height=2160, bitrate=15000)
+            video_qualities.insert().values(
+                video_id=video_4k_id, quality="2160p", width=3840, height=2160, bitrate=15000
+            )
         )
         await test_database.execute(
             video_qualities.insert().values(
@@ -224,8 +226,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?quality=1080p")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "video-1080p" in slugs
         assert "video-both" in slugs
 
@@ -233,8 +235,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?quality=2160p")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "video-4k" in slugs
         assert "video-both" in slugs
 
@@ -242,7 +244,7 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?quality=1080p,2160p")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
+        assert len(data["videos"]) == 3
 
     @pytest.mark.asyncio
     async def test_date_range_filter(self, public_client, test_database):
@@ -283,8 +285,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos", params={"date_from": yesterday.isoformat()})
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "yesterday-video" in slugs
         assert "today-video" in slugs
 
@@ -292,8 +294,8 @@ class TestSearchFilters:
         response = public_client.get("/api/videos", params={"date_to": yesterday.isoformat()})
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "old-video" in slugs
         assert "yesterday-video" in slugs
 
@@ -304,8 +306,8 @@ class TestSearchFilters:
         )
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "old-video" in slugs
         assert "yesterday-video" in slugs
 
@@ -365,15 +367,15 @@ class TestSearchFilters:
         response = public_client.get("/api/videos?has_transcription=true")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["slug"] == "video-with-transcription"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["slug"] == "video-with-transcription"
 
         # Filter for videos without transcription
         response = public_client.get("/api/videos?has_transcription=false")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        slugs = [v["slug"] for v in data]
+        assert len(data["videos"]) == 2
+        slugs = [v["slug"] for v in data["videos"]]
         assert "video-without-transcription" in slugs
         assert "video-pending-transcription" in slugs
 
@@ -419,10 +421,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=date&order=desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert data[0]["slug"] == "today-video"
-        assert data[1]["slug"] == "yesterday-video"
-        assert data[2]["slug"] == "old-video"
+        assert len(data["videos"]) == 3
+        assert data["videos"][0]["slug"] == "today-video"
+        assert data["videos"][1]["slug"] == "yesterday-video"
+        assert data["videos"][2]["slug"] == "old-video"
 
     @pytest.mark.asyncio
     async def test_sort_by_date_asc(self, public_client, test_database):
@@ -462,10 +464,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=date&order=asc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert data[0]["slug"] == "old-video"
-        assert data[1]["slug"] == "yesterday-video"
-        assert data[2]["slug"] == "today-video"
+        assert len(data["videos"]) == 3
+        assert data["videos"][0]["slug"] == "old-video"
+        assert data["videos"][1]["slug"] == "yesterday-video"
+        assert data["videos"][2]["slug"] == "today-video"
 
     @pytest.mark.asyncio
     async def test_sort_by_duration_desc(self, public_client, test_database):
@@ -503,10 +505,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=duration&order=desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert data[0]["slug"] == "long-video"
-        assert data[1]["slug"] == "medium-video"
-        assert data[2]["slug"] == "short-video"
+        assert len(data["videos"]) == 3
+        assert data["videos"][0]["slug"] == "long-video"
+        assert data["videos"][1]["slug"] == "medium-video"
+        assert data["videos"][2]["slug"] == "short-video"
 
     @pytest.mark.asyncio
     async def test_sort_by_duration_asc(self, public_client, test_database):
@@ -544,10 +546,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=duration&order=asc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert data[0]["slug"] == "short-video"
-        assert data[1]["slug"] == "medium-video"
-        assert data[2]["slug"] == "long-video"
+        assert len(data["videos"]) == 3
+        assert data["videos"][0]["slug"] == "short-video"
+        assert data["videos"][1]["slug"] == "medium-video"
+        assert data["videos"][2]["slug"] == "long-video"
 
     @pytest.mark.asyncio
     async def test_sort_by_title_asc(self, public_client, test_database):
@@ -585,10 +587,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=title&order=asc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert data[0]["slug"] == "alpha-video"
-        assert data[1]["slug"] == "bravo-video"
-        assert data[2]["slug"] == "charlie-video"
+        assert len(data["videos"]) == 3
+        assert data["videos"][0]["slug"] == "alpha-video"
+        assert data["videos"][1]["slug"] == "bravo-video"
+        assert data["videos"][2]["slug"] == "charlie-video"
 
     @pytest.mark.asyncio
     async def test_sort_by_title_desc(self, public_client, test_database):
@@ -626,10 +628,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=title&order=desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert data[0]["slug"] == "charlie-video"
-        assert data[1]["slug"] == "bravo-video"
-        assert data[2]["slug"] == "alpha-video"
+        assert len(data["videos"]) == 3
+        assert data["videos"][0]["slug"] == "charlie-video"
+        assert data["videos"][1]["slug"] == "bravo-video"
+        assert data["videos"][2]["slug"] == "alpha-video"
 
     @pytest.mark.asyncio
     async def test_sort_by_views_desc(self, public_client, test_database):
@@ -702,10 +704,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=views&order=desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert data[0]["slug"] == "popular-video"
-        assert data[1]["slug"] == "medium-video"
-        assert data[2]["slug"] == "unpopular-video"
+        assert len(data["videos"]) == 3
+        assert data["videos"][0]["slug"] == "popular-video"
+        assert data["videos"][1]["slug"] == "medium-video"
+        assert data["videos"][2]["slug"] == "unpopular-video"
 
     @pytest.mark.asyncio
     async def test_sort_by_views_asc(self, public_client, test_database):
@@ -755,9 +757,9 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?sort=views&order=asc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        assert data[0]["slug"] == "unpopular-video"
-        assert data[1]["slug"] == "popular-video"
+        assert len(data["videos"]) == 2
+        assert data["videos"][0]["slug"] == "unpopular-video"
+        assert data["videos"][1]["slug"] == "popular-video"
 
     @pytest.mark.asyncio
     async def test_default_sort_with_search(self, public_client, test_database):
@@ -787,10 +789,10 @@ class TestSearchSorting:
         response = public_client.get("/api/videos?search=Testing")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
+        assert len(data["videos"]) == 2
         # Should be sorted by date desc (most recent first) as relevance fallback
-        assert data[0]["slug"] == "another-testing-video"
-        assert data[1]["slug"] == "testing-video"
+        assert data["videos"][0]["slug"] == "another-testing-video"
+        assert data["videos"][1]["slug"] == "testing-video"
 
     @pytest.mark.asyncio
     async def test_default_sort_without_search(self, public_client, test_database):
@@ -820,9 +822,9 @@ class TestSearchSorting:
         response = public_client.get("/api/videos")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        assert data[0]["slug"] == "new-video"
-        assert data[1]["slug"] == "old-video"
+        assert len(data["videos"]) == 2
+        assert data["videos"][0]["slug"] == "new-video"
+        assert data["videos"][1]["slug"] == "old-video"
 
 
 class TestCombinedFiltersAndSorting:
@@ -864,9 +866,9 @@ class TestCombinedFiltersAndSorting:
         response = public_client.get("/api/videos?duration=short&sort=duration&order=asc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        assert data[0]["slug"] == "short-video-b"  # 100 seconds
-        assert data[1]["slug"] == "short-video-a"  # 200 seconds
+        assert len(data["videos"]) == 2
+        assert data["videos"][0]["slug"] == "short-video-b"  # 100 seconds
+        assert data["videos"][1]["slug"] == "short-video-a"  # 200 seconds
 
     @pytest.mark.asyncio
     async def test_search_with_quality_filter_and_sort(self, public_client, test_database):
@@ -909,17 +911,15 @@ class TestCombinedFiltersAndSorting:
             )
         )
         await test_database.execute(
-            video_qualities.insert().values(
-                video_id=video_2_id, quality="1080p", width=1920, height=1080, bitrate=5000
-            )
+            video_qualities.insert().values(video_id=video_2_id, quality="1080p", width=1920, height=1080, bitrate=5000)
         )
 
         response = public_client.get("/api/videos?search=tutorial&quality=1080p,2160p&sort=duration&order=desc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        assert data[0]["slug"] == "tutorial-4k"  # 600 seconds, longer
-        assert data[1]["slug"] == "tutorial-hd"  # 300 seconds, shorter
+        assert len(data["videos"]) == 2
+        assert data["videos"][0]["slug"] == "tutorial-4k"  # 600 seconds, longer
+        assert data["videos"][1]["slug"] == "tutorial-hd"  # 300 seconds, shorter
 
     @pytest.mark.asyncio
     async def test_all_filters_combined(self, public_client, test_database):
@@ -1026,7 +1026,9 @@ class TestCombinedFiltersAndSorting:
             )
         )
         await test_database.execute(
-            video_qualities.insert().values(video_id=video_old_id, quality="1080p", width=1920, height=1080, bitrate=5000)
+            video_qualities.insert().values(
+                video_id=video_old_id, quality="1080p", width=1920, height=1080, bitrate=5000
+            )
         )
         await test_database.execute(
             transcriptions.insert().values(
@@ -1050,8 +1052,8 @@ class TestCombinedFiltersAndSorting:
         )
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 1
-        assert data[0]["slug"] == "perfect-match"
+        assert len(data["videos"]) == 1
+        assert data["videos"][0]["slug"] == "perfect-match"
 
 
 class TestInvalidInputValidation:
@@ -1170,7 +1172,7 @@ class TestInvalidInputValidation:
         assert response.status_code == 200
         data = response.json()
         # Should return empty list since no videos are published in the future
-        assert len(data) == 0
+        assert len(data["videos"]) == 0
 
 
 class TestTitleSortingCaseSensitivity:
@@ -1213,8 +1215,8 @@ class TestTitleSortingCaseSensitivity:
         response = public_client.get("/api/videos?sort=title&order=asc")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
+        assert len(data["videos"]) == 3
         # Should be sorted alphabetically regardless of case
-        assert data[0]["slug"] == "apple-video"
-        assert data[1]["slug"] == "banana-video"
-        assert data[2]["slug"] == "zebra-video"
+        assert data["videos"][0]["slug"] == "apple-video"
+        assert data["videos"][1]["slug"] == "banana-video"
+        assert data["videos"][2]["slug"] == "zebra-video"
