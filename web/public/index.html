@@ -6,27 +6,34 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self';">
     <title>Damen's VLog</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
+    <link rel="stylesheet" href="/static/css/bundle.css">
+    <style>[x-cloak] { display: none !important; }</style>
     <script src="/static/js/utils.js"></script>
     <script defer src="/static/vendor/alpine.min.js"></script>
-    <style>
-        [x-cloak] { display: none !important; }
-    </style>
 </head>
 <body class="bg-dark-950 text-dark-100 min-h-screen" x-data="app()">
+    <!-- Skip to main content link -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Screen reader announcements -->
+    <div role="status" aria-live="polite" aria-atomic="true" class="sr-only" x-text="announcement"></div>
+
     <!-- Header -->
     <header class="bg-dark-900 border-b border-dark-800 sticky top-0 z-50">
         <div class="max-w-7xl mx-auto px-4 py-4">
             <div class="flex items-center justify-between">
                 <a href="/" class="text-2xl font-bold text-white">Damen's VLog</a>
-                <div class="flex-1 max-w-xl mx-8">
+                <search role="search" class="flex-1 max-w-xl mx-8">
+                    <label for="search-input" class="sr-only">Search videos</label>
                     <input
-                        type="text"
+                        id="search-input"
+                        type="search"
                         placeholder="Search videos..."
                         class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-blue-500 text-white"
                         x-model="searchQuery"
                         @input.debounce.300ms="loadVideos()"
                     >
-                </div>
+                </search>
                 <nav class="flex gap-4">
                     <a href="/" class="text-dark-300 hover:text-white">Home</a>
                 </nav>
@@ -34,7 +41,7 @@
         </div>
     </header>
 
-    <main class="max-w-7xl mx-auto px-4 py-8">
+    <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
         <!-- Categories -->
         <section class="mb-8" x-show="categories.length > 0">
             <h2 class="text-xl font-semibold mb-4">Categories</h2>
@@ -90,7 +97,7 @@
                             <div class="p-4">
                                 <h3 class="font-medium text-white group-hover:text-blue-400 line-clamp-2" x-text="video.title"></h3>
                                 <p class="text-dark-400 text-sm mt-1" x-text="video.category_name || 'Uncategorized'"></p>
-                                <p class="text-dark-500 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
+                                <p class="text-dark-400 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
                             </div>
                         </div>
                     </a>
@@ -107,6 +114,7 @@
                 loading: true,
                 searchQuery: '',
                 selectedCategory: null,
+                announcement: '', // For screen reader announcements
 
                 async init() {
                     await Promise.all([
@@ -143,9 +151,12 @@
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
                         this.videos = await res.json();
+                        // Announce results to screen readers
+                        this.announcement = `${this.videos.length} video${this.videos.length === 1 ? '' : 's'} found`;
                     } catch (e) {
                         console.error('Failed to load videos:', e);
                         this.videos = [];
+                        this.announcement = 'Failed to load videos';
                     } finally {
                         this.loading = false;
                     }

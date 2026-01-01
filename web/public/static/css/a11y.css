@@ -1,0 +1,50 @@
+/**
+ * VLog Accessibility Utilities
+ * WCAG 2.1 AA compliant accessibility styles
+ *
+ * Used by: All public pages
+ * Dependencies: design-tokens.css
+ */
+
+@layer base {
+    /* Skip to main content link */
+    .skip-link {
+        position: absolute;
+        top: -100%;
+        left: 0;
+        background: var(--vlog-primary, #3b82f6);
+        color: white;
+        padding: 8px 16px;
+        text-decoration: none;
+        z-index: 100;
+        border-radius: 0 0 var(--vlog-radius-sm, 4px) 0;
+    }
+
+    .skip-link:focus {
+        top: 0;
+    }
+
+    /* Screen reader only content */
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border-width: 0;
+    }
+
+    /* Focus indicators - WCAG 2.1 AA requires 3:1 contrast */
+    button:focus-visible,
+    a:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible,
+    [tabindex]:focus-visible {
+        outline: var(--vlog-focus-ring-width, 2px) solid var(--vlog-focus-ring-color, #3b82f6);
+        outline-offset: var(--vlog-focus-ring-offset, 2px);
+    }
+}

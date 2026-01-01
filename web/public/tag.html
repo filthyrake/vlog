@@ -6,13 +6,18 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self';">
     <title>Tag - Damen's VLog</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
+    <link rel="stylesheet" href="/static/css/bundle.css">
+    <style>[x-cloak] { display: none !important; }</style>
     <script src="/static/js/utils.js"></script>
     <script defer src="/static/vendor/alpine.min.js"></script>
-    <style>
-        [x-cloak] { display: none !important; }
-    </style>
 </head>
 <body class="bg-dark-950 text-dark-100 min-h-screen" x-data="tagPage()">
+    <!-- Skip to main content link -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Screen reader announcements -->
+    <div role="status" aria-live="polite" aria-atomic="true" class="sr-only" x-text="announcement"></div>
+
     <!-- Header -->
     <header class="bg-dark-900 border-b border-dark-800 sticky top-0 z-50">
         <div class="max-w-7xl mx-auto px-4 py-4">
@@ -25,7 +30,7 @@
         </div>
     </header>
 
-    <main class="max-w-7xl mx-auto px-4 py-8">
+    <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
         <!-- Loading -->
         <div x-show="loading" class="flex justify-center py-12">
             <div class="animate-spin rounded-full h-12 w-12 border-4 border-dark-700 border-t-blue-500"></div>
@@ -37,7 +42,7 @@
                 <span class="bg-blue-600 text-white px-3 py-1 rounded-full text-sm">#</span>
                 <h1 class="text-3xl font-bold text-white" x-text="tag?.name"></h1>
             </div>
-            <p class="text-dark-500" x-text="tag?.video_count + ' videos'"></p>
+            <p class="text-dark-400" x-text="tag?.video_count + ' videos'"></p>
         </div>
 
         <!-- Videos Grid -->
@@ -63,7 +68,7 @@
                         </div>
                         <div class="p-4">
                             <h3 class="font-medium text-white group-hover:text-blue-400 line-clamp-2" x-text="video.title"></h3>
-                            <p class="text-dark-500 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
+                            <p class="text-dark-400 text-sm mt-1" x-text="formatDate(video.published_at)"></p>
                             <!-- Video tags -->
                             <div x-show="video.tags && video.tags.length > 0" class="flex flex-wrap gap-1 mt-2">
                                 <template x-for="t in video.tags" :key="t.id">
@@ -83,6 +88,7 @@
                 tag: null,
                 videos: [],
                 loading: true,
+                announcement: '', // For screen reader announcements
 
                 async init() {
                     const slug = window.location.pathname.split('/').pop();
@@ -105,13 +111,16 @@
                         this.tag = await tagRes.json();
                         if (videosRes.ok) {
                             this.videos = await videosRes.json();
+                            this.announcement = `Tag ${this.tag.name} with ${this.videos.length} video${this.videos.length === 1 ? '' : 's'}`;
                         } else {
                             console.error('Failed to load videos:', videosRes.status);
                             this.videos = [];
+                            this.announcement = 'Failed to load videos';
                         }
                         document.title = `#${this.tag.name} - Damen's VLog`;
                     } catch (e) {
                         console.error('Failed to load tag:', e);
+                        this.announcement = 'Failed to load tag';
                     } finally {
                         this.loading = false;
                     }

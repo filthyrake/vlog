@@ -64,5 +64,74 @@ window.VLogUtils = {
             month: monthFormat,
             day: 'numeric'
         });
+    },
+
+    /**
+     * Watch history utility for tracking video playback position
+     * Stores position data in localStorage with automatic pruning
+     */
+    watchHistory: {
+        STORAGE_KEY: 'vlog_watch_history',
+        MAX_ENTRIES: 50,
+
+        /**
+         * Save watch position for a video
+         * @param {number} videoId - The video ID
+         * @param {number} position - Current playback position in seconds
+         * @param {number} duration - Total video duration in seconds
+         */
+        save(videoId, position, duration) {
+            try {
+                const history = this.getAll();
+                history[videoId] = {
+                    position,
+                    duration,
+                    percentage: (position / duration) * 100,
+                    timestamp: Date.now()
+                };
+                // Prune old entries if exceeding max
+                const entries = Object.entries(history);
+                if (entries.length > this.MAX_ENTRIES) {
+                    entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
+                    localStorage.setItem(this.STORAGE_KEY,
+                        JSON.stringify(Object.fromEntries(entries.slice(0, this.MAX_ENTRIES))));
+                } else {
+                    localStorage.setItem(this.STORAGE_KEY, JSON.stringify(history));
+                }
+            } catch (e) {
+                console.warn('Failed to save watch history:', e);
+            }
+        },
+
+        /**
+         * Get watch position for a specific video
+         * @param {number} videoId - The video ID
+         * @returns {Object|null} Position data or null if not found
+         */
+        get(videoId) {
+            return this.getAll()[videoId] || null;
+        },
+
+        /**
+         * Get all watch history entries
+         * @returns {Object} Map of videoId to position data
+         */
+        getAll() {
+            try {
+                return JSON.parse(localStorage.getItem(this.STORAGE_KEY)) || {};
+            } catch (e) {
+                return {};
+            }
+        },
+
+        /**
+         * Clear watch history for a specific video
+         * @param {number} videoId - The video ID to clear
+         */
+        clear(videoId) {
+            const history = this.getAll();
+            delete history[videoId];
+            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(history));
+        }
     }
 };
