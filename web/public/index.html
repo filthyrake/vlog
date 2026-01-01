@@ -598,7 +598,8 @@
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
-                        this.videos = await res.json();
+                        const data = await res.json();
+                        this.videos = data.videos || [];
                         // Announce results to screen readers
                         this.announcement = `${this.videos.length} video${this.videos.length === 1 ? '' : 's'} found`;
                     } catch (e) {
@@ -622,7 +623,8 @@
                         if (!res.ok) {
                             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                         }
-                        const videos = await res.json();
+                        const data = await res.json();
+                        const videos = data.videos || [];
                         this.featuredVideo = videos.length > 0 ? videos[0] : null;
                     } catch (e) {
                         console.error('Failed to load featured video:', e);

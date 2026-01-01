@@ -351,7 +351,8 @@
 
                         this.tag = await tagRes.json();
                         if (videosRes.ok) {
-                            this.videos = await videosRes.json();
+                            const data = await videosRes.json();
+                            this.videos = data.videos || [];
                             this.announcement = `Tag ${this.tag.name} with ${this.videos.length} video${this.videos.length === 1 ? '' : 's'}`;
                         } else {
                             console.error('Failed to load videos:', videosRes.status);

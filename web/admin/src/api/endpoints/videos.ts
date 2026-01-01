@@ -32,7 +32,8 @@ export const videosApi = {
    * List all videos
    */
   async list(): Promise<Video[]> {
-    return apiClient.fetch<Video[]>('/api/videos');
+    const response = await apiClient.fetch<{ videos: Video[] }>('/api/videos');
+    return response.videos || [];
   },
 
   /**
