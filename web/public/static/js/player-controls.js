@@ -222,14 +222,25 @@ class VLogPlayerControls {
         `;
         this.container.appendChild(this.controlBar);
 
+        // Live region for screen reader announcements
+        this.liveRegion = document.createElement('div');
+        this.liveRegion.className = 'player-sr-only';
+        this.liveRegion.setAttribute('role', 'status');
+        this.liveRegion.setAttribute('aria-live', 'polite');
+        this.liveRegion.setAttribute('aria-atomic', 'true');
+        this.container.appendChild(this.liveRegion);
+
         // Quality modal (for mobile)
         this.qualityModal = document.createElement('div');
         this.qualityModal.className = 'player-quality-modal';
+        this.qualityModal.setAttribute('role', 'dialog');
+        this.qualityModal.setAttribute('aria-label', 'Video quality selection');
+        this.qualityModal.setAttribute('aria-hidden', 'true');
         this.qualityModal.innerHTML = `
-            <div class="quality-modal-backdrop"></div>
+            <div class="quality-modal-backdrop" aria-hidden="true"></div>
             <div class="quality-modal-content">
                 <div class="quality-modal-header">Quality</div>
-                <div class="quality-modal-options"></div>
+                <div class="quality-modal-options" role="listbox" aria-label="Quality options"></div>
             </div>
         `;
         this.container.appendChild(this.qualityModal);
@@ -237,11 +248,14 @@ class VLogPlayerControls {
         // Speed modal
         this.speedModal = document.createElement('div');
         this.speedModal.className = 'player-speed-modal';
+        this.speedModal.setAttribute('role', 'dialog');
+        this.speedModal.setAttribute('aria-label', 'Playback speed selection');
+        this.speedModal.setAttribute('aria-hidden', 'true');
         this.speedModal.innerHTML = `
-            <div class="speed-modal-backdrop"></div>
+            <div class="speed-modal-backdrop" aria-hidden="true"></div>
             <div class="speed-modal-content">
                 <div class="speed-modal-header">Playback Speed</div>
-                <div class="speed-modal-options"></div>
+                <div class="speed-modal-options" role="listbox" aria-label="Speed options"></div>
             </div>
         `;
         this.container.appendChild(this.speedModal);
@@ -252,8 +266,10 @@ class VLogPlayerControls {
         this.shortcutsModal.className = 'player-shortcuts-modal';
         this.shortcutsModal.setAttribute('role', 'dialog');
         this.shortcutsModal.setAttribute('aria-label', 'Keyboard shortcuts');
+        this.shortcutsModal.setAttribute('aria-modal', 'true');
+        this.shortcutsModal.setAttribute('aria-hidden', 'true');
         this.shortcutsModal.innerHTML = `
-            <div class="shortcuts-modal-backdrop"></div>
+            <div class="shortcuts-modal-backdrop" aria-hidden="true"></div>
             <div class="shortcuts-modal-content">
                 <div class="shortcuts-modal-header">
                     <span>Keyboard Shortcuts</span>
@@ -787,13 +803,25 @@ class VLogPlayerControls {
     }
 
     showQualityModal() {
+        this._hideAllModals();
+        this._lastFocusedElement = document.activeElement;
         this.qualityModal.classList.add('visible');
+        this.qualityModal.setAttribute('aria-hidden', 'false');
         this.qualityBtn.setAttribute('aria-expanded', 'true');
+        // Focus first option
+        const firstOption = this.qualityModalOptions.querySelector('.quality-option');
+        if (firstOption) {
+            firstOption.focus();
+            this._trapFocus(this.qualityModal);
+        }
     }
 
     hideQualityModal() {
         this.qualityModal.classList.remove('visible');
+        this.qualityModal.setAttribute('aria-hidden', 'true');
         this.qualityBtn.setAttribute('aria-expanded', 'false');
+        this._removeFocusTrap();
+        this._restoreFocus();
     }
 
     // Speed control
@@ -812,11 +840,19 @@ class VLogPlayerControls {
     }
 
     selectSpeed(speed) {
-        this.currentSpeed = speed;
-        this.video.playbackRate = speed;
+        try {
+            this.video.playbackRate = speed;
+            // Verify the rate was actually set (browsers may clamp values)
+            this.currentSpeed = this.video.playbackRate;
+        } catch (e) {
+            console.warn('Failed to set playback rate:', e);
+            this.currentSpeed = this.video.playbackRate;
+        }
         this.updateSpeedLabel();
         this.buildSpeedOptions();
         this.hideSpeedModal();
+        // Announce to screen readers
+        this._announce(`Playback speed changed to ${this.currentSpeed === 1 ? 'normal' : this.currentSpeed + 'x'}`);
     }
 
     updateSpeedLabel() {
@@ -826,17 +862,35 @@ class VLogPlayerControls {
     }
 
     showSpeedModal() {
+        this._hideAllModals();
+        this._lastFocusedElement = document.activeElement;
         this.speedModal.classList.add('visible');
+        this.speedModal.setAttribute('aria-hidden', 'false');
         this.speedBtn.setAttribute('aria-expanded', 'true');
+        // Focus first option
+        const firstOption = this.speedModalOptions.querySelector('.speed-option');
+        if (firstOption) {
+            firstOption.focus();
+            this._trapFocus(this.speedModal);
+        }
     }
 
     hideSpeedModal() {
         this.speedModal.classList.remove('visible');
+        this.speedModal.setAttribute('aria-hidden', 'true');
         this.speedBtn.setAttribute('aria-expanded', 'false');
+        this._removeFocusTrap();
+        this._restoreFocus();
     }
 
     increaseSpeed() {
         const currentIndex = this.speedOptions.indexOf(this.currentSpeed);
+        // Guard against currentSpeed not being in the array
+        if (currentIndex === -1) {
+            // Find nearest speed option and use that
+            this.selectSpeed(1); // Reset to normal
+            return;
+        }
         if (currentIndex < this.speedOptions.length - 1) {
             this.selectSpeed(this.speedOptions[currentIndex + 1]);
         }
@@ -844,6 +898,11 @@ class VLogPlayerControls {
 
     decreaseSpeed() {
         const currentIndex = this.speedOptions.indexOf(this.currentSpeed);
+        // Guard against currentSpeed not being in the array
+        if (currentIndex === -1) {
+            this.selectSpeed(1); // Reset to normal
+            return;
+        }
         if (currentIndex > 0) {
             this.selectSpeed(this.speedOptions[currentIndex - 1]);
         }
@@ -853,9 +912,14 @@ class VLogPlayerControls {
     toggleTheaterMode() {
         this.theaterMode = !this.theaterMode;
         this.container.classList.toggle('theater-mode', this.theaterMode);
+        // Add body class for CSS :has() fallback (older browsers)
+        document.body.classList.toggle('player-theater-active', this.theaterMode);
         this.theaterBtn.classList.toggle('active', this.theaterMode);
         this.theaterBtn.setAttribute('aria-pressed', this.theaterMode.toString());
         this.theaterBtn.setAttribute('aria-label', this.theaterMode ? 'Exit theater mode' : 'Enter theater mode');
+
+        // Announce to screen readers
+        this._announce(this.theaterMode ? 'Theater mode enabled' : 'Theater mode disabled');
 
         // Dispatch custom event for parent components to react
         this.container.dispatchEvent(new CustomEvent('theatermodechange', {
@@ -866,16 +930,104 @@ class VLogPlayerControls {
 
     // Keyboard shortcuts help
     showShortcutsModal() {
+        this._hideAllModals();
+        this._lastFocusedElement = document.activeElement;
         this.shortcutsModal.classList.add('visible');
+        this.shortcutsModal.setAttribute('aria-hidden', 'false');
         // Focus the close button for accessibility
         const closeBtn = this.shortcutsModal.querySelector('.shortcuts-close-btn');
-        if (closeBtn) closeBtn.focus();
+        if (closeBtn) {
+            closeBtn.focus();
+            this._trapFocus(this.shortcutsModal);
+        }
     }
 
     hideShortcutsModal() {
         this.shortcutsModal.classList.remove('visible');
-        // Return focus to the container
-        this.container.focus();
+        this.shortcutsModal.setAttribute('aria-hidden', 'true');
+        this._removeFocusTrap();
+        this._restoreFocus();
+    }
+
+    // Helper: Hide all modals
+    _hideAllModals() {
+        if (this.qualityModal.classList.contains('visible')) {
+            this.qualityModal.classList.remove('visible');
+            this.qualityModal.setAttribute('aria-hidden', 'true');
+            this.qualityBtn.setAttribute('aria-expanded', 'false');
+        }
+        if (this.speedModal.classList.contains('visible')) {
+            this.speedModal.classList.remove('visible');
+            this.speedModal.setAttribute('aria-hidden', 'true');
+            this.speedBtn.setAttribute('aria-expanded', 'false');
+        }
+        if (this.shortcutsModal.classList.contains('visible')) {
+            this.shortcutsModal.classList.remove('visible');
+            this.shortcutsModal.setAttribute('aria-hidden', 'true');
+        }
+        this._removeFocusTrap();
+    }
+
+    // Helper: Trap focus within a modal
+    _trapFocus(modalElement) {
+        const focusableSelectors = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+        const focusableElements = modalElement.querySelectorAll(focusableSelectors);
+        if (focusableElements.length === 0) return;
+
+        const firstFocusable = focusableElements[0];
+        const lastFocusable = focusableElements[focusableElements.length - 1];
+
+        this._focusTrapHandler = (e) => {
+            if (e.key !== 'Tab') return;
+
+            if (e.shiftKey) {
+                if (document.activeElement === firstFocusable) {
+                    e.preventDefault();
+                    lastFocusable.focus();
+                }
+            } else {
+                if (document.activeElement === lastFocusable) {
+                    e.preventDefault();
+                    firstFocusable.focus();
+                }
+            }
+        };
+
+        modalElement.addEventListener('keydown', this._focusTrapHandler);
+        this._currentTrapModal = modalElement;
+    }
+
+    // Helper: Remove focus trap
+    _removeFocusTrap() {
+        if (this._focusTrapHandler && this._currentTrapModal) {
+            this._currentTrapModal.removeEventListener('keydown', this._focusTrapHandler);
+            this._focusTrapHandler = null;
+            this._currentTrapModal = null;
+        }
+    }
+
+    // Helper: Restore focus to last focused element
+    _restoreFocus() {
+        if (this._lastFocusedElement && typeof this._lastFocusedElement.focus === 'function') {
+            try {
+                this._lastFocusedElement.focus();
+            } catch (e) {
+                // Focus failed, try container
+                if (this.container) {
+                    this.container.focus();
+                }
+            }
+            this._lastFocusedElement = null;
+        } else if (this.container) {
+            this.container.focus();
+        }
+    }
+
+    // Helper: Announce message to screen readers
+    _announce(message) {
+        if (this.liveRegion) {
+            this.liveRegion.textContent = message;
+        }
     }
 
     // Captions
@@ -1226,7 +1378,7 @@ class VLogPlayerControls {
             return;
         }
 
-        // Handle Escape key for closing modals
+        // Handle Escape key for closing modals and exiting theater mode
         if (e.key === 'Escape') {
             if (this.shortcutsModal.classList.contains('visible')) {
                 this.hideShortcutsModal();
@@ -1240,6 +1392,12 @@ class VLogPlayerControls {
             }
             if (this.qualityModal.classList.contains('visible')) {
                 this.hideQualityModal();
+                e.preventDefault();
+                return;
+            }
+            // Exit theater mode on Escape (after modals are closed)
+            if (this.theaterMode) {
+                this.toggleTheaterMode();
                 e.preventDefault();
                 return;
             }
@@ -1321,6 +1479,16 @@ class VLogPlayerControls {
         clearTimeout(this.hideControlsTimeout);
         clearTimeout(this.tapTimeout);
 
+        // Exit theater mode if active to clean up body styles
+        if (this.theaterMode) {
+            this.theaterMode = false;
+            this.container.classList.remove('theater-mode');
+            document.body.classList.remove('player-theater-active');
+        }
+
+        // Remove focus trap if active
+        this._removeFocusTrap();
+
         // Remove video event listeners
         this.video.removeEventListener('play', this._boundHandlers.onPlay);
         this.video.removeEventListener('pause', this._boundHandlers.onPause);
@@ -1377,6 +1545,15 @@ class VLogPlayerControls {
         }
         if (this.qualityModal && this.qualityModal.parentNode) {
             this.qualityModal.parentNode.removeChild(this.qualityModal);
+        }
+        if (this.speedModal && this.speedModal.parentNode) {
+            this.speedModal.parentNode.removeChild(this.speedModal);
+        }
+        if (this.shortcutsModal && this.shortcutsModal.parentNode) {
+            this.shortcutsModal.parentNode.removeChild(this.shortcutsModal);
+        }
+        if (this.liveRegion && this.liveRegion.parentNode) {
+            this.liveRegion.parentNode.removeChild(this.liveRegion);
         }
 
         // Clear bound handlers reference

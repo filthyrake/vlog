@@ -958,6 +958,19 @@
     }
 }
 
+/* Screen reader only - visually hidden but accessible */
+.player-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 /* Theater mode styles */
 .player-container.theater-mode {
     position: fixed;
@@ -969,12 +982,29 @@
     background: #000;
 }
 
-/* Theater mode body overlay */
+/* Theater mode body overlay - CSS :has() version (modern browsers) */
 body:has(.player-container.theater-mode) {
     overflow: hidden;
 }
 
 body:has(.player-container.theater-mode)::after {
+    content: '';
+    position: fixed;
+    top: 70vh;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 99;
+    pointer-events: none;
+}
+
+/* Theater mode body fallback - for browsers without :has() support */
+body.player-theater-active {
+    overflow: hidden;
+}
+
+body.player-theater-active::after {
     content: '';
     position: fixed;
     top: 70vh;

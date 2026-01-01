@@ -137,6 +137,7 @@ function watchPage() {
         analytics: null,
         hls: null,
         shakaPlayer: null,
+        shakaEventHandlers: {}, // Store Shaka event handlers for cleanup
         hlsLevels: [],
         captionsEnabled: false,
         captionsTrack: null,
@@ -312,6 +313,17 @@ function watchPage() {
                     this.playerControls.destroy();
                 }
                 if (this.shakaPlayer) {
+                    // Remove event listeners before destroying
+                    if (this.shakaEventHandlers.onError) {
+                        this.shakaPlayer.removeEventListener('error', this.shakaEventHandlers.onError);
+                    }
+                    if (this.shakaEventHandlers.onTracksChanged) {
+                        this.shakaPlayer.removeEventListener('trackschanged', this.shakaEventHandlers.onTracksChanged);
+                    }
+                    if (this.shakaEventHandlers.onAdaptation) {
+                        this.shakaPlayer.removeEventListener('adaptation', this.shakaEventHandlers.onAdaptation);
+                    }
+                    this.shakaEventHandlers = {};
                     this.shakaPlayer.destroy();
                 }
                 if (this.hls) {
@@ -371,8 +383,8 @@ function watchPage() {
                 }
             });
 
-            // Error handling
-            player.addEventListener('error', (event) => {
+            // Store event handlers for cleanup
+            this.shakaEventHandlers.onError = (event) => {
                 const error = event.detail;
                 console.error('Shaka Player error:', error);
 
@@ -385,10 +397,9 @@ function watchPage() {
                 } else if (!hlsFallbackUrl) {
                     self.error = 'Video playback error';
                 }
-            });
+            };
 
-            // Track quality levels when manifest is parsed
-            player.addEventListener('trackschanged', () => {
+            this.shakaEventHandlers.onTracksChanged = () => {
                 const tracks = player.getVariantTracks();
                 debugLog('Shaka tracks available:', tracks.length);
 
@@ -418,16 +429,20 @@ function watchPage() {
                 if (self.playerControls && self.hlsLevels.length > 0) {
                     self.playerControls.setQualities(self.hlsLevels);
                 }
-            });
+            };
 
-            // Track ABR quality changes for Auto display
-            player.addEventListener('adaptation', () => {
+            this.shakaEventHandlers.onAdaptation = () => {
                 const tracks = player.getVariantTracks();
                 const activeTrack = tracks.find(t => t.active);
                 if (activeTrack && self.playerControls) {
                     self.playerControls.setCurrentAutoQuality(activeTrack.height);
                 }
-            });
+            };
+
+            // Attach event handlers
+            player.addEventListener('error', this.shakaEventHandlers.onError);
+            player.addEventListener('trackschanged', this.shakaEventHandlers.onTracksChanged);
+            player.addEventListener('adaptation', this.shakaEventHandlers.onAdaptation);
 
             // Load the manifest
             player.load(dashUrl).then(() => {
