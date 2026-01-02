@@ -79,7 +79,7 @@
                         <label class="block text-sm font-medium mb-2">Video File</label>
                         <vlog-dropzone
                             accept="video/*"
-                            max-size="10737418240"
+                            max-size="53687091200"
                             @files-selected="if ($event.detail.files[0]?.file) setFile($event.detail.files[0].file)"
                             @file-removed="uploadFile = null"
                             :disabled="uploading"

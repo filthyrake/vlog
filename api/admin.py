@@ -196,6 +196,8 @@ from config import (
     SECURE_COOKIES,
     SSE_HEARTBEAT_INTERVAL,
     SSE_RECONNECT_TIMEOUT_MS,
+    STREAMING_CODEC,
+    STREAMING_FORMAT,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_VIDEO_EXTENSIONS,
     THUMBNAIL_FRAME_PERCENTAGES,
@@ -1665,6 +1667,12 @@ async def upload_video(
                 duration=0,
                 source_width=0,
                 source_height=0,
+                # Required columns with defaults (Python-level defaults don't apply with databases lib)
+                thumbnail_source="auto",
+                streaming_format=STREAMING_FORMAT,
+                primary_codec=STREAMING_CODEC,
+                is_featured=False,
+                has_chapters=False,
             )
             video_id = await database.execute(query)
         except HTTPException:
