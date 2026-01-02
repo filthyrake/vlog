@@ -1819,8 +1819,10 @@ async def update_video(
             update_data["published_at"] = None
         else:
             try:
-                # Parse ISO format datetime (e.g., "2024-01-15T14:30")
-                update_data["published_at"] = datetime.fromisoformat(published_at)
+                # Parse ISO format datetime (e.g., "2024-01-15T14:30" or "2024-01-15T14:30:00.000Z")
+                # Python 3.9 doesn't support "Z" suffix, replace with +00:00
+                parsed_date = published_at.replace("Z", "+00:00")
+                update_data["published_at"] = datetime.fromisoformat(parsed_date)
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM)")
 
