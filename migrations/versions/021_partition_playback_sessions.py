@@ -93,11 +93,16 @@ def upgrade() -> None:
     # Step 2: Rename existing table to backup
     op.rename_table("playback_sessions", "playback_sessions_old")
 
-    # Step 3: Drop foreign key constraints on the old table's indexes
-    # (They'll be recreated on the new table)
+    # Step 3: Drop indexes on the old table
+    # (They'll be recreated on the new table with the same names)
     op.drop_index("ix_playback_sessions_video_id", table_name="playback_sessions_old")
     op.drop_index("ix_playback_sessions_viewer_id", table_name="playback_sessions_old")
     op.drop_index("ix_playback_sessions_started_at", table_name="playback_sessions_old")
+    # Also drop the session_token index to avoid name conflict
+    try:
+        op.drop_index("ix_playback_sessions_session_token", table_name="playback_sessions_old")
+    except Exception:
+        pass  # Index may not exist if created by a later migration
 
     # Step 4: Create new partitioned table
     # Note: Using raw SQL because Alembic doesn't have native partition support
@@ -291,7 +296,12 @@ def downgrade() -> None:
     op.create_index("ix_playback_sessions_viewer_id", "playback_sessions", ["viewer_id"])
     op.create_index("ix_playback_sessions_started_at", "playback_sessions", ["started_at"])
 
-    # Step 6: Update sequence
+    # Step 6: Rename the sequence (it was created as playback_sessions_new_id_seq)
+    conn.execute(
+        sa.text("ALTER SEQUENCE playback_sessions_new_id_seq RENAME TO playback_sessions_id_seq")
+    )
+
+    # Step 7: Update sequence value
     conn.execute(
         sa.text("""
         SELECT setval('playback_sessions_id_seq', COALESCE((SELECT MAX(id) FROM playback_sessions), 1))

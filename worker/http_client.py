@@ -1129,6 +1129,33 @@ class WorkerAPIClient:
             timeout=TIMEOUT_DEFAULT,
         )
 
+    async def verify_job_complete(self, job_id: int) -> dict:
+        """
+        Verify that job completion was recorded and files are present (Issue #461).
+
+        Workers call this before cleaning up their local work directory to ensure
+        the server has all the files and the completion was recorded in the database.
+
+        Args:
+            job_id: The job ID to verify
+
+        Returns:
+            Dict with:
+                - all_files_present: True if all expected files exist on disk
+                - video_status: Current status in database
+                - job_completed: Whether job completion was recorded
+                - qualities_present: List of quality directories found
+                - missing_files: List of any expected but missing files
+
+        Raises:
+            WorkerAPIError: On HTTP error or connection failure
+        """
+        return await self._request(
+            "GET",
+            f"/api/worker/{job_id}/verify-complete",
+            timeout=TIMEOUT_DEFAULT,
+        )
+
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:

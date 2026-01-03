@@ -287,15 +287,18 @@ class TestVideoTagFilteringHTTP:
         response = public_client.get("/api/videos", params={"tag": "test-tag"})
         assert response.status_code == 200
         data = response.json()
-        assert len(data) >= 1
-        assert any(v["slug"] == "test-video" for v in data)
+        videos = data.get("videos", data) if isinstance(data, dict) else data
+        assert len(videos) >= 1
+        assert any(v["slug"] == "test-video" for v in videos)
 
     @pytest.mark.asyncio
     async def test_filter_videos_by_nonexistent_tag(self, public_client, sample_video):
         """Test filtering by non-existent tag returns empty list."""
         response = public_client.get("/api/videos", params={"tag": "nonexistent-tag"})
         assert response.status_code == 200
-        assert response.json() == []
+        data = response.json()
+        videos = data.get("videos", data) if isinstance(data, dict) else data
+        assert videos == []
 
     @pytest.mark.asyncio
     async def test_video_response_includes_tags(self, public_client, sample_video_with_tag):
@@ -313,7 +316,8 @@ class TestVideoTagFilteringHTTP:
         response = public_client.get("/api/videos")
         assert response.status_code == 200
         data = response.json()
-        video = next((v for v in data if v["slug"] == "test-video"), None)
+        videos = data.get("videos", data) if isinstance(data, dict) else data
+        video = next((v for v in videos if v["slug"] == "test-video"), None)
         assert video is not None
         assert "tags" in video
         assert len(video["tags"]) == 1

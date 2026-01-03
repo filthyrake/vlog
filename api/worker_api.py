@@ -104,7 +104,7 @@ from api.database import (
     worker_api_keys,
     workers,
 )
-from api.db_retry import DatabaseLockedError, execute_with_retry
+from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
 from api.metrics import get_metrics
 from api.pubsub import Publisher
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
@@ -136,6 +136,7 @@ from config import (
     ORPHAN_CLEANUP_ENABLED,
     ORPHAN_CLEANUP_INTERVAL,
     ORPHAN_CLEANUP_MIN_AGE,
+    QUALITY_NAMES,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
     RATE_LIMIT_WORKER_DEFAULT,
@@ -1193,11 +1194,17 @@ async def worker_heartbeat(
         hwaccel_type=hwaccel_type,
     )
 
+    # Issue #458: Return server's view of worker state for stale data detection
+    # This allows the worker to detect if the server's DB state is stale
+    # (e.g., database write failed but HTTP 200 was returned)
     return HeartbeatResponse(
         status="ok",
         server_time=now,
         required_version=required_version,
         version_ok=version_ok,
+        worker_status=data.status,  # What we just wrote
+        current_job_id=worker.get("current_job_id"),  # What DB has for this worker
+        last_heartbeat_recorded=now,  # What we just wrote
     )
 
 
@@ -3127,6 +3134,131 @@ async def update_reencode_job(
     await database.execute(reencode_queue.update().where(reencode_queue.c.id == job_id).values(**update_values))
 
     return {"status": "success"}
+
+
+# =============================================================================
+# Job Completion Verification (Issue #461)
+# =============================================================================
+
+
+@app.get("/api/worker/{job_id}/verify-complete")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def verify_job_completion(
+    request: Request,
+    job_id: int,
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Verify that job completion was properly recorded and files are present.
+
+    Workers call this before cleaning up their local work directory to ensure
+    the server has all the files and the completion was recorded in the database.
+
+    This prevents data loss in edge cases where:
+    - HTTP 200 was returned but database write failed
+    - Files were uploaded but finalization failed
+    - Server crashed during completion processing
+
+    Returns:
+        - all_files_present: True if all expected files exist on disk
+        - video_status: Current status in database
+        - job_status: Current job status (completed, processing, etc.)
+        - qualities_present: List of quality directories found
+        - missing_files: List of any expected but missing files
+    """
+    # Get the job and associated video
+    job = await fetch_one_with_retry(
+        transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+    )
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Verify this worker owns the job (or owned it when it was completed)
+    # Use direct access since worker_id should always be present (may be None)
+    if job["worker_id"] != worker["worker_id"]:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == job["video_id"])
+    )
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_dir = VIDEOS_DIR / video["slug"]
+    result = {
+        "job_id": job_id,
+        "video_id": video["id"],
+        "video_slug": video["slug"],
+        "video_status": video["status"],
+        "job_completed": job.get("completed_at") is not None,
+        "all_files_present": False,
+        "qualities_present": [],
+        "missing_files": [],
+    }
+
+    # If video directory doesn't exist, files weren't uploaded
+    if not video_dir.exists():
+        result["missing_files"].append("video_directory")
+        return result
+
+    # Check for master playlist
+    master_playlist = video_dir / "master.m3u8"
+    if not master_playlist.exists():
+        result["missing_files"].append("master.m3u8")
+
+    # Check for DASH manifest (for CMAF videos)
+    streaming_format = video.get("streaming_format", "hls_ts")
+    if streaming_format == "cmaf":
+        dash_manifest = video_dir / "manifest.mpd"
+        if not dash_manifest.exists():
+            result["missing_files"].append("manifest.mpd")
+
+    # Check for thumbnail
+    thumbnail = video_dir / "thumbnail.jpg"
+    if not thumbnail.exists():
+        result["missing_files"].append("thumbnail.jpg")
+
+    # Get quality directories/files (uses config constant for consistency)
+    for quality in QUALITY_NAMES:
+        # Check CMAF style (subdirectory with init.mp4 and segments)
+        quality_dir = video_dir / quality
+        if quality_dir.is_dir():
+            init_file = quality_dir / "init.mp4"
+            if init_file.exists():
+                result["qualities_present"].append(quality)
+                continue
+
+        # Check HLS/TS style (quality.m3u8 + segments)
+        quality_playlist = video_dir / f"{quality}.m3u8"
+        if quality_playlist.exists():
+            result["qualities_present"].append(quality)
+
+    # Check against qualities recorded in database
+    quality_rows = await fetch_all_with_retry(
+        video_qualities.select().where(video_qualities.c.video_id == video["id"])
+    )
+    expected_qualities = [q["quality"] for q in quality_rows]
+
+    for expected in expected_qualities:
+        if expected not in result["qualities_present"]:
+            result["missing_files"].append(f"quality:{expected}")
+
+    # Determine if all files are present
+    result["all_files_present"] = (
+        len(result["missing_files"]) == 0
+        and len(result["qualities_present"]) > 0
+        and video["status"] == "ready"
+        and job.get("completed_at") is not None
+    )
+
+    logger.debug(
+        f"Job {job_id} verification: all_files_present={result['all_files_present']}, "
+        f"qualities={result['qualities_present']}, missing={result['missing_files']}"
+    )
+
+    return result
 
 
 if __name__ == "__main__":
