@@ -1002,6 +1002,21 @@ KNOWN_SETTINGS = [
         "Footer tagline text",
         {"max_length": 100},
     ),
+    # Metrics settings (Issue #436)
+    (
+        "metrics.enabled",
+        "metrics",
+        "boolean",
+        "Enable Prometheus metrics endpoint (/metrics)",
+        None,
+    ),
+    (
+        "metrics.auth_required",
+        "metrics",
+        "boolean",
+        "Require authentication for metrics endpoint (recommended for public deployments)",
+        None,
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1060,6 +1075,9 @@ SETTING_TO_ENV_MAP = {
     "display.show_view_counts": "VLOG_DISPLAY_SHOW_VIEW_COUNTS",
     "display.show_tagline": "VLOG_DISPLAY_SHOW_TAGLINE",
     "display.tagline": "VLOG_DISPLAY_TAGLINE",
+    # Metrics settings (Issue #436)
+    "metrics.enabled": "VLOG_METRICS_ENABLED",
+    "metrics.auth_required": "VLOG_METRICS_AUTH_REQUIRED",
 }
 
 

@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 os.environ["VLOG_TEST_MODE"] = "1"
 
 
@@ -140,3 +142,48 @@ class TestAuditLogRotationConfig:
 
         assert isinstance(AUDIT_LOG_BACKUP_COUNT, int)
         assert AUDIT_LOG_BACKUP_COUNT >= 0  # Minimum validation
+
+
+class TestMetricsEndpointAuth:
+    """Tests for metrics endpoint authentication (Issue #436)."""
+
+    def test_metrics_settings_defined(self):
+        """Test that metrics settings are defined in KNOWN_SETTINGS."""
+        from api.settings_service import KNOWN_SETTINGS
+
+        setting_keys = [s[0] for s in KNOWN_SETTINGS]
+        assert "metrics.enabled" in setting_keys
+        assert "metrics.auth_required" in setting_keys
+
+    def test_metrics_settings_env_mappings(self):
+        """Test that metrics settings have environment variable mappings."""
+        from api.settings_service import SETTING_TO_ENV_MAP
+
+        assert "metrics.enabled" in SETTING_TO_ENV_MAP
+        assert SETTING_TO_ENV_MAP["metrics.enabled"] == "VLOG_METRICS_ENABLED"
+        assert "metrics.auth_required" in SETTING_TO_ENV_MAP
+        assert SETTING_TO_ENV_MAP["metrics.auth_required"] == "VLOG_METRICS_AUTH_REQUIRED"
+
+    def test_metrics_enabled_setting_is_boolean(self):
+        """Test that metrics.enabled setting is defined as boolean type."""
+        from api.settings_service import KNOWN_SETTINGS
+
+        for setting in KNOWN_SETTINGS:
+            if setting[0] == "metrics.enabled":
+                assert setting[2] == "boolean"
+                assert setting[1] == "metrics"  # category
+                break
+        else:
+            pytest.fail("metrics.enabled setting not found")
+
+    def test_metrics_auth_required_setting_is_boolean(self):
+        """Test that metrics.auth_required setting is defined as boolean type."""
+        from api.settings_service import KNOWN_SETTINGS
+
+        for setting in KNOWN_SETTINGS:
+            if setting[0] == "metrics.auth_required":
+                assert setting[2] == "boolean"
+                assert setting[1] == "metrics"  # category
+                break
+        else:
+            pytest.fail("metrics.auth_required setting not found")
