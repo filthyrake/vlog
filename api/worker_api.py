@@ -1844,6 +1844,7 @@ async def complete_job(
     # This prevents race conditions where two requests pass the check before either stores
     # Token key is scoped to job_id to prevent cross-job collisions
     token_acquired = False
+    token_key = None  # Defined at outer scope for cleanup in exception handler
     if data.completion_token:
         redis = await get_redis()
         if redis:
@@ -1934,6 +1935,17 @@ async def complete_job(
     try:
         await execute_with_retry(do_complete_transaction)
     except DatabaseLockedError as e:
+        # Clean up token so retry can succeed (Gafton review feedback)
+        # Without this, the token stays in Redis for 15 min blocking retries
+        if token_acquired and token_key:
+            try:
+                redis = await get_redis()
+                if redis:
+                    await redis.delete(token_key)
+                    logger.info(f"Cleaned up completion token after transaction failure for job {job_id}")
+            except Exception as cleanup_err:
+                # Best effort cleanup - don't mask the original error
+                logger.warning(f"Failed to clean up completion token: {cleanup_err}")
         raise HTTPException(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
