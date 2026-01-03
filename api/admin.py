@@ -182,6 +182,9 @@ from api.settings_service import (
     get_settings_service,
     seed_settings_from_env,
 )
+from api.settings_service import (
+    get_setting as get_db_setting,
+)
 from api.worker_auth import authenticate_api_key
 from config import (
     ADMIN_API_SECRET,
@@ -984,13 +987,54 @@ async def health_check():
 
 
 @app.get("/metrics")
-async def metrics_endpoint():
+@limiter.limit("60/minute")
+async def metrics_endpoint(request: Request):
     """
     Prometheus metrics endpoint.
 
     Returns metrics in Prometheus text format for scraping.
-    No authentication required for metrics collection.
+
+    Authentication behavior is controlled by settings:
+    - metrics.enabled: If false, returns 404 (default: true)
+    - metrics.auth_required: If true, requires X-Admin-Secret header (default: false)
+
+    Security note: For production deployments, consider either:
+    1. Setting metrics.auth_required=true and using X-Admin-Secret header
+    2. Network-level isolation (only allow Prometheus server to access /metrics)
+
+    Rate limited to 60/minute to prevent brute-force attacks on authentication.
+
+    Related: Issue #436
     """
+    # Check if metrics endpoint is enabled
+    metrics_enabled = await get_db_setting("metrics.enabled", True)
+    if not metrics_enabled:
+        raise HTTPException(status_code=404, detail="Metrics endpoint disabled")
+
+    # Check if authentication is required
+    auth_required = await get_db_setting("metrics.auth_required", False)
+    if auth_required:
+        # Validate X-Admin-Secret header
+        admin_secret = request.headers.get("X-Admin-Secret", "")
+        if not ADMIN_API_SECRET:
+            # No secret configured but auth required - deny access
+            security_logger.warning(
+                "Metrics auth required but ADMIN_API_SECRET not configured",
+                extra={"event": "metrics_auth_misconfigured", "path": "/metrics"},
+            )
+            raise HTTPException(status_code=500, detail="Metrics authentication misconfigured")
+
+        if not admin_secret or not hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+            security_logger.warning(
+                "Metrics endpoint auth failed",
+                extra={
+                    "event": "metrics_auth_failure",
+                    "path": "/metrics",
+                    "client_ip": get_real_ip(request),
+                },
+            )
+            raise HTTPException(status_code=403, detail="Authentication required for metrics")
+
     return Response(content=get_metrics(), media_type="text/plain; charset=utf-8")
 
 

@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 os.environ["VLOG_TEST_MODE"] = "1"
 
 
@@ -140,3 +142,149 @@ class TestAuditLogRotationConfig:
 
         assert isinstance(AUDIT_LOG_BACKUP_COUNT, int)
         assert AUDIT_LOG_BACKUP_COUNT >= 0  # Minimum validation
+
+
+class TestMetricsEndpointAuth:
+    """Tests for metrics endpoint authentication (Issue #436)."""
+
+    def test_metrics_settings_defined(self):
+        """Test that metrics settings are defined in KNOWN_SETTINGS."""
+        from api.settings_service import KNOWN_SETTINGS
+
+        setting_keys = [s[0] for s in KNOWN_SETTINGS]
+        assert "metrics.enabled" in setting_keys
+        assert "metrics.auth_required" in setting_keys
+
+    def test_metrics_settings_env_mappings(self):
+        """Test that metrics settings have environment variable mappings."""
+        from api.settings_service import SETTING_TO_ENV_MAP
+
+        assert "metrics.enabled" in SETTING_TO_ENV_MAP
+        assert SETTING_TO_ENV_MAP["metrics.enabled"] == "VLOG_METRICS_ENABLED"
+        assert "metrics.auth_required" in SETTING_TO_ENV_MAP
+        assert SETTING_TO_ENV_MAP["metrics.auth_required"] == "VLOG_METRICS_AUTH_REQUIRED"
+
+    def test_metrics_enabled_setting_is_boolean(self):
+        """Test that metrics.enabled setting is defined as boolean type."""
+        from api.settings_service import KNOWN_SETTINGS
+
+        for setting in KNOWN_SETTINGS:
+            if setting[0] == "metrics.enabled":
+                assert setting[2] == "boolean"
+                assert setting[1] == "metrics"  # category
+                break
+        else:
+            pytest.fail("metrics.enabled setting not found")
+
+    def test_metrics_auth_required_setting_is_boolean(self):
+        """Test that metrics.auth_required setting is defined as boolean type."""
+        from api.settings_service import KNOWN_SETTINGS
+
+        for setting in KNOWN_SETTINGS:
+            if setting[0] == "metrics.auth_required":
+                assert setting[2] == "boolean"
+                assert setting[1] == "metrics"  # category
+                break
+        else:
+            pytest.fail("metrics.auth_required setting not found")
+
+
+class TestMetricsEndpointIntegration:
+    """Integration tests for metrics endpoint authentication (Issue #436).
+
+    Uses the admin_client fixture from conftest.py which properly sets up
+    test database and storage paths.
+    """
+
+    def test_metrics_endpoint_returns_200_when_enabled_no_auth(self, admin_client, monkeypatch):
+        """Metrics endpoint should return 200 when enabled and no auth required (default)."""
+        from unittest.mock import AsyncMock
+
+        # Mock settings to return defaults
+        mock_get = AsyncMock(side_effect=lambda k, d=None: {"metrics.enabled": True, "metrics.auth_required": False}.get(k, d))
+        monkeypatch.setattr("api.admin.get_db_setting", mock_get)
+
+        response = admin_client.get("/metrics")
+        assert response.status_code == 200
+        assert b"vlog_" in response.content  # Check for Prometheus metrics
+
+    def test_metrics_endpoint_returns_404_when_disabled(self, admin_client, monkeypatch):
+        """Metrics endpoint should return 404 when metrics.enabled=false."""
+        from unittest.mock import AsyncMock
+
+        # Mock settings to disable metrics
+        mock_get = AsyncMock(side_effect=lambda k, d=None: {"metrics.enabled": False, "metrics.auth_required": False}.get(k, d))
+        monkeypatch.setattr("api.admin.get_db_setting", mock_get)
+
+        response = admin_client.get("/metrics")
+        assert response.status_code == 404
+        assert "disabled" in response.json()["detail"].lower()
+
+    def test_metrics_endpoint_returns_403_when_auth_required_no_header(self, admin_client, monkeypatch):
+        """Metrics endpoint should return 403 when auth required but no header provided."""
+        from unittest.mock import AsyncMock
+
+        import api.admin
+
+        # Set admin secret so auth can work (patch at module level where it's imported)
+        monkeypatch.setattr(api.admin, "ADMIN_API_SECRET", "test-secret-123")
+
+        # Mock settings to require auth
+        mock_get = AsyncMock(side_effect=lambda k, d=None: {"metrics.enabled": True, "metrics.auth_required": True}.get(k, d))
+        monkeypatch.setattr("api.admin.get_db_setting", mock_get)
+
+        response = admin_client.get("/metrics")
+        assert response.status_code == 403
+        assert "Authentication required" in response.json()["detail"]
+
+    def test_metrics_endpoint_returns_403_when_auth_required_wrong_secret(self, admin_client, monkeypatch):
+        """Metrics endpoint should return 403 when auth required but wrong secret provided."""
+        from unittest.mock import AsyncMock
+
+        import api.admin
+
+        # Set admin secret (patch at module level where it's imported)
+        monkeypatch.setattr(api.admin, "ADMIN_API_SECRET", "correct-secret-123")
+
+        # Mock settings to require auth
+        mock_get = AsyncMock(side_effect=lambda k, d=None: {"metrics.enabled": True, "metrics.auth_required": True}.get(k, d))
+        monkeypatch.setattr("api.admin.get_db_setting", mock_get)
+
+        response = admin_client.get("/metrics", headers={"X-Admin-Secret": "wrong-secret"})
+        assert response.status_code == 403
+        assert "Authentication required" in response.json()["detail"]
+
+    def test_metrics_endpoint_returns_200_when_auth_required_correct_secret(self, admin_client, monkeypatch):
+        """Metrics endpoint should return 200 when auth required and correct secret provided."""
+        from unittest.mock import AsyncMock
+
+        import api.admin
+
+        test_secret = "correct-secret-123"
+        # Patch at module level where it's imported
+        monkeypatch.setattr(api.admin, "ADMIN_API_SECRET", test_secret)
+
+        # Mock settings to require auth
+        mock_get = AsyncMock(side_effect=lambda k, d=None: {"metrics.enabled": True, "metrics.auth_required": True}.get(k, d))
+        monkeypatch.setattr("api.admin.get_db_setting", mock_get)
+
+        response = admin_client.get("/metrics", headers={"X-Admin-Secret": test_secret})
+        assert response.status_code == 200
+        assert b"vlog_" in response.content
+
+    def test_metrics_endpoint_returns_500_when_auth_required_no_secret_configured(self, admin_client, monkeypatch):
+        """Metrics endpoint should return 500 when auth required but ADMIN_API_SECRET not set."""
+        from unittest.mock import AsyncMock
+
+        import api.admin
+
+        # Ensure no secret is configured (patch at module level where it's imported)
+        monkeypatch.setattr(api.admin, "ADMIN_API_SECRET", None)
+
+        # Mock settings to require auth
+        mock_get = AsyncMock(side_effect=lambda k, d=None: {"metrics.enabled": True, "metrics.auth_required": True}.get(k, d))
+        monkeypatch.setattr("api.admin.get_db_setting", mock_get)
+
+        response = admin_client.get("/metrics")
+        assert response.status_code == 500
+        assert "misconfigured" in response.json()["detail"].lower()
