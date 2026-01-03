@@ -2389,16 +2389,24 @@ async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse
 
 @app.delete("/api/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def delete_video(request: Request, video_id: int, permanent: bool = False):
+async def delete_video(
+    request: Request,
+    video_id: int,
+    permanent: bool = False,
+):
     """
     Soft-delete a video (moves to archive) or permanently delete if permanent=True.
 
-    Soft-delete:
+    Args:
+        video_id: The video ID to delete
+        permanent: If True, permanently delete. If False (default), soft-delete to archive.
+
+    Soft-delete (permanent=False):
     - Moves video files to archive directory
     - Sets deleted_at timestamp
     - Video can be restored within retention period
 
-    Permanent delete:
+    Permanent delete (permanent=True):
     - Removes all files permanently
     - Deletes all database records
     - Cannot be undone
@@ -4629,9 +4637,17 @@ async def enable_worker(request: Request, worker_id: str):
 
 @app.delete("/api/workers/{worker_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = True):
+async def delete_worker(
+    request: Request,
+    worker_id: str,
+    revoke_keys: bool = True,
+):
     """
     Delete a worker and optionally revoke its API keys.
+
+    Args:
+        worker_id: The worker UUID to delete
+        revoke_keys: If True (default), revoke all API keys. If False, keep keys active.
 
     This will:
     - Release any claimed job back to pending

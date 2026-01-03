@@ -7,8 +7,10 @@ while still logging detailed errors for debugging.
 
 import logging
 import re
-from typing import Optional
+import warnings
+from typing import Optional, Union
 
+from api.enums import ErrorLogging
 from config import ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH
 
 logger = logging.getLogger(__name__)
@@ -87,13 +89,19 @@ def truncate_error(msg: Optional[str], max_length: int = ERROR_DETAIL_MAX_LENGTH
 
 
 
-def sanitize_error_message(error: Optional[str], log_original: bool = True, context: str = "") -> Optional[str]:
+def sanitize_error_message(
+    error: Optional[str],
+    logging_mode: Union[ErrorLogging, bool] = ErrorLogging.LOG_ORIGINAL,
+    context: str = "",
+) -> Optional[str]:
     """
     Sanitize an error message for safe display to API clients.
 
     Args:
         error: The original error message (may contain internal details)
-        log_original: Whether to log the original message before sanitizing
+        logging_mode: Whether to log the original message before sanitizing.
+            Use ErrorLogging.LOG_ORIGINAL or ErrorLogging.SKIP_LOGGING.
+            Boolean values are deprecated but supported for backwards compatibility.
         context: Additional context for logging (e.g., "video_id=123")
 
     Returns:
@@ -102,8 +110,24 @@ def sanitize_error_message(error: Optional[str], log_original: bool = True, cont
     if error is None:
         return None
 
+    # Handle backwards compatibility with boolean values
+    if isinstance(logging_mode, bool):
+        warnings.warn(
+            "Passing boolean to sanitize_error_message() is deprecated. "
+            "Use ErrorLogging.LOG_ORIGINAL or ErrorLogging.SKIP_LOGGING instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        should_log = logging_mode
+    elif isinstance(logging_mode, ErrorLogging):
+        should_log = logging_mode == ErrorLogging.LOG_ORIGINAL
+    else:
+        raise TypeError(
+            f"logging_mode must be ErrorLogging or bool, got {type(logging_mode).__name__}: {logging_mode!r}"
+        )
+
     # Log the original error for debugging
-    if log_original and error:
+    if should_log and error:
         log_msg = "Original error"
         if context:
             log_msg += f" ({context})"
@@ -214,4 +238,4 @@ def sanitize_progress_error(error: Optional[str]) -> Optional[str]:
         return "Maximum retry attempts exceeded"
 
     # Fall back to general sanitization
-    return sanitize_error_message(error, log_original=False)
+    return sanitize_error_message(error, ErrorLogging.SKIP_LOGGING)
