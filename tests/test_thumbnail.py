@@ -294,9 +294,10 @@ class TestThumbnailInVideoResponse:
         response = admin_client.get("/api/videos")
         assert response.status_code == 200
         data = response.json()
+        videos_list = data.get("videos", data) if isinstance(data, dict) else data
 
         # Find our sample video
-        video = next((v for v in data if v["id"] == sample_video["id"]), None)
+        video = next((v for v in videos_list if v["id"] == sample_video["id"]), None)
         assert video is not None
         assert video["thumbnail_source"] == "selected"
         assert video["thumbnail_timestamp"] == 45.0

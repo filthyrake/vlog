@@ -22,6 +22,7 @@ from typing import List, Optional
 
 import sqlalchemy as sa
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -8660,7 +8661,7 @@ async def get_dead_letter_queue(
         logger.error(f"Error reading dead letter queue: {e}")
         return {
             "available": False,
-            "message": f"Error reading DLQ: {str(e)}",
+            "message": sanitize_error_message(str(e), context="read_dlq"),
             "entries": [],
             "total_count": 0,
             "depth_warning": False,
@@ -8671,8 +8672,8 @@ async def get_dead_letter_queue(
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def reprocess_dead_letter_job(
     request: Request,
-    message_id: str,
-    priority: str = Query(default="normal", regex="^(high|normal|low)$"),
+    message_id: str = FastAPIPath(..., pattern=r"^\d+-\d+$", description="Redis stream message ID"),
+    priority: str = Query(default="normal", pattern="^(high|normal|low)$"),
 ):
     """
     Reprocess a job from the dead letter queue.
@@ -8745,20 +8746,15 @@ async def reprocess_dead_letter_job(
             )
         else:
             # Create a new job if old one doesn't exist
-            await db_execute_with_retry(
+            # db_execute_with_retry returns the inserted row ID
+            new_job_id = await db_execute_with_retry(
                 transcoding_jobs.insert().values(
                     video_id=video_id,
                     attempt=1,
                     created_at=datetime.now(timezone.utc),
                 )
             )
-            # Get the new job ID
-            new_job = await fetch_one_with_retry(
-                transcoding_jobs.select()
-                .where(transcoding_jobs.c.video_id == video_id)
-                .order_by(transcoding_jobs.c.id.desc())
-            )
-            job_id = new_job["id"] if new_job else job_id
+            job_id = new_job_id if new_job_id else job_id
 
         # Reset video status
         await db_execute_with_retry(
@@ -8804,12 +8800,18 @@ async def reprocess_dead_letter_job(
         raise
     except Exception as e:
         logger.error(f"Error reprocessing DLQ message {message_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Error reprocessing job: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="reprocess_dlq"),
+        )
 
 
 @app.delete("/api/admin/job-queue/dead-letter/{message_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def delete_dead_letter_entry(request: Request, message_id: str):
+async def delete_dead_letter_entry(
+    request: Request,
+    message_id: str = FastAPIPath(..., pattern=r"^\d+-\d+$", description="Redis stream message ID"),
+):
     """
     Delete a specific entry from the dead letter queue.
 
@@ -8847,7 +8849,10 @@ async def delete_dead_letter_entry(request: Request, message_id: str):
         raise
     except Exception as e:
         logger.error(f"Error deleting DLQ message {message_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Error deleting message: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="delete_dlq"),
+        )
 
 
 @app.get("/api/admin/job-queue/stats")

@@ -104,7 +104,7 @@ from api.database import (
     worker_api_keys,
     workers,
 )
-from api.db_retry import DatabaseLockedError, execute_with_retry
+from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
 from api.metrics import get_metrics
 from api.pubsub import Publisher
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
@@ -136,6 +136,7 @@ from config import (
     ORPHAN_CLEANUP_ENABLED,
     ORPHAN_CLEANUP_INTERVAL,
     ORPHAN_CLEANUP_MIN_AGE,
+    QUALITY_NAMES,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
     RATE_LIMIT_WORKER_DEFAULT,
@@ -3166,7 +3167,7 @@ async def verify_job_completion(
         - missing_files: List of any expected but missing files
     """
     # Get the job and associated video
-    job = await database.fetch_one(
+    job = await fetch_one_with_retry(
         transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
     )
 
@@ -3174,10 +3175,11 @@ async def verify_job_completion(
         raise HTTPException(status_code=404, detail="Job not found")
 
     # Verify this worker owns the job (or owned it when it was completed)
-    if job.get("worker_id") != worker["worker_id"]:
+    # Use direct access since worker_id should always be present (may be None)
+    if job["worker_id"] != worker["worker_id"]:
         raise HTTPException(status_code=403, detail="Not your job")
 
-    video = await database.fetch_one(
+    video = await fetch_one_with_retry(
         videos.select().where(videos.c.id == job["video_id"])
     )
 
@@ -3218,10 +3220,8 @@ async def verify_job_completion(
     if not thumbnail.exists():
         result["missing_files"].append("thumbnail.jpg")
 
-    # Get quality directories/files
-    quality_names = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "original"]
-
-    for quality in quality_names:
+    # Get quality directories/files (uses config constant for consistency)
+    for quality in QUALITY_NAMES:
         # Check CMAF style (subdirectory with init.mp4 and segments)
         quality_dir = video_dir / quality
         if quality_dir.is_dir():
@@ -3236,7 +3236,7 @@ async def verify_job_completion(
             result["qualities_present"].append(quality)
 
     # Check against qualities recorded in database
-    quality_rows = await database.fetch_all(
+    quality_rows = await fetch_all_with_retry(
         video_qualities.select().where(video_qualities.c.video_id == video["id"])
     )
     expected_qualities = [q["quality"] for q in quality_rows]
