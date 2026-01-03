@@ -987,6 +987,7 @@ async def health_check():
 
 
 @app.get("/metrics")
+@limiter.limit("60/minute")
 async def metrics_endpoint(request: Request):
     """
     Prometheus metrics endpoint.
@@ -1000,6 +1001,8 @@ async def metrics_endpoint(request: Request):
     Security note: For production deployments, consider either:
     1. Setting metrics.auth_required=true and using X-Admin-Secret header
     2. Network-level isolation (only allow Prometheus server to access /metrics)
+
+    Rate limited to 60/minute to prevent brute-force attacks on authentication.
 
     Related: Issue #436
     """

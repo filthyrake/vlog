@@ -108,6 +108,7 @@ from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with
 from api.metrics import get_metrics
 from api.pubsub import Publisher
 from api.redis_client import get_redis
+from api.settings_service import get_setting as get_db_setting
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
     ClaimJobResponse,
@@ -158,6 +159,7 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+security_logger = logging.getLogger("security.worker_auth")
 
 # Thread pool for blocking I/O operations (tar extraction to NAS)
 # This prevents slow NAS operations from blocking the event loop and
@@ -2970,6 +2972,7 @@ async def health_check(request: Request):
 
 
 @app.get("/metrics")
+@limiter.limit("60/minute")
 async def metrics_endpoint(request: Request):
     """
     Prometheus metrics endpoint.
@@ -2984,30 +2987,30 @@ async def metrics_endpoint(request: Request):
     1. Setting metrics.auth_required=true and using X-Admin-Secret header
     2. Network-level isolation (only allow Prometheus server to access /metrics)
 
+    Rate limited to 60/minute to prevent brute-force attacks on authentication.
+
     Related: Issue #436
     """
-    from api.settings_service import get_setting
-
     # Check if metrics endpoint is enabled
-    metrics_enabled = await get_setting("metrics.enabled", True)
+    metrics_enabled = await get_db_setting("metrics.enabled", True)
     if not metrics_enabled:
         raise HTTPException(status_code=404, detail="Metrics endpoint disabled")
 
     # Check if authentication is required
-    auth_required = await get_setting("metrics.auth_required", False)
+    auth_required = await get_db_setting("metrics.auth_required", False)
     if auth_required:
         # Validate X-Admin-Secret header
         admin_secret = request.headers.get("X-Admin-Secret", "")
         if not WORKER_ADMIN_SECRET:
             # No secret configured but auth required - deny access
-            logger.warning(
+            security_logger.warning(
                 "Metrics auth required but VLOG_WORKER_ADMIN_SECRET not configured",
                 extra={"event": "metrics_auth_misconfigured", "path": "/metrics"},
             )
             raise HTTPException(status_code=500, detail="Metrics authentication misconfigured")
 
         if not admin_secret or not hmac.compare_digest(admin_secret, WORKER_ADMIN_SECRET):
-            logger.warning(
+            security_logger.warning(
                 "Metrics endpoint auth failed",
                 extra={
                     "event": "metrics_auth_failure",
