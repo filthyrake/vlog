@@ -308,6 +308,11 @@ def signal_handler(sig, frame):
 async def heartbeat_loop(client: WorkerAPIClient, state: dict):
     """Background task to send periodic heartbeats."""
     global HEALTH_SERVER, shutdown_requested
+
+    # Track consecutive state mismatches for Issue #458 stale data detection
+    consecutive_mismatches = 0
+    MAX_CONSECUTIVE_MISMATCHES = 3
+
     while not shutdown_requested:
         # Determine status based on whether we're processing a job
         status = "busy" if state.get("processing_job") else "idle"
@@ -333,6 +338,43 @@ async def heartbeat_loop(client: WorkerAPIClient, state: dict):
                     logger.info("  No job in progress - exiting now.")
                 # Break from heartbeat loop - main loop will handle graceful shutdown
                 break
+
+            # Issue #458: Stale data detection - compare server's view with our state
+            # This detects cases where heartbeat HTTP 200 succeeded but database write failed
+            server_status = response.get("worker_status")
+            server_job_id = response.get("current_job_id")
+            our_job_id = state.get("processing_job")
+
+            state_mismatch = False
+
+            # Check if server thinks we're processing a different job
+            if our_job_id and server_job_id != our_job_id:
+                logger.warning(
+                    f"State mismatch: We're processing job {our_job_id} but "
+                    f"server thinks we're on job {server_job_id}"
+                )
+                state_mismatch = True
+
+            # Check if server thinks we're idle when we're busy (or vice versa)
+            if server_status and server_status != status:
+                # Don't warn on active/busy mismatch as those are equivalent
+                if not (server_status in ("active", "busy") and status in ("active", "busy")):
+                    logger.warning(
+                        f"State mismatch: We're '{status}' but server recorded '{server_status}'"
+                    )
+                    state_mismatch = True
+
+            if state_mismatch:
+                consecutive_mismatches += 1
+                if consecutive_mismatches >= MAX_CONSECUTIVE_MISMATCHES:
+                    logger.error(
+                        f"CRITICAL: {consecutive_mismatches} consecutive state mismatches! "
+                        f"Server may not be recording heartbeats properly. "
+                        f"This could cause job reassignment issues."
+                    )
+            else:
+                consecutive_mismatches = 0
+
         except WorkerAPIError as e:
             logger.error(f"Heartbeat failed: {e.message}")
             if HEALTH_SERVER:
@@ -1094,8 +1136,24 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
         # 1. Job completion was verified by the server, OR
         # 2. Claim expired (job reassigned to another worker)
         # This prevents data loss if completion fails - files remain for manual recovery
+        #
+        # Issue #461: Double-check server has the files before deleting local copy
         if completion_verified and work_dir.exists():
-            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                # Verify server actually recorded completion and has files
+                verification = await client.verify_job_complete(job_id)
+                if verification.get("all_files_present"):
+                    shutil.rmtree(work_dir, ignore_errors=True)
+                    logger.debug("  Work directory cleaned up (verification passed)")
+                else:
+                    missing = verification.get("missing_files", [])
+                    logger.warning(
+                        f"  Server verification failed - preserving work directory. "
+                        f"Missing: {missing}"
+                    )
+            except Exception as e:
+                # If verification fails, preserve work directory to be safe
+                logger.error(f"  Could not verify completion: {e}, preserving work directory")
         elif work_dir.exists():
             logger.info(f"  Note: Work directory preserved at {work_dir} (completion not verified)")
 

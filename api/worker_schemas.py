@@ -210,6 +210,19 @@ class HeartbeatResponse(BaseModel):
         default=True,
         description="True if worker's code version matches required version. False means worker should exit.",
     )
+    # Issue #458: Return server's view of worker state for stale data detection
+    worker_status: Optional[str] = Field(
+        default=None,
+        description="Server's recorded status for this worker (active, busy, idle, offline, disabled)",
+    )
+    current_job_id: Optional[int] = Field(
+        default=None,
+        description="Job ID the server thinks this worker is processing (None if idle)",
+    )
+    last_heartbeat_recorded: Optional[datetime] = Field(
+        default=None,
+        description="When the server last recorded a heartbeat for this worker",
+    )
 
 
 # Job claiming

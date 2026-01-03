@@ -8572,6 +8572,305 @@ async def cancel_sprite_job(request: Request, job_id: int) -> dict:
     return {"status": "ok", "message": f"Job {job_id} cancelled"}
 
 
+# =============================================================================
+# Dead Letter Queue Monitoring (Issue #457)
+# =============================================================================
+
+
+@app.get("/api/admin/job-queue/dead-letter")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_dead_letter_queue(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200, description="Number of entries to return"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
+):
+    """
+    Get dead letter queue entries with monitoring information.
+
+    Returns failed jobs that were moved to the DLQ, including error details
+    and timing information for debugging and reprocessing.
+
+    Response includes DLQ depth for alerting thresholds (e.g., >10 jobs).
+    """
+    from api.redis_client import get_redis
+
+    redis = await get_redis()
+    if not redis:
+        return {
+            "available": False,
+            "message": "Redis not available",
+            "entries": [],
+            "total_count": 0,
+            "depth_warning": False,
+        }
+
+    try:
+        from api.job_queue import DEAD_LETTER_STREAM
+
+        # Get total count for depth monitoring
+        dlq_length = await redis.xlen(DEAD_LETTER_STREAM)
+
+        # Read entries from the stream (newest first)
+        # Use XREVRANGE to get newest first
+        entries_raw = await redis.xrevrange(
+            DEAD_LETTER_STREAM,
+            max="+",
+            min="-",
+            count=limit,
+        )
+
+        # Skip offset entries if needed (simple pagination)
+        if offset > 0:
+            entries_raw = await redis.xrevrange(
+                DEAD_LETTER_STREAM,
+                max="+",
+                min="-",
+                count=limit + offset,
+            )
+            entries_raw = entries_raw[offset:] if len(entries_raw) > offset else []
+
+        entries = []
+        for message_id, data in entries_raw:
+            entry = {
+                "message_id": message_id,
+                "job_id": int(data.get("job_id", 0)),
+                "video_id": int(data.get("video_id", 0)),
+                "video_slug": data.get("video_slug", ""),
+                "priority": data.get("priority", "normal"),
+                "error": data.get("error", "Unknown error"),
+                "failed_at": data.get("failed_at"),
+                "created_at": data.get("created_at"),
+                "original_stream": data.get("original_stream", ""),
+            }
+            entries.append(entry)
+
+        # Depth warning threshold (configurable via settings in the future)
+        depth_warning_threshold = 10
+        depth_warning = dlq_length > depth_warning_threshold
+
+        return {
+            "available": True,
+            "entries": entries,
+            "total_count": dlq_length,
+            "depth_warning": depth_warning,
+            "depth_warning_threshold": depth_warning_threshold,
+        }
+
+    except Exception as e:
+        logger.error(f"Error reading dead letter queue: {e}")
+        return {
+            "available": False,
+            "message": f"Error reading DLQ: {str(e)}",
+            "entries": [],
+            "total_count": 0,
+            "depth_warning": False,
+        }
+
+
+@app.post("/api/admin/job-queue/dead-letter/{message_id}/reprocess")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def reprocess_dead_letter_job(
+    request: Request,
+    message_id: str,
+    priority: str = Query(default="normal", regex="^(high|normal|low)$"),
+):
+    """
+    Reprocess a job from the dead letter queue.
+
+    Moves the job back to the appropriate priority stream for reprocessing.
+    The original DLQ entry is removed after successful requeue.
+
+    Args:
+        message_id: The Redis stream message ID from the DLQ
+        priority: Priority for the requeued job (defaults to original or 'normal')
+    """
+    from api.job_queue import DEAD_LETTER_STREAM, PRIORITY_STREAMS
+    from api.redis_client import get_redis
+
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis not available")
+
+    try:
+        # Read the specific message from DLQ
+        entries = await redis.xrange(
+            DEAD_LETTER_STREAM,
+            min=message_id,
+            max=message_id,
+            count=1,
+        )
+
+        if not entries:
+            raise HTTPException(status_code=404, detail=f"Message {message_id} not found in DLQ")
+
+        _, data = entries[0]
+
+        # Get the job from database to verify it exists and check status
+        job_id = int(data.get("job_id", 0))
+        video_id = int(data.get("video_id", 0))
+
+        job = await fetch_one_with_retry(
+            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
+        )
+
+        video = await fetch_one_with_retry(
+            videos.select()
+            .where(videos.c.id == video_id)
+            .where(videos.c.deleted_at.is_(None))
+        )
+
+        if not video:
+            # Video was deleted, just remove from DLQ
+            await redis.xdel(DEAD_LETTER_STREAM, message_id)
+            return {
+                "status": "skipped",
+                "message": f"Video {video_id} no longer exists, removed from DLQ",
+            }
+
+        # Reset the video and job status for reprocessing
+        if job:
+            # Reset job status
+            await db_execute_with_retry(
+                transcoding_jobs.update()
+                .where(transcoding_jobs.c.id == job_id)
+                .values(
+                    worker_id=None,
+                    claimed_at=None,
+                    completed_at=None,
+                    current_step=None,
+                    progress_percent=0,
+                    last_error=None,
+                    attempt=job["attempt"] + 1 if job["attempt"] else 1,
+                )
+            )
+        else:
+            # Create a new job if old one doesn't exist
+            await db_execute_with_retry(
+                transcoding_jobs.insert().values(
+                    video_id=video_id,
+                    attempt=1,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+            # Get the new job ID
+            new_job = await fetch_one_with_retry(
+                transcoding_jobs.select()
+                .where(transcoding_jobs.c.video_id == video_id)
+                .order_by(transcoding_jobs.c.id.desc())
+            )
+            job_id = new_job["id"] if new_job else job_id
+
+        # Reset video status
+        await db_execute_with_retry(
+            videos.update()
+            .where(videos.c.id == video_id)
+            .values(status="pending", error_message=None)
+        )
+
+        # Publish to the appropriate priority stream
+        job_dispatch = JobDispatch(
+            job_id=job_id,
+            video_id=video_id,
+            video_slug=data.get("video_slug", video["slug"]),
+            source_filename=video.get("source_filename"),
+            source_width=video.get("source_width"),
+            source_height=video.get("source_height"),
+            duration=video.get("duration"),
+            priority=priority,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        stream_name = PRIORITY_STREAMS.get(priority, PRIORITY_STREAMS["normal"])
+        await redis.xadd(
+            stream_name,
+            job_dispatch.to_stream_dict(),
+            maxlen=1000,
+        )
+
+        # Remove from DLQ
+        await redis.xdel(DEAD_LETTER_STREAM, message_id)
+
+        logger.info(f"Reprocessed DLQ job {job_id} for video {video_id} with priority {priority}")
+
+        return {
+            "status": "ok",
+            "message": f"Job {job_id} requeued with priority {priority}",
+            "job_id": job_id,
+            "video_id": video_id,
+            "video_slug": video["slug"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reprocessing DLQ message {message_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error reprocessing job: {str(e)}")
+
+
+@app.delete("/api/admin/job-queue/dead-letter/{message_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_dead_letter_entry(request: Request, message_id: str):
+    """
+    Delete a specific entry from the dead letter queue.
+
+    Use this when a job should not be retried (e.g., intentionally cancelled,
+    obsolete, or already manually resolved).
+    """
+    from api.job_queue import DEAD_LETTER_STREAM
+    from api.redis_client import get_redis
+
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis not available")
+
+    try:
+        # Verify the message exists
+        entries = await redis.xrange(
+            DEAD_LETTER_STREAM,
+            min=message_id,
+            max=message_id,
+            count=1,
+        )
+
+        if not entries:
+            raise HTTPException(status_code=404, detail=f"Message {message_id} not found in DLQ")
+
+        # Delete the message
+        deleted = await redis.xdel(DEAD_LETTER_STREAM, message_id)
+
+        if deleted:
+            return {"status": "ok", "message": f"Deleted message {message_id} from DLQ"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to delete message")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting DLQ message {message_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting message: {str(e)}")
+
+
+@app.get("/api/admin/job-queue/stats")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_job_queue_stats(request: Request):
+    """
+    Get job queue statistics including DLQ depth.
+
+    Returns comprehensive queue statistics for monitoring dashboards.
+    Includes per-priority stream lengths and DLQ depth for alerting.
+    """
+    job_queue = await get_job_queue()
+    stats = await job_queue.get_queue_stats()
+
+    # Add DLQ warning threshold info
+    dlq_depth = stats.get("dead_letter_queue", 0)
+    depth_warning_threshold = 10
+    stats["dlq_warning"] = dlq_depth > depth_warning_threshold
+    stats["dlq_warning_threshold"] = depth_warning_threshold
+
+    return stats
+
+
 if __name__ == "__main__":
     import uvicorn
 
