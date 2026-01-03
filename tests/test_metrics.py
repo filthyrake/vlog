@@ -189,6 +189,113 @@ class TestMetricsEndpointAuth:
             pytest.fail("metrics.auth_required setting not found")
 
 
+class TestIssue207NewMetrics:
+    """Tests for Issue #207 - Additional Prometheus Metrics."""
+
+    def test_http_requests_in_progress_exists(self):
+        """Test that HTTP_REQUESTS_IN_PROGRESS gauge is defined."""
+        from api.metrics import HTTP_REQUESTS_IN_PROGRESS
+
+        assert HTTP_REQUESTS_IN_PROGRESS._name == "vlog_http_requests_in_progress"
+        # Check it has the 'api' label
+        assert "api" in HTTP_REQUESTS_IN_PROGRESS._labelnames
+
+    def test_videos_watch_time_seconds_exists(self):
+        """Test that VIDEOS_WATCH_TIME_SECONDS_TOTAL counter is defined."""
+        from api.metrics import VIDEOS_WATCH_TIME_SECONDS_TOTAL
+
+        assert "watch_time" in VIDEOS_WATCH_TIME_SECONDS_TOTAL._name
+
+    def test_worker_jobs_completed_exists(self):
+        """Test that WORKER_JOBS_COMPLETED_TOTAL counter is defined."""
+        from api.metrics import WORKER_JOBS_COMPLETED_TOTAL
+
+        assert "worker_jobs_completed" in WORKER_JOBS_COMPLETED_TOTAL._name
+        # Check it has the 'worker_name' label (not worker_id for low cardinality)
+        assert "worker_name" in WORKER_JOBS_COMPLETED_TOTAL._labelnames
+
+    def test_worker_heartbeat_age_exists(self):
+        """Test that WORKER_HEARTBEAT_AGE_SECONDS gauge is defined."""
+        from api.metrics import WORKER_HEARTBEAT_AGE_SECONDS
+
+        assert "heartbeat_age" in WORKER_HEARTBEAT_AGE_SECONDS._name
+        # Check it has the 'worker_name' label (not worker_id for low cardinality)
+        assert "worker_name" in WORKER_HEARTBEAT_AGE_SECONDS._labelnames
+
+    def test_storage_videos_bytes_exists(self):
+        """Test that STORAGE_VIDEOS_BYTES gauge is defined."""
+        from api.metrics import STORAGE_VIDEOS_BYTES
+
+        assert STORAGE_VIDEOS_BYTES._name == "vlog_storage_videos_bytes"
+
+
+class TestNormalizeEndpoint:
+    """Tests for the normalize_endpoint helper function (Issue #207)."""
+
+    def test_normalize_static_path(self):
+        """Test that static paths are not modified."""
+        from api.metrics import normalize_endpoint
+
+        assert normalize_endpoint("/api/health") == "/api/health"
+        assert normalize_endpoint("/metrics") == "/metrics"
+        assert normalize_endpoint("/") == "/"
+
+    def test_normalize_video_slug(self):
+        """Test that video slugs are normalized to {id}."""
+        from api.metrics import normalize_endpoint
+
+        assert normalize_endpoint("/api/videos/my-cool-video") == "/api/videos/{id}"
+        assert normalize_endpoint("/api/videos/video-123") == "/api/videos/{id}"
+
+    def test_normalize_worker_job_id(self):
+        """Test that worker job IDs are normalized."""
+        from api.metrics import normalize_endpoint
+
+        assert normalize_endpoint("/api/worker/123/progress") == "/api/worker/{id}/progress"
+        assert normalize_endpoint("/api/worker/456/complete") == "/api/worker/{id}/complete"
+
+    def test_normalize_numeric_ids(self):
+        """Test that numeric segments are normalized to {id}."""
+        from api.metrics import normalize_endpoint
+
+        assert normalize_endpoint("/api/jobs/123") == "/api/jobs/{id}"
+        assert normalize_endpoint("/api/workers/456") == "/api/workers/{id}"
+
+    def test_normalize_empty_path(self):
+        """Test that empty path returns root."""
+        from api.metrics import normalize_endpoint
+
+        assert normalize_endpoint("") == "/"
+
+    def test_normalize_preserves_query_params(self):
+        """Test that paths without dynamic segments are preserved."""
+        from api.metrics import normalize_endpoint
+
+        assert normalize_endpoint("/api/videos") == "/api/videos"
+        assert normalize_endpoint("/api/workers") == "/api/workers"
+
+
+class TestHTTPMetricsMiddleware:
+    """Tests for the HTTPMetricsMiddleware (Issue #207)."""
+
+    def test_middleware_exists(self):
+        """Test that HTTPMetricsMiddleware class exists."""
+        from api.common import HTTPMetricsMiddleware
+
+        assert HTTPMetricsMiddleware is not None
+
+    def test_middleware_init(self):
+        """Test that middleware can be initialized."""
+        from api.common import HTTPMetricsMiddleware
+
+        async def dummy_app(scope, receive, send):
+            pass
+
+        middleware = HTTPMetricsMiddleware(dummy_app, api_name="test")
+        assert middleware.api_name == "test"
+        assert middleware.app == dummy_app
+
+
 class TestMetricsEndpointIntegration:
     """Integration tests for metrics endpoint authentication (Issue #436).
 

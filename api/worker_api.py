@@ -84,6 +84,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.background import BackgroundTask
 
 from api.common import (
+    HTTPMetricsMiddleware,
     RequestIDMiddleware,
     check_health,
     ensure_utc,
@@ -105,7 +106,12 @@ from api.database import (
     workers,
 )
 from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
-from api.metrics import get_metrics
+from api.metrics import (
+    STORAGE_VIDEOS_BYTES,
+    TRANSCODING_JOBS_TOTAL,
+    WORKER_JOBS_COMPLETED_TOTAL,
+    get_metrics,
+)
 from api.pubsub import Publisher
 from api.redis_client import get_redis
 from api.settings_service import get_setting as get_db_setting
@@ -1059,6 +1065,10 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
 )
 
+# HTTP metrics middleware (outermost - captures all requests including CORS preflight)
+# Issue #207: Tracks requests in progress, duration, and total count
+app.add_middleware(HTTPMetricsMiddleware, api_name="worker")
+
 # Rate limiting setup
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
@@ -1563,6 +1573,9 @@ async def claim_job(
     if not job:
         return ClaimJobResponse(message="No jobs available")
 
+    # Issue #207: Record job started metric
+    TRANSCODING_JOBS_TOTAL.labels(status="started").inc()
+
     # Handle retranscode cleanup if metadata is present (Issue #408)
     # This performs the deferred cleanup that was postponed when the video was queued
     if job.get("retranscode_metadata"):
@@ -1955,6 +1968,11 @@ async def complete_job(
                 # Redis failure shouldn't block - token was already set, DB is source of truth
                 logger.warning(f"Failed to update completion token status in Redis: {e}")
 
+    # Issue #207: Record job completion metrics
+    worker_label = worker["worker_name"] or worker["worker_id"]
+    WORKER_JOBS_COMPLETED_TOTAL.labels(worker_name=worker_label).inc()
+    TRANSCODING_JOBS_TOTAL.labels(status="completed").inc()
+
     # Publish job completion to Redis pub/sub for real-time UI updates
     video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
     worker_name = worker["worker_name"] or worker["worker_id"][:8]
@@ -2086,6 +2104,12 @@ async def fail_job(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
         ) from e
+
+    # Issue #207: Record job failure/retry metrics
+    if will_retry:
+        TRANSCODING_JOBS_TOTAL.labels(status="retried").inc()
+    else:
+        TRANSCODING_JOBS_TOTAL.labels(status="failed").inc()
 
     # Clean up source file after permanent failure (outside transaction)
     if not will_retry:
@@ -2584,6 +2608,9 @@ async def upload_segment(
 
     if not written:
         raise HTTPException(status_code=400, detail="Checksum verification failed")
+
+    # Issue #207: Track storage bytes for new segments
+    STORAGE_VIDEOS_BYTES.inc(bytes_written)
 
     # Extend claim on successful upload (each upload keeps claim alive)
     new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)

@@ -24,6 +24,7 @@ from slowapi.errors import RateLimitExceeded
 
 from api.analytics_cache import AnalyticsCache
 from api.common import (
+    HTTPMetricsMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
     check_health,
@@ -32,6 +33,7 @@ from api.common import (
     rate_limit_exceeded_handler,
     validate_slug,
 )
+from api.metrics import VIDEOS_WATCH_TIME_SECONDS_TOTAL
 from api.database import (
     categories,
     chapters,
@@ -322,6 +324,10 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
     expose_headers=["Content-Length", "Content-Range", "Accept-Ranges", "X-Request-ID"],
 )
+
+# HTTP metrics middleware (outermost - captures all requests including CORS preflight)
+# Issue #207: Tracks requests in progress, duration, and total count
+app.add_middleware(HTTPMetricsMiddleware, api_name="public")
 
 
 # Custom static files handler with proper headers for HLS/DASH/CMAF streaming
@@ -2270,6 +2276,12 @@ async def end_analytics_session(request: Request, data: PlaybackEnd):
             completed=completed,
         )
     )
+
+    # Issue #207: Record watch time metric
+    # duration_watched is accumulated in heartbeat endpoint - record the final value
+    duration_watched = session.get("duration_watched") or 0.0
+    if 0 < duration_watched < 86400:  # Sanity check: 0 < watch time < 24 hours
+        VIDEOS_WATCH_TIME_SECONDS_TOTAL.inc(duration_watched)
 
     return {"status": "ok"}
 
