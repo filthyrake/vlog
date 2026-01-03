@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from api.chapter_detection import (
-    DetectedChapter,
+    InternalDetectedChapter,
     extract_chapters_from_metadata,
     filter_chapters_by_length,
     generate_chapters_from_transcription,
@@ -65,7 +65,6 @@ class TestMetadataChapterExtraction:
         with patch("api.chapter_detection.UPLOADS_DIR", tmp_path):
             chapters = await extract_chapters_from_metadata(
                 video_id=999,
-                video_slug="nonexistent-video",
             )
 
             # Should return empty list, not raise an error
@@ -112,7 +111,6 @@ class TestMetadataChapterExtraction:
             with patch("asyncio.create_subprocess_exec", return_value=mock_process):
                 chapters = await extract_chapters_from_metadata(
                     video_id=1,
-                    video_slug="test-video",
                 )
 
                 assert len(chapters) == 3
@@ -151,7 +149,6 @@ class TestMetadataChapterExtraction:
             with patch("asyncio.create_subprocess_exec", return_value=mock_process):
                 chapters = await extract_chapters_from_metadata(
                     video_id=1,
-                    video_slug="test-video",
                 )
 
                 assert chapters == []
@@ -183,7 +180,6 @@ class TestMetadataChapterExtraction:
             with patch("asyncio.create_subprocess_exec", return_value=mock_process):
                 chapters = await extract_chapters_from_metadata(
                     video_id=1,
-                    video_slug="test-video",
                 )
 
                 assert len(chapters) == 2
@@ -291,9 +287,9 @@ class TestChapterFiltering:
     def test_filter_removes_close_chapters(self):
         """Test that chapters too close together are filtered."""
         chapters = [
-            DetectedChapter(title="Chapter 1", start_time=0, end_time=30),
-            DetectedChapter(title="Chapter 2", start_time=30, end_time=50),  # Only 30s later
-            DetectedChapter(title="Chapter 3", start_time=120, end_time=180),  # 90s from ch1
+            InternalDetectedChapter(title="Chapter 1", start_time=0, end_time=30),
+            InternalDetectedChapter(title="Chapter 2", start_time=30, end_time=50),  # Only 30s later
+            InternalDetectedChapter(title="Chapter 3", start_time=120, end_time=180),  # 90s from ch1
         ]
 
         result = filter_chapters_by_length(
@@ -310,8 +306,8 @@ class TestChapterFiltering:
     def test_filter_removes_near_end_chapters(self):
         """Test that chapters too close to video end are filtered."""
         chapters = [
-            DetectedChapter(title="Chapter 1", start_time=0, end_time=100),
-            DetectedChapter(title="Chapter 2", start_time=580, end_time=600),  # Only 20s from end
+            InternalDetectedChapter(title="Chapter 1", start_time=0, end_time=100),
+            InternalDetectedChapter(title="Chapter 2", start_time=580, end_time=600),  # Only 20s from end
         ]
 
         result = filter_chapters_by_length(
@@ -327,9 +323,9 @@ class TestChapterFiltering:
     def test_filter_sorts_by_start_time(self):
         """Test that chapters are sorted by start time."""
         chapters = [
-            DetectedChapter(title="Late Chapter", start_time=300, end_time=400),
-            DetectedChapter(title="Early Chapter", start_time=0, end_time=100),
-            DetectedChapter(title="Middle Chapter", start_time=150, end_time=250),
+            InternalDetectedChapter(title="Late Chapter", start_time=300, end_time=400),
+            InternalDetectedChapter(title="Early Chapter", start_time=0, end_time=100),
+            InternalDetectedChapter(title="Middle Chapter", start_time=150, end_time=250),
         ]
 
         result = filter_chapters_by_length(
@@ -343,23 +339,23 @@ class TestChapterFiltering:
         assert result[2].title == "Late Chapter"
 
 
-class TestDetectedChapterDataclass:
-    """Tests for the DetectedChapter dataclass."""
+class TestInternalDetectedChapterDataclass:
+    """Tests for the InternalDetectedChapter dataclass."""
 
     def test_default_source(self):
         """Test that default source is 'metadata'."""
-        chapter = DetectedChapter(title="Test", start_time=0.0)
+        chapter = InternalDetectedChapter(title="Test", start_time=0.0)
         assert chapter.source == "metadata"
 
     def test_custom_source(self):
         """Test setting a custom source."""
-        chapter = DetectedChapter(title="Test", start_time=0.0, source="transcription")
+        chapter = InternalDetectedChapter(title="Test", start_time=0.0, source="transcription")
         assert chapter.source == "transcription"
 
     def test_optional_end_time(self):
         """Test that end_time is optional."""
-        chapter = DetectedChapter(title="Test", start_time=0.0)
+        chapter = InternalDetectedChapter(title="Test", start_time=0.0)
         assert chapter.end_time is None
 
-        chapter_with_end = DetectedChapter(title="Test", start_time=0.0, end_time=60.0)
+        chapter_with_end = InternalDetectedChapter(title="Test", start_time=0.0, end_time=60.0)
         assert chapter_with_end.end_time == 60.0
