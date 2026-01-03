@@ -7,11 +7,32 @@ while still logging detailed errors for debugging.
 
 import logging
 import re
-from typing import Optional
+from enum import Enum
+from typing import Optional, Union
 
 from config import ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH
 
 logger = logging.getLogger(__name__)
+
+
+class ErrorLogging(str, Enum):
+    """Controls whether original error messages are logged before sanitization.
+
+    Use this enum instead of boolean flags for self-documenting call sites.
+
+    Example:
+        # Clear intent at call site
+        sanitize_error_message(err, ErrorLogging.SKIP_LOGGING)
+
+        # vs unclear boolean
+        sanitize_error_message(err, False)  # What does False mean?
+    """
+
+    LOG_ORIGINAL = "log_original"
+    """Log the original error message before returning sanitized version."""
+
+    SKIP_LOGGING = "skip_logging"
+    """Skip logging, only return the sanitized message."""
 
 # Patterns that indicate internal details
 INTERNAL_PATTERNS = [
@@ -87,13 +108,19 @@ def truncate_error(msg: Optional[str], max_length: int = ERROR_DETAIL_MAX_LENGTH
 
 
 
-def sanitize_error_message(error: Optional[str], log_original: bool = True, context: str = "") -> Optional[str]:
+def sanitize_error_message(
+    error: Optional[str],
+    logging_mode: Union[ErrorLogging, bool] = ErrorLogging.LOG_ORIGINAL,
+    context: str = "",
+) -> Optional[str]:
     """
     Sanitize an error message for safe display to API clients.
 
     Args:
         error: The original error message (may contain internal details)
-        log_original: Whether to log the original message before sanitizing
+        logging_mode: Whether to log the original message before sanitizing.
+            Use ErrorLogging.LOG_ORIGINAL or ErrorLogging.SKIP_LOGGING.
+            Boolean values are deprecated but supported for backwards compatibility.
         context: Additional context for logging (e.g., "video_id=123")
 
     Returns:
@@ -102,8 +129,14 @@ def sanitize_error_message(error: Optional[str], log_original: bool = True, cont
     if error is None:
         return None
 
+    # Handle backwards compatibility with boolean values
+    if isinstance(logging_mode, bool):
+        should_log = logging_mode
+    else:
+        should_log = logging_mode == ErrorLogging.LOG_ORIGINAL
+
     # Log the original error for debugging
-    if log_original and error:
+    if should_log and error:
         log_msg = "Original error"
         if context:
             log_msg += f" ({context})"
@@ -214,4 +247,4 @@ def sanitize_progress_error(error: Optional[str]) -> Optional[str]:
         return "Maximum retry attempts exceeded"
 
     # Fall back to general sanitization
-    return sanitize_error_message(error, log_original=False)
+    return sanitize_error_message(error, ErrorLogging.SKIP_LOGGING)
