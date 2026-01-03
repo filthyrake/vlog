@@ -16,6 +16,7 @@ import signal
 import threading
 import time
 import uuid
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
@@ -832,9 +833,19 @@ async def validate_hls_playlist(
 
     # Handle backwards compatibility with boolean values
     if isinstance(validation_mode, bool):
+        warnings.warn(
+            "Passing boolean to validate_hls_playlist() is deprecated. "
+            "Use PlaylistValidation.CHECK_SEGMENTS or PlaylistValidation.STRUCTURE_ONLY instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         should_check_segments = validation_mode
-    else:
+    elif isinstance(validation_mode, PlaylistValidation):
         should_check_segments = validation_mode == PlaylistValidation.CHECK_SEGMENTS
+    else:
+        raise TypeError(
+            f"validation_mode must be PlaylistValidation or bool, got {type(validation_mode).__name__}: {validation_mode!r}"
+        )
 
     try:
         content = playlist_path.read_text()
@@ -1867,9 +1878,19 @@ async def mark_job_failed(
     """
     # Handle backwards compatibility with boolean values
     if isinstance(failure_mode, bool):
+        warnings.warn(
+            "Passing boolean to mark_job_failed() is deprecated. "
+            "Use JobFailureMode.PERMANENT or JobFailureMode.RETRYABLE instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         is_permanent = failure_mode
-    else:
+    elif isinstance(failure_mode, JobFailureMode):
         is_permanent = failure_mode == JobFailureMode.PERMANENT
+    else:
+        raise TypeError(
+            f"failure_mode must be JobFailureMode or bool, got {type(failure_mode).__name__}: {failure_mode!r}"
+        )
 
     values = {
         "last_error": error[:500],

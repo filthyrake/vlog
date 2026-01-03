@@ -76,6 +76,26 @@ class SortOrder(str, Enum):
 # ============================================================================
 
 
+class ErrorLogging(str, Enum):
+    """Controls whether original error messages are logged before sanitization.
+
+    Use this enum instead of boolean flags for self-documenting call sites.
+
+    Example:
+        # Clear intent at call site
+        sanitize_error_message(err, ErrorLogging.SKIP_LOGGING)
+
+        # vs unclear boolean
+        sanitize_error_message(err, False)  # What does False mean?
+    """
+
+    LOG_ORIGINAL = "log_original"
+    """Log the original error message before returning sanitized version."""
+
+    SKIP_LOGGING = "skip_logging"
+    """Skip logging, only return the sanitized message."""
+
+
 class PlaylistValidation(str, Enum):
     """Controls depth of HLS playlist validation.
 
@@ -110,10 +130,10 @@ class JobFailureMode(str, Enum):
     """
 
     RETRYABLE = "retryable"
-    """Job failed but may be retried (does not set completed_at)."""
+    """Job failed but should be retried - leaves the job open for another attempt."""
 
     PERMANENT = "permanent"
-    """Job permanently failed, no more retries (sets completed_at)."""
+    """Job permanently failed - marks the job as finished, preventing further retries."""
 
 
 class DeleteMode(str, Enum):

@@ -33,6 +33,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from api.enums import PlaylistValidation
 from api.job_queue import JobDispatch, JobQueue
 
 # Import code version for compatibility checking
@@ -510,7 +511,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
 
                 # Validate HLS playlist before upload (issue #166)
                 playlist_path = output_dir / "original.m3u8"
-                is_valid, validation_error = await validate_hls_playlist(playlist_path)
+                is_valid, validation_error = await validate_hls_playlist(playlist_path, PlaylistValidation.CHECK_SEGMENTS)
                 if not is_valid:
                     logger.error(f"    original: HLS validation failed - {validation_error}")
                     quality_progress_list[0] = {"name": "original", "status": "failed", "progress": 0}
@@ -817,7 +818,7 @@ async def process_job(client: WorkerAPIClient, job: dict) -> bool:
                 quality_playlist_path = output_dir / quality_name / "stream.m3u8"
             else:
                 quality_playlist_path = output_dir / f"{quality_name}.m3u8"
-            is_valid, validation_error = await validate_hls_playlist(quality_playlist_path)
+            is_valid, validation_error = await validate_hls_playlist(quality_playlist_path, PlaylistValidation.CHECK_SEGMENTS)
             if not is_valid:
                 logger.error(f"    {quality_name}: HLS validation failed - {validation_error}")
                 async with progress_list_lock:

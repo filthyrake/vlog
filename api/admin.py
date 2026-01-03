@@ -73,7 +73,7 @@ from api.db_retry import (
     fetch_one_with_retry,
     fetch_val_with_retry,
 )
-from api.enums import DeleteMode, KeyRevocation, TranscriptionStatus, VideoStatus
+from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
 from api.metrics import get_metrics, init_app_info
@@ -2400,8 +2400,6 @@ async def delete_video(
     Args:
         video_id: The video ID to delete
         permanent: If True, permanently delete. If False (default), soft-delete to archive.
-            Note: Internally uses DeleteMode enum (DeleteMode.SOFT, DeleteMode.PERMANENT)
-            for self-documenting code.
 
     Soft-delete (permanent=False):
     - Moves video files to archive directory
@@ -2413,16 +2411,12 @@ async def delete_video(
     - Deletes all database records
     - Cannot be undone
     """
-    # Convert boolean to enum for internal use (self-documenting)
-    delete_mode = DeleteMode.PERMANENT if permanent else DeleteMode.SOFT
-    is_permanent = delete_mode == DeleteMode.PERMANENT
-
     # Get video info
     row = await database.fetch_one(videos.select().where(videos.c.id == video_id))
     if not row:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    if is_permanent:
+    if permanent:
         # PERMANENT DELETE - remove everything
         # First, delete all database records atomically
         async with database.transaction():
@@ -4654,18 +4648,12 @@ async def delete_worker(
     Args:
         worker_id: The worker UUID to delete
         revoke_keys: If True (default), revoke all API keys. If False, keep keys active.
-            Note: Internally uses KeyRevocation enum (KeyRevocation.REVOKE, KeyRevocation.KEEP)
-            for self-documenting code.
 
     This will:
     - Release any claimed job back to pending
     - Revoke all API keys (if revoke_keys=True)
     - Delete the worker record
     """
-    # Convert boolean to enum for internal use (self-documenting)
-    key_handling = KeyRevocation.REVOKE if revoke_keys else KeyRevocation.KEEP
-    should_revoke = key_handling == KeyRevocation.REVOKE
-
     # Find worker by UUID
     worker = await fetch_one_with_retry(workers.select().where(workers.c.worker_id == worker_id))
     if not worker:
@@ -4693,7 +4681,7 @@ async def delete_worker(
                 await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
 
         # Revoke API keys if requested
-        if should_revoke:
+        if revoke_keys:
             await database.execute(
                 worker_api_keys.update()
                 .where(worker_api_keys.c.worker_id == worker["id"])

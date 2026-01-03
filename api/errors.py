@@ -7,32 +7,13 @@ while still logging detailed errors for debugging.
 
 import logging
 import re
-from enum import Enum
+import warnings
 from typing import Optional, Union
 
+from api.enums import ErrorLogging
 from config import ERROR_DETAIL_MAX_LENGTH, ERROR_SUMMARY_MAX_LENGTH
 
 logger = logging.getLogger(__name__)
-
-
-class ErrorLogging(str, Enum):
-    """Controls whether original error messages are logged before sanitization.
-
-    Use this enum instead of boolean flags for self-documenting call sites.
-
-    Example:
-        # Clear intent at call site
-        sanitize_error_message(err, ErrorLogging.SKIP_LOGGING)
-
-        # vs unclear boolean
-        sanitize_error_message(err, False)  # What does False mean?
-    """
-
-    LOG_ORIGINAL = "log_original"
-    """Log the original error message before returning sanitized version."""
-
-    SKIP_LOGGING = "skip_logging"
-    """Skip logging, only return the sanitized message."""
 
 # Patterns that indicate internal details
 INTERNAL_PATTERNS = [
@@ -131,9 +112,19 @@ def sanitize_error_message(
 
     # Handle backwards compatibility with boolean values
     if isinstance(logging_mode, bool):
+        warnings.warn(
+            "Passing boolean to sanitize_error_message() is deprecated. "
+            "Use ErrorLogging.LOG_ORIGINAL or ErrorLogging.SKIP_LOGGING instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         should_log = logging_mode
-    else:
+    elif isinstance(logging_mode, ErrorLogging):
         should_log = logging_mode == ErrorLogging.LOG_ORIGINAL
+    else:
+        raise TypeError(
+            f"logging_mode must be ErrorLogging or bool, got {type(logging_mode).__name__}: {logging_mode!r}"
+        )
 
     # Log the original error for debugging
     if should_log and error:
