@@ -38,6 +38,7 @@ from api.chapter_detection import (
     generate_chapters_from_transcription,
 )
 from api.common import (
+    HTTPMetricsMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
     check_health,
@@ -81,7 +82,13 @@ from api.db_retry import (
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
-from api.metrics import get_metrics, init_app_info
+from api.metrics import (
+    STORAGE_VIDEOS_BYTES,
+    get_metrics,
+    init_app_info,
+    start_metrics_background_tasks,
+    stop_metrics_background_tasks,
+)
 from api.pagination import encode_cursor, validate_cursor
 from api.partition_manager import ensure_partitions_exist, is_table_partitioned
 from api.public import get_video_url_prefix, get_watermark_settings
@@ -888,6 +895,9 @@ async def lifespan(app: FastAPI):
     # Start background task for periodic session cleanup
     _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
 
+    # Issue #207: Start background tasks for dynamic metrics (heartbeat ages, storage reconciliation)
+    await start_metrics_background_tasks(database, storage_path=VIDEOS_DIR)
+
     yield
 
     # Cancel background cleanup task
@@ -897,6 +907,9 @@ async def lifespan(app: FastAPI):
             await _session_cleanup_task
         except asyncio.CancelledError:
             pass
+
+    # Issue #207: Stop metrics background tasks
+    await stop_metrics_background_tasks()
 
     await database.disconnect()
 
@@ -935,6 +948,10 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID"],
 )
+
+# HTTP metrics middleware (outermost - captures all requests including CORS preflight)
+# Issue #207: Tracks requests in progress, duration, and total count
+app.add_middleware(HTTPMetricsMiddleware, api_name="admin")
 
 # Serve video files for preview
 app.mount("/videos", StaticFiles(directory=str(VIDEOS_DIR)), name="videos")
@@ -2487,6 +2504,12 @@ async def delete_video(
         # Delete files AFTER successful transaction (file ops can't be rolled back)
         video_dir = VIDEOS_DIR / row["slug"]
         if video_dir.exists():
+            # Issue #207: Track storage bytes for deleted video files
+            try:
+                video_size = sum(f.stat().st_size for f in video_dir.rglob("*") if f.is_file())
+                STORAGE_VIDEOS_BYTES.dec(video_size)
+            except OSError:
+                pass  # Size calculation failed, reconciliation will correct
             shutil.rmtree(video_dir)
 
         # Delete archived files if any

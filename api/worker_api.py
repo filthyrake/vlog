@@ -84,6 +84,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.background import BackgroundTask
 
 from api.common import (
+    HTTPMetricsMiddleware,
     RequestIDMiddleware,
     check_health,
     ensure_utc,
@@ -105,7 +106,13 @@ from api.database import (
     workers,
 )
 from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
-from api.metrics import get_metrics
+from api.metrics import (
+    STORAGE_VIDEOS_BYTES,
+    TRANSCODING_JOBS_TOTAL,
+    WORKER_JOBS_COMPLETED_TOTAL,
+    get_metrics,
+    sanitize_label,
+)
 from api.pubsub import Publisher
 from api.redis_client import get_redis
 from api.settings_service import get_setting as get_db_setting
@@ -1059,6 +1066,10 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
 )
 
+# HTTP metrics middleware (outermost - captures all requests including CORS preflight)
+# Issue #207: Tracks requests in progress, duration, and total count
+app.add_middleware(HTTPMetricsMiddleware, api_name="worker")
+
 # Rate limiting setup
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
@@ -1563,6 +1574,9 @@ async def claim_job(
     if not job:
         return ClaimJobResponse(message="No jobs available")
 
+    # Issue #207: Record job started metric
+    TRANSCODING_JOBS_TOTAL.labels(status="started").inc()
+
     # Handle retranscode cleanup if metadata is present (Issue #408)
     # This performs the deferred cleanup that was postponed when the video was queued
     if job.get("retranscode_metadata"):
@@ -1955,6 +1969,11 @@ async def complete_job(
                 # Redis failure shouldn't block - token was already set, DB is source of truth
                 logger.warning(f"Failed to update completion token status in Redis: {e}")
 
+    # Issue #207: Record job completion metrics (sanitize label to prevent injection)
+    worker_label = sanitize_label(worker["worker_name"] or worker["worker_id"])
+    WORKER_JOBS_COMPLETED_TOTAL.labels(worker_name=worker_label).inc()
+    TRANSCODING_JOBS_TOTAL.labels(status="completed").inc()
+
     # Publish job completion to Redis pub/sub for real-time UI updates
     video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
     worker_name = worker["worker_name"] or worker["worker_id"][:8]
@@ -2086,6 +2105,12 @@ async def fail_job(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
         ) from e
+
+    # Issue #207: Record job failure/retry metrics
+    if will_retry:
+        TRANSCODING_JOBS_TOTAL.labels(status="retried").inc()
+    else:
+        TRANSCODING_JOBS_TOTAL.labels(status="failed").inc()
 
     # Clean up source file after permanent failure (outside transaction)
     if not will_retry:
@@ -2552,17 +2577,24 @@ async def upload_segment(
     # Use thread pool to avoid blocking event loop on NAS (code review fix)
     loop = asyncio.get_event_loop()
     dest_exists = await loop.run_in_executor(_io_executor, dest_path.exists)
+    old_file_size = 0  # Track old size for storage metric adjustment on overwrite
     if dest_exists:
         try:
             # Add timeout to handle NFS hangs (code review fix)
-            existing_checksum = await asyncio.wait_for(
-                loop.run_in_executor(_io_executor, lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()),
+            # Get both checksum and file size to properly track storage on overwrite
+            def get_existing_file_info():
+                file_bytes = dest_path.read_bytes()
+                return hashlib.sha256(file_bytes).hexdigest(), len(file_bytes)
+
+            existing_checksum, old_file_size = await asyncio.wait_for(
+                loop.run_in_executor(_io_executor, get_existing_file_info),
                 timeout=30.0,
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout reading existing segment {filename}, treating as non-existent")
             dest_exists = False
             existing_checksum = None
+            old_file_size = 0
         if dest_exists and existing_checksum == checksum:
             logger.debug(f"Segment {filename} already exists with matching checksum")
             return SegmentUploadResponse(
@@ -2573,6 +2605,7 @@ async def upload_segment(
             )
         else:
             # File exists with different content - overwrite
+            # old_file_size is already captured above for storage metric adjustment
             logger.warning(f"Segment {filename} exists with different checksum, overwriting")
 
     # Atomic write with fsync (Margo's durability requirement)
@@ -2584,6 +2617,20 @@ async def upload_segment(
 
     if not written:
         raise HTTPException(status_code=400, detail="Checksum verification failed")
+
+    # Issue #207: Track storage bytes for new/overwritten segments
+    # If overwriting, adjust for the old file size to maintain accuracy
+    if old_file_size > 0:
+        # Overwrite case: net change = new size - old size
+        net_change = bytes_written - old_file_size
+        if net_change > 0:
+            STORAGE_VIDEOS_BYTES.inc(net_change)
+        elif net_change < 0:
+            STORAGE_VIDEOS_BYTES.dec(abs(net_change))
+        # If net_change == 0, no adjustment needed
+    else:
+        # New file case
+        STORAGE_VIDEOS_BYTES.inc(bytes_written)
 
     # Extend claim on successful upload (each upload keeps claim alive)
     new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
