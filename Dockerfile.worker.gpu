@@ -147,7 +147,7 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
     VLOG_BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
     # GPU detection (auto-detect by default)
     VLOG_HWACCEL_TYPE=auto \
-    VLOG_HWACCEL_PREFERRED_CODEC=h264 \
+    VLOG_HWACCEL_PREFERRED_CODEC=av1 \
     # NVIDIA runtime (nvidia-container-toolkit injects libraries)
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
