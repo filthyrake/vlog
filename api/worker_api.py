@@ -305,8 +305,7 @@ def _write_segment_sync(
 
     if not checksum_verified:
         logger.warning(
-            f"Checksum mismatch for {dest_path.name}: "
-            f"expected {checksum[:16]}..., got {actual_checksum[:16]}..."
+            f"Checksum mismatch for {dest_path.name}: expected {checksum[:16]}..., got {actual_checksum[:16]}..."
         )
         return False, 0, False
 
@@ -505,9 +504,7 @@ async def extract_tar_async(
             f"Tar extraction timed out after {timeout}s - possible stale NFS mount. "
             f"Source: {tmp_path}, Target: {output_dir}"
         )
-        raise ValueError(
-            f"Tar extraction timed out after {timeout}s - storage may be unresponsive"
-        )
+        raise ValueError(f"Tar extraction timed out after {timeout}s - storage may be unresponsive")
 
 
 # Initialize rate limiter
@@ -598,8 +595,7 @@ async def _should_skip_stale_check_grace_period() -> bool:
             if seconds_since_last < STALE_CHECK_STARTUP_GRACE_PERIOD:
                 # A recent check was done, no need for grace period
                 logger.debug(
-                    f"Recent stale check found in Redis ({seconds_since_last:.0f}s ago), "
-                    "skipping startup grace period"
+                    f"Recent stale check found in Redis ({seconds_since_last:.0f}s ago), skipping startup grace period"
                 )
                 return True
     except Exception as e:
@@ -848,8 +844,7 @@ async def _cleanup_orphaned_quality_directories() -> int:
 
         # Also check for active transcoding jobs - don't cleanup while job is running
         active_jobs = await database.fetch_all(
-            transcoding_jobs.select()
-            .where(transcoding_jobs.c.completed_at.is_(None))
+            transcoding_jobs.select().where(transcoding_jobs.c.completed_at.is_(None))
         )
         active_video_ids = {job["video_id"] for job in active_jobs}
 
@@ -890,15 +885,15 @@ async def _cleanup_orphaned_quality_directories() -> int:
                 if age_seconds < min_age_seconds:
                     # Too new - might still be in progress
                     logger.debug(
-                        f"Orphaned quality dir {subdir} is only {age_seconds/3600:.1f}h old, "
-                        f"threshold is {min_age_seconds/3600:.1f}h - skipping"
+                        f"Orphaned quality dir {subdir} is only {age_seconds / 3600:.1f}h old, "
+                        f"threshold is {min_age_seconds / 3600:.1f}h - skipping"
                     )
                     continue
 
                 # Old enough and no database record - delete it
                 logger.info(
                     f"Cleaning orphaned quality directory: {subdir} "
-                    f"(age: {age_seconds/3600:.1f}h, no database record)"
+                    f"(age: {age_seconds / 3600:.1f}h, no database record)"
                 )
                 try:
                     shutil.rmtree(subdir)
@@ -927,8 +922,7 @@ async def cleanup_orphaned_files():
         return
 
     logger.info(
-        f"Orphan cleanup started (interval: {ORPHAN_CLEANUP_INTERVAL}s, "
-        f"min_age: {ORPHAN_CLEANUP_MIN_AGE/3600:.1f}h)"
+        f"Orphan cleanup started (interval: {ORPHAN_CLEANUP_INTERVAL}s, min_age: {ORPHAN_CLEANUP_MIN_AGE / 3600:.1f}h)"
     )
 
     while not _shutdown_event.is_set():
@@ -1094,7 +1088,7 @@ async def register_worker(
     """
     worker_id = str(uuid.uuid4())
     api_key = secrets.token_urlsafe(32)  # 256-bit key
-    key_hash = hash_api_key(api_key)
+    key_hash, hash_version = hash_api_key(api_key)  # Returns (hash, version) tuple
     key_prefix = get_key_prefix(api_key)
     now = datetime.now(timezone.utc)
 
@@ -1134,11 +1128,12 @@ async def register_worker(
                 )
             )
 
-            # Create API key record
+            # Create API key record with argon2id hash (Issue #445)
             await database.execute(
                 worker_api_keys.insert().values(
                     worker_id=result["worker_db_id"],
                     key_hash=key_hash,
+                    hash_version=hash_version,
                     key_prefix=key_prefix,
                     created_at=now,
                 )
@@ -1369,9 +1364,7 @@ async def claim_job(
             f"Rejecting job claim from worker '{worker_name}' - "
             f"no code_version in metadata (workers.require_version_field is enabled)"
         )
-        return ClaimJobResponse(
-            message="Version field required: worker must send code_version in heartbeat"
-        )
+        return ClaimJobResponse(message="Version field required: worker must send code_version in heartbeat")
 
     # Check for version mismatch
     if require_version_match and worker_version and worker_version != CODE_VERSION:
@@ -1616,9 +1609,7 @@ async def claim_job(
             async with database.transaction():
                 # Delete video_qualities records
                 if retranscode_all:
-                    await database.execute(
-                        video_qualities.delete().where(video_qualities.c.video_id == video_id)
-                    )
+                    await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
                 else:
                     await database.execute(
                         video_qualities.delete().where(
@@ -1629,9 +1620,7 @@ async def claim_job(
 
                 # Delete transcription records if needed
                 if delete_transcription:
-                    await database.execute(
-                        transcriptions.delete().where(transcriptions.c.video_id == video_id)
-                    )
+                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
 
                 # Clear the retranscode_metadata now that cleanup is done
                 await database.execute(
@@ -1987,7 +1976,9 @@ async def complete_job(
                     )
                 )
                 await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(
                         sprite_sheet_status="pending",
                         sprite_sheet_error=None,
                     )
@@ -2563,11 +2554,8 @@ async def upload_segment(
         try:
             # Add timeout to handle NFS hangs (code review fix)
             existing_checksum = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _io_executor,
-                    lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()
-                ),
-                timeout=30.0
+                loop.run_in_executor(_io_executor, lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()),
+                timeout=30.0,
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout reading existing segment {filename}, treating as non-existent")
@@ -2583,15 +2571,11 @@ async def upload_segment(
             )
         else:
             # File exists with different content - overwrite
-            logger.warning(
-                f"Segment {filename} exists with different checksum, overwriting"
-            )
+            logger.warning(f"Segment {filename} exists with different checksum, overwriting")
 
     # Atomic write with fsync (Margo's durability requirement)
     try:
-        written, bytes_written, checksum_verified = await write_segment_atomic(
-            data, dest_path, checksum
-        )
+        written, bytes_written, checksum_verified = await write_segment_atomic(data, dest_path, checksum)
     except Exception as e:
         logger.exception(f"Failed to write segment {filename}: {e}")
         raise HTTPException(status_code=500, detail="Write failed")
@@ -2602,9 +2586,7 @@ async def upload_segment(
     # Extend claim on successful upload (each upload keeps claim alive)
     new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
     await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job["id"])
-        .values(claim_expires_at=new_expiry)
+        transcoding_jobs.update().where(transcoding_jobs.c.id == job["id"]).values(claim_expires_at=new_expiry)
     )
 
     logger.debug(f"Segment {quality}/{filename} uploaded for video {video_slug}")
@@ -2840,9 +2822,7 @@ async def finalize_segment_upload(
         # Extend claim
         new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
         await database.execute(
-            transcoding_jobs.update()
-            .where(transcoding_jobs.c.id == job["id"])
-            .values(claim_expires_at=new_expiry)
+            transcoding_jobs.update().where(transcoding_jobs.c.id == job["id"]).values(claim_expires_at=new_expiry)
         )
 
     logger.info(f"Quality {quality} finalized for video {video['slug']} ({actual_count} segments)")
@@ -3305,9 +3285,7 @@ async def verify_job_completion(
         - missing_files: List of any expected but missing files
     """
     # Get the job and associated video
-    job = await fetch_one_with_retry(
-        transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-    )
+    job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -3317,9 +3295,7 @@ async def verify_job_completion(
     if job["worker_id"] != worker["worker_id"]:
         raise HTTPException(status_code=403, detail="Not your job")
 
-    video = await fetch_one_with_retry(
-        videos.select().where(videos.c.id == job["video_id"])
-    )
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == job["video_id"]))
 
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -3374,9 +3350,7 @@ async def verify_job_completion(
             result["qualities_present"].append(quality)
 
     # Check against qualities recorded in database
-    quality_rows = await fetch_all_with_retry(
-        video_qualities.select().where(video_qualities.c.video_id == video["id"])
-    )
+    quality_rows = await fetch_all_with_retry(video_qualities.select().where(video_qualities.c.video_id == video["id"]))
     expected_qualities = [q["quality"] for q in quality_rows]
 
     for expected in expected_qualities:

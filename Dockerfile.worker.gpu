@@ -32,11 +32,13 @@ RUN dnf install -y epel-release && \
         https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-10.noarch.rpm && \
     dnf clean all
 
-# Install Python 3.12 and build dependencies
+# Install Python 3.12 and build dependencies for packages with C extensions (argon2-cffi)
 RUN dnf install -y \
     python3.12 \
     python3.12-pip \
     python3.12-devel \
+    gcc \
+    libffi-devel \
     && dnf clean all && \
     alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
     alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.12 1

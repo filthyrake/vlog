@@ -29,6 +29,7 @@ dependencies = [
     "sse-starlette>=1.6.0",  # Server-Sent Events support
     "prometheus-client>=0.19.0",  # Prometheus metrics
     "psutil>=5.9.0",  # System resource monitoring for sprite worker
+    "argon2-cffi>=23.1.0",  # Secure API key hashing (Issue #445)
 ]
 
 [project.optional-dependencies]

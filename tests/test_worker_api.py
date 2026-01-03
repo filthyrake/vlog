@@ -6,6 +6,7 @@ Covers authentication edge cases, key hashing, source file download, and path tr
 """
 
 import asyncio
+import hashlib
 import io
 import tarfile
 import time
@@ -14,7 +15,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from api.database import quality_progress, transcoding_jobs, videos, worker_api_keys, workers
-from api.worker_auth import get_key_prefix, hash_api_key
+from api.worker_auth import (
+    HASH_VERSION_ARGON2,
+    HASH_VERSION_SHA256,
+    get_key_prefix,
+    hash_api_key,
+    hash_api_key_legacy,
+    verify_api_key_hash,
+)
 
 # ============================================================================
 # Authentication Edge Cases (Issue #119)
@@ -158,21 +166,42 @@ class TestAuthenticationEdgeCases:
 
 
 class TestKeyHashingFunctions:
-    """Tests for API key hashing utilities (Issue #119)."""
+    """Tests for API key hashing utilities (Issue #119, #445)."""
 
-    def test_hash_api_key_produces_consistent_hash(self):
-        """Test that hashing the same key twice produces the same result."""
+    def test_hash_api_key_returns_argon2_format(self):
+        """Test that hash_api_key returns argon2id hash format and version."""
         key = "test-api-key-abcdefgh12345678"
-        hash1 = hash_api_key(key)
-        hash2 = hash_api_key(key)
-        assert hash1 == hash2
-        assert len(hash1) == 64  # SHA-256 produces 64 hex characters
+        hash_value, version = hash_api_key(key)
+
+        # Verify returns argon2 version
+        assert version == HASH_VERSION_ARGON2
+
+        # Verify argon2id format (starts with $argon2id$)
+        assert hash_value.startswith("$argon2id$")
+
+    def test_hash_api_key_is_non_deterministic(self):
+        """Test that argon2 hashes are unique due to random salt."""
+        key = "test-api-key-abcdefgh12345678"
+        hash1, _ = hash_api_key(key)
+        hash2, _ = hash_api_key(key)
+
+        # Each hash should be different due to random salt
+        assert hash1 != hash2
+
+        # But both should verify correctly
+        assert verify_api_key_hash(key, hash1, HASH_VERSION_ARGON2)
+        assert verify_api_key_hash(key, hash2, HASH_VERSION_ARGON2)
 
     def test_hash_api_key_different_inputs_different_outputs(self):
         """Test that different keys produce different hashes."""
         key1 = "test-api-key-abcdefgh12345678"
         key2 = "test-api-key-12345678abcdefgh"
-        assert hash_api_key(key1) != hash_api_key(key2)
+        hash1, _ = hash_api_key(key1)
+        hash2, _ = hash_api_key(key2)
+
+        # Different keys should not verify against each other's hash
+        assert not verify_api_key_hash(key2, hash1, HASH_VERSION_ARGON2)
+        assert not verify_api_key_hash(key1, hash2, HASH_VERSION_ARGON2)
 
     def test_get_key_prefix_extracts_first_8_chars(self):
         """Test key prefix extraction returns first 8 characters."""
@@ -186,6 +215,85 @@ class TestKeyHashingFunctions:
         key = "short"
         prefix = get_key_prefix(key)
         assert prefix == "short"  # Returns entire key if < 8 chars
+
+
+class TestHashVersioning:
+    """Tests for dual-format hash verification (Issue #445)."""
+
+    def test_new_keys_use_argon2(self):
+        """New keys should use argon2id hashing (version 2)."""
+        key = "test-key-12345678"
+        hash_value, version = hash_api_key(key)
+
+        assert version == HASH_VERSION_ARGON2
+        assert hash_value.startswith("$argon2id$")
+
+    def test_argon2_verification_succeeds(self):
+        """argon2id hashes should verify correctly."""
+        key = "test-key-12345678"
+        hash_value, version = hash_api_key(key)
+
+        assert verify_api_key_hash(key, hash_value, version) is True
+
+    def test_argon2_verification_wrong_key_fails(self):
+        """argon2id verification should fail for wrong key."""
+        key = "test-key-12345678"
+        wrong_key = "wrong-key-12345678"
+        hash_value, version = hash_api_key(key)
+
+        assert verify_api_key_hash(wrong_key, hash_value, version) is False
+
+    def test_legacy_sha256_verification(self):
+        """Legacy SHA-256 keys should still verify."""
+        key = "test-key-12345678"
+        legacy_hash = hash_api_key_legacy(key)
+
+        assert verify_api_key_hash(key, legacy_hash, HASH_VERSION_SHA256) is True
+
+    def test_legacy_sha256_format(self):
+        """Legacy SHA-256 hash should be 64 hex characters."""
+        key = "test-key-12345678"
+        legacy_hash = hash_api_key_legacy(key)
+
+        assert len(legacy_hash) == 64
+        # Verify it matches direct hashlib result
+        assert legacy_hash == hashlib.sha256(key.encode()).hexdigest()
+
+    def test_wrong_version_fails_sha256_as_argon2(self):
+        """SHA-256 hash claiming to be argon2 should fail verification."""
+        key = "test-key-12345678"
+        legacy_hash = hashlib.sha256(key.encode()).hexdigest()
+
+        # This hash is SHA-256 but we claim it's argon2
+        assert verify_api_key_hash(key, legacy_hash, HASH_VERSION_ARGON2) is False
+
+    def test_wrong_version_fails_argon2_as_sha256(self):
+        """argon2 hash claiming to be SHA-256 should fail verification."""
+        key = "test-key-12345678"
+        argon2_hash, _ = hash_api_key(key)
+
+        # This hash is argon2 but we claim it's SHA-256
+        # SHA-256 verification uses hmac.compare_digest which will fail
+        assert verify_api_key_hash(key, argon2_hash, HASH_VERSION_SHA256) is False
+
+    def test_unknown_version_fails_closed(self):
+        """Unknown hash_version should fail verification (fail closed)."""
+        key = "test-key-12345678"
+        some_hash = "abc123"
+
+        # Unknown version should return False, not default to legacy
+        assert verify_api_key_hash(key, some_hash, 999) is False
+        assert verify_api_key_hash(key, some_hash, 0) is False
+        assert verify_api_key_hash(key, some_hash, -1) is False
+
+    def test_invalid_argon2_hash_fails_gracefully(self):
+        """Malformed argon2 hash should fail gracefully, not raise exception."""
+        key = "test-key-12345678"
+        invalid_hash = "not-a-valid-argon2-hash"
+
+        # Should return False, not raise an exception
+        result = verify_api_key_hash(key, invalid_hash, HASH_VERSION_ARGON2)
+        assert result is False
 
 
 # ============================================================================
@@ -737,9 +845,7 @@ class TestJobClaiming:
         assert data["job_id"] is not None
 
         # Verify processed_by fields were set in the database
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == data["job_id"])
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == data["job_id"]))
         assert job["processed_by_worker_id"] == registered_worker["worker_id"]
         assert job["processed_by_worker_name"] is not None
         assert len(job["processed_by_worker_name"]) > 0
@@ -781,9 +887,7 @@ class TestJobClaiming:
         assert complete_response.status_code == 200
 
         # Verify processed_by fields are still present after completion
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["completed_at"] is not None
         assert job["processed_by_worker_id"] == registered_worker["worker_id"]
         assert job["processed_by_worker_name"] is not None
@@ -819,9 +923,7 @@ class TestJobClaiming:
         assert fail_response.json()["will_retry"] is False
 
         # Verify processed_by fields are still present after failure
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["completed_at"] is not None  # Failed jobs also set completed_at
         assert job["processed_by_worker_id"] == registered_worker["worker_id"]
         assert job["processed_by_worker_name"] is not None
@@ -963,12 +1065,15 @@ class TestRetranscodeClaimCleanup:
 
         # Create retranscode metadata (as the retranscode endpoint would)
         import json
-        retranscode_metadata = json.dumps({
-            "retranscode_all": True,
-            "qualities_to_delete": ["1080p", "720p"],
-            "delete_transcription": True,
-            "video_dir": str(test_storage["videos"] / "ready-video-retranscode"),
-        })
+
+        retranscode_metadata = json.dumps(
+            {
+                "retranscode_all": True,
+                "qualities_to_delete": ["1080p", "720p"],
+                "delete_transcription": True,
+                "video_dir": str(test_storage["videos"] / "ready-video-retranscode"),
+            }
+        )
 
         # Create a transcoding job with retranscode_metadata
         await test_database.execute(
@@ -993,9 +1098,7 @@ class TestRetranscodeClaimCleanup:
         assert "claimed successfully" in data["message"].lower()
 
         # Verify video status changed to processing
-        video = await test_database.fetch_one(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["status"] == "processing"
 
     @pytest.mark.asyncio
@@ -1020,12 +1123,15 @@ class TestRetranscodeClaimCleanup:
 
         # Create retranscode metadata
         import json
-        retranscode_metadata = json.dumps({
-            "retranscode_all": True,
-            "qualities_to_delete": ["1080p"],
-            "delete_transcription": False,
-            "video_dir": str(test_storage["videos"] / "ready-video-metadata-clear"),
-        })
+
+        retranscode_metadata = json.dumps(
+            {
+                "retranscode_all": True,
+                "qualities_to_delete": ["1080p"],
+                "delete_transcription": False,
+                "video_dir": str(test_storage["videos"] / "ready-video-metadata-clear"),
+            }
+        )
 
         # Create a transcoding job with retranscode_metadata
         job_id = await test_database.execute(
@@ -1046,9 +1152,7 @@ class TestRetranscodeClaimCleanup:
         assert response.status_code == 200
 
         # Verify retranscode_metadata was cleared
-        job = await test_database.fetch_one(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await test_database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
         assert job["retranscode_metadata"] is None
 
     @pytest.mark.asyncio
@@ -1083,12 +1187,15 @@ class TestRetranscodeClaimCleanup:
 
         # Create retranscode metadata for selective delete (only 720p)
         import json
-        retranscode_metadata = json.dumps({
-            "retranscode_all": False,
-            "qualities_to_delete": ["720p"],
-            "delete_transcription": False,
-            "video_dir": str(test_storage["videos"] / "ready-video-qualities-delete"),
-        })
+
+        retranscode_metadata = json.dumps(
+            {
+                "retranscode_all": False,
+                "qualities_to_delete": ["720p"],
+                "delete_transcription": False,
+                "video_dir": str(test_storage["videos"] / "ready-video-qualities-delete"),
+            }
+        )
 
         # Create a transcoding job with retranscode_metadata
         await test_database.execute(
@@ -1150,12 +1257,15 @@ class TestRetranscodeClaimCleanup:
 
         # Create retranscode metadata for full retranscode
         import json
-        retranscode_metadata = json.dumps({
-            "retranscode_all": True,
-            "qualities_to_delete": ["1080p", "720p"],
-            "delete_transcription": True,
-            "video_dir": str(video_dir),
-        })
+
+        retranscode_metadata = json.dumps(
+            {
+                "retranscode_all": True,
+                "qualities_to_delete": ["1080p", "720p"],
+                "delete_transcription": True,
+                "video_dir": str(video_dir),
+            }
+        )
 
         # Create a transcoding job with retranscode_metadata
         await test_database.execute(
@@ -1821,9 +1931,7 @@ class TestWorkerRevocation:
 class TestAdminSecretNotConfigured:
     """Tests for when WORKER_ADMIN_SECRET is not configured (503 errors)."""
 
-    def test_register_returns_503_when_secret_not_configured(
-        self, test_storage, test_db_url, monkeypatch
-    ):
+    def test_register_returns_503_when_secret_not_configured(self, test_storage, test_db_url, monkeypatch):
         """Test registration returns 503 when admin secret is not configured."""
         import importlib
         import sys
@@ -1859,9 +1967,7 @@ class TestAdminSecretNotConfigured:
             assert response.status_code == 503
             assert "VLOG_WORKER_ADMIN_SECRET" in response.json()["detail"]
 
-    def test_list_workers_returns_503_when_secret_not_configured(
-        self, test_storage, test_db_url, monkeypatch
-    ):
+    def test_list_workers_returns_503_when_secret_not_configured(self, test_storage, test_db_url, monkeypatch):
         """Test listing workers returns 503 when admin secret is not configured."""
         import importlib
         import sys
@@ -1895,9 +2001,7 @@ class TestAdminSecretNotConfigured:
             assert response.status_code == 503
             assert "VLOG_WORKER_ADMIN_SECRET" in response.json()["detail"]
 
-    def test_revoke_returns_503_when_secret_not_configured(
-        self, test_storage, test_db_url, monkeypatch
-    ):
+    def test_revoke_returns_503_when_secret_not_configured(self, test_storage, test_db_url, monkeypatch):
         """Test revoking returns 503 when admin secret is not configured."""
         import importlib
         import sys
