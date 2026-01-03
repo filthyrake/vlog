@@ -456,8 +456,8 @@ async def _update_worker_heartbeat_metrics(database: "Database", sa, workers) ->
     ).where(workers.c.status != "disabled")
 
     try:
-        async with asyncio.timeout(10):  # Increased timeout to accommodate retries
-            rows = await fetch_all_with_retry(query)
+        # Use wait_for for Python 3.9 compatibility (asyncio.timeout requires 3.11+)
+        rows = await asyncio.wait_for(fetch_all_with_retry(query), timeout=10)
     except asyncio.TimeoutError:
         logger.warning("Timeout querying workers for heartbeat metrics")
         return
@@ -537,9 +537,11 @@ async def reconcile_storage_bytes() -> None:
         return
 
     try:
-        # Run scan with timeout
-        async with asyncio.timeout(STORAGE_SCAN_TIMEOUT_SECONDS):
-            result = await asyncio.to_thread(_scan_storage_size_safe, _STORAGE_VIDEO_PATH)
+        # Run scan with timeout (use wait_for for Python 3.9 compatibility)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_scan_storage_size_safe, _STORAGE_VIDEO_PATH),
+            timeout=STORAGE_SCAN_TIMEOUT_SECONDS,
+        )
 
         if result["success"]:
             STORAGE_VIDEOS_BYTES.set(result["total_bytes"])
