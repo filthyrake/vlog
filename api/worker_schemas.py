@@ -281,6 +281,24 @@ class CompleteJobRequest(BaseModel):
     source_height: Optional[int] = None
     streaming_format: Optional[str] = None  # "hls_ts" or "cmaf"
     streaming_codec: Optional[str] = None  # "h264", "hevc", "av1"
+    completion_token: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Idempotency token for retry safety (format: job_id-uuid4)",
+    )
+
+    @field_validator("completion_token")
+    @classmethod
+    def validate_completion_token(cls, v: Optional[str]) -> Optional[str]:
+        """Validate completion_token format: {job_id}-{uuid4}."""
+        if v is None:
+            return v
+        # Format: "123-550e8400-e29b-41d4-a716-446655440000"
+        # job_id (digits) + "-" + uuid4 (36 chars with hyphens)
+        pattern = re.compile(r"^\d+-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
+        if not pattern.match(v):
+            raise ValueError("Invalid completion_token format. Expected: job_id-uuid4")
+        return v.lower()  # Normalize UUID part to lowercase
 
 
 class CompleteJobResponse(BaseModel):

@@ -107,6 +107,7 @@ from api.database import (
 from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
 from api.metrics import get_metrics
 from api.pubsub import Publisher
+from api.redis_client import get_redis
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
     ClaimJobResponse,
@@ -523,6 +524,12 @@ _api_start_time: Optional[datetime] = None
 # Grace period after API startup before running stale job detection (seconds)
 # This allows workers to send heartbeats after API recovers from downtime
 STALE_CHECK_STARTUP_GRACE_PERIOD = 120  # 2 minutes
+# Redis key prefix for vlog application (prevents collisions if Redis is shared)
+REDIS_KEY_PREFIX = "vlog:"
+# Redis key for tracking last stale check time (Issue #456)
+STALE_CHECK_LAST_RUN_KEY = f"{REDIS_KEY_PREFIX}stale_job_checker:last_run"
+# TTL for completion tokens (15 minutes to cover extended retry scenarios)
+COMPLETION_TOKEN_TTL = 900  # 15 minutes
 
 
 async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret")):
@@ -564,6 +571,62 @@ async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias
         )
 
 
+async def _should_skip_stale_check_grace_period() -> bool:
+    """
+    Determine if we should skip the startup grace period based on Redis state.
+
+    Issue #456: The grace period was previously based on API process uptime,
+    which reset on every restart. If the API restarts frequently, stale job
+    checking would never run. Now we track the last check time in Redis,
+    so a recent check by a previous API instance satisfies the grace period.
+
+    Returns:
+        True if grace period should be skipped (a recent check was done),
+        False if we should still wait
+    """
+    redis = await get_redis()
+    if not redis:
+        # Redis not available, fall back to API startup time check
+        return False
+
+    try:
+        last_check_str = await redis.get(STALE_CHECK_LAST_RUN_KEY)
+        if last_check_str:
+            # Redis client uses decode_responses=True, so this is already a string
+            last_check = datetime.fromisoformat(last_check_str)
+            seconds_since_last = (datetime.now(timezone.utc) - last_check).total_seconds()
+            if seconds_since_last < STALE_CHECK_STARTUP_GRACE_PERIOD:
+                # A recent check was done, no need for grace period
+                logger.debug(
+                    f"Recent stale check found in Redis ({seconds_since_last:.0f}s ago), "
+                    "skipping startup grace period"
+                )
+                return True
+    except Exception as e:
+        logger.warning(f"Failed to check last stale run time from Redis: {e}")
+
+    return False
+
+
+async def _record_stale_check_time():
+    """
+    Record the current time as the last stale check time in Redis.
+
+    Issue #456: This allows other API instances to know that a recent check
+    was performed, so they don't need to wait for their own grace period.
+    """
+    redis = await get_redis()
+    if not redis:
+        return
+
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        # TTL of 5 minutes - longer than grace period, allows for handoff
+        await redis.set(STALE_CHECK_LAST_RUN_KEY, now, ex=300)
+    except Exception as e:
+        logger.warning(f"Failed to record stale check time in Redis: {e}")
+
+
 async def _detect_and_release_stale_jobs():
     """
     Core logic for detecting and releasing stale jobs from offline workers.
@@ -579,13 +642,20 @@ async def _detect_and_release_stale_jobs():
     Jobs are only released if the job's claim has expired (claim_expires_at < now),
     not just based on worker heartbeat age. This prevents releasing jobs when
     the API was temporarily unresponsive but workers were actively processing.
+
+    Issue #456: Grace period now checks Redis for recent checks by other API
+    instances, preventing stale jobs from accumulating during restart storms.
     """
     global _api_start_time
     now = datetime.now(timezone.utc)
 
-    # Skip stale check during startup grace period
+    # Issue #456: Check if a recent stale check was done (in Redis)
+    # If so, we can skip the local startup grace period
+    skip_grace = await _should_skip_stale_check_grace_period()
+
+    # Skip stale check during startup grace period (unless Redis shows recent check)
     # This allows workers to send heartbeats after API recovers from downtime
-    if _api_start_time:
+    if not skip_grace and _api_start_time:
         time_since_startup = (now - _api_start_time).total_seconds()
         if time_since_startup < STALE_CHECK_STARTUP_GRACE_PERIOD:
             logger.debug(
@@ -683,6 +753,9 @@ async def _detect_and_release_stale_jobs():
                 await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
                 logger.info(f"Reset video {job['video_id']} status to pending")
 
+    # Issue #456: Record successful check time in Redis for cross-instance coordination
+    await _record_stale_check_time()
+
     return processed_count
 
 
@@ -739,9 +812,14 @@ async def _cleanup_orphaned_quality_directories() -> int:
     """
     global _api_start_time
 
-    # Skip during startup grace period (same as stale job checker)
     now = datetime.now(timezone.utc)
-    if _api_start_time:
+
+    # Issue #456: Check if a recent stale check was done (in Redis)
+    # If so, we can skip the local startup grace period
+    skip_grace = await _should_skip_stale_check_grace_period()
+
+    # Skip during startup grace period (same as stale job checker)
+    if not skip_grace and _api_start_time:
         time_since_startup = (now - _api_start_time).total_seconds()
         if time_since_startup < STALE_CHECK_STARTUP_GRACE_PERIOD:
             return 0
@@ -1742,15 +1820,49 @@ async def complete_job(
     data: CompleteJobRequest,
     worker: dict = Depends(verify_worker_key),
 ):
-    """Mark job as complete after HLS files uploaded."""
+    """Mark job as complete after HLS files uploaded.
+
+    Idempotency (Issue #455):
+    - If completion_token is provided and was already processed, returns early
+    - If job is already completed, returns early
+    - Metadata fields only update if not already set (idempotent on retry)
+    """
     job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
         raise HTTPException(status_code=403, detail="Not your job")
 
-    # Check if claim has expired
     now = datetime.now(timezone.utc)
+
+    # Issue #455: Idempotency check - if job already completed, return early
+    if job["completed_at"] is not None:
+        logger.info(f"Job {job_id} already completed, returning idempotent response")
+        return CompleteJobResponse(status="ok", message="Job already completed")
+
+    # Issue #455: Atomic token check-and-set using SETNX (set if not exists)
+    # This prevents race conditions where two requests pass the check before either stores
+    # Token key is scoped to job_id to prevent cross-job collisions
+    token_acquired = False
+    token_key = None  # Defined at outer scope for cleanup in exception handler
+    if data.completion_token:
+        redis = await get_redis()
+        if redis:
+            # Key format: vlog:completion_token:{job_id}:{token}
+            token_key = f"{REDIS_KEY_PREFIX}completion_token:{job_id}:{data.completion_token}"
+            try:
+                # SETNX: Set only if key doesn't exist (atomic check-and-set)
+                # Returns True if set succeeded (we own the token), False if key already exists
+                token_acquired = await redis.set(token_key, "processing", ex=COMPLETION_TOKEN_TTL, nx=True)
+                if not token_acquired:
+                    logger.info(f"Job {job_id} completion token already in use, returning idempotent response")
+                    return CompleteJobResponse(status="ok", message="Job already completed")
+            except Exception as e:
+                # Redis failure shouldn't block completion - log and continue
+                # Fall back to DB-based idempotency (completed_at check)
+                logger.warning(f"Failed to acquire completion token in Redis: {e}")
+
+    # Check if claim has expired
     if job["claim_expires_at"]:
         claim_expiry = job["claim_expires_at"]
         if claim_expiry.tzinfo is None:
@@ -1783,21 +1895,23 @@ async def complete_job(
                     )
 
             # Update video metadata if provided
-            # Only set published_at if not already set (preserve date for re-transcoded videos)
+            # Issue #455: Only set fields if not already set (idempotent on retry)
             video_row = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
             video_updates = {"status": "ready"}
-            if video_row and video_row["published_at"] is None:
-                video_updates["published_at"] = now
-            if data.duration is not None:
-                video_updates["duration"] = data.duration
-            if data.source_width is not None:
-                video_updates["source_width"] = data.source_width
-            if data.source_height is not None:
-                video_updates["source_height"] = data.source_height
-            if data.streaming_format is not None:
-                video_updates["streaming_format"] = data.streaming_format
-            if data.streaming_codec is not None:
-                video_updates["primary_codec"] = data.streaming_codec
+            if video_row:
+                if video_row["published_at"] is None:
+                    video_updates["published_at"] = now
+                # Only update metadata if not already set (idempotent retry safety)
+                if data.duration is not None and video_row["duration"] is None:
+                    video_updates["duration"] = data.duration
+                if data.source_width is not None and video_row["source_width"] is None:
+                    video_updates["source_width"] = data.source_width
+                if data.source_height is not None and video_row["source_height"] is None:
+                    video_updates["source_height"] = data.source_height
+                if data.streaming_format is not None and video_row["streaming_format"] is None:
+                    video_updates["streaming_format"] = data.streaming_format
+                if data.streaming_codec is not None and video_row["primary_codec"] is None:
+                    video_updates["primary_codec"] = data.streaming_codec
 
             # Mark job complete
             await database.execute(
@@ -1821,10 +1935,34 @@ async def complete_job(
     try:
         await execute_with_retry(do_complete_transaction)
     except DatabaseLockedError as e:
+        # Clean up token so retry can succeed (Gafton review feedback)
+        # Without this, the token stays in Redis for 15 min blocking retries
+        if token_acquired and token_key:
+            try:
+                redis = await get_redis()
+                if redis:
+                    await redis.delete(token_key)
+                    logger.info(f"Cleaned up completion token after transaction failure for job {job_id}")
+            except Exception as cleanup_err:
+                # Best effort cleanup - don't mask the original error
+                logger.warning(f"Failed to clean up completion token: {cleanup_err}")
         raise HTTPException(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
         ) from e
+
+    # Issue #455: Update token status to "completed" after successful completion
+    # The token was already set with SETNX before the transaction (status: "processing")
+    # Now we update it to "completed" to indicate success
+    if data.completion_token and token_acquired:
+        redis = await get_redis()
+        if redis:
+            try:
+                token_key = f"{REDIS_KEY_PREFIX}completion_token:{job_id}:{data.completion_token}"
+                await redis.set(token_key, "completed", ex=COMPLETION_TOKEN_TTL)
+            except Exception as e:
+                # Redis failure shouldn't block - token was already set, DB is source of truth
+                logger.warning(f"Failed to update completion token status in Redis: {e}")
 
     # Publish job completion to Redis pub/sub for real-time UI updates
     video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
