@@ -524,8 +524,12 @@ _api_start_time: Optional[datetime] = None
 # Grace period after API startup before running stale job detection (seconds)
 # This allows workers to send heartbeats after API recovers from downtime
 STALE_CHECK_STARTUP_GRACE_PERIOD = 120  # 2 minutes
+# Redis key prefix for vlog application (prevents collisions if Redis is shared)
+REDIS_KEY_PREFIX = "vlog:"
 # Redis key for tracking last stale check time (Issue #456)
-STALE_CHECK_LAST_RUN_KEY = "stale_job_checker:last_run"
+STALE_CHECK_LAST_RUN_KEY = f"{REDIS_KEY_PREFIX}stale_job_checker:last_run"
+# TTL for completion tokens (15 minutes to cover extended retry scenarios)
+COMPLETION_TOKEN_TTL = 900  # 15 minutes
 
 
 async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret")):
@@ -588,7 +592,8 @@ async def _should_skip_stale_check_grace_period() -> bool:
     try:
         last_check_str = await redis.get(STALE_CHECK_LAST_RUN_KEY)
         if last_check_str:
-            last_check = datetime.fromisoformat(last_check_str.decode())
+            # Redis client uses decode_responses=True, so this is already a string
+            last_check = datetime.fromisoformat(last_check_str)
             seconds_since_last = (datetime.now(timezone.utc) - last_check).total_seconds()
             if seconds_since_last < STALE_CHECK_STARTUP_GRACE_PERIOD:
                 # A recent check was done, no need for grace period
@@ -1835,19 +1840,26 @@ async def complete_job(
         logger.info(f"Job {job_id} already completed, returning idempotent response")
         return CompleteJobResponse(status="ok", message="Job already completed")
 
-    # Issue #455: Check completion token in Redis for idempotency
+    # Issue #455: Atomic token check-and-set using SETNX (set if not exists)
+    # This prevents race conditions where two requests pass the check before either stores
+    # Token key is scoped to job_id to prevent cross-job collisions
+    token_acquired = False
     if data.completion_token:
         redis = await get_redis()
         if redis:
-            token_key = f"completion_token:{data.completion_token}"
+            # Key format: vlog:completion_token:{job_id}:{token}
+            token_key = f"{REDIS_KEY_PREFIX}completion_token:{job_id}:{data.completion_token}"
             try:
-                existing_token = await redis.get(token_key)
-                if existing_token:
-                    logger.info(f"Job {job_id} completion token already processed, returning idempotent response")
+                # SETNX: Set only if key doesn't exist (atomic check-and-set)
+                # Returns True if set succeeded (we own the token), False if key already exists
+                token_acquired = await redis.set(token_key, "processing", ex=COMPLETION_TOKEN_TTL, nx=True)
+                if not token_acquired:
+                    logger.info(f"Job {job_id} completion token already in use, returning idempotent response")
                     return CompleteJobResponse(status="ok", message="Job already completed")
             except Exception as e:
                 # Redis failure shouldn't block completion - log and continue
-                logger.warning(f"Failed to check completion token in Redis: {e}")
+                # Fall back to DB-based idempotency (completed_at check)
+                logger.warning(f"Failed to acquire completion token in Redis: {e}")
 
     # Check if claim has expired
     if job["claim_expires_at"]:
@@ -1927,16 +1939,18 @@ async def complete_job(
             detail="Database temporarily unavailable, please retry",
         ) from e
 
-    # Issue #455: Store completion token in Redis for 5 minutes
-    if data.completion_token:
+    # Issue #455: Update token status to "completed" after successful completion
+    # The token was already set with SETNX before the transaction (status: "processing")
+    # Now we update it to "completed" to indicate success
+    if data.completion_token and token_acquired:
         redis = await get_redis()
         if redis:
             try:
-                token_key = f"completion_token:{data.completion_token}"
-                await redis.set(token_key, "1", ex=300)  # 5 minutes TTL
+                token_key = f"{REDIS_KEY_PREFIX}completion_token:{job_id}:{data.completion_token}"
+                await redis.set(token_key, "completed", ex=COMPLETION_TOKEN_TTL)
             except Exception as e:
-                # Redis failure shouldn't block - token check provides fallback idempotency
-                logger.warning(f"Failed to store completion token in Redis: {e}")
+                # Redis failure shouldn't block - token was already set, DB is source of truth
+                logger.warning(f"Failed to update completion token status in Redis: {e}")
 
     # Publish job completion to Redis pub/sub for real-time UI updates
     video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
