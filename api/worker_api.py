@@ -111,6 +111,7 @@ from api.metrics import (
     TRANSCODING_JOBS_TOTAL,
     WORKER_JOBS_COMPLETED_TOTAL,
     get_metrics,
+    sanitize_label,
 )
 from api.pubsub import Publisher
 from api.redis_client import get_redis
@@ -1968,8 +1969,8 @@ async def complete_job(
                 # Redis failure shouldn't block - token was already set, DB is source of truth
                 logger.warning(f"Failed to update completion token status in Redis: {e}")
 
-    # Issue #207: Record job completion metrics
-    worker_label = worker["worker_name"] or worker["worker_id"]
+    # Issue #207: Record job completion metrics (sanitize label to prevent injection)
+    worker_label = sanitize_label(worker["worker_name"] or worker["worker_id"])
     WORKER_JOBS_COMPLETED_TOTAL.labels(worker_name=worker_label).inc()
     TRANSCODING_JOBS_TOTAL.labels(status="completed").inc()
 
@@ -2576,17 +2577,24 @@ async def upload_segment(
     # Use thread pool to avoid blocking event loop on NAS (code review fix)
     loop = asyncio.get_event_loop()
     dest_exists = await loop.run_in_executor(_io_executor, dest_path.exists)
+    old_file_size = 0  # Track old size for storage metric adjustment on overwrite
     if dest_exists:
         try:
             # Add timeout to handle NFS hangs (code review fix)
-            existing_checksum = await asyncio.wait_for(
-                loop.run_in_executor(_io_executor, lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()),
+            # Get both checksum and file size to properly track storage on overwrite
+            def get_existing_file_info():
+                file_bytes = dest_path.read_bytes()
+                return hashlib.sha256(file_bytes).hexdigest(), len(file_bytes)
+
+            existing_checksum, old_file_size = await asyncio.wait_for(
+                loop.run_in_executor(_io_executor, get_existing_file_info),
                 timeout=30.0,
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout reading existing segment {filename}, treating as non-existent")
             dest_exists = False
             existing_checksum = None
+            old_file_size = 0
         if dest_exists and existing_checksum == checksum:
             logger.debug(f"Segment {filename} already exists with matching checksum")
             return SegmentUploadResponse(
@@ -2597,6 +2605,7 @@ async def upload_segment(
             )
         else:
             # File exists with different content - overwrite
+            # old_file_size is already captured above for storage metric adjustment
             logger.warning(f"Segment {filename} exists with different checksum, overwriting")
 
     # Atomic write with fsync (Margo's durability requirement)
@@ -2609,8 +2618,19 @@ async def upload_segment(
     if not written:
         raise HTTPException(status_code=400, detail="Checksum verification failed")
 
-    # Issue #207: Track storage bytes for new segments
-    STORAGE_VIDEOS_BYTES.inc(bytes_written)
+    # Issue #207: Track storage bytes for new/overwritten segments
+    # If overwriting, adjust for the old file size to maintain accuracy
+    if old_file_size > 0:
+        # Overwrite case: net change = new size - old size
+        net_change = bytes_written - old_file_size
+        if net_change > 0:
+            STORAGE_VIDEOS_BYTES.inc(net_change)
+        elif net_change < 0:
+            STORAGE_VIDEOS_BYTES.dec(abs(net_change))
+        # If net_change == 0, no adjustment needed
+    else:
+        # New file case
+        STORAGE_VIDEOS_BYTES.inc(bytes_written)
 
     # Extend claim on successful upload (each upload keeps claim alive)
     new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)

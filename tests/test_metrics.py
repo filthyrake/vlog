@@ -274,6 +274,127 @@ class TestNormalizeEndpoint:
         assert normalize_endpoint("/api/videos") == "/api/videos"
         assert normalize_endpoint("/api/workers") == "/api/workers"
 
+    def test_normalize_uuid_patterns(self):
+        """Test that UUID patterns are normalized to {id}."""
+        from api.metrics import normalize_endpoint
+
+        # Standard UUID format
+        assert normalize_endpoint("/api/users/550e8400-e29b-41d4-a716-446655440000") == "/api/users/{id}"
+        # Lowercase UUID
+        assert normalize_endpoint("/api/users/a1b2c3d4-e5f6-7890-abcd-ef1234567890") == "/api/users/{id}"
+
+    def test_normalize_long_slug_patterns(self):
+        """Test that long slug patterns are normalized to {id}."""
+        from api.metrics import normalize_endpoint
+
+        # Long slugs with multiple hyphens (likely dynamic content)
+        assert normalize_endpoint("/api/docs/driving-impressions-of-the-2017-bmw-m4") == "/api/docs/{id}"
+
+    def test_normalize_caches_results(self):
+        """Test that normalize_endpoint uses LRU cache for performance."""
+        from api.metrics import normalize_endpoint
+
+        # Call the same path multiple times
+        path = "/api/videos/test-slug"
+        result1 = normalize_endpoint(path)
+        result2 = normalize_endpoint(path)
+
+        # Results should be identical (cached)
+        assert result1 == result2
+
+        # Check cache info shows hits
+        cache_info = normalize_endpoint.cache_info()
+        assert cache_info.hits >= 1
+
+
+class TestSanitizeLabel:
+    """Tests for the sanitize_label helper function (Issue #207 review feedback)."""
+
+    def test_sanitize_label_basic(self):
+        """Test that normal labels pass through."""
+        from api.metrics import sanitize_label
+
+        assert sanitize_label("worker-1") == "worker-1"
+        assert sanitize_label("my_worker") == "my_worker"
+        assert sanitize_label("Worker123") == "Worker123"
+
+    def test_sanitize_label_special_chars(self):
+        """Test that special characters are replaced with underscores."""
+        from api.metrics import sanitize_label
+
+        assert sanitize_label("worker\nname") == "worker_name"
+        assert sanitize_label("worker;name") == "worker_name"
+        assert sanitize_label("worker@name") == "worker_name"
+        assert sanitize_label("worker name") == "worker_name"
+
+    def test_sanitize_label_truncation(self):
+        """Test that labels are truncated to max length."""
+        from api.metrics import sanitize_label
+
+        long_label = "a" * 100
+        result = sanitize_label(long_label)
+        assert len(result) == 50  # Default max_len
+
+        result_custom = sanitize_label(long_label, max_len=20)
+        assert len(result_custom) == 20
+
+    def test_sanitize_label_empty(self):
+        """Test that empty labels return 'unknown'."""
+        from api.metrics import sanitize_label
+
+        assert sanitize_label("") == "unknown"
+        assert sanitize_label(None) == "unknown"
+
+
+class TestBackgroundTaskMetrics:
+    """Tests for background task health metrics (Issue #207 review feedback)."""
+
+    def test_background_task_metrics_exist(self):
+        """Test that background task health metrics are defined."""
+        from api.metrics import (
+            BACKGROUND_TASK_DURATION_SECONDS,
+            BACKGROUND_TASK_ERRORS_TOTAL,
+            BACKGROUND_TASK_LAST_SUCCESS,
+            STORAGE_RECONCILIATION_STATUS,
+        )
+
+        # Counter names don't include _total suffix in _name (Prometheus adds it automatically in output)
+        assert "background_task_errors" in BACKGROUND_TASK_ERRORS_TOTAL._name
+        assert BACKGROUND_TASK_LAST_SUCCESS._name == "vlog_background_task_last_success_timestamp_seconds"
+        assert BACKGROUND_TASK_DURATION_SECONDS._name == "vlog_background_task_duration_seconds"
+        assert STORAGE_RECONCILIATION_STATUS._name == "vlog_storage_reconciliation_status"
+
+    def test_background_task_metrics_have_correct_labels(self):
+        """Test that background task metrics have the task_name label."""
+        from api.metrics import (
+            BACKGROUND_TASK_DURATION_SECONDS,
+            BACKGROUND_TASK_ERRORS_TOTAL,
+            BACKGROUND_TASK_LAST_SUCCESS,
+        )
+
+        assert "task_name" in BACKGROUND_TASK_ERRORS_TOTAL._labelnames
+        assert "task_name" in BACKGROUND_TASK_LAST_SUCCESS._labelnames
+        assert "task_name" in BACKGROUND_TASK_DURATION_SECONDS._labelnames
+
+
+class TestStorageReconciliationConfig:
+    """Tests for configurable storage reconciliation (Issue #207 review feedback)."""
+
+    def test_reconciliation_config_defaults(self):
+        """Test that storage reconciliation has sensible defaults."""
+        from api.metrics import (
+            STORAGE_RECONCILIATION_INTERVAL_SECONDS,
+            STORAGE_SCAN_MAX_FILES,
+            STORAGE_SCAN_TIMEOUT_SECONDS,
+        )
+
+        # Default 6 hours
+        assert STORAGE_RECONCILIATION_INTERVAL_SECONDS == 6 * 60 * 60
+        # Default 5 million files
+        assert STORAGE_SCAN_MAX_FILES == 5_000_000
+        # Default 30 minutes timeout
+        assert STORAGE_SCAN_TIMEOUT_SECONDS == 1800
+
 
 class TestHTTPMetricsMiddleware:
     """Tests for the HTTPMetricsMiddleware (Issue #207)."""
@@ -294,6 +415,37 @@ class TestHTTPMetricsMiddleware:
         middleware = HTTPMetricsMiddleware(dummy_app, api_name="test")
         assert middleware.api_name == "test"
         assert middleware.app == dummy_app
+
+    @pytest.mark.asyncio
+    async def test_middleware_records_metrics_on_exception(self):
+        """Test that middleware records metrics even when the app raises an exception."""
+        from api.common import HTTPMetricsMiddleware
+        from api.metrics import HTTP_REQUESTS_IN_PROGRESS
+
+        # Track initial gauge value
+        initial_value = HTTP_REQUESTS_IN_PROGRESS.labels(api="test_exception")._value.get()
+
+        async def failing_app(scope, receive, send):
+            # Increment gauge happens before this
+            raise ValueError("Test exception")
+
+        middleware = HTTPMetricsMiddleware(failing_app, api_name="test_exception")
+
+        scope = {"type": "http", "method": "GET", "path": "/test"}
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        async def send(message):
+            pass
+
+        # The middleware should record metrics even on exception
+        with pytest.raises(ValueError, match="Test exception"):
+            await middleware(scope, receive, send)
+
+        # Gauge should be back to initial value (decremented in finally block)
+        final_value = HTTP_REQUESTS_IN_PROGRESS.labels(api="test_exception")._value.get()
+        assert final_value == initial_value
 
 
 class TestMetricsEndpointIntegration:

@@ -303,8 +303,10 @@ class HTTPMetricsMiddleware:
 
             # Record duration histogram
             HTTP_REQUEST_DURATION_SECONDS.labels(method=method, endpoint=path).observe(duration)
-            # Increment request counter with status code
-            HTTP_REQUESTS_TOTAL.labels(method=method, endpoint=path, status_code=str(status_code)).inc()
+            # Increment request counter with status code and api label (for Grafana grouping)
+            HTTP_REQUESTS_TOTAL.labels(
+                method=method, endpoint=path, status_code=str(status_code), api=self.api_name
+            ).inc()
 
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
