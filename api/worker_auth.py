@@ -62,7 +62,7 @@ def hash_api_key_legacy(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-def verify_api_key_hash(key: str, stored_hash: str, hash_version: int) -> bool:
+def verify_api_key_hash(key: str, stored_hash: str, hash_version: int, key_prefix: Optional[str] = None) -> bool:
     """
     Verify an API key against a stored hash using the appropriate algorithm.
 
@@ -70,6 +70,7 @@ def verify_api_key_hash(key: str, stored_hash: str, hash_version: int) -> bool:
         key: The plaintext API key to verify
         stored_hash: The hash stored in the database
         hash_version: The algorithm version (1=SHA-256, 2=argon2id)
+        key_prefix: Optional key prefix for error logging context
 
     Returns:
         True if the key matches the hash, False otherwise
@@ -84,7 +85,11 @@ def verify_api_key_hash(key: str, stored_hash: str, hash_version: int) -> bool:
             # Malformed hash in database - log and fail
             security_logger.error(
                 "Invalid argon2 hash format in database",
-                extra={"event": "auth_error", "reason": "invalid_hash_format"},
+                extra={
+                    "event": "auth_error",
+                    "reason": "invalid_hash_format",
+                    "key_prefix": key_prefix,
+                },
             )
             return False
     elif hash_version == HASH_VERSION_SHA256:
@@ -95,7 +100,12 @@ def verify_api_key_hash(key: str, stored_hash: str, hash_version: int) -> bool:
         # Unknown version - fail closed, don't default to legacy
         security_logger.error(
             f"Unknown hash_version in database: {hash_version}",
-            extra={"event": "auth_error", "reason": "unknown_hash_version", "hash_version": hash_version},
+            extra={
+                "event": "auth_error",
+                "reason": "unknown_hash_version",
+                "hash_version": hash_version,
+                "key_prefix": key_prefix,
+            },
         )
         return False
 
@@ -129,19 +139,35 @@ async def authenticate_api_key(api_key: str, request: Optional[Request] = None) 
         The key record as a dict on success
 
     Raises:
-        HTTPException(401) if key is invalid or revoked
+        HTTPException(401) if key is invalid, too short, or revoked
     """
     ctx = _get_request_context(request)
+
+    # Validate API key format - must be at least 8 chars for prefix extraction
+    if not api_key or len(api_key) < 8:
+        security_logger.warning(
+            "Authentication failed: invalid API key format",
+            extra={
+                "event": "auth_failure",
+                "reason": "invalid_key_format",
+                "key_length": len(api_key) if api_key else 0,
+                **ctx,
+            },
+        )
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
     prefix = get_key_prefix(api_key)
 
-    # Query database for matching key by prefix (non-revoked keys only)
-    key_record = await database.fetch_one(
+    # Query database for ALL matching keys by prefix (non-revoked only)
+    # Multiple keys may share a prefix (1 in 2^32 collision chance per key)
+    # We must check each candidate to find the matching one
+    key_records = await database.fetch_all(
         worker_api_keys.select()
         .where(worker_api_keys.c.key_prefix == prefix)
         .where(worker_api_keys.c.revoked_at.is_(None))
     )
 
-    if not key_record:
+    if not key_records:
         security_logger.warning(
             "Authentication failed: invalid API key",
             extra={
@@ -153,23 +179,25 @@ async def authenticate_api_key(api_key: str, request: Optional[Request] = None) 
         )
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    # Get hash_version with fallback to SHA-256 for legacy records
-    hash_version = _get_hash_version(key_record)
+    # Try each candidate key with matching prefix
+    for key_record in key_records:
+        hash_version = _get_hash_version(key_record)
+        if verify_api_key_hash(api_key, key_record["key_hash"], hash_version, key_prefix=prefix):
+            # Found matching key
+            return dict(key_record)
 
-    if not verify_api_key_hash(api_key, key_record["key_hash"], hash_version):
-        security_logger.warning(
-            "Authentication failed: key hash mismatch",
-            extra={
-                "event": "auth_failure",
-                "reason": "hash_mismatch",
-                "key_prefix": prefix,
-                "hash_version": hash_version,
-                **ctx,
-            },
-        )
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    return dict(key_record)
+    # None of the candidates matched - log with first candidate's version for debugging
+    security_logger.warning(
+        "Authentication failed: key hash mismatch",
+        extra={
+            "event": "auth_failure",
+            "reason": "hash_mismatch",
+            "key_prefix": prefix,
+            "candidates_checked": len(key_records),
+            **ctx,
+        },
+    )
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 def _get_request_context(request: Optional[Request]) -> dict:
