@@ -4,7 +4,6 @@ Runs on port 9001 (not exposed externally).
 """
 
 import asyncio
-import hashlib
 import hmac
 import json
 import logging
@@ -174,6 +173,7 @@ from api.settings_service import (
     get_settings_service,
     seed_settings_from_env,
 )
+from api.worker_auth import authenticate_api_key
 from config import (
     ADMIN_API_SECRET,
     ADMIN_CORS_ALLOWED_ORIGINS,
@@ -6430,19 +6430,13 @@ async def claim_reencode_job(request: Request):
     Uses atomic UPDATE with RETURNING to prevent race conditions when
     multiple workers try to claim jobs simultaneously.
     """
-    # Verify worker API key
+    # Verify worker API key using shared helper (supports both argon2 and SHA-256)
     api_key = request.headers.get("X-Worker-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Worker API key required")
 
-    # Verify the API key exists and is active
-    key_record = await fetch_one_with_retry(
-        sa.text("SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL").bindparams(
-            key_hash=hashlib.sha256(api_key.encode()).hexdigest()
-        )
-    )
-    if not key_record:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+    # authenticate_api_key raises HTTPException(401) if invalid
+    await authenticate_api_key(api_key, request)
 
     # Atomic claim using UPDATE with subquery and RETURNING
     # This prevents race conditions when multiple workers claim simultaneously
@@ -6494,18 +6488,13 @@ async def update_reencode_job(
     Used by workers to mark jobs as completed/failed.
     Requires worker API key authentication.
     """
-    # Verify worker API key
+    # Verify worker API key using shared helper (supports both argon2 and SHA-256)
     api_key = request.headers.get("X-Worker-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Worker API key required")
 
-    key_record = await fetch_one_with_retry(
-        sa.text("SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL").bindparams(
-            key_hash=hashlib.sha256(api_key.encode()).hexdigest()
-        )
-    )
-    if not key_record:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+    # authenticate_api_key raises HTTPException(401) if invalid
+    await authenticate_api_key(api_key, request)
 
     # Validate job exists
     job = await fetch_one_with_retry(
@@ -7931,9 +7920,7 @@ async def list_chapters(request: Request, video_id: int):
 
     # Fetch chapters ordered by position
     chapter_rows = await fetch_all_with_retry(
-        chapters.select()
-        .where(chapters.c.video_id == video_id)
-        .order_by(chapters.c.position)
+        chapters.select().where(chapters.c.video_id == video_id).order_by(chapters.c.position)
     )
 
     chapter_list = [
@@ -7973,7 +7960,7 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
     if video["duration"] and data.start_time >= video["duration"]:
         raise HTTPException(
             status_code=400,
-            detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)"
+            detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)",
         )
 
     # Check chapter limit
@@ -7981,10 +7968,7 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
         sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
     )
     if chapter_count >= MAX_CHAPTERS_PER_VIDEO:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Maximum chapters per video ({MAX_CHAPTERS_PER_VIDEO}) reached"
-        )
+        raise HTTPException(status_code=400, detail=f"Maximum chapters per video ({MAX_CHAPTERS_PER_VIDEO}) reached")
 
     async with database.transaction():
         # Get next position with FOR UPDATE to prevent race conditions
@@ -8015,14 +7999,10 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
         chapter_id = result
 
         # Update has_chapters flag on video
-        await database.execute(
-            videos.update().where(videos.c.id == video_id).values(has_chapters=True)
-        )
+        await database.execute(videos.update().where(videos.c.id == video_id).values(has_chapters=True))
 
     # Fetch the created chapter
-    new_chapter = await fetch_one_with_retry(
-        chapters.select().where(chapters.c.id == chapter_id)
-    )
+    new_chapter = await fetch_one_with_retry(chapters.select().where(chapters.c.id == chapter_id))
 
     # Audit log
     log_audit(
@@ -8053,9 +8033,7 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
 async def get_chapter(request: Request, video_id: int, chapter_id: int):
     """Get a specific chapter."""
     chapter = await fetch_one_with_retry(
-        chapters.select()
-        .where(chapters.c.id == chapter_id)
-        .where(chapters.c.video_id == video_id)
+        chapters.select().where(chapters.c.id == chapter_id).where(chapters.c.video_id == video_id)
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -8079,9 +8057,7 @@ async def update_chapter(request: Request, video_id: int, chapter_id: int, data:
     """Update an existing chapter."""
     # Verify chapter exists
     chapter = await fetch_one_with_retry(
-        chapters.select()
-        .where(chapters.c.id == chapter_id)
-        .where(chapters.c.video_id == video_id)
+        chapters.select().where(chapters.c.id == chapter_id).where(chapters.c.video_id == video_id)
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -8094,13 +8070,11 @@ async def update_chapter(request: Request, video_id: int, chapter_id: int, data:
         update_values["description"] = data.description
     if data.start_time is not None:
         # Validate against video duration
-        video = await fetch_one_with_retry(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
         if video["duration"] and data.start_time >= video["duration"]:
             raise HTTPException(
                 status_code=400,
-                detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)"
+                detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)",
             )
         update_values["start_time"] = data.start_time
     if data.end_time is not None:
@@ -8111,14 +8085,10 @@ async def update_chapter(request: Request, video_id: int, chapter_id: int, data:
         update_values["end_time"] = data.end_time
 
     # Update chapter
-    await db_execute_with_retry(
-        chapters.update().where(chapters.c.id == chapter_id).values(**update_values)
-    )
+    await db_execute_with_retry(chapters.update().where(chapters.c.id == chapter_id).values(**update_values))
 
     # Fetch updated chapter
-    updated_chapter = await fetch_one_with_retry(
-        chapters.select().where(chapters.c.id == chapter_id)
-    )
+    updated_chapter = await fetch_one_with_retry(chapters.select().where(chapters.c.id == chapter_id))
 
     # Audit log
     log_audit(
@@ -8150,9 +8120,7 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
     """Delete a chapter and reorder remaining chapters."""
     # Verify chapter exists
     chapter = await fetch_one_with_retry(
-        chapters.select()
-        .where(chapters.c.id == chapter_id)
-        .where(chapters.c.video_id == video_id)
+        chapters.select().where(chapters.c.id == chapter_id).where(chapters.c.video_id == video_id)
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -8161,9 +8129,7 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
 
     async with database.transaction():
         # Delete the chapter
-        await database.execute(
-            chapters.delete().where(chapters.c.id == chapter_id)
-        )
+        await database.execute(chapters.delete().where(chapters.c.id == chapter_id))
 
         # Reorder remaining chapters (compact positions)
         await database.execute(
@@ -8182,9 +8148,7 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
 
         # Update has_chapters flag if no chapters remain
         if remaining_count == 0:
-            await database.execute(
-                videos.update().where(videos.c.id == video_id).values(has_chapters=False)
-            )
+            await database.execute(videos.update().where(videos.c.id == video_id).values(has_chapters=False))
 
     # Audit log
     log_audit(
@@ -8330,19 +8294,14 @@ async def queue_sprite_generation(
     """
     # Verify video exists and is ready
     video = await fetch_one_with_retry(
-        videos.select()
-        .where(videos.c.id == video_id)
-        .where(videos.c.deleted_at.is_(None))
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
     )
 
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     if video["status"] != "ready":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Video must be in 'ready' status (current: {video['status']})"
-        )
+        raise HTTPException(status_code=400, detail=f"Video must be in 'ready' status (current: {video['status']})")
 
     # Check if already queued and pending
     existing = await fetch_one_with_retry(
@@ -8370,7 +8329,9 @@ async def queue_sprite_generation(
 
     # Update video sprite status to pending
     await db_execute_with_retry(
-        videos.update().where(videos.c.id == video_id).values(
+        videos.update()
+        .where(videos.c.id == video_id)
+        .values(
             sprite_sheet_status="pending",
             sprite_sheet_error=None,
         )
@@ -8428,7 +8389,9 @@ async def queue_all_for_sprites(
             )
         )
         await db_execute_with_retry(
-            videos.update().where(videos.c.id == row["id"]).values(
+            videos.update()
+            .where(videos.c.id == row["id"])
+            .values(
                 sprite_sheet_status="pending",
                 sprite_sheet_error=None,
             )
@@ -8535,9 +8498,7 @@ async def get_video_sprite_status(request: Request, video_id: int) -> SpriteStat
     Get sprite sheet status for a specific video.
     """
     video = await fetch_one_with_retry(
-        videos.select()
-        .where(videos.c.id == video_id)
-        .where(videos.c.deleted_at.is_(None))
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
     )
 
     if not video:
@@ -8574,13 +8535,13 @@ async def cancel_sprite_job(request: Request, job_id: int) -> dict:
     if job["status"] != "pending":
         raise HTTPException(status_code=400, detail=f"Cannot cancel job with status '{job['status']}'")
 
-    await db_execute_with_retry(
-        sprite_queue.update().where(sprite_queue.c.id == job_id).values(status="cancelled")
-    )
+    await db_execute_with_retry(sprite_queue.update().where(sprite_queue.c.id == job_id).values(status="cancelled"))
 
     # Reset video sprite status
     await db_execute_with_retry(
-        videos.update().where(videos.c.id == job["video_id"]).values(
+        videos.update()
+        .where(videos.c.id == job["video_id"])
+        .values(
             sprite_sheet_status=None,
             sprite_sheet_error=None,
         )
@@ -8726,14 +8687,10 @@ async def reprocess_dead_letter_job(
         job_id = int(data.get("job_id", 0))
         video_id = int(data.get("video_id", 0))
 
-        job = await fetch_one_with_retry(
-            transcoding_jobs.select().where(transcoding_jobs.c.id == job_id)
-        )
+        job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
 
         video = await fetch_one_with_retry(
-            videos.select()
-            .where(videos.c.id == video_id)
-            .where(videos.c.deleted_at.is_(None))
+            videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
         )
 
         if not video:
@@ -8774,9 +8731,7 @@ async def reprocess_dead_letter_job(
 
         # Reset video status
         await db_execute_with_retry(
-            videos.update()
-            .where(videos.c.id == video_id)
-            .values(status="pending", error_message=None)
+            videos.update().where(videos.c.id == video_id).values(status="pending", error_message=None)
         )
 
         # Publish to the appropriate priority stream

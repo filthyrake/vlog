@@ -5,8 +5,10 @@ import hashlib
 import hmac
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
@@ -24,15 +26,150 @@ logger = logging.getLogger(__name__)
 # API key header
 api_key_header = APIKeyHeader(name="X-Worker-API-Key", auto_error=False)
 
+# Hash version constants (Issue #445)
+# Used to support dual-format verification during migration from SHA-256 to argon2id
+HASH_VERSION_SHA256 = 1  # Legacy - fast, GPU-vulnerable
+HASH_VERSION_ARGON2 = 2  # Current - memory-hard, GPU-resistant
 
-def hash_api_key(key: str) -> str:
-    """Hash an API key using SHA-256."""
+# Explicit argon2 parameters (OWASP recommended minimums)
+# These are stored in the hash output, so verification works even if defaults change
+_password_hasher = PasswordHasher(
+    time_cost=3,  # iterations
+    memory_cost=65536,  # 64MB memory
+    parallelism=4,  # threads
+)
+
+
+def hash_api_key(key: str) -> Tuple[str, int]:
+    """
+    Hash an API key using argon2id.
+
+    Returns:
+        Tuple of (hash_string, hash_version)
+        - hash_string: The argon2id hash with embedded salt and parameters
+        - hash_version: HASH_VERSION_ARGON2 (2)
+    """
+    return _password_hasher.hash(key), HASH_VERSION_ARGON2
+
+
+def hash_api_key_legacy(key: str) -> str:
+    """
+    Hash an API key using SHA-256 (legacy method).
+
+    This is only used for backward compatibility with existing keys.
+    New keys should use hash_api_key() which uses argon2id.
+    """
     return hashlib.sha256(key.encode()).hexdigest()
+
+
+def verify_api_key_hash(key: str, stored_hash: str, hash_version: int) -> bool:
+    """
+    Verify an API key against a stored hash using the appropriate algorithm.
+
+    Args:
+        key: The plaintext API key to verify
+        stored_hash: The hash stored in the database
+        hash_version: The algorithm version (1=SHA-256, 2=argon2id)
+
+    Returns:
+        True if the key matches the hash, False otherwise
+    """
+    if hash_version == HASH_VERSION_ARGON2:
+        try:
+            _password_hasher.verify(stored_hash, key)
+            return True
+        except VerifyMismatchError:
+            return False
+        except InvalidHashError:
+            # Malformed hash in database - log and fail
+            security_logger.error(
+                "Invalid argon2 hash format in database",
+                extra={"event": "auth_error", "reason": "invalid_hash_format"},
+            )
+            return False
+    elif hash_version == HASH_VERSION_SHA256:
+        # Legacy SHA-256 verification with timing-safe comparison
+        computed = hashlib.sha256(key.encode()).hexdigest()
+        return hmac.compare_digest(computed, stored_hash)
+    else:
+        # Unknown version - fail closed, don't default to legacy
+        security_logger.error(
+            f"Unknown hash_version in database: {hash_version}",
+            extra={"event": "auth_error", "reason": "unknown_hash_version", "hash_version": hash_version},
+        )
+        return False
 
 
 def get_key_prefix(key: str) -> str:
     """Get the first 8 characters of an API key for efficient lookup."""
     return key[:8]
+
+
+def _get_hash_version(record: dict) -> int:
+    """Safely get hash_version from a database record with fallback to SHA-256."""
+    try:
+        return record["hash_version"]
+    except (KeyError, TypeError):
+        return HASH_VERSION_SHA256
+
+
+async def authenticate_api_key(api_key: str, request: Optional[Request] = None) -> dict:
+    """
+    Authenticate an API key and return the key record.
+
+    This is a shared helper used by both verify_worker_key() and admin endpoints.
+    It handles the prefix-based lookup and hash verification for both argon2id
+    and legacy SHA-256 keys.
+
+    Args:
+        api_key: The plaintext API key from the request header
+        request: Optional request for logging context
+
+    Returns:
+        The key record as a dict on success
+
+    Raises:
+        HTTPException(401) if key is invalid or revoked
+    """
+    ctx = _get_request_context(request)
+    prefix = get_key_prefix(api_key)
+
+    # Query database for matching key by prefix (non-revoked keys only)
+    key_record = await database.fetch_one(
+        worker_api_keys.select()
+        .where(worker_api_keys.c.key_prefix == prefix)
+        .where(worker_api_keys.c.revoked_at.is_(None))
+    )
+
+    if not key_record:
+        security_logger.warning(
+            "Authentication failed: invalid API key",
+            extra={
+                "event": "auth_failure",
+                "reason": "invalid_key",
+                "key_prefix": prefix,
+                **ctx,
+            },
+        )
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Get hash_version with fallback to SHA-256 for legacy records
+    hash_version = _get_hash_version(key_record)
+
+    if not verify_api_key_hash(api_key, key_record["key_hash"], hash_version):
+        security_logger.warning(
+            "Authentication failed: key hash mismatch",
+            extra={
+                "event": "auth_failure",
+                "reason": "hash_mismatch",
+                "key_prefix": prefix,
+                "hash_version": hash_version,
+                **ctx,
+            },
+        )
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    return dict(key_record)
 
 
 def _get_request_context(request: Optional[Request]) -> dict:
@@ -104,41 +241,9 @@ async def verify_worker_key(
             detail="Missing API key. Include X-Worker-API-Key header.",
         )
 
-    # Extract prefix for efficient lookup (safe to log - not the full key)
+    # Use shared helper for key authentication (handles both argon2 and SHA-256)
+    key_record = await authenticate_api_key(api_key, request)
     prefix = get_key_prefix(api_key)
-    key_hash = hash_api_key(api_key)
-
-    # Query database for matching key by prefix (non-revoked keys only)
-    key_record = await database.fetch_one(
-        worker_api_keys.select()
-        .where(worker_api_keys.c.key_prefix == prefix)
-        .where(worker_api_keys.c.revoked_at.is_(None))
-    )
-
-    if not key_record:
-        security_logger.warning(
-            "Authentication failed: invalid API key",
-            extra={
-                "event": "auth_failure",
-                "reason": "invalid_key",
-                "key_prefix": prefix,
-                **ctx,
-            },
-        )
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    # Use timing-safe comparison to prevent timing attacks on the hash
-    if not hmac.compare_digest(key_hash, key_record["key_hash"]):
-        security_logger.warning(
-            "Authentication failed: key hash mismatch",
-            extra={
-                "event": "auth_failure",
-                "reason": "hash_mismatch",
-                "key_prefix": prefix,
-                **ctx,
-            },
-        )
-        raise HTTPException(status_code=401, detail="Invalid API key")
 
     # Check expiration (handle both timezone-aware and naive datetimes from SQLite)
     now = datetime.now(timezone.utc)
@@ -152,6 +257,7 @@ async def verify_worker_key(
                     "reason": "expired_key",
                     "key_prefix": prefix,
                     "worker_id": key_record["worker_id"],
+                    "hash_version": _get_hash_version(key_record),
                     "expired_at": expires_at.isoformat(),
                     **ctx,
                 },
@@ -206,6 +312,7 @@ async def verify_worker_key(
             "event": "auth_success",
             "worker_id": worker["worker_id"],
             "worker_name": worker["worker_name"],
+            "hash_version": _get_hash_version(key_record),
             **ctx,
         },
     )
