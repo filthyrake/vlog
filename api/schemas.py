@@ -1,5 +1,6 @@
 import math
 from datetime import datetime
+from enum import Enum
 from typing import Any, List, Optional, Set
 
 from pydantic import BaseModel, Field, field_validator
@@ -1193,6 +1194,53 @@ class ReorderChaptersRequest(BaseModel):
         max_length=MAX_CHAPTERS_PER_VIDEO,
         description="Chapter IDs in new order",
     )
+
+
+# Auto-detect chapter source types
+class ChapterDetectionSource(str, Enum):
+    """Source for auto-detecting chapters."""
+
+    METADATA = "metadata"  # Extract from video file metadata (ffprobe -show_chapters)
+    TRANSCRIPTION = "transcription"  # Generate from transcription analysis
+    BOTH = "both"  # Try metadata first, fall back to transcription
+
+
+class AutoDetectChaptersRequest(BaseModel):
+    """Request to auto-detect chapters for a video (Issue #493)."""
+
+    source: ChapterDetectionSource = Field(
+        default=ChapterDetectionSource.METADATA,
+        description="Source for chapter detection: 'metadata', 'transcription', or 'both'",
+    )
+    min_chapter_length: int = Field(
+        default=60,
+        ge=10,
+        le=600,
+        description="Minimum seconds between chapters (to avoid too many short chapters)",
+    )
+    replace_existing: bool = Field(
+        default=False,
+        description="Whether to replace existing chapters (if False, fails when chapters exist)",
+    )
+
+
+class DetectedChapter(BaseModel):
+    """A chapter detected from auto-detection."""
+
+    title: str
+    start_time: float
+    end_time: Optional[float] = None
+    source: str = Field(description="Where this chapter was detected from: 'metadata' or 'transcription'")
+
+
+class AutoDetectChaptersResponse(BaseModel):
+    """Response from auto-detect chapters endpoint."""
+
+    video_id: int
+    chapters_created: int
+    source_used: str = Field(description="The source that provided the chapters")
+    chapters: List[ChapterResponse]
+    message: str
 
 
 # ============ Sprite Sheet Models (Issue #413 Phase 7B) ============

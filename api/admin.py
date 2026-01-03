@@ -81,12 +81,19 @@ from api.partition_manager import ensure_partitions_exist, is_table_partitioned
 from api.public import get_video_url_prefix, get_watermark_settings
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
+from api.chapter_detection import (
+    extract_chapters_from_metadata,
+    filter_chapters_by_length,
+    generate_chapters_from_transcription,
+)
 from api.schemas import (
     MAX_CHAPTERS_PER_VIDEO,
     ActiveJobsResponse,
     ActiveJobWithWorker,
     AddVideoToPlaylistRequest,
     AnalyticsOverview,
+    AutoDetectChaptersRequest,
+    AutoDetectChaptersResponse,
     BulkCustomFieldsResponse,
     BulkCustomFieldsUpdate,
     BulkDeleteRequest,
@@ -101,6 +108,7 @@ from api.schemas import (
     CategoryCreate,
     CategoryResponse,
     ChapterCreate,
+    ChapterDetectionSource,
     ChapterListResponse,
     ChapterResponse,
     ChapterUpdate,
@@ -8239,6 +8247,176 @@ async def reorder_chapters(request: Request, video_id: int, data: ReorderChapter
     )
 
     return {"status": "ok"}
+
+
+@app.post("/api/videos/{video_id}/chapters/auto-detect")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def auto_detect_chapters(
+    request: Request, video_id: int, data: AutoDetectChaptersRequest
+) -> AutoDetectChaptersResponse:
+    """
+    Auto-detect chapters for a video from metadata or transcription (Issue #493).
+
+    Supports three detection sources:
+    - 'metadata': Extract chapter markers embedded in video file via ffprobe
+    - 'transcription': Generate chapters from speech-to-text analysis
+    - 'both': Try metadata first, fall back to transcription
+
+    Args:
+        video_id: ID of the video to detect chapters for
+        data: Detection parameters (source, min_chapter_length, replace_existing)
+
+    Returns:
+        AutoDetectChaptersResponse with created chapters
+
+    Raises:
+        404: Video not found
+        400: Chapters already exist (if replace_existing=False)
+        400: No chapters could be detected
+    """
+    # Verify video exists
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Check for existing chapters
+    existing_count = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
+    )
+
+    if existing_count > 0 and not data.replace_existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video already has {existing_count} chapter(s). Set replace_existing=true to overwrite.",
+        )
+
+    # Attempt chapter detection based on source
+    detected_chapters = []
+    source_used = None
+
+    if data.source in (ChapterDetectionSource.METADATA, ChapterDetectionSource.BOTH):
+        try:
+            detected_chapters = await extract_chapters_from_metadata(
+                video_id=video_id,
+                video_slug=video["slug"],
+            )
+            if detected_chapters:
+                source_used = "metadata"
+        except Exception as e:
+            # Log but don't fail - might try transcription next
+            print(f"Metadata chapter extraction failed for video {video_id}: {e}")
+
+    # Try transcription if metadata didn't produce results
+    if not detected_chapters and data.source in (
+        ChapterDetectionSource.TRANSCRIPTION,
+        ChapterDetectionSource.BOTH,
+    ):
+        # Get transcription from database
+        transcription = await fetch_one_with_retry(
+            transcriptions.select().where(transcriptions.c.video_id == video_id)
+        )
+
+        if transcription and transcription["status"] == TranscriptionStatus.COMPLETED:
+            transcript_text = transcription.get("transcript_text", "")
+            if transcript_text:
+                detected_chapters = await generate_chapters_from_transcription(
+                    transcript_text=transcript_text,
+                    video_duration=video["duration"] or 0,
+                    min_chapter_length=data.min_chapter_length,
+                )
+                if detected_chapters:
+                    source_used = "transcription"
+        elif data.source == ChapterDetectionSource.TRANSCRIPTION:
+            # Only fail if transcription was specifically requested
+            raise HTTPException(
+                status_code=400,
+                detail="No completed transcription available. Run transcription first.",
+            )
+
+    # Filter by minimum length
+    if detected_chapters:
+        detected_chapters = filter_chapters_by_length(
+            detected_chapters,
+            min_chapter_length=data.min_chapter_length,
+            video_duration=video["duration"] or 0,
+        )
+
+    if not detected_chapters:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No chapters detected from {data.source.value}. No embedded chapters or data.",
+        )
+
+    # Check chapter limit
+    if len(detected_chapters) > MAX_CHAPTERS_PER_VIDEO:
+        detected_chapters = detected_chapters[:MAX_CHAPTERS_PER_VIDEO]
+
+    # Create chapters in database
+    created_chapters = []
+    now = datetime.now(timezone.utc)
+
+    async with database.transaction():
+        # Delete existing chapters if replacing
+        if data.replace_existing and existing_count > 0:
+            await database.execute(chapters.delete().where(chapters.c.video_id == video_id))
+
+        # Insert new chapters
+        for position, detected in enumerate(detected_chapters):
+            result = await database.execute(
+                chapters.insert().values(
+                    video_id=video_id,
+                    title=detected.title,
+                    description=None,
+                    start_time=detected.start_time,
+                    end_time=detected.end_time,
+                    position=position,
+                    created_at=now,
+                )
+            )
+            chapter_id = result
+
+            created_chapters.append(
+                ChapterResponse(
+                    id=chapter_id,
+                    video_id=video_id,
+                    title=detected.title,
+                    description=None,
+                    start_time=detected.start_time,
+                    end_time=detected.end_time,
+                    position=position,
+                    created_at=now,
+                    updated_at=None,
+                )
+            )
+
+        # Update has_chapters flag
+        await database.execute(videos.update().where(videos.c.id == video_id).values(has_chapters=True))
+
+    # Audit log
+    log_audit(
+        AuditAction.CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="chapter",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={
+            "action": "auto-detect",
+            "source": source_used,
+            "chapters_created": len(created_chapters),
+            "replaced_existing": data.replace_existing and existing_count > 0,
+        },
+    )
+
+    return AutoDetectChaptersResponse(
+        video_id=video_id,
+        chapters_created=len(created_chapters),
+        source_used=source_used,
+        chapters=created_chapters,
+        message=f"Successfully created {len(created_chapters)} chapter(s) from {source_used}",
+    )
 
 
 # =============================================================================
