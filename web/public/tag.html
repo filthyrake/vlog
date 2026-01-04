@@ -32,8 +32,8 @@
                     placeholder="Search in tag..."
                     class="site-header__search-input"
                     x-model="searchQuery"
-                    @input.debounce.300ms="filterVideos()"
-                    @keydown.escape="clearSearch()"
+                    @input.debounce.300ms="filterVideos"
+                    @keydown.escape="clearSearch"
                 >
                 <!-- Result count -->
                 <span
@@ -47,7 +47,7 @@
                     type="button"
                     class="site-header__search-clear"
                     :class="_searchClearClass"
-                    @click="clearSearch()"
+                    @click="clearSearch"
                     aria-label="Clear search"
                 >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -61,7 +61,7 @@
             <button
                 type="button"
                 class="site-header__menu-btn"
-                @click="openMobileNav()"
+                @click="openMobileNav"
                 aria-label="Open menu"
                 :aria-expanded="_mobileNavExpanded"
                 aria-controls="mobile-nav-drawer"
@@ -87,16 +87,16 @@
         :class="_mobileNavClass"
         x-show="mobileNavOpen"
         x-cloak
-        @keydown.escape.window="closeMobileNav()"
+        @keydown.escape.window="closeMobileNav"
     >
-        <div class="mobile-nav__backdrop" @click="closeMobileNav()"></div>
+        <div class="mobile-nav__backdrop" @click="closeMobileNav"></div>
         <div id="mobile-nav-drawer" class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
             <div class="mobile-nav__header">
                 <span class="mobile-nav__title">Menu</span>
                 <button
                     type="button"
                     class="mobile-nav__close"
-                    @click="closeMobileNav()"
+                    @click="closeMobileNav"
                     aria-label="Close menu"
                     x-ref="closeBtn"
                 >
@@ -191,7 +191,7 @@
             <p class="text-dark-500 mb-4" x-text="_emptyStateMessage"></p>
             <button
                 x-show="searchQuery"
-                @click="clearSearch()"
+                @click="clearSearch"
                 class="inline-flex items-center gap-2 px-4 py-2 bg-dark-800 hover:bg-dark-700 text-dark-300 rounded-lg transition"
             >
                 <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -35,7 +35,7 @@
                     placeholder="Search videos..."
                     class="site-header__search-input"
                     x-model="searchQuery"
-                    @keydown.enter="navigateToSearch()"
+                    @keydown.enter="navigateToSearch"
                 >
             </div>
 
@@ -43,7 +43,7 @@
             <button
                 type="button"
                 class="site-header__menu-btn"
-                @click="openMobileNav()"
+                @click="openMobileNav"
                 aria-label="Open menu"
                 :aria-expanded="_mobileNavExpanded"
                 aria-controls="mobile-nav-drawer"
@@ -69,16 +69,16 @@
         :class="_mobileNavClass"
         x-show="mobileNavOpen"
         x-cloak
-        @keydown.escape.window="closeMobileNav()"
+        @keydown.escape.window="closeMobileNav"
     >
-        <div class="mobile-nav__backdrop" @click="closeMobileNav()"></div>
+        <div class="mobile-nav__backdrop" @click="closeMobileNav"></div>
         <div id="mobile-nav-drawer" class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
             <div class="mobile-nav__header">
                 <span class="mobile-nav__title">Menu</span>
                 <button
                     type="button"
                     class="mobile-nav__close"
-                    @click="closeMobileNav()"
+                    @click="closeMobileNav"
                     aria-label="Close menu"
                     x-ref="closeBtn"
                 >
@@ -267,7 +267,7 @@
                 <!-- Error state with retry -->
                 <div x-show="_showRelatedError" class="text-center py-4">
                     <p class="text-dark-400 text-sm mb-2">Failed to load related videos</p>
-                    <button @click="retryRelatedVideos()" class="text-blue-400 hover:underline text-sm">
+                    <button @click="retryRelatedVideos" class="text-blue-400 hover:underline text-sm">
                         Try again
                     </button>
                 </div>
