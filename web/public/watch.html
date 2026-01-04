@@ -93,10 +93,10 @@
                     <div class="mobile-nav__section-title">Navigation</div>
                     <a href="/" class="mobile-nav__link">Home</a>
                 </div>
-                <div class="mobile-nav__section" x-show="video?.category_name">
+                <div class="mobile-nav__section" x-show="video?._showCategory">
                     <div class="mobile-nav__section-title">Category</div>
                     <a
-                        :href="'/category/' + (video?.category_slug || '')"
+                        :href="video?._categoryHref"
                         class="mobile-nav__link"
                         x-text="video?.category_name"
                     ></a>
@@ -119,7 +119,7 @@
         </div>
 
         <!-- Video Content with Related Videos Sidebar -->
-        <div x-show="!loading && !error && video" x-cloak class="watch-layout">
+        <div x-show="_showVideo" x-cloak class="watch-layout">
             <!-- Main Column -->
             <div class="watch-layout__main">
                 <!-- Breadcrumb -->
@@ -128,9 +128,9 @@
                     <li class="breadcrumb__item">
                         <a href="/" class="breadcrumb__link">Home</a>
                     </li>
-                    <li class="breadcrumb__item" x-show="video?.category_name">
+                    <li class="breadcrumb__item" x-show="video?._showCategory">
                         <span class="breadcrumb__separator" aria-hidden="true">/</span>
-                        <a :href="'/category/' + (video?.category_slug || '')" class="breadcrumb__link" x-text="video?.category_name"></a>
+                        <a :href="video?._categoryHref" class="breadcrumb__link" x-text="video?.category_name"></a>
                     </li>
                     <li class="breadcrumb__item">
                         <span class="breadcrumb__separator" aria-hidden="true">/</span>
@@ -152,26 +152,26 @@
                     >
                     </video>
                     <!-- Watermark overlay (loaded dynamically if enabled, styles applied via JS for CSP compliance) -->
-                    <template x-if="watermark?.enabled && watermark?.type === 'image'">
+                    <template x-if="_showImageWatermark">
                         <div
                             class="player-watermark"
-                            :class="watermark?.position"
+                            :class="_watermarkPosition"
                         >
                             <img
-                                :src="watermark?.image_url"
+                                :src="_watermarkImageUrl"
                                 alt=""
                                 draggable="false"
                             >
                         </div>
                     </template>
-                    <template x-if="watermark?.enabled && watermark?.type === 'text'">
+                    <template x-if="_showTextWatermark">
                         <div
                             class="player-watermark"
-                            :class="watermark?.position"
+                            :class="_watermarkPosition"
                         >
                             <span
                                 class="player-watermark-text"
-                                x-text="watermark?.text"
+                                x-text="_watermarkText"
                             ></span>
                         </div>
                     </template>
@@ -221,9 +221,9 @@
                 </div>
 
                 <!-- Description -->
-                <div class="border-t border-dark-800 pt-4 mt-4" x-show="video?.description">
+                <div class="border-t border-dark-800 pt-4 mt-4" x-show="video?._hasDescription">
                     <h2 class="text-lg font-semibold mb-2">Description</h2>
-                    <p class="text-dark-300 whitespace-pre-wrap" x-text="video?.description"></p>
+                    <p class="text-dark-300 whitespace-pre-wrap" x-text="video?._description"></p>
                 </div>
             </div>
 

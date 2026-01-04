@@ -164,6 +164,13 @@ function watchPage() {
         _showRelatedList: false,
         _showRelatedEmpty: false,
         _showDownloadButton: false, // Precomputed for Alpine CSP
+        _showVideo: false, // Precomputed for Alpine CSP: !loading && !error && video
+        // Precomputed watermark display values for Alpine CSP
+        _showImageWatermark: false,
+        _showTextWatermark: false,
+        _watermarkPosition: '',
+        _watermarkImageUrl: '',
+        _watermarkText: '',
 
         // Display settings from API
         showViewCounts: true,
@@ -255,7 +262,9 @@ function watchPage() {
                 _hasQualities: hasQualities,
                 _categoryHref: '/category/' + (video.category_slug || ''),
                 _downloadHref: '/api/videos/' + video.slug + '/download/original',
-                _showCategory: !!video.category_name
+                _showCategory: !!video.category_name,
+                _hasDescription: !!video.description,
+                _description: video.description || ''
             };
         },
 
@@ -354,6 +363,7 @@ function watchPage() {
 
                 document.title = `${this.video.title} - Damen's VLog`;
                 this.loading = false;
+                this._showVideo = true; // Video loaded successfully
 
                 // Initialize player after DOM update
                 this.$nextTick(() => {
@@ -373,6 +383,8 @@ function watchPage() {
                 const res = await VLogUtils.fetchWithTimeout('/api/config/watermark', {}, 5000);
                 if (res.ok) {
                     this.watermark = await res.json();
+                    // Update precomputed watermark display values for Alpine CSP
+                    this.updateWatermarkDisplayFlags();
                     // Apply watermark styles via JavaScript (CSP-compliant)
                     this.$nextTick(() => this.applyWatermarkStyles());
                 }
@@ -380,6 +392,17 @@ function watchPage() {
                 // Watermark is optional, don't show errors
                 debugLog('Failed to load watermark config:', e);
             }
+        },
+
+        // Update precomputed watermark display flags for Alpine CSP
+        updateWatermarkDisplayFlags() {
+            const w = this.watermark;
+            const enabled = w && w.enabled;
+            this._showImageWatermark = enabled && w.type === 'image';
+            this._showTextWatermark = enabled && w.type === 'text';
+            this._watermarkPosition = (w && w.position) || '';
+            this._watermarkImageUrl = (w && w.image_url) || '';
+            this._watermarkText = (w && w.text) || '';
         },
 
         // Apply watermark styles directly to DOM elements (CSP-compliant, bypasses Alpine :style)

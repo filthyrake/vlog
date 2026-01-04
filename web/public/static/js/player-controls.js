@@ -285,7 +285,6 @@ class VLogPlayerControls {
             </div>
         `;
         this.container.appendChild(this.speedModal);
-        this.buildSpeedOptions();
 
         // Keyboard shortcuts help modal
         this.shortcutsModal = document.createElement('div');
@@ -419,6 +418,9 @@ class VLogPlayerControls {
         // Thumbnail preview references (Issue #413 Phase 7B)
         this.thumbnailPreview = this.controlBar.querySelector('.player-thumbnail-preview');
         this.thumbnailPreviewInner = this.controlBar.querySelector('.player-thumbnail-preview-inner');
+
+        // Build speed options after DOM refs are cached
+        this.buildSpeedOptions();
     }
 
     bindEvents() {
