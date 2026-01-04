@@ -2,11 +2,13 @@
  * Tag page Alpine.js component
  * Handles tag video listing and search
  */
+'use strict';
 
-const MAX_SEARCH_LENGTH = 200;
-const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+(function() {
+    const MAX_SEARCH_LENGTH = 200;
+    const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-function tagPage() {
+    function tagPage() {
     return {
         tag: null,
         videos: [],
@@ -175,4 +177,10 @@ function tagPage() {
             }
         }
     };
-}
+    }
+
+    // Register with Alpine.js when it initializes
+    document.addEventListener('alpine:init', () => {
+        Alpine.data('tagPage', tagPage);
+    });
+})();

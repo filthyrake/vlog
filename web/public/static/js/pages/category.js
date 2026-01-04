@@ -2,12 +2,14 @@
  * Category page Alpine.js component
  * Handles category video listing and search
  */
+'use strict';
 
-const MAX_SEARCH_LENGTH = 200;
-const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+(function() {
+    const MAX_SEARCH_LENGTH = 200;
+    const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-function categoryPage() {
-    return {
+    function categoryPage() {
+        return {
         category: null,
         videos: [],
         _filteredVideos: [],
@@ -175,4 +177,10 @@ function categoryPage() {
             }
         }
     };
-}
+    }
+
+    // Register with Alpine.js when it initializes
+    document.addEventListener('alpine:init', () => {
+        Alpine.data('categoryPage', categoryPage);
+    });
+})();

@@ -2,11 +2,13 @@
  * Home page Alpine.js component
  * Handles video listing, search, categories, and continue watching
  */
+'use strict';
 
-const MAX_SEARCH_LENGTH = 200;
+(function() {
+    const MAX_SEARCH_LENGTH = 200;
 
-function app() {
-    return {
+    function app() {
+        return {
         videos: [],
         categories: [],
         loading: true,
@@ -297,4 +299,10 @@ function app() {
             document.getElementById('search-input')?.focus();
         }
     };
-}
+    }
+
+    // Register with Alpine.js when it initializes
+    document.addEventListener('alpine:init', () => {
+        Alpine.data('app', app);
+    });
+})();
