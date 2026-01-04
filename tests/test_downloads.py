@@ -12,7 +12,7 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -139,7 +139,7 @@ class TestDownloadOriginal:
 
     def test_invalid_slug_returns_400(self, mock_settings, mock_storage_available):
         """Invalid slug format returns 400."""
-        from api.public import app, _active_downloads_per_ip
+        from api.public import _active_downloads_per_ip, app
 
         _active_downloads_per_ip.clear()
 
@@ -158,7 +158,7 @@ class TestDownloadOriginal:
 
     def test_video_not_found_returns_404(self, mock_settings, mock_storage_available):
         """Non-existent video returns 404."""
-        from api.public import app, _release_download_slot
+        from api.public import app
 
         with patch("api.public.fetch_one_with_retry") as mock_db:
             mock_db.return_value = None
@@ -205,8 +205,8 @@ class TestConcurrentDownloadLimits:
         """Test acquiring and releasing download slots."""
         from api.public import (
             _acquire_download_slot,
-            _release_download_slot,
             _active_downloads_per_ip,
+            _release_download_slot,
         )
 
         # Clear any existing state
@@ -244,7 +244,7 @@ class TestConcurrentDownloadLimits:
 
     def test_concurrent_limit_exceeded_returns_429(self, mock_settings, mock_storage_available):
         """When concurrent limit is exceeded, return 429."""
-        from api.public import app, _active_downloads_per_ip
+        from api.public import _active_downloads_per_ip, app
 
         # Set up: max 2 concurrent, already have 2
         _active_downloads_per_ip.clear()
