@@ -93,12 +93,12 @@
                     <div class="mobile-nav__section-title">Navigation</div>
                     <a href="/" class="mobile-nav__link">Home</a>
                 </div>
-                <div class="mobile-nav__section" x-show="video?._showCategory">
+                <div class="mobile-nav__section" x-show="_videoShowCategory">
                     <div class="mobile-nav__section-title">Category</div>
                     <a
-                        :href="video?._categoryHref"
+                        :href="_videoCategoryHref"
                         class="mobile-nav__link"
-                        x-text="video?.category_name"
+                        x-text="_videoCategoryName"
                     ></a>
                 </div>
             </nav>
@@ -128,13 +128,13 @@
                     <li class="breadcrumb__item">
                         <a href="/" class="breadcrumb__link">Home</a>
                     </li>
-                    <li class="breadcrumb__item" x-show="video?._showCategory">
+                    <li class="breadcrumb__item" x-show="_videoShowCategory">
                         <span class="breadcrumb__separator" aria-hidden="true">/</span>
-                        <a :href="video?._categoryHref" class="breadcrumb__link" x-text="video?.category_name"></a>
+                        <a :href="_videoCategoryHref" class="breadcrumb__link" x-text="_videoCategoryName"></a>
                     </li>
                     <li class="breadcrumb__item">
                         <span class="breadcrumb__separator" aria-hidden="true">/</span>
-                        <span class="breadcrumb__current" aria-current="page" x-text="video?.title"></span>
+                        <span class="breadcrumb__current" aria-current="page" x-text="_videoTitle"></span>
                     </li>
                 </ol>
             </nav>
@@ -147,8 +147,8 @@
                         preload="auto"
                         playsinline
                         controls
-                        :poster="video?.thumbnail_url"
-                        :aria-label="video?.title"
+                        :poster="_videoThumbnailUrl"
+                        :aria-label="_videoTitle"
                     >
                     </video>
                     <!-- Watermark overlay (loaded dynamically if enabled, styles applied via JS for CSP compliance) -->
@@ -181,18 +181,18 @@
 
             <!-- Video Info -->
             <div class="bg-dark-900 rounded-xl p-6">
-                <h1 class="text-2xl font-bold text-white mb-2" x-text="video?.title"></h1>
+                <h1 class="text-2xl font-bold text-white mb-2" x-text="_videoTitle"></h1>
 
                 <div class="flex flex-wrap gap-4 text-dark-400 text-sm mb-4">
-                    <span x-text="video?._publishedDate"></span>
-                    <span x-text="video?._duration"></span>
-                    <span x-text="video?._resolution"></span>
+                    <span x-text="_videoPublishedDate"></span>
+                    <span x-text="_videoDuration"></span>
+                    <span x-text="_videoResolution"></span>
                 </div>
 
                 <!-- Quality Info -->
-                <div class="flex flex-wrap gap-2 mb-4" x-show="video?._hasQualities">
+                <div class="flex flex-wrap gap-2 mb-4" x-show="_videoHasQualities">
                     <span class="text-dark-500 text-sm">Available in:</span>
-                    <template x-for="(q, idx) in video?.qualities" :key="idx">
+                    <template x-for="(q, idx) in _videoQualities" :key="idx">
                         <span class="bg-dark-800 px-2 py-1 rounded text-sm text-dark-300" x-text="q.quality"></span>
                     </template>
                 </div>
@@ -200,7 +200,7 @@
                 <!-- Download Button (Issue #202) -->
                 <div x-show="_showDownloadButton" class="mb-4">
                     <a
-                        :href="video?._downloadHref"
+                        :href="_videoDownloadHref"
                         class="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                         download
                     >
@@ -212,18 +212,18 @@
                 </div>
 
                 <!-- Category -->
-                <div x-show="video?._showCategory" class="mb-4">
+                <div x-show="_videoShowCategory" class="mb-4">
                     <a
-                        :href="video?._categoryHref"
+                        :href="_videoCategoryHref"
                         class="inline-block bg-blue-600/20 text-blue-400 px-3 py-1 rounded-full text-sm hover:bg-blue-600/30"
-                        x-text="video?.category_name"
+                        x-text="_videoCategoryName"
                     ></a>
                 </div>
 
                 <!-- Description -->
-                <div class="border-t border-dark-800 pt-4 mt-4" x-show="video?._hasDescription">
+                <div class="border-t border-dark-800 pt-4 mt-4" x-show="_videoHasDescription">
                     <h2 class="text-lg font-semibold mb-2">Description</h2>
-                    <p class="text-dark-300 whitespace-pre-wrap" x-text="video?._description"></p>
+                    <p class="text-dark-300 whitespace-pre-wrap" x-text="_videoDescription"></p>
                 </div>
             </div>
 

@@ -172,6 +172,21 @@ function watchPage() {
         _watermarkImageUrl: '',
         _watermarkText: '',
 
+        // Precomputed video display values for Alpine CSP (no optional chaining allowed)
+        _videoTitle: '',
+        _videoCategoryName: '',
+        _videoCategoryHref: '',
+        _videoShowCategory: false,
+        _videoThumbnailUrl: '',
+        _videoPublishedDate: '',
+        _videoDuration: '',
+        _videoResolution: '',
+        _videoHasQualities: false,
+        _videoQualities: [],
+        _videoDownloadHref: '',
+        _videoHasDescription: false,
+        _videoDescription: '',
+
         // Display settings from API
         showViewCounts: true,
         showTagline: true,
@@ -268,6 +283,25 @@ function watchPage() {
             };
         },
 
+        // Update top-level video display properties for Alpine CSP (no optional chaining in templates)
+        updateVideoDisplayProperties(video) {
+            if (!video) return;
+            const hasQualities = video.qualities && video.qualities.length > 0;
+            this._videoTitle = video.title || '';
+            this._videoCategoryName = video.category_name || '';
+            this._videoCategoryHref = '/category/' + (video.category_slug || '');
+            this._videoShowCategory = !!video.category_name;
+            this._videoThumbnailUrl = video.thumbnail_url || '';
+            this._videoPublishedDate = VLogUtils.formatDate(video.published_at);
+            this._videoDuration = VLogUtils.formatDuration(video.duration);
+            this._videoResolution = (video.source_width || 0) + 'x' + (video.source_height || 0);
+            this._videoHasQualities = hasQualities;
+            this._videoQualities = hasQualities ? video.qualities : [];
+            this._videoDownloadHref = '/api/videos/' + video.slug + '/download/original';
+            this._videoHasDescription = !!video.description;
+            this._videoDescription = video.description || '';
+        },
+
         // Update download button visibility after config loads
         updateDownloadButtonVisibility() {
             this._showDownloadButton = this.downloadConfig?.enabled && this.downloadConfig?.allow_original;
@@ -354,6 +388,8 @@ function watchPage() {
                 const rawVideo = await res.json();
                 this.video = this.enrichMainVideo(rawVideo);
                 this._videoSlug = slug; // Store for retry button in Alpine CSP
+                // Update top-level video properties for Alpine CSP (no optional chaining)
+                this.updateVideoDisplayProperties(rawVideo);
 
                 if (this.video.status !== 'ready') {
                     this.error = 'Video is still processing...';
