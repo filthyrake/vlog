@@ -112,6 +112,7 @@ from api.metrics import (
 from api.pubsub import Publisher
 from api.redis_client import get_redis
 from api.settings_service import get_setting as get_db_setting
+from api.webhook_service import trigger_webhook_event
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
     ClaimJobResponse,
@@ -716,6 +717,22 @@ async def _detect_and_release_stale_jobs():
         processed_count += 1
         logger.warning(f"Worker '{worker_name}' went offline (no heartbeat since {worker_last_hb})")
 
+        # Trigger webhook for worker going offline (Issue #203)
+        try:
+            await trigger_webhook_event(
+                "worker.offline",
+                {
+                    "worker_id": worker["worker_id"],
+                    "worker_name": worker["worker_name"],
+                    "worker_type": worker["worker_type"],
+                    "last_heartbeat": worker_last_hb.isoformat() if worker_last_hb else None,
+                    "registered_at": worker["registered_at"].isoformat() if worker["registered_at"] else None,
+                },
+            )
+        except Exception as e:
+            # Don't fail stale job check if webhook fails
+            logger.warning(f"Failed to trigger worker offline webhook: {e}")
+
         # Find jobs claimed by this worker that have EXPIRED claims
         # Don't release jobs where the claim hasn't expired yet - the worker might still complete them
         stale_jobs = await database.fetch_all(
@@ -1165,6 +1182,27 @@ async def register_worker(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
         ) from e
+
+    # Trigger webhook for worker registration (Issue #203)
+    try:
+        # Parse capabilities for webhook payload
+        capabilities_dict = None
+        if data.capabilities:
+            capabilities_dict = data.capabilities.model_dump()
+
+        await trigger_webhook_event(
+            "worker.registered",
+            {
+                "worker_id": worker_id,
+                "worker_name": worker_name,
+                "worker_type": data.worker_type,
+                "registered_at": now.isoformat(),
+                "capabilities": capabilities_dict,
+            },
+        )
+    except Exception as e:
+        # Don't fail registration if webhook fails
+        logger.warning(f"Failed to trigger worker registration webhook: {e}")
 
     return WorkerRegisterResponse(
         worker_id=worker_id,

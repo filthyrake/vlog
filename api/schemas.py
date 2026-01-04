@@ -1,7 +1,10 @@
+import ipaddress
 import math
+import socket
 from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional, Set
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -1311,6 +1314,100 @@ class SpriteQueueJobsResponse(BaseModel):
 
 # ============ Webhook Models (Issue #203) ============
 
+# SSRF Protection: Blocked IP ranges for webhook URLs
+# These ranges are internal/private networks that should never be webhook targets
+BLOCKED_IP_RANGES = [
+    ipaddress.ip_network("0.0.0.0/8"),  # Current network
+    ipaddress.ip_network("10.0.0.0/8"),  # Private network
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local (AWS metadata)
+    ipaddress.ip_network("172.16.0.0/12"),  # Private network
+    ipaddress.ip_network("192.168.0.0/16"),  # Private network
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 unique local
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+]
+
+# Known cloud metadata endpoints that must be blocked
+BLOCKED_HOSTNAMES = {
+    "metadata.google.internal",
+    "metadata.google.internal.",
+    "169.254.169.254",  # AWS/GCP/Azure metadata
+}
+
+# Minimum secret length for HMAC signing security
+MINIMUM_SECRET_LENGTH = 32
+
+
+def validate_webhook_url(url: str) -> str:
+    """
+    Validate webhook URL for SSRF protection.
+
+    Blocks:
+    - Internal/private IP ranges (10.x, 172.16.x, 192.168.x, 127.x)
+    - Cloud metadata endpoints (169.254.169.254)
+    - Link-local addresses
+    - IPv6 private ranges
+
+    Args:
+        url: The webhook URL to validate
+
+    Returns:
+        The validated URL
+
+    Raises:
+        ValueError: If URL is invalid or targets a blocked address
+    """
+    # Basic URL format validation
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise ValueError("Invalid URL format")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL must have a valid hostname")
+
+    # Normalize hostname for comparison
+    hostname_lower = hostname.lower()
+
+    # Block known metadata hostnames
+    if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.rstrip(".") in BLOCKED_HOSTNAMES:
+        raise ValueError("URL targets a blocked hostname (cloud metadata endpoint)")
+
+    # Try to resolve hostname and check IP
+    try:
+        # Get all IP addresses for the hostname
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for family, _, _, _, sockaddr in addr_info:
+            if family == socket.AF_INET:
+                ip = ipaddress.ip_address(sockaddr[0])
+            elif family == socket.AF_INET6:
+                ip = ipaddress.ip_address(sockaddr[0])
+            else:
+                continue
+
+            # Check against blocked ranges
+            for blocked_range in BLOCKED_IP_RANGES:
+                if ip in blocked_range:
+                    raise ValueError(f"URL targets a blocked IP range ({ip} is in {blocked_range})")
+
+    except socket.gaierror:
+        # DNS resolution failed - allow for now, will fail on actual delivery
+        # This allows webhooks to be configured before DNS is set up
+        pass
+    except ValueError as e:
+        # Re-raise validation errors
+        if "blocked" in str(e).lower():
+            raise
+        # Other IP parsing errors are ignored
+        pass
+
+    return url
+
 
 class WebhookEventType(str, Enum):
     """Supported webhook event types."""
@@ -1354,9 +1451,8 @@ class WebhookCreate(BaseModel):
     @field_validator("url")
     @classmethod
     def validate_url(cls, v: str) -> str:
-        if not v.startswith(("http://", "https://")):
-            raise ValueError("URL must start with http:// or https://")
-        return v
+        # Use SSRF-protected URL validation
+        return validate_webhook_url(v)
 
     @field_validator("events")
     @classmethod
@@ -1365,6 +1461,14 @@ class WebhookCreate(BaseModel):
             if event not in WEBHOOK_EVENT_TYPES:
                 valid_events = ", ".join(sorted(WEBHOOK_EVENT_TYPES))
                 raise ValueError(f"Invalid event type: {event}. Valid types: {valid_events}")
+        return v
+
+    @field_validator("secret")
+    @classmethod
+    def validate_secret(cls, v: Optional[str]) -> Optional[str]:
+        # Enforce minimum secret length for security
+        if v is not None and len(v) < MINIMUM_SECRET_LENGTH:
+            raise ValueError(f"Secret must be at least {MINIMUM_SECRET_LENGTH} characters for security")
         return v
 
 
@@ -1381,8 +1485,9 @@ class WebhookUpdate(BaseModel):
     @field_validator("url")
     @classmethod
     def validate_url(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and not v.startswith(("http://", "https://")):
-            raise ValueError("URL must start with http:// or https://")
+        if v is not None:
+            # Use SSRF-protected URL validation
+            return validate_webhook_url(v)
         return v
 
     @field_validator("events")
@@ -1393,6 +1498,14 @@ class WebhookUpdate(BaseModel):
                 if event not in WEBHOOK_EVENT_TYPES:
                     valid_events = ", ".join(sorted(WEBHOOK_EVENT_TYPES))
                     raise ValueError(f"Invalid event type: {event}. Valid types: {valid_events}")
+        return v
+
+    @field_validator("secret")
+    @classmethod
+    def validate_secret(cls, v: Optional[str]) -> Optional[str]:
+        # Enforce minimum secret length for security
+        if v is not None and len(v) < MINIMUM_SECRET_LENGTH:
+            raise ValueError(f"Secret must be at least {MINIMUM_SECRET_LENGTH} characters for security")
         return v
 
 

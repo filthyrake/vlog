@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from api.database import configure_database, database, transcriptions
 from api.enums import TranscriptionStatus
+from api.webhook_service import trigger_webhook_event
 from config import (
     AUDIO_EXTRACTION_TIMEOUT,
     SUPPORTED_VIDEO_EXTENSIONS,
@@ -397,6 +398,24 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         )
 
         print(f"  Completed in {duration:.1f}s ({word_count} words, language: {result['language']})")
+
+        # Trigger webhook for transcription completion (Issue #203)
+        try:
+            await trigger_webhook_event(
+                "transcription.completed",
+                {
+                    "video_id": video_id,
+                    "video_slug": slug,
+                    "title": title,
+                    "transcription_id": transcription_id,
+                    "language": result["language"],
+                    "word_count": word_count,
+                    "duration_seconds": duration,
+                },
+            )
+        except Exception as e:
+            # Don't fail transcription if webhook fails
+            print(f"  Warning: Failed to trigger transcription webhook: {e}")
 
     except TranscriptionCancelled:
         # Graceful shutdown - reset status to pending so it can be retried

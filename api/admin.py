@@ -912,11 +912,11 @@ async def lifespan(app: FastAPI):
     # Issue #207: Start background tasks for dynamic metrics (heartbeat ages, storage reconciliation)
     await start_metrics_background_tasks(database, storage_path=VIDEOS_DIR)
 
-    # Issue #203: Start webhook delivery background worker
+    # Issue #203: Start webhook delivery background worker (with crash recovery)
     from api.webhook_service import start_webhook_delivery_worker, stop_webhook_delivery_worker
 
-    start_webhook_delivery_worker()
-    logger.info("Webhook delivery worker started")
+    await start_webhook_delivery_worker()
+    logger.info("Webhook delivery worker started (with crash recovery)")
 
     yield
 
@@ -928,8 +928,8 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    # Issue #203: Stop webhook delivery worker
-    stop_webhook_delivery_worker()
+    # Issue #203: Stop webhook delivery worker gracefully
+    await stop_webhook_delivery_worker(timeout=10.0)
     logger.info("Webhook delivery worker stopped")
 
     # Issue #207: Stop metrics background tasks
@@ -9228,14 +9228,36 @@ async def get_job_queue_stats(request: Request):
 
 @app.get("/api/webhooks")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def list_webhooks(request: Request) -> WebhookListResponse:
+async def list_webhooks(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum webhooks to return"),
+    offset: int = Query(default=0, ge=0, description="Number of webhooks to skip"),
+    active_only: bool = Query(default=False, description="Only return active webhooks"),
+) -> WebhookListResponse:
     """
-    List all configured webhooks.
+    List all configured webhooks with pagination.
 
-    Returns all webhooks with their configuration and delivery statistics.
+    Returns webhooks with their configuration and delivery statistics.
     Secrets are never included in responses.
+
+    Query Parameters:
+    - limit: Maximum webhooks to return (default 50, max 100)
+    - offset: Number of webhooks to skip (default 0)
+    - active_only: Filter to only active webhooks (default false)
     """
-    query = webhooks.select().order_by(webhooks.c.created_at.desc())
+    # Build query with optional filter
+    base_query = webhooks.select()
+    if active_only:
+        base_query = base_query.where(webhooks.c.active == True)  # noqa: E712
+
+    # Get total count for pagination
+    count_query = sa.select(sa.func.count()).select_from(webhooks)
+    if active_only:
+        count_query = count_query.where(webhooks.c.active == True)  # noqa: E712
+    total_count = await fetch_val_with_retry(count_query) or 0
+
+    # Apply pagination
+    query = base_query.order_by(webhooks.c.created_at.desc()).limit(limit).offset(offset)
     rows = await fetch_all_with_retry(query)
 
     webhook_list = []
@@ -9262,7 +9284,7 @@ async def list_webhooks(request: Request) -> WebhookListResponse:
             )
         )
 
-    return WebhookListResponse(webhooks=webhook_list, total_count=len(webhook_list))
+    return WebhookListResponse(webhooks=webhook_list, total_count=total_count)
 
 
 @app.get("/api/webhooks/stats")
