@@ -2664,7 +2664,7 @@ async def end_analytics_session(request: Request, data: PlaybackEnd):
 
     # Issue #207: Record watch time metric
     # duration_watched is accumulated in heartbeat endpoint - record the final value
-    duration_watched = session.get("duration_watched") or 0.0
+    duration_watched = session["duration_watched"] or 0.0
     if 0 < duration_watched < 86400:  # Sanity check: 0 < watch time < 24 hours
         VIDEOS_WATCH_TIME_SECONDS_TOTAL.inc(duration_watched)
 

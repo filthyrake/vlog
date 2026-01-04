@@ -17,7 +17,7 @@ class TestErrorLoggingEnum:
 
     def test_log_original_logs_message(self, caplog):
         """Test that LOG_ORIGINAL logs the original error."""
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("WARNING", logger="api.errors"):
             result = sanitize_error_message(
                 "Test error message",
                 ErrorLogging.LOG_ORIGINAL,
