@@ -507,6 +507,16 @@
             this.loadVideos();
         },
 
+        // CSP-compatible version: reads slug from data attribute on clicked element
+        selectCategoryBySlug() {
+            const slug = this.$el.dataset.slug;
+            if (slug) {
+                this.selectedCategory = slug;
+                this.updateCategoryDisplay();
+                this.loadVideos();
+            }
+        },
+
         getCategoryButtonClass(cat) {
             if (this.selectedCategory === cat.slug) {
                 return 'bg-blue-600 text-white';

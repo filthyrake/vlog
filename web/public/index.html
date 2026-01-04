@@ -255,7 +255,8 @@
                 </button>
                 <template x-for="(cat, idx) in categories" :key="idx">
                     <button
-                        @click="selectCategory(cat)"
+                        @click="selectCategoryBySlug"
+                        :data-slug="cat.slug"
                         :class="cat._buttonClass"
                         class="px-4 py-2 rounded-lg transition flex-shrink-0 snap-start whitespace-nowrap"
                         :aria-pressed="cat._ariaPressed"
