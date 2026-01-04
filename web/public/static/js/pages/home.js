@@ -231,6 +231,14 @@
             this.announcement = mode === 'grid' ? 'Grid view' : 'List view';
         },
 
+        // CSP-compatible version: reads mode from data attribute on clicked element
+        setViewModeFromData() {
+            const mode = this.$el.dataset.mode;
+            if (mode) {
+                this.setViewMode(mode);
+            }
+        },
+
         updateViewModeClasses() {
             if (this.viewMode === 'list') {
                 this._videoGridClass = 'flex flex-col gap-4';
@@ -658,6 +666,14 @@
             } else {
                 this.announcement = 'Unable to save - storage unavailable or full';
                 console.error('Watch Later toggle failed for video', videoId);
+            }
+        },
+
+        // CSP-compatible version: reads video ID from data attribute
+        toggleWatchLaterById() {
+            const videoId = parseInt(this.$el.dataset.videoId, 10);
+            if (videoId) {
+                this.toggleWatchLater(videoId);
             }
         },
 

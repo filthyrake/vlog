@@ -231,7 +231,8 @@
                                     type="button"
                                     class="video-card__action"
                                     :class="video._watchLaterClass"
-                                    @click.prevent.stop="toggleWatchLater(video)"
+                                    @click.prevent.stop="toggleWatchLaterById"
+                                    :data-video-id="video.id"
                                     :aria-label="video._watchLaterLabel"
                                     :aria-pressed="video._watchLaterPressed"
                                 >

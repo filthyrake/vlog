@@ -257,6 +257,14 @@
                 this.announcement = 'Unable to save - storage unavailable or full';
                 console.error('Watch Later toggle failed for video', videoId);
             }
+        },
+
+        // CSP-compatible version: reads video ID from data attribute
+        toggleWatchLaterById() {
+            const videoId = parseInt(this.$el.dataset.videoId, 10);
+            if (videoId) {
+                this.toggleWatchLater(videoId);
+            }
         }
     };
     }
