@@ -12,7 +12,7 @@ If authentication is enabled (`VLOG_ADMIN_API_SECRET` is set), you'll be prompte
 
 ## Navigation
 
-The admin interface has seven main tabs:
+The admin interface has eight main tabs:
 
 | Tab | Purpose |
 |-----|---------|
@@ -21,6 +21,7 @@ The admin interface has seven main tabs:
 | **Playlists** | Create and manage playlists and collections |
 | **Upload** | Upload new videos with metadata |
 | **Workers** | Monitor transcoding workers and job status |
+| **Webhooks** | Configure event notifications |
 | **Analytics** | View playback statistics and trends |
 | **Settings** | Configure runtime settings and watermarks |
 
@@ -90,6 +91,69 @@ Select multiple videos using checkboxes, then:
 | **Retry** | Retry failed transcoding |
 | **Re-upload** | Replace source file |
 | **Re-transcribe** | Regenerate captions |
+| **Generate Sprites** | Create timeline preview thumbnails |
+| **Queue Re-encode** | Convert to CMAF format |
+
+### Video Chapters
+
+Chapters provide timeline navigation within videos.
+
+**Adding Chapters:**
+1. Open the video edit panel
+2. Click the "Chapters" tab
+3. Click "Add Chapter"
+4. Enter:
+   - **Title:** Chapter name
+   - **Start Time:** When chapter begins (seconds or MM:SS format)
+   - **End Time:** Optional end time
+5. Click "Save"
+
+**Managing Chapters:**
+- Drag and drop to reorder chapters
+- Click to edit chapter details
+- Click X to remove a chapter
+- Maximum 50 chapters per video
+
+**Chapter Display:**
+- Chapters appear in the video player timeline
+- Viewers can click to jump to specific chapters
+- Chapter titles shown on hover
+
+### Sprite Sheet Generation
+
+Sprite sheets enable thumbnail previews when scrubbing the video timeline.
+
+**Generating Sprites:**
+1. Open the video edit panel
+2. Click "Generate Sprites" in actions menu
+3. Wait for background processing
+4. Preview thumbnails appear on timeline hover
+
+**Configuration:**
+- Frame interval: seconds between captures (default: 5)
+- Grid size: thumbnails per sheet (default: 10x10)
+- See [CONFIGURATION.md](CONFIGURATION.md#sprite-sheet-settings)
+
+### Re-encode Queue
+
+Convert legacy HLS/TS videos to modern CMAF format.
+
+**Queue Individual Video:**
+1. Open the video edit panel
+2. Click "Queue Re-encode" in actions menu
+3. Select priority (high, normal, low)
+4. Video joins re-encode queue
+
+**Bulk Queue:**
+1. From Videos tab, filter by format = "hls_ts"
+2. Select multiple videos
+3. Click "Queue Re-encode"
+4. Choose priority level
+
+**Monitor Queue:**
+- View queue status in Workers tab
+- See pending, in-progress, and completed jobs
+- Cancel pending jobs if needed
 
 ---
 
@@ -270,12 +334,97 @@ View the transcoding queue:
 - **Active Jobs:** Currently being processed
 - **Queue Priority:** High, Normal, Low
 
+### Worker Management
+
+**Registering Workers:**
+```bash
+vlog worker register --name "k8s-worker-1"
+```
+Save the returned API key for the worker configuration.
+
+**Revoking Workers:**
+1. Find the worker in the list
+2. Click "Revoke" to disable API key
+3. Worker will be unable to claim new jobs
+
+### Re-encode Queue Monitoring
+
+The Workers tab shows the re-encode queue status:
+
+| Section | Description |
+|---------|-------------|
+| **Pending** | Jobs waiting for workers |
+| **In Progress** | Currently being re-encoded |
+| **Completed** | Recently finished jobs |
+| **Failed** | Jobs that encountered errors |
+
+**Queue Actions:**
+- Cancel pending jobs
+- Retry failed jobs
+- View job details and error messages
+
 ### Deployment History
 
 Track container deployments and rolling updates:
 - Deployment timestamp
 - Image version deployed
 - Rollout status
+- Worker pod names
+
+---
+
+## Webhooks Tab
+
+Configure webhook notifications for external integrations.
+
+### Creating a Webhook
+
+1. Click "New Webhook"
+2. Enter webhook URL (HTTPS recommended)
+3. Select events to subscribe to
+4. Optionally add a description
+5. Click "Create"
+
+A unique secret key will be generated for signature verification.
+
+### Webhook Events
+
+| Event | Description |
+|-------|-------------|
+| `video.ready` | Transcoding completed |
+| `video.processing` | Transcoding started |
+| `video.failed` | Transcoding failed |
+| `video.deleted` | Video soft-deleted |
+| `video.restored` | Video restored from archive |
+| `video.purged` | Video permanently deleted |
+| `transcription.complete` | Captions generated |
+| `transcription.failed` | Caption generation failed |
+| `worker.connected` | Worker came online |
+| `worker.disconnected` | Worker went offline |
+
+### Managing Webhooks
+
+**Testing:**
+1. Open webhook details
+2. Click "Test"
+3. Select an event type
+4. View the response
+
+**Viewing Deliveries:**
+1. Click on a webhook
+2. See delivery history with status codes
+3. View request/response details
+4. Retry failed deliveries
+
+**Status Indicators:**
+- Green checkmark: Successful delivery
+- Red X: Failed (will retry)
+- Yellow clock: Pending retry
+- Gray circle: Circuit breaker open
+
+### Webhook Security
+
+Each webhook has a unique secret for signature verification. See [CONFIGURATION.md](CONFIGURATION.md#webhook-notification-settings) for verification examples.
 
 ---
 

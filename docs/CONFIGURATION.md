@@ -819,16 +819,28 @@ Configure thumbnail sprite sheet generation for timeline previews.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_SPRITE_INTERVAL` | `10` | Seconds between sprite frames |
-| `VLOG_SPRITE_TILE_SIZE` | `10` | Grid size (10 = 10x10 = 100 frames per sheet) |
-| `VLOG_SPRITE_FRAME_WIDTH` | `160` | Thumbnail frame width in pixels |
-| `VLOG_SPRITE_FRAME_HEIGHT` | `90` | Thumbnail frame height (auto if 0) |
-| `VLOG_SPRITE_JPEG_QUALITY` | `80` | JPEG quality for sprite sheets (1-100) |
+| `VLOG_SPRITE_SHEET_ENABLED` | `true` | Enable sprite sheet generation |
+| `VLOG_SPRITE_SHEET_FRAME_INTERVAL` | `5` | Seconds between sprite frames (1-30) |
+| `VLOG_SPRITE_SHEET_TILE_SIZE` | `10` | Grid size (10 = 10x10 = 100 frames per sheet) |
+| `VLOG_SPRITE_SHEET_THUMBNAIL_WIDTH` | `160` | Thumbnail frame width in pixels (80-320) |
+| `VLOG_SPRITE_SHEET_JPEG_QUALITY` | `60` | JPEG quality for sprite sheets (30-95) |
+| `VLOG_SPRITE_SHEET_MAX_SHEETS` | `100` | Maximum sprite sheets per video |
+| `VLOG_SPRITE_SHEET_TIMEOUT_MULTIPLIER` | `0.5` | Timeout as fraction of video duration |
+| `VLOG_SPRITE_SHEET_TIMEOUT_MINIMUM` | `60` | Minimum generation timeout (seconds) |
+| `VLOG_SPRITE_SHEET_TIMEOUT_MAXIMUM` | `600` | Maximum generation timeout (seconds) |
+| `VLOG_SPRITE_SHEET_AUTO_GENERATE` | `false` | Auto-generate after transcode completes |
+| `VLOG_SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT` | `20` | Minimum free memory % to start job |
+| `VLOG_SPRITE_SHEET_MAX_VIDEO_DURATION` | `14400` | Max video duration to process (4 hours) |
 
 **Example:**
-- 30 minute video with 10-second interval = 180 frames
+- 30 minute video with 5-second interval = 360 frames
 - 10x10 tile size = 100 frames per sheet
-- Results in 2 sprite sheets
+- Results in 4 sprite sheets (~150-300 KB each)
+
+**Memory Management:**
+- Sprite generation is memory-intensive for long videos
+- Jobs are skipped if free memory is below threshold
+- Very long videos (>4 hours) are skipped by default
 
 ---
 
@@ -852,6 +864,77 @@ When enabled, workers must report a version >= `REQUIRED_WORKER_VERSION` or jobs
 | `VLOG_TAR_EXTRACTION_TIMEOUT` | `300` | Timeout for tar extraction in seconds |
 
 Prevents hung tar extraction operations from blocking the worker API.
+
+---
+
+## Webhook Notification Settings
+
+Configure webhook notifications for video lifecycle events.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_WEBHOOKS_ENABLED` | `true` | Master switch for webhook delivery |
+| `VLOG_WEBHOOKS_MAX_RETRIES` | `5` | Maximum retry attempts for failed deliveries |
+| `VLOG_WEBHOOKS_RETRY_BASE_DELAY` | `30` | Base delay between retries (seconds) |
+| `VLOG_WEBHOOKS_RETRY_BACKOFF_MULTIPLIER` | `2.0` | Exponential backoff multiplier |
+| `VLOG_WEBHOOKS_REQUEST_TIMEOUT` | `10` | HTTP request timeout (seconds) |
+| `VLOG_WEBHOOKS_MAX_CONCURRENT_DELIVERIES` | `10` | Maximum parallel webhook deliveries |
+| `VLOG_WEBHOOKS_DELIVERY_BATCH_SIZE` | `50` | Deliveries to process per batch |
+
+**Supported Events:**
+- `video.ready` - Video transcoding complete
+- `video.processing` - Transcoding started
+- `video.failed` - Transcoding failed
+- `video.deleted` - Video soft-deleted
+- `video.restored` - Video restored from archive
+- `video.purged` - Video permanently deleted
+- `transcription.complete` - Captions generated
+- `transcription.failed` - Transcription failed
+- `worker.connected` - Worker came online
+- `worker.disconnected` - Worker went offline
+
+**Security Features:**
+- HMAC-SHA256 signature verification (`X-VLog-Signature` header)
+- SSRF protection (blocks private IP ranges)
+- Circuit breaker (opens after 5 consecutive failures)
+- Per-webhook secret keys for signature verification
+
+**Example Verification (Python):**
+```python
+import hmac
+import hashlib
+
+def verify_webhook(payload: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(
+        secret.encode(), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
+```
+
+---
+
+## Video Download Settings
+
+Configure video download functionality.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_DOWNLOADS_ENABLED` | `false` | Master switch for download feature |
+| `VLOG_DOWNLOADS_ALLOW_ORIGINAL` | `false` | Allow downloading original source files |
+| `VLOG_DOWNLOADS_ALLOW_TRANSCODED` | `true` | Allow downloading transcoded variants |
+| `VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR` | `10` | Downloads per IP per hour (0 = unlimited) |
+| `VLOG_DOWNLOADS_MAX_CONCURRENT` | `2` | Max concurrent downloads per IP (1-10) |
+
+**Security Considerations:**
+- Downloads are disabled by default for bandwidth protection
+- Original file downloads are disabled by default (may expose source metadata)
+- Rate limiting prevents bandwidth abuse
+- Consider CDN integration for high-traffic scenarios
+
+**Download Endpoints:**
+- `GET /api/videos/{slug}/download` - Download highest quality transcoded version
+- `GET /api/videos/{slug}/download?quality=720p` - Download specific quality
+- `GET /api/videos/{slug}/download?original=true` - Download original (if enabled)
 
 ---
 
