@@ -282,3 +282,8 @@
   border-radius: var(--vlog-radius-md);
   z-index: var(--vlog-z-tooltip);
 }
+
+/* Alpine.js x-cloak directive - hides elements until Alpine initializes */
+[x-cloak] {
+  display: none !important;
+}

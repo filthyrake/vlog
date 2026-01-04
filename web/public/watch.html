@@ -3,15 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; worker-src 'self' blob:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self';">
     <title>Watch - Damen's VLog</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <link rel="stylesheet" href="/static/css/bundle.css">
     <link rel="stylesheet" href="/static/css/pages/player.css">
-    <style>[x-cloak] { display: none !important; }</style>
-    <script src="/static/js/utils.js"></script>
+    <script defer src="/static/js/utils.js"></script>
     <script defer src="/static/js/pages/watch.js"></script>
-    <script defer src="/static/vendor/alpine.min.js"></script>
+    <script defer src="/static/vendor/alpine.csp.min.js"></script>
     <!-- Shaka Player for DASH/HLS playback (preferred for CMAF) -->
     <script src="/static/vendor/shaka-player.compiled.min.js"></script>
     <!-- hls.js for legacy HLS playback (fallback) -->

@@ -19,3 +19,8 @@
 @import 'components/header.css';
 @import 'components/breadcrumb.css';
 @import 'components/footer.css';
+
+/* Alpine.js x-cloak directive - hides elements until Alpine initializes */
+[x-cloak] {
+    display: none !important;
+}

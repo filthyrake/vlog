@@ -20,6 +20,6 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "alpinejs": "^3.14.8"
+    "@alpinejs/csp": "^3.14.8"
   }
 }
