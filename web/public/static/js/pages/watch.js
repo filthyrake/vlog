@@ -144,6 +144,8 @@ function watchPage() {
         watermark: null,
         downloadConfig: null,  // Issue #202: Download configuration
         mobileNavOpen: false,
+        _mobileNavExpanded: 'false', // Precomputed for Alpine CSP
+        _mobileNavClass: '', // Precomputed for Alpine CSP
         previousFocus: null,
         searchQuery: '',
 
@@ -152,11 +154,26 @@ function watchPage() {
         loadingRelated: false,
         relatedError: false,
         _relatedAbortController: null,
+        _videoSlug: '', // Precomputed for retry button in Alpine CSP
+        // Precomputed related videos display values for Alpine CSP
+        _hasRelatedVideos: false,
+        _mobileRelatedVideos: [], // First 6 for mobile
+        _showRelatedSidebar: false,
+        _showRelatedLoading: false,
+        _showRelatedError: false,
+        _showRelatedList: false,
+        _showRelatedEmpty: false,
+        _showDownloadButton: false, // Precomputed for Alpine CSP
 
         // Display settings from API
         showViewCounts: true,
         showTagline: true,
         tagline: '',
+        // Precomputed current year for footer (Alpine CSP)
+        _currentYear: new Date().getFullYear(),
+        _showFooterTagline: false, // Precomputed for Alpine CSP
+        // Precomputed arrays for skeleton loaders (Alpine CSP)
+        _skeletonArray6: [1, 2, 3, 4, 5, 6],
 
         async loadDisplayConfig() {
             try {
@@ -166,6 +183,7 @@ function watchPage() {
                     this.showViewCounts = config.show_view_counts !== false;
                     this.showTagline = config.show_tagline !== false;
                     this.tagline = config.tagline || '';
+                    this._showFooterTagline = this.showTagline && this.tagline;
                 }
             } catch (e) {
                 // Use defaults on error
@@ -182,6 +200,8 @@ function watchPage() {
         openMobileNav() {
             this.previousFocus = document.activeElement;
             this.mobileNavOpen = true;
+            this._mobileNavExpanded = 'true';
+            this._mobileNavClass = 'mobile-nav--open';
             document.body.style.overflow = 'hidden';
             this.$nextTick(() => {
                 this.$refs.closeBtn?.focus();
@@ -190,6 +210,8 @@ function watchPage() {
 
         closeMobileNav() {
             this.mobileNavOpen = false;
+            this._mobileNavExpanded = 'false';
+            this._mobileNavClass = '';
             document.body.style.overflow = '';
             this.$nextTick(() => {
                 if (this.previousFocus) {
@@ -197,6 +219,54 @@ function watchPage() {
                     this.previousFocus = null;
                 }
             });
+        },
+
+        // Enrich related video with precomputed display values for Alpine CSP
+        enrichRelatedVideo(video) {
+            return {
+                ...video,
+                _href: '/watch/' + video.slug,
+                _duration: VLogUtils.formatDuration(video.duration),
+                _category: video.category_name || 'Uncategorized',
+                _viewCount: VLogUtils.formatViewCount(video.view_count)
+            };
+        },
+
+        // Update precomputed related video display flags for Alpine CSP
+        updateRelatedDisplayFlags() {
+            const hasVideos = this.relatedVideos.length > 0;
+            this._hasRelatedVideos = hasVideos;
+            this._mobileRelatedVideos = this.relatedVideos.slice(0, 6);
+            this._showRelatedSidebar = !this.loadingRelated || hasVideos;
+            this._showRelatedLoading = this.loadingRelated && !hasVideos;
+            this._showRelatedError = this.relatedError && !hasVideos;
+            this._showRelatedList = !this.loadingRelated && hasVideos;
+            this._showRelatedEmpty = !this.loadingRelated && !this.relatedError && !hasVideos;
+        },
+
+        // Enrich main video with precomputed display values for Alpine CSP
+        enrichMainVideo(video) {
+            const hasQualities = video.qualities && video.qualities.length > 0;
+            return {
+                ...video,
+                _duration: VLogUtils.formatDuration(video.duration),
+                _publishedDate: VLogUtils.formatDate(video.published_at),
+                _resolution: video.source_width + 'x' + video.source_height,
+                _hasQualities: hasQualities,
+                _categoryHref: '/category/' + (video.category_slug || ''),
+                _downloadHref: '/api/videos/' + video.slug + '/download/original',
+                _showCategory: !!video.category_name
+            };
+        },
+
+        // Update download button visibility after config loads
+        updateDownloadButtonVisibility() {
+            this._showDownloadButton = this.downloadConfig?.enabled && this.downloadConfig?.allow_original;
+        },
+
+        // Retry loading related videos (called from template without arguments)
+        retryRelatedVideos() {
+            this.loadRelatedVideos(this._videoSlug);
         },
 
         // Load related videos (Issue #413 Phase 5)
@@ -231,7 +301,8 @@ function watchPage() {
 
                 if (!Array.isArray(data)) throw new Error('Invalid response schema');
 
-                this.relatedVideos = data;
+                // Enrich related videos with precomputed display values
+                this.relatedVideos = data.map(v => this.enrichRelatedVideo(v));
             } catch (e) {
                 // Handle abort separately (including Safari quirks)
                 if (e.name === 'AbortError' || this._relatedAbortController?.signal?.aborted) {
@@ -249,6 +320,7 @@ function watchPage() {
                 this.relatedError = true;
             } finally {
                 this.loadingRelated = false;
+                this.updateRelatedDisplayFlags();
             }
         },
 
@@ -270,7 +342,9 @@ function watchPage() {
                 if (!res.ok) {
                     throw new Error('Video not found');
                 }
-                this.video = await res.json();
+                const rawVideo = await res.json();
+                this.video = this.enrichMainVideo(rawVideo);
+                this._videoSlug = slug; // Store for retry button in Alpine CSP
 
                 if (this.video.status !== 'ready') {
                     this.error = 'Video is still processing...';
@@ -299,10 +373,39 @@ function watchPage() {
                 const res = await VLogUtils.fetchWithTimeout('/api/config/watermark', {}, 5000);
                 if (res.ok) {
                     this.watermark = await res.json();
+                    // Apply watermark styles via JavaScript (CSP-compliant)
+                    this.$nextTick(() => this.applyWatermarkStyles());
                 }
             } catch (e) {
                 // Watermark is optional, don't show errors
                 debugLog('Failed to load watermark config:', e);
+            }
+        },
+
+        // Apply watermark styles directly to DOM elements (CSP-compliant, bypasses Alpine :style)
+        applyWatermarkStyles() {
+            if (!this.watermark?.enabled) return;
+
+            const container = document.querySelector('.player-watermark');
+            if (!container) return;
+
+            const padding = this.watermark.padding || 16;
+            const opacity = this.watermark.opacity || 0.5;
+
+            container.style.setProperty('--watermark-padding', padding + 'px');
+            container.style.opacity = opacity;
+
+            if (this.watermark.type === 'image') {
+                const img = container.querySelector('img');
+                if (img) {
+                    img.style.maxWidth = (this.watermark.max_width_percent || 15) + '%';
+                }
+            } else if (this.watermark.type === 'text') {
+                const text = container.querySelector('.player-watermark-text');
+                if (text) {
+                    text.style.fontSize = (this.watermark.text_size || 16) + 'px';
+                    text.style.color = this.watermark.text_color || 'white';
+                }
             }
         },
 
@@ -312,6 +415,7 @@ function watchPage() {
                 const res = await VLogUtils.fetchWithTimeout('/api/config/downloads', {}, 5000);
                 if (res.ok) {
                     this.downloadConfig = await res.json();
+                    this.updateDownloadButtonVisibility();
                     debugLog('Download config loaded:', this.downloadConfig);
                 }
             } catch (e) {

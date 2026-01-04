@@ -38,15 +38,15 @@
                 <!-- Result count -->
                 <span
                     class="site-header__search-count"
-                    :class="{ 'site-header__search-count--has-clear': searchQuery }"
-                    x-show="searchQuery && !loading"
-                    x-text="resultCount + ' result' + (resultCount === 1 ? '' : 's')"
+                    :class="_searchCountClass"
+                    x-show="_showSearchCount"
+                    x-text="_searchResultText"
                 ></span>
                 <!-- Clear button -->
                 <button
                     type="button"
                     class="site-header__search-clear"
-                    :class="{ 'site-header__search-clear--visible': searchQuery }"
+                    :class="_searchClearClass"
                     @click="clearSearch()"
                     aria-label="Clear search"
                 >
@@ -63,7 +63,7 @@
                 class="site-header__menu-btn"
                 @click="openMobileNav()"
                 aria-label="Open menu"
-                :aria-expanded="mobileNavOpen.toString()"
+                :aria-expanded="_mobileNavExpanded"
                 aria-controls="mobile-nav-drawer"
                 x-ref="menuBtn"
             >
@@ -84,7 +84,7 @@
     <!-- Mobile Navigation Drawer -->
     <div
         class="mobile-nav"
-        :class="{ 'mobile-nav--open': mobileNavOpen }"
+        :class="_mobileNavClass"
         x-show="mobileNavOpen"
         x-cloak
         @keydown.escape.window="closeMobileNav()"
@@ -120,19 +120,19 @@
         <div x-show="loading" role="status" aria-label="Loading tag">
             <!-- Skeleton breadcrumb -->
             <div class="mb-4">
-                <div class="skeleton skeleton-text skeleton--w-1/4" style="height: 1rem;"></div>
+                <div class="skeleton skeleton-text skeleton--w-1/4 skeleton--h-1"></div>
             </div>
             <!-- Skeleton header -->
             <div class="mb-8">
                 <div class="flex items-center gap-2 mb-2">
-                    <div class="skeleton" style="width: 2rem; height: 2rem; border-radius: 9999px;"></div>
-                    <div class="skeleton skeleton-text--lg skeleton--w-1/4" style="height: 2rem;"></div>
+                    <div class="skeleton skeleton-circle"></div>
+                    <div class="skeleton skeleton-text--lg skeleton--w-1/4 skeleton--h-2"></div>
                 </div>
-                <div class="skeleton skeleton-text skeleton--w-1/4" style="height: 0.875rem;"></div>
+                <div class="skeleton skeleton-text skeleton--w-1/4 skeleton--h-sm"></div>
             </div>
             <!-- Skeleton grid -->
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                <template x-for="i in 8" :key="i">
+                <template x-for="(i, idx) in _skeletonArray8" :key="idx">
                     <div class="skeleton-card">
                         <div class="skeleton skeleton-card__thumbnail"></div>
                         <div class="skeleton-card__info">
@@ -167,7 +167,7 @@
                 </li>
                 <li class="breadcrumb__item">
                     <span class="breadcrumb__separator" aria-hidden="true">/</span>
-                    <span class="breadcrumb__current" aria-current="page" x-text="'#' + tag?.name"></span>
+                    <span class="breadcrumb__current" aria-current="page" x-text="_tagNameWithHash"></span>
                 </li>
             </ol>
         </nav>
@@ -176,9 +176,9 @@
         <div x-show="!loading && tag" class="mb-8">
             <div class="flex items-center gap-2 mb-2">
                 <span class="bg-blue-600 text-white px-3 py-1 rounded-full text-sm">#</span>
-                <h1 class="text-3xl font-bold text-white" x-text="tag?.name"></h1>
+                <h1 class="text-3xl font-bold text-white" x-text="_tagName"></h1>
             </div>
-            <p class="text-dark-400" x-text="(searchQuery ? resultCount : tag?.video_count) + ' video' + ((searchQuery ? resultCount : tag?.video_count) === 1 ? '' : 's')"></p>
+            <p class="text-dark-400" x-text="_videoCountText"></p>
         </div>
 
         <!-- Empty State -->
@@ -187,8 +187,8 @@
                 <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
                 <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
             </svg>
-            <h3 class="text-lg font-medium text-dark-300 mb-2" x-text="searchQuery ? 'No videos match your search' : 'No videos with this tag yet'"></h3>
-            <p class="text-dark-500 mb-4" x-text="searchQuery ? 'Try adjusting your search terms.' : 'Check back soon for new content!'"></p>
+            <h3 class="text-lg font-medium text-dark-300 mb-2" x-text="_emptyStateTitle"></h3>
+            <p class="text-dark-500 mb-4" x-text="_emptyStateMessage"></p>
             <button
                 x-show="searchQuery"
                 @click="clearSearch()"
@@ -203,12 +203,12 @@
         </div>
 
         <!-- Video Grid -->
-        <div x-show="!loading && _filteredVideos.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            <template x-for="video in _filteredVideos" :key="video.id">
+        <div x-show="_showVideoGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <template x-for="(video, idx) in _filteredVideos" :key="idx">
                 <article class="video-card">
                     <a
-                        :href="'/watch/' + video.slug"
-                        :aria-label="video.title + ', ' + formatDuration(video.duration) + (showViewCounts && video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
+                        :href="video._href"
+                        :aria-label="video._ariaLabel"
                     >
                         <div class="video-card__thumbnail">
                             <!-- Placeholder icon -->
@@ -222,11 +222,11 @@
                                 loading="lazy"
                                 @error="$el.style.display='none'"
                             >
-                            <span class="video-card__duration" x-text="formatDuration(video.duration)"></span>
+                            <span class="video-card__duration" x-text="video._duration"></span>
                             <!-- Watch progress bar (if partially watched) -->
-                            <template x-if="getWatchProgress(video.id)">
+                            <template x-if="video._hasProgress">
                                 <div class="video-card__progress">
-                                    <div class="video-card__progress-bar" :style="'width:' + getWatchProgress(video.id) + '%'"></div>
+                                    <div class="video-card__progress-bar" :class="video._progressClass"></div>
                                 </div>
                             </template>
                             <!-- Hover actions -->
@@ -234,10 +234,10 @@
                                 <button
                                     type="button"
                                     class="video-card__action"
-                                    :class="{ 'video-card__action--active': isInWatchLater(video.id) }"
-                                    @click.prevent.stop="toggleWatchLater(video.id)"
-                                    :aria-label="isInWatchLater(video.id) ? 'Remove from Watch Later' : 'Add to Watch Later'"
-                                    :aria-pressed="isInWatchLater(video.id).toString()"
+                                    :class="video._watchLaterClass"
+                                    @click.prevent.stop="toggleWatchLater(video)"
+                                    :aria-label="video._watchLaterLabel"
+                                    :aria-pressed="video._watchLaterPressed"
                                 >
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                         <circle cx="12" cy="12" r="10"></circle>
@@ -249,8 +249,8 @@
                         <div class="video-card__info">
                             <h3 class="video-card__title" x-text="video.title"></h3>
                             <p class="video-card__meta">
-                                <span x-text="formatDate(video.published_at)"></span>
-                                <template x-if="showViewCounts && video.view_count > 0">
+                                <span x-text="video._publishedDate"></span>
+                                <template x-if="video._showViewCount">
                                     <span>
                                         &bull;
                                         <span class="video-card__views">
@@ -258,15 +258,15 @@
                                                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                                                 <circle cx="12" cy="12" r="3"></circle>
                                             </svg>
-                                            <span x-text="formatViewCount(video.view_count)"></span>
+                                            <span x-text="video._viewCount"></span>
                                         </span>
                                     </span>
                                 </template>
                             </p>
                             <!-- Video tags -->
-                            <div x-show="video.tags && video.tags.length > 0" class="video-card__tags">
-                                <template x-for="t in video.tags" :key="t.id">
-                                    <span class="video-card__tag" x-text="'#' + t.name"></span>
+                            <div x-show="video._hasTags" class="video-card__tags">
+                                <template x-for="(t, tidx) in video._tags" :key="tidx">
+                                    <span class="video-card__tag" x-text="t._name"></span>
                                 </template>
                             </div>
                         </div>
@@ -282,7 +282,7 @@
             <div class="site-footer__content">
                 <div class="site-footer__brand">
                     <a href="/" class="site-footer__logo">Damen's VLog</a>
-                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
+                    <p class="site-footer__tagline" x-show="_showFooterTagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
                     <div class="site-footer__nav-group">
@@ -292,7 +292,7 @@
                 </nav>
             </div>
             <div class="site-footer__bottom">
-                <p class="site-footer__copyright">&copy; <span x-text="new Date().getFullYear()"></span> Damen's VLog. All rights reserved.</p>
+                <p class="site-footer__copyright">&copy; <span x-text="_currentYear"></span> Damen's VLog. All rights reserved.</p>
             </div>
         </div>
     </footer>

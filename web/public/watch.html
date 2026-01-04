@@ -45,7 +45,7 @@
                 class="site-header__menu-btn"
                 @click="openMobileNav()"
                 aria-label="Open menu"
-                :aria-expanded="mobileNavOpen.toString()"
+                :aria-expanded="_mobileNavExpanded"
                 aria-controls="mobile-nav-drawer"
                 x-ref="menuBtn"
             >
@@ -66,7 +66,7 @@
     <!-- Mobile Navigation Drawer -->
     <div
         class="mobile-nav"
-        :class="{ 'mobile-nav--open': mobileNavOpen }"
+        :class="_mobileNavClass"
         x-show="mobileNavOpen"
         x-cloak
         @keydown.escape.window="closeMobileNav()"
@@ -151,16 +151,14 @@
                         :aria-label="video?.title"
                     >
                     </video>
-                    <!-- Watermark overlay (loaded dynamically if enabled) -->
+                    <!-- Watermark overlay (loaded dynamically if enabled, styles applied via JS for CSP compliance) -->
                     <template x-if="watermark?.enabled && watermark?.type === 'image'">
                         <div
                             class="player-watermark"
                             :class="watermark?.position"
-                            :style="`--watermark-padding: ${watermark?.padding || 16}px; opacity: ${watermark?.opacity || 0.5};`"
                         >
                             <img
                                 :src="watermark?.image_url"
-                                :style="`max-width: ${watermark?.max_width_percent || 15}%;`"
                                 alt=""
                                 draggable="false"
                             >
@@ -170,11 +168,9 @@
                         <div
                             class="player-watermark"
                             :class="watermark?.position"
-                            :style="`--watermark-padding: ${watermark?.padding || 16}px; opacity: ${watermark?.opacity || 0.5};`"
                         >
                             <span
                                 class="player-watermark-text"
-                                :style="`font-size: ${watermark?.text_size || 16}px; color: ${watermark?.text_color || 'white'};`"
                                 x-text="watermark?.text"
                             ></span>
                         </div>
@@ -188,23 +184,23 @@
                 <h1 class="text-2xl font-bold text-white mb-2" x-text="video?.title"></h1>
 
                 <div class="flex flex-wrap gap-4 text-dark-400 text-sm mb-4">
-                    <span x-text="formatDate(video?.published_at)"></span>
-                    <span x-text="formatDuration(video?.duration)"></span>
-                    <span x-text="video?.source_width + 'x' + video?.source_height"></span>
+                    <span x-text="video?._publishedDate"></span>
+                    <span x-text="video?._duration"></span>
+                    <span x-text="video?._resolution"></span>
                 </div>
 
                 <!-- Quality Info -->
-                <div class="flex flex-wrap gap-2 mb-4" x-show="video?.qualities?.length">
+                <div class="flex flex-wrap gap-2 mb-4" x-show="video?._hasQualities">
                     <span class="text-dark-500 text-sm">Available in:</span>
-                    <template x-for="q in video?.qualities" :key="q.quality">
+                    <template x-for="(q, idx) in video?.qualities" :key="idx">
                         <span class="bg-dark-800 px-2 py-1 rounded text-sm text-dark-300" x-text="q.quality"></span>
                     </template>
                 </div>
 
                 <!-- Download Button (Issue #202) -->
-                <div x-show="downloadConfig?.enabled && downloadConfig?.allow_original" class="mb-4">
+                <div x-show="_showDownloadButton" class="mb-4">
                     <a
-                        :href="'/api/videos/' + video?.slug + '/download/original'"
+                        :href="video?._downloadHref"
                         class="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                         download
                     >
@@ -216,9 +212,9 @@
                 </div>
 
                 <!-- Category -->
-                <div x-show="video?.category_name" class="mb-4">
+                <div x-show="video?._showCategory" class="mb-4">
                     <a
-                        :href="'/category/' + (video?.category_slug || '')"
+                        :href="video?._categoryHref"
                         class="inline-block bg-blue-600/20 text-blue-400 px-3 py-1 rounded-full text-sm hover:bg-blue-600/30"
                         x-text="video?.category_name"
                     ></a>
@@ -232,18 +228,18 @@
             </div>
 
                 <!-- Related Videos - Mobile (below video info) -->
-                <div class="watch-layout__related--mobile" x-show="relatedVideos.length > 0">
+                <div class="watch-layout__related--mobile" x-show="_hasRelatedVideos">
                     <h2 class="text-lg font-semibold text-white mb-4">Related Videos</h2>
                     <div class="flex flex-col gap-3">
-                        <template x-for="related in relatedVideos.slice(0, 6)" :key="related.id">
-                            <a :href="'/watch/' + related.slug" class="video-card video-card--list group">
+                        <template x-for="(related, idx) in _mobileRelatedVideos" :key="idx">
+                            <a :href="related._href" class="video-card video-card--list group">
                                 <div class="video-card--list__thumbnail">
                                     <img :src="related.thumbnail_url" :alt="related.title" loading="lazy" class="video-card--list__img">
-                                    <span class="video-card__duration" x-text="formatDuration(related.duration)"></span>
+                                    <span class="video-card__duration" x-text="related._duration"></span>
                                 </div>
                                 <div class="video-card--list__info">
                                     <h3 class="video-card--list__title" x-text="related.title"></h3>
-                                    <p class="video-card--list__meta" x-text="related.category_name || 'Uncategorized'"></p>
+                                    <p class="video-card--list__meta" x-text="related._category"></p>
                                 </div>
                             </a>
                         </template>
@@ -252,12 +248,12 @@
             </div>
 
             <!-- Related Videos Sidebar - Desktop -->
-            <aside class="watch-layout__sidebar" x-show="!loadingRelated || relatedVideos.length > 0">
+            <aside class="watch-layout__sidebar" x-show="_showRelatedSidebar">
                 <h2 class="text-lg font-semibold text-white mb-4">Related Videos</h2>
 
                 <!-- Loading skeleton -->
-                <div x-show="loadingRelated && relatedVideos.length === 0" class="flex flex-col gap-3">
-                    <template x-for="i in 6" :key="i">
+                <div x-show="_showRelatedLoading" class="flex flex-col gap-3">
+                    <template x-for="(i, idx) in _skeletonArray6" :key="idx">
                         <div class="skeleton-card skeleton-card--horizontal">
                             <div class="skeleton skeleton-card__thumbnail--small"></div>
                             <div class="skeleton-card__info">
@@ -269,32 +265,32 @@
                 </div>
 
                 <!-- Error state with retry -->
-                <div x-show="relatedError && relatedVideos.length === 0" class="text-center py-4">
+                <div x-show="_showRelatedError" class="text-center py-4">
                     <p class="text-dark-400 text-sm mb-2">Failed to load related videos</p>
-                    <button @click="loadRelatedVideos(video.slug)" class="text-blue-400 hover:underline text-sm">
+                    <button @click="retryRelatedVideos()" class="text-blue-400 hover:underline text-sm">
                         Try again
                     </button>
                 </div>
 
                 <!-- Related videos list -->
-                <div x-show="!loadingRelated && relatedVideos.length > 0" class="flex flex-col gap-3">
-                    <template x-for="related in relatedVideos" :key="related.id">
-                        <a :href="'/watch/' + related.slug" class="video-card video-card--list group">
+                <div x-show="_showRelatedList" class="flex flex-col gap-3">
+                    <template x-for="(related, idx) in relatedVideos" :key="idx">
+                        <a :href="related._href" class="video-card video-card--list group">
                             <div class="video-card--list__thumbnail">
                                 <img :src="related.thumbnail_url" :alt="related.title" loading="lazy" class="video-card--list__img">
-                                <span class="video-card__duration" x-text="formatDuration(related.duration)"></span>
+                                <span class="video-card__duration" x-text="related._duration"></span>
                             </div>
                             <div class="video-card--list__info">
                                 <h3 class="video-card--list__title" x-text="related.title"></h3>
-                                <p class="video-card--list__meta" x-text="related.category_name || 'Uncategorized'"></p>
-                                <p x-show="showViewCounts" class="video-card--list__views text-dark-500 text-xs" x-text="VLogUtils.formatViewCount(related.view_count)"></p>
+                                <p class="video-card--list__meta" x-text="related._category"></p>
+                                <p x-show="showViewCounts" class="video-card--list__views text-dark-500 text-xs" x-text="related._viewCount"></p>
                             </div>
                         </a>
                     </template>
                 </div>
 
                 <!-- Empty state -->
-                <div x-show="!loadingRelated && !relatedError && relatedVideos.length === 0" class="text-center py-4">
+                <div x-show="_showRelatedEmpty" class="text-center py-4">
                     <p class="text-dark-400 text-sm">No related videos found</p>
                 </div>
             </aside>
@@ -307,7 +303,7 @@
             <div class="site-footer__content">
                 <div class="site-footer__brand">
                     <a href="/" class="site-footer__logo">Damen's VLog</a>
-                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
+                    <p class="site-footer__tagline" x-show="_showFooterTagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
                     <div class="site-footer__nav-group">
@@ -317,7 +313,7 @@
                 </nav>
             </div>
             <div class="site-footer__bottom">
-                <p class="site-footer__copyright">&copy; <span x-text="new Date().getFullYear()"></span> Damen's VLog. All rights reserved.</p>
+                <p class="site-footer__copyright">&copy; <span x-text="_currentYear"></span> Damen's VLog. All rights reserved.</p>
             </div>
         </div>
     </footer>

@@ -38,15 +38,15 @@
                 <!-- Result count -->
                 <span
                     class="site-header__search-count"
-                    :class="{ 'site-header__search-count--has-clear': searchQuery }"
-                    x-show="searchQuery && !loading"
-                    x-text="videos.length + ' result' + (videos.length === 1 ? '' : 's')"
+                    :class="_searchCountClass"
+                    x-show="_showSearchCount"
+                    x-text="_searchResultText"
                 ></span>
                 <!-- Clear button -->
                 <button
                     type="button"
                     class="site-header__search-clear"
-                    :class="{ 'site-header__search-clear--visible': searchQuery }"
+                    :class="_searchClearClass"
                     @click="clearSearch()"
                     aria-label="Clear search"
                 >
@@ -63,7 +63,7 @@
                 class="site-header__menu-btn"
                 @click="openMobileNav()"
                 aria-label="Open menu"
-                :aria-expanded="mobileNavOpen.toString()"
+                :aria-expanded="_mobileNavAriaExpanded"
                 aria-controls="mobile-nav-drawer"
                 x-ref="menuBtn"
             >
@@ -84,7 +84,7 @@
     <!-- Mobile Navigation Drawer -->
     <div
         class="mobile-nav"
-        :class="{ 'mobile-nav--open': mobileNavOpen }"
+        :class="_mobileNavClass"
         x-show="mobileNavOpen"
         x-cloak
         @keydown.escape.window="closeMobileNav()"
@@ -111,13 +111,13 @@
                     <div class="mobile-nav__section-title">Navigation</div>
                     <a href="/" class="mobile-nav__link mobile-nav__link--active">Home</a>
                 </div>
-                <div class="mobile-nav__section" x-show="categories.length > 0">
+                <div class="mobile-nav__section" x-show="_hasCategories">
                     <div class="mobile-nav__section-title">Categories</div>
-                    <template x-for="cat in categories" :key="cat.id">
+                    <template x-for="(cat, idx) in categories" :key="idx">
                         <a
-                            :href="'/category/' + cat.slug"
+                            :href="cat._href"
                             class="mobile-nav__link"
-                            x-text="cat.name"
+                            x-text="cat._name"
                         ></a>
                     </template>
                 </div>
@@ -127,51 +127,55 @@
 
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
         <!-- Hero Section: Featured Video -->
-        <section class="mb-8" x-show="featuredVideo && !searchQuery" x-cloak>
-            <a
-                :href="'/watch/' + featuredVideo?.slug"
-                class="block relative rounded-xl overflow-hidden group"
-                :aria-label="'Featured: ' + featuredVideo?.title"
-            >
-                <div class="aspect-[21/9] md:aspect-[21/9] bg-dark-900 relative">
-                    <img
-                        :src="featuredVideo?.thumbnail_url"
-                        :alt="featuredVideo?.title"
-                        class="absolute inset-0 w-full h-full object-cover"
-                        loading="eager"
-                    >
-                    <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent"></div>
-                    <!-- Play button overlay -->
-                    <div class="absolute inset-0 flex items-center justify-center">
-                        <div class="w-16 h-16 md:w-20 md:h-20 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center group-hover:bg-white/30 transition">
-                            <svg class="w-8 h-8 md:w-10 md:h-10 text-white ml-1" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M8 5v14l11-7z"/>
-                            </svg>
+        <template x-if="featuredVideo">
+            <section class="mb-8" x-show="!searchQuery" x-cloak>
+                <a
+                    :href="featuredVideo._href"
+                    class="block relative rounded-xl overflow-hidden group"
+                    :aria-label="featuredVideo._ariaLabel"
+                >
+                    <div class="aspect-[21/9] md:aspect-[21/9] bg-dark-900 relative">
+                        <img
+                            :src="featuredVideo.thumbnail_url"
+                            :alt="featuredVideo.title"
+                            class="absolute inset-0 w-full h-full object-cover"
+                            loading="eager"
+                        >
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent"></div>
+                        <!-- Play button overlay -->
+                        <div class="absolute inset-0 flex items-center justify-center">
+                            <div class="w-16 h-16 md:w-20 md:h-20 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center group-hover:bg-white/30 transition">
+                                <svg class="w-8 h-8 md:w-10 md:h-10 text-white ml-1" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M8 5v14l11-7z"/>
+                                </svg>
+                            </div>
+                        </div>
+                        <!-- Info overlay -->
+                        <div class="absolute bottom-0 left-0 right-0 p-4 md:p-6">
+                            <span class="inline-block px-2 py-1 bg-blue-600 text-white text-xs font-medium rounded mb-2">Featured</span>
+                            <h2 class="text-xl md:text-2xl lg:text-3xl font-bold text-white mb-2 line-clamp-2" x-text="featuredVideo.title"></h2>
+                            <div class="flex items-center gap-4 text-white/70 text-sm">
+                                <span x-text="featuredVideo._category"></span>
+                                <span x-text="featuredVideo._duration"></span>
+                                <template x-if="featuredVideo._showViewCount">
+                                    <span x-text="featuredVideo._viewCount"></span>
+                                </template>
+                            </div>
                         </div>
                     </div>
-                    <!-- Info overlay -->
-                    <div class="absolute bottom-0 left-0 right-0 p-4 md:p-6">
-                        <span class="inline-block px-2 py-1 bg-blue-600 text-white text-xs font-medium rounded mb-2">Featured</span>
-                        <h2 class="text-xl md:text-2xl lg:text-3xl font-bold text-white mb-2 line-clamp-2" x-text="featuredVideo?.title"></h2>
-                        <div class="flex items-center gap-4 text-white/70 text-sm">
-                            <span x-text="featuredVideo?.category_name || 'Uncategorized'"></span>
-                            <span x-text="formatDuration(featuredVideo?.duration)"></span>
-                            <span x-show="showViewCounts && featuredVideo?.view_count > 0" x-text="formatViewCount(featuredVideo?.view_count)"></span>
-                        </div>
-                    </div>
-                </div>
-            </a>
-        </section>
+                </a>
+            </section>
+        </template>
 
         <!-- Continue Watching Section -->
         <!-- Skeleton while loading -->
-        <section class="mb-8" x-show="continueWatchingLoading && !searchQuery" x-cloak>
+        <section class="mb-8" x-show="_showContinueWatchingLoading" x-cloak>
             <div class="flex items-center justify-between mb-4">
-                <div class="skeleton skeleton-text--lg" style="width: 180px;"></div>
+                <div class="skeleton skeleton-text--lg skeleton--w-180"></div>
             </div>
             <div class="flex gap-4 overflow-x-auto pb-4" role="status" aria-label="Loading continue watching">
-                <template x-for="i in 4" :key="i">
-                    <div class="skeleton-card flex-shrink-0 w-[280px] sm:w-[320px]" :style="'animation-delay:' + (i * 100) + 'ms'">
+                <template x-for="(i, idx) in _skeletonArray4" :key="idx">
+                    <div class="skeleton-card flex-shrink-0 w-[280px] sm:w-[320px]">
                         <div class="skeleton skeleton-card__thumbnail"></div>
                         <div class="skeleton-card__info">
                             <div class="skeleton skeleton-card__title"></div>
@@ -183,7 +187,7 @@
             </div>
         </section>
         <!-- Error state -->
-        <section class="mb-8" x-show="continueWatchingError && !searchQuery" x-cloak role="alert">
+        <section class="mb-8" x-show="_showContinueWatchingError" x-cloak role="alert">
             <div class="flex items-center gap-3 p-4 bg-dark-900/50 rounded-lg border border-dark-700">
                 <svg class="w-5 h-5 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
@@ -192,7 +196,7 @@
             </div>
         </section>
         <!-- Actual content -->
-        <section class="mb-8" x-show="!continueWatchingLoading && !continueWatchingError && continueWatching.length > 0 && !searchQuery" x-cloak>
+        <section class="mb-8" x-show="_showContinueWatching" x-cloak>
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-xl font-semibold">Continue Watching</h2>
                 <button
@@ -204,32 +208,32 @@
                 </button>
             </div>
             <div class="flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scrollbar-hide" role="list" aria-label="Continue watching videos">
-                <template x-for="item in continueWatching" :key="item.video.id">
+                <template x-for="(item, idx) in continueWatching" :key="idx">
                     <article class="video-card flex-shrink-0 w-[280px] sm:w-[320px] snap-start" role="listitem">
                         <a
-                            :href="'/watch/' + item.video.slug + '?t=' + Math.floor(item.position)"
-                            :aria-label="item.video.title + ', ' + formatDuration(item.video.duration) + ', ' + Math.round(100 - item.percentage) + '% remaining'"
+                            :href="item._href"
+                            :aria-label="item._ariaLabel"
                         >
                             <div class="video-card__thumbnail">
                                 <img
-                                    :src="item.video.thumbnail_url"
-                                    :alt="item.video.title"
+                                    :src="item._thumbnail"
+                                    :alt="item._title"
                                     loading="lazy"
                                     @error="$el.style.display='none'"
                                 >
-                                <span class="video-card__duration" x-text="formatDuration(item.video.duration)"></span>
+                                <span class="video-card__duration" x-text="item._duration"></span>
                                 <!-- Progress bar -->
                                 <div class="video-card__progress">
-                                    <div class="video-card__progress-bar" :style="'width:' + item.percentage + '%'"></div>
+                                    <div class="video-card__progress-bar" :class="item._progressClass"></div>
                                 </div>
                                 <!-- Time remaining badge -->
                                 <span class="absolute bottom-6 left-2 bg-black/80 text-white text-xs px-2 py-1 rounded">
-                                    <span x-text="formatDuration(item.video.duration - item.position)"></span> left
+                                    <span x-text="item._remaining"></span> left
                                 </span>
                             </div>
                             <div class="video-card__info">
-                                <h3 class="video-card__title" x-text="item.video.title"></h3>
-                                <p class="video-card__meta" x-text="item.video.category_name || 'Uncategorized'"></p>
+                                <h3 class="video-card__title" x-text="item._title"></h3>
+                                <p class="video-card__meta" x-text="item._category"></p>
                             </div>
                         </a>
                     </article>
@@ -238,26 +242,26 @@
         </section>
 
         <!-- Categories -->
-        <section class="mb-8" x-show="categories.length > 0">
+        <section class="mb-8" x-show="_hasCategories">
             <h2 class="text-xl font-semibold mb-4">Categories</h2>
             <div class="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory md:flex-wrap md:overflow-visible scrollbar-hide" role="group" aria-label="Filter by category">
                 <button
-                    @click="selectedCategory = null; loadVideos()"
-                    :class="selectedCategory === null ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                    @click="clearCategoryFilter()"
+                    :class="_allCategoryButtonClass"
                     class="px-4 py-2 rounded-lg transition flex-shrink-0 snap-start"
-                    :aria-pressed="(selectedCategory === null).toString()"
+                    :aria-pressed="_allCategoryAriaPressed"
                 >
                     All
                 </button>
-                <template x-for="cat in categories" :key="cat.id">
+                <template x-for="(cat, idx) in categories" :key="idx">
                     <button
-                        @click="selectedCategory = cat.slug; loadVideos()"
-                        :class="selectedCategory === cat.slug ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        @click="selectCategory(cat)"
+                        :class="cat._buttonClass"
                         class="px-4 py-2 rounded-lg transition flex-shrink-0 snap-start whitespace-nowrap"
-                        :aria-pressed="(selectedCategory === cat.slug).toString()"
+                        :aria-pressed="cat._ariaPressed"
                     >
-                        <span x-text="cat.name"></span>
-                        <span class="text-dark-400 ml-1" x-text="'(' + cat.video_count + ')'"></span>
+                        <span x-text="cat._name"></span>
+                        <span class="text-dark-400 ml-1" x-text="cat._count"></span>
                     </button>
                 </template>
             </div>
@@ -266,11 +270,11 @@
         <!-- Videos Grid -->
         <section>
             <div class="flex items-center justify-between mb-4">
-                <h2 class="text-xl font-semibold" x-text="selectedCategory ? 'Videos' : 'Latest Videos'"></h2>
+                <h2 class="text-xl font-semibold" x-text="_videosSectionTitle"></h2>
             </div>
 
             <!-- Filter/Sort Bar -->
-            <div class="filter-bar" x-show="videos.length > 0 || loading">
+            <div class="filter-bar" x-show="_showFilterBar">
                 <div class="filter-bar__group">
                     <label for="sort-select" class="filter-bar__label">Sort by</label>
                     <select
@@ -308,9 +312,9 @@
                     <button
                         type="button"
                         class="filter-bar__toggle"
-                        :class="{ 'filter-bar__toggle--active': viewMode === 'grid' }"
+                        :class="_gridViewToggleClass"
                         @click="setViewMode('grid')"
-                        :aria-pressed="(viewMode === 'grid').toString()"
+                        :aria-pressed="_gridViewAriaPressed"
                         aria-label="Grid view"
                     >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -323,9 +327,9 @@
                     <button
                         type="button"
                         class="filter-bar__toggle"
-                        :class="{ 'filter-bar__toggle--active': viewMode === 'list' }"
+                        :class="_listViewToggleClass"
                         @click="setViewMode('list')"
-                        :aria-pressed="(viewMode === 'list').toString()"
+                        :aria-pressed="_listViewAriaPressed"
                         aria-label="List view"
                     >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -342,7 +346,7 @@
 
             <!-- Skeleton Loaders -->
             <div x-show="loading" class="skeleton-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" role="status" aria-label="Loading videos">
-                <template x-for="i in 8" :key="i">
+                <template x-for="(i, idx) in _skeletonArray8" :key="idx">
                     <div class="skeleton-card">
                         <div class="skeleton skeleton-card__thumbnail"></div>
                         <div class="skeleton-card__info">
@@ -356,13 +360,13 @@
             </div>
 
             <!-- Empty State -->
-            <div x-show="!loading && videos.length === 0" class="text-center py-12">
+            <div x-show="_showEmptyState" class="text-center py-12">
                 <svg class="mx-auto h-16 w-16 text-dark-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                     <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
                     <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>
                 </svg>
-                <h3 class="text-lg font-medium text-dark-300 mb-2" x-text="searchQuery ? 'No videos match your search' : 'No videos found'"></h3>
-                <p class="text-dark-500 mb-4" x-text="searchQuery ? 'Try adjusting your search terms or browse all videos.' : 'Check back soon for new content!'"></p>
+                <h3 class="text-lg font-medium text-dark-300 mb-2" x-text="_emptyStateTitle"></h3>
+                <p class="text-dark-500 mb-4" x-text="_emptyStateMessage"></p>
                 <button
                     x-show="searchQuery"
                     @click="clearSearch()"
@@ -378,14 +382,14 @@
 
             <!-- Video Grid/List -->
             <div
-                x-show="!loading && videos.length > 0"
-                :class="viewMode === 'list' ? 'flex flex-col gap-4' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6'"
+                x-show="_showVideoGrid"
+                :class="_videoGridClass"
             >
-                <template x-for="video in videos" :key="video.id">
-                    <article class="video-card" :class="{ 'video-card--list': viewMode === 'list' }">
+                <template x-for="(video, idx) in videos" :key="idx">
+                    <article class="video-card" :class="_videoCardClass">
                         <a
-                            :href="'/watch/' + video.slug"
-                            :aria-label="video.title + ', ' + formatDuration(video.duration) + (showViewCounts && video.view_count > 0 ? ', ' + formatViewCount(video.view_count) : '')"
+                            :href="video._href"
+                            :aria-label="video._ariaLabel"
                         >
                             <div class="video-card__thumbnail">
                                 <!-- Placeholder icon -->
@@ -399,11 +403,11 @@
                                     loading="lazy"
                                     @error="$el.style.display='none'"
                                 >
-                                <span class="video-card__duration" x-text="formatDuration(video.duration)"></span>
+                                <span class="video-card__duration" x-text="video._duration"></span>
                                 <!-- Watch progress bar (if partially watched) -->
-                                <template x-if="getWatchProgress(video.id)">
+                                <template x-if="video._hasProgress">
                                     <div class="video-card__progress">
-                                        <div class="video-card__progress-bar" :style="'width:' + getWatchProgress(video.id) + '%'"></div>
+                                        <div class="video-card__progress-bar" :class="video._progressClass"></div>
                                     </div>
                                 </template>
                                 <!-- Hover actions -->
@@ -411,10 +415,10 @@
                                     <button
                                         type="button"
                                         class="video-card__action"
-                                        :class="{ 'video-card__action--active': isInWatchLater(video.id) }"
-                                        @click.prevent.stop="toggleWatchLater(video.id)"
-                                        :aria-label="isInWatchLater(video.id) ? 'Remove from Watch Later' : 'Add to Watch Later'"
-                                        :aria-pressed="isInWatchLater(video.id).toString()"
+                                        :class="video._watchLaterClass"
+                                        @click.prevent.stop="toggleWatchLater(video)"
+                                        :aria-label="video._watchLaterLabel"
+                                        :aria-pressed="video._watchLaterPressed"
                                     >
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                             <circle cx="12" cy="12" r="10"></circle>
@@ -426,8 +430,8 @@
                             <div class="video-card__info">
                                 <h3 class="video-card__title" x-text="video.title"></h3>
                                 <p class="video-card__meta">
-                                    <span x-text="video.category_name || 'Uncategorized'"></span>
-                                    <template x-if="showViewCounts && video.view_count > 0">
+                                    <span x-text="video._category"></span>
+                                    <template x-if="video._showViewCount">
                                         <span>
                                             &bull;
                                             <span class="video-card__views">
@@ -435,12 +439,12 @@
                                                     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                                                     <circle cx="12" cy="12" r="3"></circle>
                                                 </svg>
-                                                <span x-text="formatViewCount(video.view_count)"></span>
+                                                <span x-text="video._viewCount"></span>
                                             </span>
                                         </span>
                                     </template>
                                 </p>
-                                <p class="video-card__meta" x-text="formatDate(video.published_at)"></p>
+                                <p class="video-card__meta" x-text="video._publishedDate"></p>
                             </div>
                         </a>
                     </article>
@@ -455,7 +459,7 @@
             <div class="site-footer__content">
                 <div class="site-footer__brand">
                     <a href="/" class="site-footer__logo">Damen's VLog</a>
-                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
+                    <p class="site-footer__tagline" x-show="_showFooterTagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
                     <div class="site-footer__nav-group">
@@ -465,7 +469,7 @@
                 </nav>
             </div>
             <div class="site-footer__bottom">
-                <p class="site-footer__copyright">&copy; <span x-text="new Date().getFullYear()"></span> Damen's VLog. All rights reserved.</p>
+                <p class="site-footer__copyright">&copy; <span x-text="_currentYear"></span> Damen's VLog. All rights reserved.</p>
             </div>
         </div>
     </footer>
