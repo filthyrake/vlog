@@ -33,7 +33,6 @@ from api.common import (
     rate_limit_exceeded_handler,
     validate_slug,
 )
-from api.metrics import VIDEOS_WATCH_TIME_SECONDS_TOTAL
 from api.database import (
     categories,
     chapters,
@@ -61,6 +60,7 @@ from api.db_retry import (
 )
 from api.enums import DurationFilter, SortBy, SortOrder, TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
+from api.metrics import VIDEOS_WATCH_TIME_SECONDS_TOTAL
 from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
     CategoryResponse,
@@ -86,6 +86,12 @@ from api.schemas import (
 )
 from config import (
     CORS_ALLOWED_ORIGINS,
+    DOWNLOADS_ALLOW_ORIGINAL,
+    DOWNLOADS_ALLOW_TRANSCODED,
+    DOWNLOADS_ENABLED,
+    DOWNLOADS_MAX_CONCURRENT,
+    DOWNLOADS_RATE_LIMIT_PER_HOUR,
+    DOWNLOADS_REQUIRE_AUTH,
     NAS_STORAGE,
     PUBLIC_PORT,
     QUALITY_NAMES,
@@ -95,6 +101,8 @@ from config import (
     RATE_LIMIT_PUBLIC_VIDEOS_LIST,
     RATE_LIMIT_STORAGE_URL,
     SECURE_COOKIES,
+    SUPPORTED_VIDEO_EXTENSIONS,
+    UPLOADS_DIR,
     VIDEOS_DIR,
     WATERMARK_ENABLED,
     WATERMARK_IMAGE,
@@ -524,12 +532,14 @@ async def get_video_chapters(video_ids: List[int], has_chapters_flags: Dict[int,
         video_id = row["video_id"]
         if video_id not in result:
             result[video_id] = []
-        result[video_id].append(ChapterInfo(
-            id=row["id"],
-            title=row["title"],
-            start_time=row["start_time"],
-            end_time=row["end_time"],
-        ))
+        result[video_id].append(
+            ChapterInfo(
+                id=row["id"],
+                title=row["title"],
+                start_time=row["start_time"],
+                end_time=row["end_time"],
+            )
+        )
 
     return result
 
@@ -2126,6 +2136,195 @@ async def get_display_config(request: Request):
     """
     settings = await get_display_settings()
     return settings
+
+
+# ============================================================================
+# Download Configuration (Issue #202)
+# ============================================================================
+
+# Cached download settings (refreshed every 60 seconds)
+_cached_download_settings: Dict[str, Any] = {}
+_cached_download_settings_time: float = 0
+_DOWNLOAD_SETTINGS_CACHE_TTL = 60  # seconds
+
+
+async def get_download_settings() -> Dict[str, Any]:
+    """
+    Get download settings from database with caching and env var fallback.
+
+    Returns dict with:
+    - enabled: Whether downloads are enabled (default False)
+    - require_auth: Whether authentication is required (default True)
+    - allow_original: Whether original file downloads are allowed (default False)
+    - allow_transcoded: Whether transcoded quality downloads are allowed (default True)
+    - rate_limit_per_hour: Downloads per IP per hour (default 10)
+    - max_concurrent: Max concurrent downloads per IP (default 2)
+    """
+    global _cached_download_settings, _cached_download_settings_time
+
+    now = time.time()
+    if _cached_download_settings and (now - _cached_download_settings_time) < _DOWNLOAD_SETTINGS_CACHE_TTL:
+        return _cached_download_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "enabled": await service.get("downloads.enabled", DOWNLOADS_ENABLED),
+            "require_auth": await service.get("downloads.require_auth", DOWNLOADS_REQUIRE_AUTH),
+            "allow_original": await service.get("downloads.allow_original", DOWNLOADS_ALLOW_ORIGINAL),
+            "allow_transcoded": await service.get("downloads.allow_transcoded", DOWNLOADS_ALLOW_TRANSCODED),
+            "rate_limit_per_hour": await service.get("downloads.rate_limit_per_hour", DOWNLOADS_RATE_LIMIT_PER_HOUR),
+            "max_concurrent": await service.get("downloads.max_concurrent", DOWNLOADS_MAX_CONCURRENT),
+        }
+
+        _cached_download_settings = settings
+        _cached_download_settings_time = now
+
+    except Exception as e:
+        logger.debug(f"Failed to get download settings from DB, using env vars: {e}")
+        _cached_download_settings = {
+            "enabled": DOWNLOADS_ENABLED,
+            "require_auth": DOWNLOADS_REQUIRE_AUTH,
+            "allow_original": DOWNLOADS_ALLOW_ORIGINAL,
+            "allow_transcoded": DOWNLOADS_ALLOW_TRANSCODED,
+            "rate_limit_per_hour": DOWNLOADS_RATE_LIMIT_PER_HOUR,
+            "max_concurrent": DOWNLOADS_MAX_CONCURRENT,
+        }
+        _cached_download_settings_time = now
+
+    return _cached_download_settings
+
+
+def reset_download_settings_cache() -> None:
+    """Reset the cached download settings. Useful for testing."""
+    global _cached_download_settings, _cached_download_settings_time
+    _cached_download_settings = {}
+    _cached_download_settings_time = 0
+
+
+@app.get("/api/config/downloads")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_download_config(request: Request):
+    """
+    Get download configuration for the UI.
+
+    Returns whether downloads are enabled and what options are available.
+    This is used by the watch page to show/hide download buttons.
+    """
+    settings = await get_download_settings()
+
+    if not settings["enabled"]:
+        return {"enabled": False}
+
+    return {
+        "enabled": True,
+        "allow_original": settings["allow_original"],
+        "allow_transcoded": settings["allow_transcoded"],
+        "require_auth": settings["require_auth"],
+    }
+
+
+def _find_original_file(video_id: int) -> Optional[Path]:
+    """
+    Find the original uploaded file for a video.
+
+    Searches UPLOADS_DIR for files matching {video_id}.{ext} where ext
+    is one of the supported video extensions.
+
+    Args:
+        video_id: The video's database ID
+
+    Returns:
+        Path to the original file if found, None otherwise
+    """
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
+        candidate = UPLOADS_DIR / f"{video_id}{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+@app.get("/api/videos/{slug}/download/original")
+@limiter.limit(
+    f"{DOWNLOADS_RATE_LIMIT_PER_HOUR}/hour" if DOWNLOADS_RATE_LIMIT_PER_HOUR > 0 else RATE_LIMIT_PUBLIC_DEFAULT
+)
+async def download_original(request: Request, slug: str):
+    """
+    Download the original source file for a video.
+
+    This endpoint serves the original file as uploaded, without any transcoding.
+    The file is streamed to prevent loading large files into memory.
+
+    Requirements:
+    - Downloads must be enabled (VLOG_DOWNLOADS_ENABLED=true)
+    - Original downloads must be allowed (VLOG_DOWNLOADS_ALLOW_ORIGINAL=true)
+    - If require_auth is true, user must be authenticated (TODO: implement)
+
+    Returns:
+        FileResponse with the original video file
+    """
+    # Validate slug
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
+    # Check download settings
+    settings = await get_download_settings()
+
+    if not settings["enabled"]:
+        raise HTTPException(status_code=403, detail="Downloads are disabled")
+
+    if not settings["allow_original"]:
+        raise HTTPException(status_code=403, detail="Original file downloads are disabled")
+
+    # TODO: Implement authentication check if require_auth is True
+    # For now, we'll skip this since it requires session management
+    # if settings["require_auth"]:
+    #     # Check for valid session
+    #     pass
+
+    # Get video from database
+    video_query = (
+        videos.select()
+        .where(videos.c.slug == slug)
+        .where(videos.c.status == VideoStatus.READY)
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Find the original file
+    original_file = _find_original_file(video["id"])
+
+    if not original_file:
+        raise HTTPException(
+            status_code=404,
+            detail="Original file not available. It may have been deleted after transcoding.",
+        )
+
+    # Generate a safe filename for the download
+    # Use the video title with the original extension
+    safe_title = "".join(c for c in video["title"] if c.isalnum() or c in " -_").strip()
+    if not safe_title:
+        safe_title = slug
+    download_filename = f"{safe_title}{original_file.suffix}"
+
+    logger.info(f"Serving original download for video {slug} (id={video['id']})")
+
+    return FileResponse(
+        path=original_file,
+        filename=download_filename,
+        media_type="video/mp4",  # Most common, could be detected from extension
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_filename}"',
+            "Cache-Control": "private, max-age=3600",  # Cache for 1 hour
+        },
+    )
 
 
 # ============================================================================

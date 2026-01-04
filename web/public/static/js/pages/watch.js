@@ -142,6 +142,7 @@ function watchPage() {
         captionsEnabled: false,
         captionsTrack: null,
         watermark: null,
+        downloadConfig: null,  // Issue #202: Download configuration
         mobileNavOpen: false,
         previousFocus: null,
         searchQuery: '',
@@ -255,6 +256,7 @@ function watchPage() {
             // Fetch configs (non-blocking)
             this.loadWatermarkConfig();
             this.loadDisplayConfig();
+            this.loadDownloadConfig();  // Issue #202
 
             const slug = window.location.pathname.split('/').pop();
             if (!slug || !SLUG_PATTERN.test(slug)) {
@@ -301,6 +303,20 @@ function watchPage() {
             } catch (e) {
                 // Watermark is optional, don't show errors
                 debugLog('Failed to load watermark config:', e);
+            }
+        },
+
+        // Issue #202: Load download configuration
+        async loadDownloadConfig() {
+            try {
+                const res = await VLogUtils.fetchWithTimeout('/api/config/downloads', {}, 5000);
+                if (res.ok) {
+                    this.downloadConfig = await res.json();
+                    debugLog('Download config loaded:', this.downloadConfig);
+                }
+            } catch (e) {
+                // Downloads are optional, fail silently
+                debugLog('Failed to load download config:', e);
             }
         },
 

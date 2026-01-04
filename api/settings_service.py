@@ -645,7 +645,9 @@ class SettingsService:
                     raise SettingsValidationError(f"Value {value} is above maximum {constraints['max']}")
             if "enum_values" in constraints and constraints["enum_values"] is not None:
                 if value not in constraints["enum_values"]:
-                    raise SettingsValidationError(f"Value '{value}' not in allowed values: {constraints['enum_values']}")
+                    raise SettingsValidationError(
+                        f"Value '{value}' not in allowed values: {constraints['enum_values']}"
+                    )
             if "pattern" in constraints and constraints["pattern"] is not None:
                 import re
 
@@ -1017,6 +1019,49 @@ KNOWN_SETTINGS = [
         "Require authentication for metrics endpoint (recommended for public deployments)",
         None,
     ),
+    # Download settings (Issue #202)
+    (
+        "downloads.enabled",
+        "downloads",
+        "boolean",
+        "Enable video download feature (disabled by default for security)",
+        None,
+    ),
+    (
+        "downloads.require_auth",
+        "downloads",
+        "boolean",
+        "Require authentication for downloads (recommended for public deployments)",
+        None,
+    ),
+    (
+        "downloads.allow_original",
+        "downloads",
+        "boolean",
+        "Allow downloading original source files (as uploaded)",
+        None,
+    ),
+    (
+        "downloads.allow_transcoded",
+        "downloads",
+        "boolean",
+        "Allow downloading transcoded quality variants (e.g., 1080p MP4)",
+        None,
+    ),
+    (
+        "downloads.rate_limit_per_hour",
+        "downloads",
+        "integer",
+        "Download rate limit per IP per hour (0 to disable)",
+        {"min": 0, "max": 1000},
+    ),
+    (
+        "downloads.max_concurrent",
+        "downloads",
+        "integer",
+        "Maximum concurrent downloads per IP",
+        {"min": 1, "max": 10},
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1078,6 +1123,13 @@ SETTING_TO_ENV_MAP = {
     # Metrics settings (Issue #436)
     "metrics.enabled": "VLOG_METRICS_ENABLED",
     "metrics.auth_required": "VLOG_METRICS_AUTH_REQUIRED",
+    # Download settings (Issue #202)
+    "downloads.enabled": "VLOG_DOWNLOADS_ENABLED",
+    "downloads.require_auth": "VLOG_DOWNLOADS_REQUIRE_AUTH",
+    "downloads.allow_original": "VLOG_DOWNLOADS_ALLOW_ORIGINAL",
+    "downloads.allow_transcoded": "VLOG_DOWNLOADS_ALLOW_TRANSCODED",
+    "downloads.rate_limit_per_hour": "VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR",
+    "downloads.max_concurrent": "VLOG_DOWNLOADS_MAX_CONCURRENT",
 }
 
 
