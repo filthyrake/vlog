@@ -1028,13 +1028,6 @@ KNOWN_SETTINGS = [
         None,
     ),
     (
-        "downloads.require_auth",
-        "downloads",
-        "boolean",
-        "Require authentication for downloads (recommended for public deployments)",
-        None,
-    ),
-    (
         "downloads.allow_original",
         "downloads",
         "boolean",
@@ -1125,7 +1118,6 @@ SETTING_TO_ENV_MAP = {
     "metrics.auth_required": "VLOG_METRICS_AUTH_REQUIRED",
     # Download settings (Issue #202)
     "downloads.enabled": "VLOG_DOWNLOADS_ENABLED",
-    "downloads.require_auth": "VLOG_DOWNLOADS_REQUIRE_AUTH",
     "downloads.allow_original": "VLOG_DOWNLOADS_ALLOW_ORIGINAL",
     "downloads.allow_transcoded": "VLOG_DOWNLOADS_ALLOW_TRANSCODED",
     "downloads.rate_limit_per_hour": "VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR",

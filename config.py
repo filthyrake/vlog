@@ -583,10 +583,6 @@ SPRITE_SHEET_MAX_VIDEO_DURATION = get_int_env("VLOG_SPRITE_SHEET_MAX_VIDEO_DURAT
 # Set VLOG_DOWNLOADS_ENABLED=true to enable
 DOWNLOADS_ENABLED = os.getenv("VLOG_DOWNLOADS_ENABLED", "false").lower() in ("true", "1", "yes")
 
-# Require authentication for downloads (when admin auth is configured)
-# When true, downloads require a valid session; when false, downloads are public
-DOWNLOADS_REQUIRE_AUTH = os.getenv("VLOG_DOWNLOADS_REQUIRE_AUTH", "true").lower() in ("true", "1", "yes")
-
 # Allow downloading original source files (as uploaded)
 DOWNLOADS_ALLOW_ORIGINAL = os.getenv("VLOG_DOWNLOADS_ALLOW_ORIGINAL", "false").lower() in ("true", "1", "yes")
 

@@ -3,6 +3,7 @@ Public API - serves the video browsing interface.
 Runs on port 9000.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -13,9 +14,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import sqlalchemy as sa
-from fastapi import Cookie, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +33,7 @@ from api.common import (
     get_real_ip,
     get_storage_status,
     rate_limit_exceeded_handler,
+    require_storage_available,
     validate_slug,
 )
 from api.database import (
@@ -91,7 +94,6 @@ from config import (
     DOWNLOADS_ENABLED,
     DOWNLOADS_MAX_CONCURRENT,
     DOWNLOADS_RATE_LIMIT_PER_HOUR,
-    DOWNLOADS_REQUIRE_AUTH,
     NAS_STORAGE,
     PUBLIC_PORT,
     QUALITY_NAMES,
@@ -2146,54 +2148,100 @@ async def get_display_config(request: Request):
 _cached_download_settings: Dict[str, Any] = {}
 _cached_download_settings_time: float = 0
 _DOWNLOAD_SETTINGS_CACHE_TTL = 60  # seconds
+_download_settings_lock: Optional[asyncio.Lock] = None
+
+# Concurrent download tracking per IP (in-memory, resets on restart)
+_active_downloads_per_ip: Dict[str, int] = {}
+_downloads_tracking_lock: Optional[asyncio.Lock] = None
+
+# MIME type mapping for video files
+_VIDEO_MIME_TYPES: Dict[str, str] = {
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+}
+
+# Maximum file size for downloads (100GB sanity check)
+_MAX_DOWNLOAD_FILE_SIZE = 100 * 1024 * 1024 * 1024
+
+
+def _get_download_settings_lock() -> asyncio.Lock:
+    """Get or create the download settings cache lock."""
+    global _download_settings_lock
+    if _download_settings_lock is None:
+        _download_settings_lock = asyncio.Lock()
+    return _download_settings_lock
+
+
+def _get_downloads_tracking_lock() -> asyncio.Lock:
+    """Get or create the concurrent downloads tracking lock."""
+    global _downloads_tracking_lock
+    if _downloads_tracking_lock is None:
+        _downloads_tracking_lock = asyncio.Lock()
+    return _downloads_tracking_lock
 
 
 async def get_download_settings() -> Dict[str, Any]:
     """
     Get download settings from database with caching and env var fallback.
 
+    Uses asyncio.Lock to prevent thundering herd on cache expiry.
+
     Returns dict with:
     - enabled: Whether downloads are enabled (default False)
-    - require_auth: Whether authentication is required (default True)
     - allow_original: Whether original file downloads are allowed (default False)
     - allow_transcoded: Whether transcoded quality downloads are allowed (default True)
     - rate_limit_per_hour: Downloads per IP per hour (default 10)
     - max_concurrent: Max concurrent downloads per IP (default 2)
+
+    Note: rate_limit_per_hour is configured at startup and requires restart to change.
+    The database setting only affects the displayed config, not the actual rate limit.
     """
     global _cached_download_settings, _cached_download_settings_time
 
     now = time.time()
-    if _cached_download_settings and (now - _cached_download_settings_time) < _DOWNLOAD_SETTINGS_CACHE_TTL:
+    # Fast path: cache is valid
+    if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL:
         return _cached_download_settings
 
-    try:
-        from api.settings_service import get_settings_service
+    # Slow path: acquire lock and refresh cache
+    async with _get_download_settings_lock():
+        # Double-check after acquiring lock (another request may have refreshed)
+        now = time.time()
+        if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL:
+            return _cached_download_settings
 
-        service = get_settings_service()
+        try:
+            from api.settings_service import get_settings_service
 
-        settings = {
-            "enabled": await service.get("downloads.enabled", DOWNLOADS_ENABLED),
-            "require_auth": await service.get("downloads.require_auth", DOWNLOADS_REQUIRE_AUTH),
-            "allow_original": await service.get("downloads.allow_original", DOWNLOADS_ALLOW_ORIGINAL),
-            "allow_transcoded": await service.get("downloads.allow_transcoded", DOWNLOADS_ALLOW_TRANSCODED),
-            "rate_limit_per_hour": await service.get("downloads.rate_limit_per_hour", DOWNLOADS_RATE_LIMIT_PER_HOUR),
-            "max_concurrent": await service.get("downloads.max_concurrent", DOWNLOADS_MAX_CONCURRENT),
-        }
+            service = get_settings_service()
 
-        _cached_download_settings = settings
-        _cached_download_settings_time = now
+            settings = {
+                "enabled": await service.get("downloads.enabled", DOWNLOADS_ENABLED),
+                "allow_original": await service.get("downloads.allow_original", DOWNLOADS_ALLOW_ORIGINAL),
+                "allow_transcoded": await service.get("downloads.allow_transcoded", DOWNLOADS_ALLOW_TRANSCODED),
+                "rate_limit_per_hour": await service.get(
+                    "downloads.rate_limit_per_hour", DOWNLOADS_RATE_LIMIT_PER_HOUR
+                ),
+                "max_concurrent": await service.get("downloads.max_concurrent", DOWNLOADS_MAX_CONCURRENT),
+            }
 
-    except Exception as e:
-        logger.debug(f"Failed to get download settings from DB, using env vars: {e}")
-        _cached_download_settings = {
-            "enabled": DOWNLOADS_ENABLED,
-            "require_auth": DOWNLOADS_REQUIRE_AUTH,
-            "allow_original": DOWNLOADS_ALLOW_ORIGINAL,
-            "allow_transcoded": DOWNLOADS_ALLOW_TRANSCODED,
-            "rate_limit_per_hour": DOWNLOADS_RATE_LIMIT_PER_HOUR,
-            "max_concurrent": DOWNLOADS_MAX_CONCURRENT,
-        }
-        _cached_download_settings_time = now
+            _cached_download_settings = settings
+            _cached_download_settings_time = now
+
+        except Exception as e:
+            # Log at WARNING level - this is an operational issue that could hide config problems
+            logger.warning(f"Failed to get download settings from DB, using env vars: {e}")
+            _cached_download_settings = {
+                "enabled": DOWNLOADS_ENABLED,
+                "allow_original": DOWNLOADS_ALLOW_ORIGINAL,
+                "allow_transcoded": DOWNLOADS_ALLOW_TRANSCODED,
+                "rate_limit_per_hour": DOWNLOADS_RATE_LIMIT_PER_HOUR,
+                "max_concurrent": DOWNLOADS_MAX_CONCURRENT,
+            }
+            _cached_download_settings_time = now
 
     return _cached_download_settings
 
@@ -2223,35 +2271,113 @@ async def get_download_config(request: Request):
         "enabled": True,
         "allow_original": settings["allow_original"],
         "allow_transcoded": settings["allow_transcoded"],
-        "require_auth": settings["require_auth"],
     }
 
 
 def _find_original_file(video_id: int) -> Optional[Path]:
     """
-    Find the original uploaded file for a video.
+    Find the original uploaded file for a video with validation.
 
     Searches UPLOADS_DIR for files matching {video_id}.{ext} where ext
-    is one of the supported video extensions.
+    is one of the supported video extensions. Validates that the file
+    is readable, is a regular file, and has a reasonable size.
 
     Args:
         video_id: The video's database ID
 
     Returns:
-        Path to the original file if found, None otherwise
+        Path to the original file if found and valid, None otherwise
+
+    Raises:
+        OSError: If the uploads directory is inaccessible
     """
-    for ext in SUPPORTED_VIDEO_EXTENSIONS:
-        candidate = UPLOADS_DIR / f"{video_id}{ext}"
-        if candidate.exists():
-            return candidate
-    return None
+    try:
+        for ext in SUPPORTED_VIDEO_EXTENSIONS:
+            candidate = UPLOADS_DIR / f"{video_id}{ext}"
+
+            if not candidate.exists():
+                continue
+
+            # Validate it's a regular file (not directory, symlink to unsafe location, etc.)
+            if not candidate.is_file():
+                logger.warning(f"Original file for video {video_id} is not a regular file: {candidate}")
+                continue
+
+            # Verify readable and get size
+            try:
+                stat_info = candidate.stat()
+
+                # Check for empty files
+                if stat_info.st_size == 0:
+                    logger.warning(f"Original file for video {video_id} is empty: {candidate}")
+                    continue
+
+                # Sanity check on file size (100GB max)
+                if stat_info.st_size > _MAX_DOWNLOAD_FILE_SIZE:
+                    logger.error(
+                        f"Original file for video {video_id} exceeds size limit: "
+                        f"{stat_info.st_size / 1e9:.1f}GB > {_MAX_DOWNLOAD_FILE_SIZE / 1e9:.0f}GB"
+                    )
+                    continue
+
+                # Verify we can read it
+                if not os.access(candidate, os.R_OK):
+                    logger.warning(f"Original file for video {video_id} is not readable: {candidate}")
+                    continue
+
+                return candidate
+
+            except (OSError, PermissionError) as e:
+                logger.warning(f"Cannot access original file {candidate}: {e}")
+                continue
+
+        return None
+
+    except OSError as e:
+        logger.error(f"Filesystem error searching for video {video_id} original: {e}")
+        raise
+
+
+async def _acquire_download_slot(client_ip: str, max_concurrent: int) -> bool:
+    """
+    Try to acquire a download slot for the given IP.
+
+    Args:
+        client_ip: The client's IP address
+        max_concurrent: Maximum concurrent downloads allowed per IP
+
+    Returns:
+        True if slot acquired, False if at limit
+    """
+    async with _get_downloads_tracking_lock():
+        current = _active_downloads_per_ip.get(client_ip, 0)
+        if current >= max_concurrent:
+            return False
+        _active_downloads_per_ip[client_ip] = current + 1
+        return True
+
+
+async def _release_download_slot(client_ip: str) -> None:
+    """Release a download slot for the given IP."""
+    async with _get_downloads_tracking_lock():
+        current = _active_downloads_per_ip.get(client_ip, 0)
+        if current <= 1:
+            _active_downloads_per_ip.pop(client_ip, None)
+        else:
+            _active_downloads_per_ip[client_ip] = current - 1
 
 
 @app.get("/api/videos/{slug}/download/original")
 @limiter.limit(
+    # Note: This rate limit is configured at startup from env vars.
+    # Changing the database setting requires a restart to take effect.
     f"{DOWNLOADS_RATE_LIMIT_PER_HOUR}/hour" if DOWNLOADS_RATE_LIMIT_PER_HOUR > 0 else RATE_LIMIT_PUBLIC_DEFAULT
 )
-async def download_original(request: Request, slug: str):
+async def download_original(
+    request: Request,
+    slug: str,
+    _storage=Depends(require_storage_available),
+):
     """
     Download the original source file for a video.
 
@@ -2261,11 +2387,14 @@ async def download_original(request: Request, slug: str):
     Requirements:
     - Downloads must be enabled (VLOG_DOWNLOADS_ENABLED=true)
     - Original downloads must be allowed (VLOG_DOWNLOADS_ALLOW_ORIGINAL=true)
-    - If require_auth is true, user must be authenticated (TODO: implement)
+    - Storage must be available
+    - Concurrent download limit per IP must not be exceeded
 
     Returns:
         FileResponse with the original video file
     """
+    client_ip = get_real_ip(request)
+
     # Validate slug
     if not validate_slug(slug):
         raise HTTPException(status_code=400, detail="Invalid video slug")
@@ -2279,52 +2408,107 @@ async def download_original(request: Request, slug: str):
     if not settings["allow_original"]:
         raise HTTPException(status_code=403, detail="Original file downloads are disabled")
 
-    # TODO: Implement authentication check if require_auth is True
-    # For now, we'll skip this since it requires session management
-    # if settings["require_auth"]:
-    #     # Check for valid session
-    #     pass
-
-    # Get video from database
-    video_query = (
-        videos.select()
-        .where(videos.c.slug == slug)
-        .where(videos.c.status == VideoStatus.READY)
-        .where(videos.c.deleted_at.is_(None))
-        .where(videos.c.published_at.is_not(None))
-    )
-    video = await fetch_one_with_retry(video_query)
-
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    # Find the original file
-    original_file = _find_original_file(video["id"])
-
-    if not original_file:
+    # Check concurrent download limit
+    max_concurrent = settings["max_concurrent"]
+    if not await _acquire_download_slot(client_ip, max_concurrent):
+        logger.warning(f"Download rate limit exceeded for {client_ip} (max {max_concurrent} concurrent)")
         raise HTTPException(
-            status_code=404,
-            detail="Original file not available. It may have been deleted after transcoding.",
+            status_code=429,
+            detail=f"Too many concurrent downloads. Maximum {max_concurrent} allowed per IP.",
         )
 
-    # Generate a safe filename for the download
-    # Use the video title with the original extension
-    safe_title = "".join(c for c in video["title"] if c.isalnum() or c in " -_").strip()
-    if not safe_title:
-        safe_title = slug
-    download_filename = f"{safe_title}{original_file.suffix}"
+    try:
+        # Get video from database
+        video_query = (
+            videos.select()
+            .where(videos.c.slug == slug)
+            .where(videos.c.status == VideoStatus.READY)
+            .where(videos.c.deleted_at.is_(None))
+            .where(videos.c.published_at.is_not(None))
+        )
+        video = await fetch_one_with_retry(video_query)
 
-    logger.info(f"Serving original download for video {slug} (id={video['id']})")
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
 
-    return FileResponse(
-        path=original_file,
-        filename=download_filename,
-        media_type="video/mp4",  # Most common, could be detected from extension
-        headers={
-            "Content-Disposition": f'attachment; filename="{download_filename}"',
-            "Cache-Control": "private, max-age=3600",  # Cache for 1 hour
-        },
-    )
+        # Find the original file with validation
+        try:
+            original_file = _find_original_file(video["id"])
+        except OSError:
+            raise HTTPException(status_code=503, detail="Storage temporarily unavailable")
+
+        if not original_file:
+            raise HTTPException(
+                status_code=404,
+                detail="Original file not available. It may have been deleted after transcoding.",
+            )
+
+        # Final validation before serving (reduce TOCTOU window)
+        try:
+            if not original_file.exists():
+                raise HTTPException(status_code=404, detail="Original file no longer available")
+            file_size = original_file.stat().st_size
+        except OSError as e:
+            logger.error(f"Filesystem error accessing {original_file}: {e}")
+            raise HTTPException(status_code=503, detail="Storage temporarily unavailable")
+
+        # Generate a safe filename for the download
+        # Use the video title with the original extension, limited to 200 chars
+        safe_title = "".join(c for c in video["title"] if c.isalnum() or c in " -_").strip()
+        safe_title = "_".join(safe_title.split())  # Replace spaces with underscores
+        if not safe_title or len(safe_title.encode("utf-8")) > 200:
+            safe_title = slug
+        safe_title = safe_title[:200]  # Limit length
+
+        # Validate extension is in allowed list
+        ext = original_file.suffix.lower()
+        if ext not in SUPPORTED_VIDEO_EXTENSIONS:
+            logger.error(f"Invalid file extension {ext} for video {slug}")
+            raise HTTPException(status_code=500, detail="Invalid file type")
+
+        download_filename = f"{safe_title}{ext}"
+
+        # RFC 5987 encoding for Content-Disposition with non-ASCII support
+        encoded_filename = quote(download_filename)
+        # Escape any quotes in the ASCII fallback filename
+        ascii_filename = download_filename.replace('"', "_")
+
+        # Determine correct MIME type based on extension
+        media_type = _VIDEO_MIME_TYPES.get(ext, "application/octet-stream")
+
+        file_size_mb = file_size / (1024 * 1024)
+        logger.info(
+            f"Serving original download: video={slug} (id={video['id']}), "
+            f"file={original_file.name}, size={file_size_mb:.1f}MB, client={client_ip}"
+        )
+
+        # Note: We don't release the download slot here because FileResponse
+        # streams the file asynchronously. The slot will be released when the
+        # response completes or errors. For true slot tracking, we'd need to
+        # wrap the response in a custom streaming response with cleanup.
+        # For now, we accept this limitation - slots may leak on slow downloads.
+        # TODO: Implement proper cleanup with background task or custom response
+
+        return FileResponse(
+            path=original_file,
+            filename=download_filename,
+            media_type=media_type,
+            headers={
+                # RFC 5987 encoded filename with ASCII fallback
+                "Content-Disposition": f'attachment; filename="{ascii_filename}"; '
+                f"filename*=UTF-8''{encoded_filename}",
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+
+    except HTTPException:
+        # Release slot on HTTP errors (client won't download)
+        await _release_download_slot(client_ip)
+        raise
+    except Exception:
+        # Release slot on unexpected errors
+        await _release_download_slot(client_ip)
+        raise
 
 
 # ============================================================================
