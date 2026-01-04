@@ -391,8 +391,26 @@ RATE_LIMIT_WORKER_REGISTER = os.getenv("VLOG_RATE_LIMIT_WORKER_REGISTER", "5/hou
 RATE_LIMIT_WORKER_PROGRESS = os.getenv("VLOG_RATE_LIMIT_WORKER_PROGRESS", "600/minute")
 
 # Storage backend for rate limiting
-# Options: "memory" (default, per-process), or a Redis URL like "redis://localhost:6379"
-RATE_LIMIT_STORAGE_URL = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL", "memory://")
+# Options: "memory" (per-process), or a Redis URL like "redis://localhost:6379"
+# SECURITY: In-memory rate limiting doesn't work with multiple API instances.
+# If VLOG_REDIS_URL is configured, we default to using it for rate limiting.
+# Set VLOG_RATE_LIMIT_STORAGE_URL explicitly to override this behavior.
+_explicit_rate_limit_storage = os.getenv("VLOG_RATE_LIMIT_STORAGE_URL")
+_redis_url_for_rate_limit = os.getenv("VLOG_REDIS_URL")
+
+if _explicit_rate_limit_storage:
+    # Explicit configuration takes precedence
+    RATE_LIMIT_STORAGE_URL = _explicit_rate_limit_storage
+elif _redis_url_for_rate_limit:
+    # Auto-detect: use Redis if VLOG_REDIS_URL is configured
+    RATE_LIMIT_STORAGE_URL = _redis_url_for_rate_limit
+    if not os.environ.get("VLOG_TEST_MODE"):
+        logger.info(
+            f"Rate limiting auto-detected Redis from VLOG_REDIS_URL: {_redis_url_for_rate_limit}"
+        )
+else:
+    # Fallback to in-memory (single instance only)
+    RATE_LIMIT_STORAGE_URL = "memory://"
 
 # Redis Configuration (for job queue and pub/sub)
 # Set VLOG_REDIS_URL to enable Redis features (e.g., "redis://localhost:6379")

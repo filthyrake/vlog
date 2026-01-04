@@ -966,6 +966,16 @@ async def lifespan(app: FastAPI):
         f"Worker API started - database connected. Stale check grace period: {STALE_CHECK_STARTUP_GRACE_PERIOD}s"
     )
 
+    # Warn about in-memory rate limiting limitations (security issue #446)
+    if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
+        logger.warning(
+            "SECURITY: Rate limiting is using in-memory storage. "
+            "With multiple API instances, attackers can bypass rate limits by distributing "
+            "requests across instances. For production with load balancing, configure Redis: "
+            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379 "
+            "(or set VLOG_REDIS_URL which will be auto-detected)"
+        )
+
     # Start background tasks
     stale_job_task = asyncio.create_task(check_stale_jobs())
     orphan_cleanup_task = asyncio.create_task(cleanup_orphaned_files())
