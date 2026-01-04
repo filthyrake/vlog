@@ -315,7 +315,7 @@ VLOG_ADMIN_CORS_ORIGINS=http://your-server:9001,http://192.168.1.100:9001
 | `VLOG_RATE_LIMIT_WORKER_DEFAULT` | `300/minute` | Default limit for worker API endpoints |
 | `VLOG_RATE_LIMIT_WORKER_REGISTER` | `5/hour` | Limit for worker registration |
 | `VLOG_RATE_LIMIT_WORKER_PROGRESS` | `600/minute` | Limit for progress update endpoints |
-| `VLOG_RATE_LIMIT_STORAGE_URL` | `memory://` | Storage backend URL |
+| `VLOG_RATE_LIMIT_STORAGE_URL` | (auto) | Storage backend URL (see below) |
 
 **Rate Limit Format:** `count/period` where period is `second`, `minute`, `hour`, or `day`
 
@@ -323,23 +323,39 @@ VLOG_ADMIN_CORS_ORIGINS=http://your-server:9001,http://192.168.1.100:9001
 - `memory://` - In-memory storage (per-process, resets on restart)
 - `redis://localhost:6379` - Redis storage (shared across processes)
 
-**⚠️ Multi-Instance Deployments:**
+**🔒 SECURITY: Multi-Instance Rate Limiting**
 
-The default in-memory storage does not work correctly when running multiple API instances behind a load balancer. Each process maintains its own rate limit counter, so:
-- With N instances, effective rate limit is N × configured limit
-- Users can bypass rate limits by hitting different instances
+> **Warning:** In-memory rate limiting is a **security vulnerability** in multi-instance deployments. Attackers can bypass rate limits by distributing requests across instances.
 
-For production deployments with multiple instances, you **must** use Redis:
+**Auto-Detection (Recommended):**
+
+If `VLOG_REDIS_URL` is configured, rate limiting will automatically use Redis storage. This is the recommended setup for production:
 
 ```bash
-# Install redis Python package
-pip install redis
-
-# Configure Redis backend
-export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
+# Configure Redis for VLog features - rate limiting will auto-detect
+export VLOG_REDIS_URL=redis://localhost:6379
 ```
 
-The API will log a warning at startup if rate limiting is enabled with in-memory storage.
+**Explicit Configuration:**
+
+To explicitly control rate limit storage (overrides auto-detection):
+
+```bash
+# Use Redis for rate limiting
+export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
+
+# Or force in-memory (single instance only!)
+export VLOG_RATE_LIMIT_STORAGE_URL=memory://
+```
+
+**Why Redis is Required for Multi-Instance:**
+
+Each API process maintains its own rate limit counter with in-memory storage:
+- With N instances, effective rate limit is N × configured limit
+- Attackers can bypass rate limits by hitting different instances
+- This is a security issue, not just a misconfiguration
+
+The API will log a `SECURITY` warning at startup if rate limiting is using in-memory storage.
 
 ### Redis Configuration
 
@@ -446,10 +462,14 @@ With in-memory cache, different instances may show slightly different analytics 
 
 ### Rate Limiting
 
-By default, rate limiting uses in-memory storage (per-process). For consistent rate limiting across instances:
+**Auto-Detection:** If `VLOG_REDIS_URL` is set, rate limiting automatically uses Redis storage.
+
+For explicit configuration:
 ```bash
 VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379
 ```
+
+> ⚠️ **Security:** In-memory rate limiting allows attackers to bypass limits by distributing requests across instances. See the Rate Limiting section above for details.
 
 ### Database
 
@@ -799,16 +819,28 @@ Configure thumbnail sprite sheet generation for timeline previews.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_SPRITE_INTERVAL` | `10` | Seconds between sprite frames |
-| `VLOG_SPRITE_TILE_SIZE` | `10` | Grid size (10 = 10x10 = 100 frames per sheet) |
-| `VLOG_SPRITE_FRAME_WIDTH` | `160` | Thumbnail frame width in pixels |
-| `VLOG_SPRITE_FRAME_HEIGHT` | `90` | Thumbnail frame height (auto if 0) |
-| `VLOG_SPRITE_JPEG_QUALITY` | `80` | JPEG quality for sprite sheets (1-100) |
+| `VLOG_SPRITE_SHEET_ENABLED` | `true` | Enable sprite sheet generation |
+| `VLOG_SPRITE_SHEET_FRAME_INTERVAL` | `5` | Seconds between sprite frames (1-30) |
+| `VLOG_SPRITE_SHEET_TILE_SIZE` | `10` | Grid size (10 = 10x10 = 100 frames per sheet) |
+| `VLOG_SPRITE_SHEET_THUMBNAIL_WIDTH` | `160` | Thumbnail frame width in pixels (80-320) |
+| `VLOG_SPRITE_SHEET_JPEG_QUALITY` | `60` | JPEG quality for sprite sheets (30-95) |
+| `VLOG_SPRITE_SHEET_MAX_SHEETS` | `100` | Maximum sprite sheets per video |
+| `VLOG_SPRITE_SHEET_TIMEOUT_MULTIPLIER` | `0.5` | Timeout as fraction of video duration |
+| `VLOG_SPRITE_SHEET_TIMEOUT_MINIMUM` | `60` | Minimum generation timeout (seconds) |
+| `VLOG_SPRITE_SHEET_TIMEOUT_MAXIMUM` | `600` | Maximum generation timeout (seconds) |
+| `VLOG_SPRITE_SHEET_AUTO_GENERATE` | `false` | Auto-generate after transcode completes |
+| `VLOG_SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT` | `20` | Minimum free memory % to start job |
+| `VLOG_SPRITE_SHEET_MAX_VIDEO_DURATION` | `14400` | Max video duration to process (4 hours) |
 
 **Example:**
-- 30 minute video with 10-second interval = 180 frames
+- 30 minute video with 5-second interval = 360 frames
 - 10x10 tile size = 100 frames per sheet
-- Results in 2 sprite sheets
+- Results in 4 sprite sheets (~150-300 KB each)
+
+**Memory Management:**
+- Sprite generation is memory-intensive for long videos
+- Jobs are skipped if free memory is below threshold
+- Very long videos (>4 hours) are skipped by default
 
 ---
 
@@ -832,6 +864,77 @@ When enabled, workers must report a version >= `REQUIRED_WORKER_VERSION` or jobs
 | `VLOG_TAR_EXTRACTION_TIMEOUT` | `300` | Timeout for tar extraction in seconds |
 
 Prevents hung tar extraction operations from blocking the worker API.
+
+---
+
+## Webhook Notification Settings
+
+Configure webhook notifications for video lifecycle events.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_WEBHOOKS_ENABLED` | `true` | Master switch for webhook delivery |
+| `VLOG_WEBHOOKS_MAX_RETRIES` | `5` | Maximum retry attempts for failed deliveries |
+| `VLOG_WEBHOOKS_RETRY_BASE_DELAY` | `30` | Base delay between retries (seconds) |
+| `VLOG_WEBHOOKS_RETRY_BACKOFF_MULTIPLIER` | `2.0` | Exponential backoff multiplier |
+| `VLOG_WEBHOOKS_REQUEST_TIMEOUT` | `10` | HTTP request timeout (seconds) |
+| `VLOG_WEBHOOKS_MAX_CONCURRENT_DELIVERIES` | `10` | Maximum parallel webhook deliveries |
+| `VLOG_WEBHOOKS_DELIVERY_BATCH_SIZE` | `50` | Deliveries to process per batch |
+
+**Supported Events:**
+- `video.ready` - Video transcoding complete
+- `video.processing` - Transcoding started
+- `video.failed` - Transcoding failed
+- `video.deleted` - Video soft-deleted
+- `video.restored` - Video restored from archive
+- `video.purged` - Video permanently deleted
+- `transcription.complete` - Captions generated
+- `transcription.failed` - Transcription failed
+- `worker.connected` - Worker came online
+- `worker.disconnected` - Worker went offline
+
+**Security Features:**
+- HMAC-SHA256 signature verification (`X-VLog-Signature` header)
+- SSRF protection (blocks private IP ranges)
+- Circuit breaker (opens after 5 consecutive failures)
+- Per-webhook secret keys for signature verification
+
+**Example Verification (Python):**
+```python
+import hmac
+import hashlib
+
+def verify_webhook(payload: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(
+        secret.encode(), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
+```
+
+---
+
+## Video Download Settings
+
+Configure video download functionality.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_DOWNLOADS_ENABLED` | `false` | Master switch for download feature |
+| `VLOG_DOWNLOADS_ALLOW_ORIGINAL` | `false` | Allow downloading original source files |
+| `VLOG_DOWNLOADS_ALLOW_TRANSCODED` | `true` | Allow downloading transcoded variants |
+| `VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR` | `10` | Downloads per IP per hour (0 = unlimited) |
+| `VLOG_DOWNLOADS_MAX_CONCURRENT` | `2` | Max concurrent downloads per IP (1-10) |
+
+**Security Considerations:**
+- Downloads are disabled by default for bandwidth protection
+- Original file downloads are disabled by default (may expose source metadata)
+- Rate limiting prevents bandwidth abuse
+- Consider CDN integration for high-traffic scenarios
+
+**Download Endpoints:**
+- `GET /api/videos/{slug}/download` - Download highest quality transcoded version
+- `GET /api/videos/{slug}/download?quality=720p` - Download specific quality
+- `GET /api/videos/{slug}/download?original=true` - Download original (if enabled)
 
 ---
 

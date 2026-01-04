@@ -18,12 +18,8 @@ Video Status States:
 - ready: Transcoding complete, ready to stream
 - failed: Transcoding failed permanently (max retries exceeded)
 
-Job States (derived from fields):
-- Unclaimed: claimed_at = NULL, available for workers
-- Claimed: claimed_at != NULL, claim_expires_at > NOW(), actively processing
-- Expired: claimed_at != NULL, claim_expires_at <= NOW(), ready for reclaim
-- Completed: completed_at != NULL, transcoding finished
-- Failed: last_error != NULL AND attempt_number >= max_attempts, permanent failure
+Job States: See api/job_state.py for explicit state machine implementation.
+States: unclaimed, claimed, expired, completed, failed, retrying
 
 Worker States:
 - active: Recently heartbeated, available for work
@@ -84,6 +80,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.background import BackgroundTask
 
 from api.common import (
+    HTTPMetricsMiddleware,
     RequestIDMiddleware,
     check_health,
     ensure_utc,
@@ -104,9 +101,18 @@ from api.database import (
     worker_api_keys,
     workers,
 )
-from api.db_retry import DatabaseLockedError, execute_with_retry
-from api.metrics import get_metrics
+from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
+from api.metrics import (
+    STORAGE_VIDEOS_BYTES,
+    TRANSCODING_JOBS_TOTAL,
+    WORKER_JOBS_COMPLETED_TOTAL,
+    get_metrics,
+    sanitize_label,
+)
 from api.pubsub import Publisher
+from api.redis_client import get_redis
+from api.settings_service import get_setting as get_db_setting
+from api.webhook_service import trigger_webhook_event
 from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
 from api.worker_schemas import (
     ClaimJobResponse,
@@ -136,6 +142,7 @@ from config import (
     ORPHAN_CLEANUP_ENABLED,
     ORPHAN_CLEANUP_INTERVAL,
     ORPHAN_CLEANUP_MIN_AGE,
+    QUALITY_NAMES,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
     RATE_LIMIT_WORKER_DEFAULT,
@@ -156,6 +163,7 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+security_logger = logging.getLogger("security.worker_auth")
 
 # Thread pool for blocking I/O operations (tar extraction to NAS)
 # This prevents slow NAS operations from blocking the event loop and
@@ -303,8 +311,7 @@ def _write_segment_sync(
 
     if not checksum_verified:
         logger.warning(
-            f"Checksum mismatch for {dest_path.name}: "
-            f"expected {checksum[:16]}..., got {actual_checksum[:16]}..."
+            f"Checksum mismatch for {dest_path.name}: expected {checksum[:16]}..., got {actual_checksum[:16]}..."
         )
         return False, 0, False
 
@@ -503,9 +510,7 @@ async def extract_tar_async(
             f"Tar extraction timed out after {timeout}s - possible stale NFS mount. "
             f"Source: {tmp_path}, Target: {output_dir}"
         )
-        raise ValueError(
-            f"Tar extraction timed out after {timeout}s - storage may be unresponsive"
-        )
+        raise ValueError(f"Tar extraction timed out after {timeout}s - storage may be unresponsive")
 
 
 # Initialize rate limiter
@@ -522,6 +527,12 @@ _api_start_time: Optional[datetime] = None
 # Grace period after API startup before running stale job detection (seconds)
 # This allows workers to send heartbeats after API recovers from downtime
 STALE_CHECK_STARTUP_GRACE_PERIOD = 120  # 2 minutes
+# Redis key prefix for vlog application (prevents collisions if Redis is shared)
+REDIS_KEY_PREFIX = "vlog:"
+# Redis key for tracking last stale check time (Issue #456)
+STALE_CHECK_LAST_RUN_KEY = f"{REDIS_KEY_PREFIX}stale_job_checker:last_run"
+# TTL for completion tokens (15 minutes to cover extended retry scenarios)
+COMPLETION_TOKEN_TTL = 900  # 15 minutes
 
 
 async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias="X-Admin-Secret")):
@@ -563,6 +574,61 @@ async def verify_admin_secret(x_admin_secret: Optional[str] = Header(None, alias
         )
 
 
+async def _should_skip_stale_check_grace_period() -> bool:
+    """
+    Determine if we should skip the startup grace period based on Redis state.
+
+    Issue #456: The grace period was previously based on API process uptime,
+    which reset on every restart. If the API restarts frequently, stale job
+    checking would never run. Now we track the last check time in Redis,
+    so a recent check by a previous API instance satisfies the grace period.
+
+    Returns:
+        True if grace period should be skipped (a recent check was done),
+        False if we should still wait
+    """
+    redis = await get_redis()
+    if not redis:
+        # Redis not available, fall back to API startup time check
+        return False
+
+    try:
+        last_check_str = await redis.get(STALE_CHECK_LAST_RUN_KEY)
+        if last_check_str:
+            # Redis client uses decode_responses=True, so this is already a string
+            last_check = datetime.fromisoformat(last_check_str)
+            seconds_since_last = (datetime.now(timezone.utc) - last_check).total_seconds()
+            if seconds_since_last < STALE_CHECK_STARTUP_GRACE_PERIOD:
+                # A recent check was done, no need for grace period
+                logger.debug(
+                    f"Recent stale check found in Redis ({seconds_since_last:.0f}s ago), skipping startup grace period"
+                )
+                return True
+    except Exception as e:
+        logger.warning(f"Failed to check last stale run time from Redis: {e}")
+
+    return False
+
+
+async def _record_stale_check_time():
+    """
+    Record the current time as the last stale check time in Redis.
+
+    Issue #456: This allows other API instances to know that a recent check
+    was performed, so they don't need to wait for their own grace period.
+    """
+    redis = await get_redis()
+    if not redis:
+        return
+
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        # TTL of 5 minutes - longer than grace period, allows for handoff
+        await redis.set(STALE_CHECK_LAST_RUN_KEY, now, ex=300)
+    except Exception as e:
+        logger.warning(f"Failed to record stale check time in Redis: {e}")
+
+
 async def _detect_and_release_stale_jobs():
     """
     Core logic for detecting and releasing stale jobs from offline workers.
@@ -578,13 +644,20 @@ async def _detect_and_release_stale_jobs():
     Jobs are only released if the job's claim has expired (claim_expires_at < now),
     not just based on worker heartbeat age. This prevents releasing jobs when
     the API was temporarily unresponsive but workers were actively processing.
+
+    Issue #456: Grace period now checks Redis for recent checks by other API
+    instances, preventing stale jobs from accumulating during restart storms.
     """
     global _api_start_time
     now = datetime.now(timezone.utc)
 
-    # Skip stale check during startup grace period
+    # Issue #456: Check if a recent stale check was done (in Redis)
+    # If so, we can skip the local startup grace period
+    skip_grace = await _should_skip_stale_check_grace_period()
+
+    # Skip stale check during startup grace period (unless Redis shows recent check)
     # This allows workers to send heartbeats after API recovers from downtime
-    if _api_start_time:
+    if not skip_grace and _api_start_time:
         time_since_startup = (now - _api_start_time).total_seconds()
         if time_since_startup < STALE_CHECK_STARTUP_GRACE_PERIOD:
             logger.debug(
@@ -644,6 +717,22 @@ async def _detect_and_release_stale_jobs():
         processed_count += 1
         logger.warning(f"Worker '{worker_name}' went offline (no heartbeat since {worker_last_hb})")
 
+        # Trigger webhook for worker going offline (Issue #203)
+        try:
+            await trigger_webhook_event(
+                "worker.offline",
+                {
+                    "worker_id": worker["worker_id"],
+                    "worker_name": worker["worker_name"],
+                    "worker_type": worker["worker_type"],
+                    "last_heartbeat": worker_last_hb.isoformat() if worker_last_hb else None,
+                    "registered_at": worker["registered_at"].isoformat() if worker["registered_at"] else None,
+                },
+            )
+        except Exception as e:
+            # Don't fail stale job check if webhook fails
+            logger.warning(f"Failed to trigger worker offline webhook: {e}")
+
         # Find jobs claimed by this worker that have EXPIRED claims
         # Don't release jobs where the claim hasn't expired yet - the worker might still complete them
         stale_jobs = await database.fetch_all(
@@ -681,6 +770,9 @@ async def _detect_and_release_stale_jobs():
             if video and video["status"] == "processing":
                 await database.execute(videos.update().where(videos.c.id == job["video_id"]).values(status="pending"))
                 logger.info(f"Reset video {job['video_id']} status to pending")
+
+    # Issue #456: Record successful check time in Redis for cross-instance coordination
+    await _record_stale_check_time()
 
     return processed_count
 
@@ -738,9 +830,14 @@ async def _cleanup_orphaned_quality_directories() -> int:
     """
     global _api_start_time
 
-    # Skip during startup grace period (same as stale job checker)
     now = datetime.now(timezone.utc)
-    if _api_start_time:
+
+    # Issue #456: Check if a recent stale check was done (in Redis)
+    # If so, we can skip the local startup grace period
+    skip_grace = await _should_skip_stale_check_grace_period()
+
+    # Skip during startup grace period (same as stale job checker)
+    if not skip_grace and _api_start_time:
         time_since_startup = (now - _api_start_time).total_seconds()
         if time_since_startup < STALE_CHECK_STARTUP_GRACE_PERIOD:
             return 0
@@ -769,8 +866,7 @@ async def _cleanup_orphaned_quality_directories() -> int:
 
         # Also check for active transcoding jobs - don't cleanup while job is running
         active_jobs = await database.fetch_all(
-            transcoding_jobs.select()
-            .where(transcoding_jobs.c.completed_at.is_(None))
+            transcoding_jobs.select().where(transcoding_jobs.c.completed_at.is_(None))
         )
         active_video_ids = {job["video_id"] for job in active_jobs}
 
@@ -811,15 +907,15 @@ async def _cleanup_orphaned_quality_directories() -> int:
                 if age_seconds < min_age_seconds:
                     # Too new - might still be in progress
                     logger.debug(
-                        f"Orphaned quality dir {subdir} is only {age_seconds/3600:.1f}h old, "
-                        f"threshold is {min_age_seconds/3600:.1f}h - skipping"
+                        f"Orphaned quality dir {subdir} is only {age_seconds / 3600:.1f}h old, "
+                        f"threshold is {min_age_seconds / 3600:.1f}h - skipping"
                     )
                     continue
 
                 # Old enough and no database record - delete it
                 logger.info(
                     f"Cleaning orphaned quality directory: {subdir} "
-                    f"(age: {age_seconds/3600:.1f}h, no database record)"
+                    f"(age: {age_seconds / 3600:.1f}h, no database record)"
                 )
                 try:
                     shutil.rmtree(subdir)
@@ -848,8 +944,7 @@ async def cleanup_orphaned_files():
         return
 
     logger.info(
-        f"Orphan cleanup started (interval: {ORPHAN_CLEANUP_INTERVAL}s, "
-        f"min_age: {ORPHAN_CLEANUP_MIN_AGE/3600:.1f}h)"
+        f"Orphan cleanup started (interval: {ORPHAN_CLEANUP_INTERVAL}s, min_age: {ORPHAN_CLEANUP_MIN_AGE / 3600:.1f}h)"
     )
 
     while not _shutdown_event.is_set():
@@ -883,6 +978,16 @@ async def lifespan(app: FastAPI):
     logger.info(
         f"Worker API started - database connected. Stale check grace period: {STALE_CHECK_STARTUP_GRACE_PERIOD}s"
     )
+
+    # Warn about in-memory rate limiting limitations (security issue #446)
+    if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
+        logger.warning(
+            "SECURITY: Rate limiting is using in-memory storage. "
+            "With multiple API instances, attackers can bypass rate limits by distributing "
+            "requests across instances. For production with load balancing, configure Redis: "
+            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379 "
+            "(or set VLOG_REDIS_URL which will be auto-detected)"
+        )
 
     # Start background tasks
     stale_job_task = asyncio.create_task(check_stale_jobs())
@@ -984,6 +1089,10 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
 )
 
+# HTTP metrics middleware (outermost - captures all requests including CORS preflight)
+# Issue #207: Tracks requests in progress, duration, and total count
+app.add_middleware(HTTPMetricsMiddleware, api_name="worker")
+
 # Rate limiting setup
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
@@ -1015,7 +1124,7 @@ async def register_worker(
     """
     worker_id = str(uuid.uuid4())
     api_key = secrets.token_urlsafe(32)  # 256-bit key
-    key_hash = hash_api_key(api_key)
+    key_hash, hash_version = hash_api_key(api_key)  # Returns (hash, version) tuple
     key_prefix = get_key_prefix(api_key)
     now = datetime.now(timezone.utc)
 
@@ -1055,11 +1164,12 @@ async def register_worker(
                 )
             )
 
-            # Create API key record
+            # Create API key record with argon2id hash (Issue #445)
             await database.execute(
                 worker_api_keys.insert().values(
                     worker_id=result["worker_db_id"],
                     key_hash=key_hash,
+                    hash_version=hash_version,
                     key_prefix=key_prefix,
                     created_at=now,
                 )
@@ -1072,6 +1182,27 @@ async def register_worker(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
         ) from e
+
+    # Trigger webhook for worker registration (Issue #203)
+    try:
+        # Parse capabilities for webhook payload
+        capabilities_dict = None
+        if data.capabilities:
+            capabilities_dict = data.capabilities.model_dump()
+
+        await trigger_webhook_event(
+            "worker.registered",
+            {
+                "worker_id": worker_id,
+                "worker_name": worker_name,
+                "worker_type": data.worker_type,
+                "registered_at": now.isoformat(),
+                "capabilities": capabilities_dict,
+            },
+        )
+    except Exception as e:
+        # Don't fail registration if webhook fails
+        logger.warning(f"Failed to trigger worker registration webhook: {e}")
 
     return WorkerRegisterResponse(
         worker_id=worker_id,
@@ -1193,11 +1324,17 @@ async def worker_heartbeat(
         hwaccel_type=hwaccel_type,
     )
 
+    # Issue #458: Return server's view of worker state for stale data detection
+    # This allows the worker to detect if the server's DB state is stale
+    # (e.g., database write failed but HTTP 200 was returned)
     return HeartbeatResponse(
         status="ok",
         server_time=now,
         required_version=required_version,
         version_ok=version_ok,
+        worker_status=data.status,  # What we just wrote
+        current_job_id=worker.get("current_job_id"),  # What DB has for this worker
+        last_heartbeat_recorded=now,  # What we just wrote
     )
 
 
@@ -1284,9 +1421,7 @@ async def claim_job(
             f"Rejecting job claim from worker '{worker_name}' - "
             f"no code_version in metadata (workers.require_version_field is enabled)"
         )
-        return ClaimJobResponse(
-            message="Version field required: worker must send code_version in heartbeat"
-        )
+        return ClaimJobResponse(message="Version field required: worker must send code_version in heartbeat")
 
     # Check for version mismatch
     if require_version_match and worker_version and worker_version != CODE_VERSION:
@@ -1483,6 +1618,9 @@ async def claim_job(
     if not job:
         return ClaimJobResponse(message="No jobs available")
 
+    # Issue #207: Record job started metric
+    TRANSCODING_JOBS_TOTAL.labels(status="started").inc()
+
     # Handle retranscode cleanup if metadata is present (Issue #408)
     # This performs the deferred cleanup that was postponed when the video was queued
     if job.get("retranscode_metadata"):
@@ -1531,9 +1669,7 @@ async def claim_job(
             async with database.transaction():
                 # Delete video_qualities records
                 if retranscode_all:
-                    await database.execute(
-                        video_qualities.delete().where(video_qualities.c.video_id == video_id)
-                    )
+                    await database.execute(video_qualities.delete().where(video_qualities.c.video_id == video_id))
                 else:
                     await database.execute(
                         video_qualities.delete().where(
@@ -1544,9 +1680,7 @@ async def claim_job(
 
                 # Delete transcription records if needed
                 if delete_transcription:
-                    await database.execute(
-                        transcriptions.delete().where(transcriptions.c.video_id == video_id)
-                    )
+                    await database.execute(transcriptions.delete().where(transcriptions.c.video_id == video_id))
 
                 # Clear the retranscode_metadata now that cleanup is done
                 await database.execute(
@@ -1735,15 +1869,49 @@ async def complete_job(
     data: CompleteJobRequest,
     worker: dict = Depends(verify_worker_key),
 ):
-    """Mark job as complete after HLS files uploaded."""
+    """Mark job as complete after HLS files uploaded.
+
+    Idempotency (Issue #455):
+    - If completion_token is provided and was already processed, returns early
+    - If job is already completed, returns early
+    - Metadata fields only update if not already set (idempotent on retry)
+    """
     job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["worker_id"] != worker["worker_id"]:
         raise HTTPException(status_code=403, detail="Not your job")
 
-    # Check if claim has expired
     now = datetime.now(timezone.utc)
+
+    # Issue #455: Idempotency check - if job already completed, return early
+    if job["completed_at"] is not None:
+        logger.info(f"Job {job_id} already completed, returning idempotent response")
+        return CompleteJobResponse(status="ok", message="Job already completed")
+
+    # Issue #455: Atomic token check-and-set using SETNX (set if not exists)
+    # This prevents race conditions where two requests pass the check before either stores
+    # Token key is scoped to job_id to prevent cross-job collisions
+    token_acquired = False
+    token_key = None  # Defined at outer scope for cleanup in exception handler
+    if data.completion_token:
+        redis = await get_redis()
+        if redis:
+            # Key format: vlog:completion_token:{job_id}:{token}
+            token_key = f"{REDIS_KEY_PREFIX}completion_token:{job_id}:{data.completion_token}"
+            try:
+                # SETNX: Set only if key doesn't exist (atomic check-and-set)
+                # Returns True if set succeeded (we own the token), False if key already exists
+                token_acquired = await redis.set(token_key, "processing", ex=COMPLETION_TOKEN_TTL, nx=True)
+                if not token_acquired:
+                    logger.info(f"Job {job_id} completion token already in use, returning idempotent response")
+                    return CompleteJobResponse(status="ok", message="Job already completed")
+            except Exception as e:
+                # Redis failure shouldn't block completion - log and continue
+                # Fall back to DB-based idempotency (completed_at check)
+                logger.warning(f"Failed to acquire completion token in Redis: {e}")
+
+    # Check if claim has expired
     if job["claim_expires_at"]:
         claim_expiry = job["claim_expires_at"]
         if claim_expiry.tzinfo is None:
@@ -1776,21 +1944,23 @@ async def complete_job(
                     )
 
             # Update video metadata if provided
-            # Only set published_at if not already set (preserve date for re-transcoded videos)
+            # Issue #455: Only set fields if not already set (idempotent on retry)
             video_row = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
             video_updates = {"status": "ready"}
-            if video_row and video_row["published_at"] is None:
-                video_updates["published_at"] = now
-            if data.duration is not None:
-                video_updates["duration"] = data.duration
-            if data.source_width is not None:
-                video_updates["source_width"] = data.source_width
-            if data.source_height is not None:
-                video_updates["source_height"] = data.source_height
-            if data.streaming_format is not None:
-                video_updates["streaming_format"] = data.streaming_format
-            if data.streaming_codec is not None:
-                video_updates["primary_codec"] = data.streaming_codec
+            if video_row:
+                if video_row["published_at"] is None:
+                    video_updates["published_at"] = now
+                # Only update metadata if not already set (idempotent retry safety)
+                if data.duration is not None and video_row["duration"] is None:
+                    video_updates["duration"] = data.duration
+                if data.source_width is not None and video_row["source_width"] is None:
+                    video_updates["source_width"] = data.source_width
+                if data.source_height is not None and video_row["source_height"] is None:
+                    video_updates["source_height"] = data.source_height
+                if data.streaming_format is not None and video_row["streaming_format"] is None:
+                    video_updates["streaming_format"] = data.streaming_format
+                if data.streaming_codec is not None and video_row["primary_codec"] is None:
+                    video_updates["primary_codec"] = data.streaming_codec
 
             # Mark job complete
             await database.execute(
@@ -1814,10 +1984,39 @@ async def complete_job(
     try:
         await execute_with_retry(do_complete_transaction)
     except DatabaseLockedError as e:
+        # Clean up token so retry can succeed (Gafton review feedback)
+        # Without this, the token stays in Redis for 15 min blocking retries
+        if token_acquired and token_key:
+            try:
+                redis = await get_redis()
+                if redis:
+                    await redis.delete(token_key)
+                    logger.info(f"Cleaned up completion token after transaction failure for job {job_id}")
+            except Exception as cleanup_err:
+                # Best effort cleanup - don't mask the original error
+                logger.warning(f"Failed to clean up completion token: {cleanup_err}")
         raise HTTPException(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
         ) from e
+
+    # Issue #455: Update token status to "completed" after successful completion
+    # The token was already set with SETNX before the transaction (status: "processing")
+    # Now we update it to "completed" to indicate success
+    if data.completion_token and token_acquired:
+        redis = await get_redis()
+        if redis:
+            try:
+                token_key = f"{REDIS_KEY_PREFIX}completion_token:{job_id}:{data.completion_token}"
+                await redis.set(token_key, "completed", ex=COMPLETION_TOKEN_TTL)
+            except Exception as e:
+                # Redis failure shouldn't block - token was already set, DB is source of truth
+                logger.warning(f"Failed to update completion token status in Redis: {e}")
+
+    # Issue #207: Record job completion metrics (sanitize label to prevent injection)
+    worker_label = sanitize_label(worker["worker_name"] or worker["worker_id"])
+    WORKER_JOBS_COMPLETED_TOTAL.labels(worker_name=worker_label).inc()
+    TRANSCODING_JOBS_TOTAL.labels(status="completed").inc()
 
     # Publish job completion to Redis pub/sub for real-time UI updates
     video = await database.fetch_one(videos.select().where(videos.c.id == job["video_id"]))
@@ -1842,7 +2041,9 @@ async def complete_job(
                     )
                 )
                 await database.execute(
-                    videos.update().where(videos.c.id == job["video_id"]).values(
+                    videos.update()
+                    .where(videos.c.id == job["video_id"])
+                    .values(
                         sprite_sheet_status="pending",
                         sprite_sheet_error=None,
                     )
@@ -1948,6 +2149,12 @@ async def fail_job(
             status_code=503,
             detail="Database temporarily unavailable, please retry",
         ) from e
+
+    # Issue #207: Record job failure/retry metrics
+    if will_retry:
+        TRANSCODING_JOBS_TOTAL.labels(status="retried").inc()
+    else:
+        TRANSCODING_JOBS_TOTAL.labels(status="failed").inc()
 
     # Clean up source file after permanent failure (outside transaction)
     if not will_retry:
@@ -2414,20 +2621,24 @@ async def upload_segment(
     # Use thread pool to avoid blocking event loop on NAS (code review fix)
     loop = asyncio.get_event_loop()
     dest_exists = await loop.run_in_executor(_io_executor, dest_path.exists)
+    old_file_size = 0  # Track old size for storage metric adjustment on overwrite
     if dest_exists:
         try:
             # Add timeout to handle NFS hangs (code review fix)
-            existing_checksum = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _io_executor,
-                    lambda: hashlib.sha256(dest_path.read_bytes()).hexdigest()
-                ),
-                timeout=30.0
+            # Get both checksum and file size to properly track storage on overwrite
+            def get_existing_file_info():
+                file_bytes = dest_path.read_bytes()
+                return hashlib.sha256(file_bytes).hexdigest(), len(file_bytes)
+
+            existing_checksum, old_file_size = await asyncio.wait_for(
+                loop.run_in_executor(_io_executor, get_existing_file_info),
+                timeout=30.0,
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout reading existing segment {filename}, treating as non-existent")
             dest_exists = False
             existing_checksum = None
+            old_file_size = 0
         if dest_exists and existing_checksum == checksum:
             logger.debug(f"Segment {filename} already exists with matching checksum")
             return SegmentUploadResponse(
@@ -2438,15 +2649,12 @@ async def upload_segment(
             )
         else:
             # File exists with different content - overwrite
-            logger.warning(
-                f"Segment {filename} exists with different checksum, overwriting"
-            )
+            # old_file_size is already captured above for storage metric adjustment
+            logger.warning(f"Segment {filename} exists with different checksum, overwriting")
 
     # Atomic write with fsync (Margo's durability requirement)
     try:
-        written, bytes_written, checksum_verified = await write_segment_atomic(
-            data, dest_path, checksum
-        )
+        written, bytes_written, checksum_verified = await write_segment_atomic(data, dest_path, checksum)
     except Exception as e:
         logger.exception(f"Failed to write segment {filename}: {e}")
         raise HTTPException(status_code=500, detail="Write failed")
@@ -2454,12 +2662,24 @@ async def upload_segment(
     if not written:
         raise HTTPException(status_code=400, detail="Checksum verification failed")
 
+    # Issue #207: Track storage bytes for new/overwritten segments
+    # If overwriting, adjust for the old file size to maintain accuracy
+    if old_file_size > 0:
+        # Overwrite case: net change = new size - old size
+        net_change = bytes_written - old_file_size
+        if net_change > 0:
+            STORAGE_VIDEOS_BYTES.inc(net_change)
+        elif net_change < 0:
+            STORAGE_VIDEOS_BYTES.dec(abs(net_change))
+        # If net_change == 0, no adjustment needed
+    else:
+        # New file case
+        STORAGE_VIDEOS_BYTES.inc(bytes_written)
+
     # Extend claim on successful upload (each upload keeps claim alive)
     new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
     await database.execute(
-        transcoding_jobs.update()
-        .where(transcoding_jobs.c.id == job["id"])
-        .values(claim_expires_at=new_expiry)
+        transcoding_jobs.update().where(transcoding_jobs.c.id == job["id"]).values(claim_expires_at=new_expiry)
     )
 
     logger.debug(f"Segment {quality}/{filename} uploaded for video {video_slug}")
@@ -2695,9 +2915,7 @@ async def finalize_segment_upload(
         # Extend claim
         new_expiry = now + timedelta(minutes=WORKER_CLAIM_DURATION_MINUTES)
         await database.execute(
-            transcoding_jobs.update()
-            .where(transcoding_jobs.c.id == job["id"])
-            .values(claim_expires_at=new_expiry)
+            transcoding_jobs.update().where(transcoding_jobs.c.id == job["id"]).values(claim_expires_at=new_expiry)
         )
 
     logger.info(f"Quality {quality} finalized for video {video['slug']} ({actual_count} segments)")
@@ -2845,13 +3063,54 @@ async def health_check(request: Request):
 
 
 @app.get("/metrics")
-async def metrics_endpoint():
+@limiter.limit("60/minute")
+async def metrics_endpoint(request: Request):
     """
     Prometheus metrics endpoint.
 
     Returns metrics in Prometheus text format for scraping.
-    No authentication required for metrics collection.
+
+    Authentication behavior is controlled by settings:
+    - metrics.enabled: If false, returns 404 (default: true)
+    - metrics.auth_required: If true, requires X-Admin-Secret header (default: false)
+
+    Security note: For production deployments, consider either:
+    1. Setting metrics.auth_required=true and using X-Admin-Secret header
+    2. Network-level isolation (only allow Prometheus server to access /metrics)
+
+    Rate limited to 60/minute to prevent brute-force attacks on authentication.
+
+    Related: Issue #436
     """
+    # Check if metrics endpoint is enabled
+    metrics_enabled = await get_db_setting("metrics.enabled", True)
+    if not metrics_enabled:
+        raise HTTPException(status_code=404, detail="Metrics endpoint disabled")
+
+    # Check if authentication is required
+    auth_required = await get_db_setting("metrics.auth_required", False)
+    if auth_required:
+        # Validate X-Admin-Secret header
+        admin_secret = request.headers.get("X-Admin-Secret", "")
+        if not WORKER_ADMIN_SECRET:
+            # No secret configured but auth required - deny access
+            security_logger.warning(
+                "Metrics auth required but VLOG_WORKER_ADMIN_SECRET not configured",
+                extra={"event": "metrics_auth_misconfigured", "path": "/metrics"},
+            )
+            raise HTTPException(status_code=500, detail="Metrics authentication misconfigured")
+
+        if not admin_secret or not hmac.compare_digest(admin_secret, WORKER_ADMIN_SECRET):
+            security_logger.warning(
+                "Metrics endpoint auth failed",
+                extra={
+                    "event": "metrics_auth_failure",
+                    "path": "/metrics",
+                    "client_ip": get_real_ip(request),
+                },
+            )
+            raise HTTPException(status_code=403, detail="Authentication required for metrics")
+
     return Response(content=get_metrics(), media_type="text/plain; charset=utf-8")
 
 
@@ -3127,6 +3386,125 @@ async def update_reencode_job(
     await database.execute(reencode_queue.update().where(reencode_queue.c.id == job_id).values(**update_values))
 
     return {"status": "success"}
+
+
+# =============================================================================
+# Job Completion Verification (Issue #461)
+# =============================================================================
+
+
+@app.get("/api/worker/{job_id}/verify-complete")
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def verify_job_completion(
+    request: Request,
+    job_id: int,
+    worker: dict = Depends(verify_worker_key),
+):
+    """
+    Verify that job completion was properly recorded and files are present.
+
+    Workers call this before cleaning up their local work directory to ensure
+    the server has all the files and the completion was recorded in the database.
+
+    This prevents data loss in edge cases where:
+    - HTTP 200 was returned but database write failed
+    - Files were uploaded but finalization failed
+    - Server crashed during completion processing
+
+    Returns:
+        - all_files_present: True if all expected files exist on disk
+        - video_status: Current status in database
+        - job_status: Current job status (completed, processing, etc.)
+        - qualities_present: List of quality directories found
+        - missing_files: List of any expected but missing files
+    """
+    # Get the job and associated video
+    job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Verify this worker owns the job (or owned it when it was completed)
+    # Use direct access since worker_id should always be present (may be None)
+    if job["worker_id"] != worker["worker_id"]:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    video = await fetch_one_with_retry(videos.select().where(videos.c.id == job["video_id"]))
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_dir = VIDEOS_DIR / video["slug"]
+    result = {
+        "job_id": job_id,
+        "video_id": video["id"],
+        "video_slug": video["slug"],
+        "video_status": video["status"],
+        "job_completed": job.get("completed_at") is not None,
+        "all_files_present": False,
+        "qualities_present": [],
+        "missing_files": [],
+    }
+
+    # If video directory doesn't exist, files weren't uploaded
+    if not video_dir.exists():
+        result["missing_files"].append("video_directory")
+        return result
+
+    # Check for master playlist
+    master_playlist = video_dir / "master.m3u8"
+    if not master_playlist.exists():
+        result["missing_files"].append("master.m3u8")
+
+    # Check for DASH manifest (for CMAF videos)
+    streaming_format = video.get("streaming_format", "hls_ts")
+    if streaming_format == "cmaf":
+        dash_manifest = video_dir / "manifest.mpd"
+        if not dash_manifest.exists():
+            result["missing_files"].append("manifest.mpd")
+
+    # Check for thumbnail
+    thumbnail = video_dir / "thumbnail.jpg"
+    if not thumbnail.exists():
+        result["missing_files"].append("thumbnail.jpg")
+
+    # Get quality directories/files (uses config constant for consistency)
+    for quality in QUALITY_NAMES:
+        # Check CMAF style (subdirectory with init.mp4 and segments)
+        quality_dir = video_dir / quality
+        if quality_dir.is_dir():
+            init_file = quality_dir / "init.mp4"
+            if init_file.exists():
+                result["qualities_present"].append(quality)
+                continue
+
+        # Check HLS/TS style (quality.m3u8 + segments)
+        quality_playlist = video_dir / f"{quality}.m3u8"
+        if quality_playlist.exists():
+            result["qualities_present"].append(quality)
+
+    # Check against qualities recorded in database
+    quality_rows = await fetch_all_with_retry(video_qualities.select().where(video_qualities.c.video_id == video["id"]))
+    expected_qualities = [q["quality"] for q in quality_rows]
+
+    for expected in expected_qualities:
+        if expected not in result["qualities_present"]:
+            result["missing_files"].append(f"quality:{expected}")
+
+    # Determine if all files are present
+    result["all_files_present"] = (
+        len(result["missing_files"]) == 0
+        and len(result["qualities_present"]) > 0
+        and video["status"] == "ready"
+        and job.get("completed_at") is not None
+    )
+
+    logger.debug(
+        f"Job {job_id} verification: all_files_present={result['all_files_present']}, "
+        f"qualities={result['qualities_present']}, missing={result['missing_files']}"
+    )
+
+    return result
 
 
 if __name__ == "__main__":

@@ -519,6 +519,181 @@ vlog worker status
 
 ---
 
+## Webhook Issues
+
+### Webhooks Not Delivering
+
+**Symptom:** Webhook deliveries stuck in pending or failing
+
+**Causes and Solutions:**
+
+1. **Target URL unreachable**
+   ```bash
+   # Test connectivity from server
+   curl -I https://your-webhook-endpoint.com
+   ```
+
+2. **SSRF protection blocking**
+   - Webhooks cannot target private IPs (10.x, 172.16-31.x, 192.168.x)
+   - Use public endpoints only
+
+3. **Circuit breaker open**
+   ```bash
+   # Check delivery status
+   psql -U vlog -d vlog -c "SELECT id, status, attempts, last_error FROM webhook_deliveries WHERE webhook_id = <id> ORDER BY created_at DESC LIMIT 5"
+   ```
+
+4. **Webhook disabled**
+   - Check webhook status in Admin UI
+   - Circuit breaker may have disabled after consecutive failures
+
+### Signature Verification Failing
+
+**Symptom:** Receiving webhook but signature doesn't match
+
+**Causes and Solutions:**
+
+1. **Wrong secret**
+   - Copy secret exactly from Admin UI
+   - Check for trailing whitespace
+
+2. **Encoding issues**
+   ```python
+   # Verify signature correctly
+   import hmac, hashlib
+   expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+   signature = request.headers.get('X-VLog-Signature')
+   # Compare: f"sha256={expected}" == signature
+   ```
+
+3. **Body modified**
+   - Use raw request body, not parsed JSON
+   - Middleware may be modifying the payload
+
+---
+
+## Rate Limiting Issues
+
+### Getting Rate Limited
+
+**Symptom:** HTTP 429 Too Many Requests errors
+
+**Causes and Solutions:**
+
+1. **Check current limits**
+   ```bash
+   vlog settings get rate_limiting.public_default
+   ```
+
+2. **Increase limits** (via Admin UI or CLI)
+   ```bash
+   vlog settings set rate_limiting.public_default "200/minute"
+   ```
+
+3. **Using Redis rate limiting**
+   - Memory backend doesn't share state across instances
+   - Enable Redis for consistent rate limiting:
+   ```bash
+   export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379
+   ```
+
+### Rate Limiter Not Working
+
+**Symptom:** Rate limits not being enforced
+
+**Causes and Solutions:**
+
+1. **Check if enabled**
+   ```bash
+   grep RATE_LIMIT /etc/systemd/system/vlog-public.service
+   ```
+
+2. **Behind proxy without forwarded headers**
+   ```python
+   # nginx needs to forward client IP
+   proxy_set_header X-Real-IP $remote_addr;
+   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+   ```
+
+---
+
+## Content Security Policy (CSP) Issues
+
+### Alpine.js Errors
+
+**Symptom:** JavaScript errors, UI not interactive
+
+**Causes and Solutions:**
+
+1. **Check browser console for CSP violations**
+   - Look for "refused to evaluate script" errors
+
+2. **Inline event handlers blocked**
+   - VLog uses CSP-compliant Alpine.js patterns
+   - Don't add inline onclick/onchange handlers
+
+3. **Third-party scripts blocked**
+   - Custom scripts need to be allowlisted
+   - Check nginx CSP headers
+
+### Video Player Not Loading
+
+**Symptom:** Player shows blank or errors
+
+**Causes and Solutions:**
+
+1. **Check for blob: CSP issues**
+   - Shaka Player requires `blob:` in media-src
+   - hls.js requires `blob:` in worker-src
+
+2. **Verify CSP headers**
+   ```bash
+   curl -I http://localhost:9000 | grep -i content-security
+   ```
+
+---
+
+## Video Download Issues
+
+### Downloads Not Working
+
+**Symptom:** Download links return 404 or 403
+
+**Causes and Solutions:**
+
+1. **Feature disabled**
+   ```bash
+   # Enable downloads
+   export VLOG_DOWNLOADS_ENABLED=true
+   sudo systemctl restart vlog-public
+   ```
+
+2. **Original downloads disabled**
+   ```bash
+   # Check setting
+   grep DOWNLOADS_ALLOW_ORIGINAL /etc/systemd/system/vlog-public.service
+   ```
+
+3. **Rate limited**
+   - Default: 10 downloads/hour per IP
+   - Check `VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR`
+
+### Download Files Missing
+
+**Symptom:** Download returns error or incomplete file
+
+**Causes and Solutions:**
+
+1. **Video not fully transcoded**
+   - Only "ready" videos can be downloaded
+   - Check video status in Admin UI
+
+2. **Original file deleted**
+   - Originals are deleted after transcoding by default
+   - Set `VLOG_KEEP_ORIGINAL=true` to preserve
+
+---
+
 ## Debug Mode
 
 Enable debug logging for more information:

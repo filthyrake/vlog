@@ -45,8 +45,9 @@ Core video metadata and processing status.
 | thumbnail_timestamp | FLOAT | NULLABLE | Timestamp for 'selected' thumbnails |
 | is_featured | BOOLEAN | DEFAULT FALSE | Featured on homepage |
 | has_chapters | BOOLEAN | DEFAULT FALSE | Has chapter markers |
-| streaming_format | VARCHAR(20) | NULLABLE | Streaming format: hls, cmaf |
-| primary_codec | VARCHAR(20) | NULLABLE | Primary codec: h264, hevc, av1 |
+| streaming_format | VARCHAR(10) | NOT NULL, DEFAULT 'hls_ts' | Streaming format: hls_ts, cmaf |
+| primary_codec | VARCHAR(10) | NOT NULL, DEFAULT 'h264' | Primary codec: h264, hevc, av1 |
+| featured_at | TIMESTAMP WITH TIME ZONE | NULLABLE | When marked featured (for ordering) |
 | sprite_sheet_status | VARCHAR(20) | NULLABLE | pending, generating, ready, failed |
 | sprite_sheet_error | TEXT | NULLABLE | Sprite generation error |
 | sprite_sheet_count | INTEGER | DEFAULT 0 | Number of sprite sheets |
@@ -240,18 +241,23 @@ Registered remote transcoding workers.
 
 ### worker_api_keys
 
-API keys for worker authentication (SHA-256 hashed).
+API keys for worker authentication (argon2id hashed).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | INTEGER | PRIMARY KEY | Auto-increment ID |
 | worker_id | INTEGER | FK(workers.id) CASCADE | Parent worker |
-| key_hash | VARCHAR(64) | NOT NULL | SHA-256 hash of full key |
+| key_hash | VARCHAR(255) | NOT NULL | argon2id hash (or SHA-256 for legacy) |
 | key_prefix | VARCHAR(8) | NOT NULL, INDEX | First 8 chars for lookup |
+| hash_version | INTEGER | NOT NULL, DEFAULT 2 | Hash algorithm version |
 | created_at | TIMESTAMP | NOT NULL | Key creation time |
 | expires_at | TIMESTAMP | NULLABLE | Optional expiration time |
 | revoked_at | TIMESTAMP | NULLABLE | Revocation time (NULL = active) |
 | last_used_at | TIMESTAMP | NULLABLE | Last successful authentication |
+
+**Hash Versions:**
+- `1` - SHA-256 (legacy, for backward compatibility)
+- `2` - argon2id (current, recommended)
 
 **Indexes:**
 - `ix_worker_api_keys_key_prefix` - Efficient key lookup
@@ -259,7 +265,8 @@ API keys for worker authentication (SHA-256 hashed).
 
 **Security Design:**
 - Full API key is only shown once at registration
-- Key is stored as SHA-256 hash
+- New keys use argon2id (memory-hard, GPU-resistant)
+- Legacy SHA-256 keys still work but should be regenerated
 - Prefix enables efficient lookup without full scan
 - Revoked keys remain in table for audit trail
 - `last_used_at` tracks recent activity
@@ -513,9 +520,174 @@ Custom field values for each video (many-to-many with JSON values).
 
 **Cascade Behavior:** Deleting a video or field definition removes the value.
 
+### webhooks
+
+External webhook endpoints for event notifications.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| name | VARCHAR(100) | NOT NULL | Webhook display name |
+| url | VARCHAR(500) | NOT NULL | Webhook endpoint URL |
+| events | TEXT | NOT NULL | JSON array of subscribed events |
+| secret | VARCHAR(64) | NULLABLE | HMAC-SHA256 signing key |
+| active | BOOLEAN | DEFAULT TRUE | Whether webhook is enabled |
+| headers | TEXT | NULLABLE | JSON object of custom headers |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | Creation timestamp |
+| updated_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Last modification timestamp |
+| last_triggered_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Last delivery attempt |
+| total_deliveries | INTEGER | DEFAULT 0 | Total delivery attempts |
+| successful_deliveries | INTEGER | DEFAULT 0 | Successful deliveries |
+| failed_deliveries | INTEGER | DEFAULT 0 | Failed deliveries |
+
+**Indexes:**
+- `ix_webhooks_active` - Filter by active status
+- `ix_webhooks_created_at` - Order by creation date
+
+**Supported Events:**
+- `video.uploaded`, `video.ready`, `video.failed`, `video.deleted`, `video.restored`
+- `transcription.completed`
+- `worker.registered`, `worker.offline`
+
+### webhook_deliveries
+
+Tracks individual webhook delivery attempts.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| webhook_id | INTEGER | FK(webhooks.id) CASCADE | Parent webhook |
+| event_type | VARCHAR(50) | NOT NULL | Event that triggered delivery |
+| event_data | TEXT | NOT NULL | JSON payload sent |
+| request_body | TEXT | NULLABLE | Full request body |
+| response_status | INTEGER | NULLABLE | HTTP response status |
+| response_body | TEXT | NULLABLE | Response body (truncated) |
+| error_message | TEXT | NULLABLE | Error if delivery failed |
+| attempt_number | INTEGER | DEFAULT 1 | Retry attempt number |
+| status | VARCHAR(20) | DEFAULT 'pending' | Delivery status |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | When delivery was queued |
+| next_retry_at | TIMESTAMP WITH TIME ZONE | NULLABLE | Next retry time |
+| delivered_at | TIMESTAMP WITH TIME ZONE | NULLABLE | When successfully delivered |
+| duration_ms | INTEGER | NULLABLE | Request duration in milliseconds |
+
+**Status Values:**
+- `pending` - Queued for delivery
+- `delivered` - Successfully delivered
+- `failed` - Failed, will retry
+- `failed_permanent` - Failed, max retries exceeded
+
+**Indexes:**
+- `ix_webhook_deliveries_webhook_id` - Find deliveries for a webhook
+- `ix_webhook_deliveries_status` - Filter by status
+- `ix_webhook_deliveries_event_type` - Filter by event type
+- `ix_webhook_deliveries_next_retry_at` - Find deliveries due for retry
+- `ix_webhook_deliveries_status_next_retry` - Composite for retry query
+
+### reencode_queue
+
+Background queue for re-encoding videos to different formats/codecs.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| video_id | INTEGER | FK(videos.id) CASCADE | Video to re-encode |
+| target_format | VARCHAR(20) | DEFAULT 'cmaf' | Target format: hls_ts, cmaf |
+| target_codec | VARCHAR(10) | DEFAULT 'hevc' | Target codec: h264, hevc, av1 |
+| priority | VARCHAR(10) | DEFAULT 'normal' | Priority: high, normal, low |
+| status | VARCHAR(20) | DEFAULT 'pending' | Job status |
+| created_at | TIMESTAMP WITH TIME ZONE | DEFAULT NOW() | When queued |
+| started_at | TIMESTAMP WITH TIME ZONE | NULLABLE | When processing started |
+| completed_at | TIMESTAMP WITH TIME ZONE | NULLABLE | When completed |
+| error_message | TEXT | NULLABLE | Error if failed |
+| retry_count | INTEGER | DEFAULT 0 | Number of retry attempts |
+| processed_by_worker_id | INTEGER | NULLABLE | Worker that processed job |
+
+**Status Values:**
+- `pending` - Queued for processing
+- `in_progress` - Currently processing
+- `completed` - Successfully re-encoded
+- `failed` - Processing failed
+- `cancelled` - Cancelled by user
+
+**Indexes:**
+- `ix_reencode_queue_status` - Filter by status
+- `ix_reencode_queue_video_id` - Find jobs for a video
+- `ix_reencode_queue_priority_created` - Order by priority then date
+
+### deployment_events
+
+Tracks worker lifecycle events for operational monitoring.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | INTEGER | PRIMARY KEY | Auto-increment ID |
+| worker_id | VARCHAR(36) | NOT NULL | Worker UUID |
+| worker_name | VARCHAR(100) | NULLABLE | Worker display name |
+| event_type | VARCHAR(20) | NOT NULL | Event type |
+| old_version | VARCHAR(64) | NULLABLE | Previous code version |
+| new_version | VARCHAR(64) | NULLABLE | New code version |
+| status | VARCHAR(20) | DEFAULT 'pending' | Event status |
+| triggered_by | VARCHAR(100) | NULLABLE | Who/what triggered event |
+| details | TEXT | NULLABLE | JSON additional details |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL | When event occurred |
+| completed_at | TIMESTAMP WITH TIME ZONE | NULLABLE | When event completed |
+
+**Event Types:**
+- `restart` - Worker restart requested
+- `stop` - Worker stop requested
+- `update` - Code update deployed
+- `deploy` - New deployment
+- `rollback` - Rollback to previous version
+- `version_change` - Version changed
+
+**Status Values:**
+- `pending` - Waiting to execute
+- `in_progress` - Currently executing
+- `completed` - Successfully completed
+- `failed` - Execution failed
+
+**Indexes:**
+- `ix_deployment_events_worker_id` - Find events for a worker
+- `ix_deployment_events_created_at` - Order by date
+
 ---
 
 ## Entity Relationships
+
+```
+categories (1) ─────────────────────────── (N) videos
+categories (1) ─────────────────────────── (N) custom_field_definitions
+                                                │
+videos (1) ─────────────────────────────── (N) video_qualities
+videos (1) ─────────────────────────────── (N) playback_sessions
+videos (1) ─────────────────────────────── (1) transcoding_jobs
+videos (1) ─────────────────────────────── (1) transcriptions
+videos (1) ─────────────────────────────── (N) chapters
+videos (1) ─────────────────────────────── (N) sprite_queue
+videos (1) ─────────────────────────────── (N) reencode_queue
+videos (N) ─────────────────────────────── (N) tags (via video_tags)
+videos (N) ─────────────────────────────── (N) playlists (via playlist_items)
+videos (N) ─────────────────────────────── (N) custom_field_definitions (via video_custom_fields)
+                                                │
+playlists (1) ─────────────────────────── (N) playlist_items
+                                                │
+transcoding_jobs (1) ──────────────────── (N) quality_progress
+transcoding_jobs (N) ──────────────────── (1) workers
+                                                │
+workers (1) ───────────────────────────── (N) worker_api_keys
+                                                │
+viewers (1) ────────────────────────────── (N) playback_sessions
+                                                │
+webhooks (1) ──────────────────────────── (N) webhook_deliveries
+
+admin_sessions ────────────────────────── (standalone, no FKs)
+settings ──────────────────────────────── (standalone, no FKs)
+deployment_events ─────────────────────── (standalone, references workers.worker_id but no FK)
+```
+
+---
+
+## Cascade Behavior
 
 ```
 categories (1) ─────────────────────────── (N) videos
@@ -568,6 +740,8 @@ settings ───────────────────────�
 | workers | transcoding_jobs.worker_id | SET NULL |
 | viewers | playback_sessions | SET NULL |
 | categories | videos | SET NULL (handled in app) |
+| webhooks | webhook_deliveries | CASCADE |
+| videos | reencode_queue | CASCADE |
 
 ---
 

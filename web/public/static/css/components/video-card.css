@@ -149,6 +149,28 @@
         transition: width var(--vlog-transition-base, 200ms ease);
     }
 
+    /* Progress bar width classes (CSP-compliant, no inline styles) */
+    .video-card__progress-bar--5 { width: 5%; }
+    .video-card__progress-bar--10 { width: 10%; }
+    .video-card__progress-bar--15 { width: 15%; }
+    .video-card__progress-bar--20 { width: 20%; }
+    .video-card__progress-bar--25 { width: 25%; }
+    .video-card__progress-bar--30 { width: 30%; }
+    .video-card__progress-bar--35 { width: 35%; }
+    .video-card__progress-bar--40 { width: 40%; }
+    .video-card__progress-bar--45 { width: 45%; }
+    .video-card__progress-bar--50 { width: 50%; }
+    .video-card__progress-bar--55 { width: 55%; }
+    .video-card__progress-bar--60 { width: 60%; }
+    .video-card__progress-bar--65 { width: 65%; }
+    .video-card__progress-bar--70 { width: 70%; }
+    .video-card__progress-bar--75 { width: 75%; }
+    .video-card__progress-bar--80 { width: 80%; }
+    .video-card__progress-bar--85 { width: 85%; }
+    .video-card__progress-bar--90 { width: 90%; }
+    .video-card__progress-bar--95 { width: 95%; }
+    .video-card__progress-bar--100 { width: 100%; }
+
     /* Element: View count display (Issue #413 Phase 3) */
     .video-card__views {
         display: inline-flex;

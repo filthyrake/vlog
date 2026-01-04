@@ -36,6 +36,22 @@ def extract_env_vars_from_cli():
     return set(f"VLOG_{var}" for var in matches)
 
 
+def extract_env_vars_from_settings_service():
+    """Extract all VLOG_ environment variable names from settings_service.py SETTING_TO_ENV_MAP.
+
+    These are database-backed settings that fall back to environment variables.
+    """
+    settings_path = Path(__file__).parent.parent / "api" / "settings_service.py"
+    content = settings_path.read_text()
+
+    # Find all VLOG_ env var values in SETTING_TO_ENV_MAP
+    # Pattern matches: "setting.key": "VLOG_ENV_VAR"
+    pattern = r'"VLOG_([A-Z_]+)"'
+    matches = re.findall(pattern, content)
+
+    return set(f"VLOG_{var}" for var in matches)
+
+
 def extract_env_vars_from_example():
     """Extract all VLOG_ environment variable names from .env.example"""
     example_path = Path(__file__).parent.parent / ".env.example"
@@ -55,7 +71,8 @@ def test_env_example_completeness():
     cli_vars = extract_env_vars_from_cli()
     example_vars = extract_env_vars_from_example()
 
-    # Combine all expected variables
+    # Combine all expected variables (excludes settings_service vars since they're
+    # database-backed settings that don't all need to be documented in .env.example)
     all_expected_vars = config_vars | cli_vars
 
     # Check for missing variables
@@ -71,10 +88,11 @@ def test_env_example_no_undefined_vars():
     """Test that .env.example doesn't contain variables not used in the code"""
     config_vars = extract_env_vars_from_config()
     cli_vars = extract_env_vars_from_cli()
+    settings_vars = extract_env_vars_from_settings_service()
     example_vars = extract_env_vars_from_example()
 
     # Combine all expected variables
-    all_expected_vars = config_vars | cli_vars
+    all_expected_vars = config_vars | cli_vars | settings_vars
 
     # Check for extra variables (might be deprecated or test-only)
     extra_vars = example_vars - all_expected_vars

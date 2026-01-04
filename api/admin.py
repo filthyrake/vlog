@@ -4,7 +4,6 @@ Runs on port 9001 (not exposed externally).
 """
 
 import asyncio
-import hashlib
 import hmac
 import json
 import logging
@@ -22,6 +21,7 @@ from typing import List, Optional
 
 import sqlalchemy as sa
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,7 +32,13 @@ from sse_starlette.sse import EventSourceResponse
 
 from api.analytics_cache import create_analytics_cache
 from api.audit import AuditAction, log_audit
+from api.chapter_detection import (
+    extract_chapters_from_metadata,
+    filter_chapters_by_length,
+    generate_chapters_from_transcription,
+)
 from api.common import (
+    HTTPMetricsMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
     check_health,
@@ -62,12 +68,15 @@ from api.database import (
     video_qualities,
     video_tags,
     videos,
+    webhook_deliveries,
+    webhooks,
     worker_api_keys,
     workers,
 )
 from api.db_retry import (
     DatabaseLockedError,
     db_execute_with_retry,
+    execute_with_retry,
     fetch_all_with_retry,
     fetch_one_with_retry,
     fetch_val_with_retry,
@@ -75,7 +84,13 @@ from api.db_retry import (
 from api.enums import TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
-from api.metrics import get_metrics, init_app_info
+from api.metrics import (
+    STORAGE_VIDEOS_BYTES,
+    get_metrics,
+    init_app_info,
+    start_metrics_background_tasks,
+    stop_metrics_background_tasks,
+)
 from api.pagination import encode_cursor, validate_cursor
 from api.partition_manager import ensure_partitions_exist, is_table_partitioned
 from api.public import get_video_url_prefix, get_watermark_settings
@@ -87,6 +102,8 @@ from api.schemas import (
     ActiveJobWithWorker,
     AddVideoToPlaylistRequest,
     AnalyticsOverview,
+    AutoDetectChaptersRequest,
+    AutoDetectChaptersResponse,
     BulkCustomFieldsResponse,
     BulkCustomFieldsUpdate,
     BulkDeleteRequest,
@@ -101,6 +118,7 @@ from api.schemas import (
     CategoryCreate,
     CategoryResponse,
     ChapterCreate,
+    ChapterDetectionSource,
     ChapterListResponse,
     ChapterResponse,
     ChapterUpdate,
@@ -162,6 +180,16 @@ from api.schemas import (
     VideoResponse,
     VideoTagInfo,
     VideoTagsUpdate,
+    WebhookCreate,
+    WebhookDeliveryDetailResponse,
+    WebhookDeliveryListResponse,
+    WebhookDeliveryResponse,
+    WebhookListResponse,
+    WebhookResponse,
+    WebhookStatsResponse,
+    WebhookTestRequest,
+    WebhookTestResponse,
+    WebhookUpdate,
     WorkerDashboardResponse,
     WorkerDashboardStatus,
     WorkerDetailResponse,
@@ -173,6 +201,10 @@ from api.settings_service import (
     get_settings_service,
     seed_settings_from_env,
 )
+from api.settings_service import (
+    get_setting as get_db_setting,
+)
+from api.worker_auth import authenticate_api_key
 from config import (
     ADMIN_API_SECRET,
     ADMIN_CORS_ALLOWED_ORIGINS,
@@ -196,6 +228,8 @@ from config import (
     SECURE_COOKIES,
     SSE_HEARTBEAT_INTERVAL,
     SSE_RECONNECT_TIMEOUT_MS,
+    STREAMING_CODEC,
+    STREAMING_FORMAT,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_VIDEO_EXTENSIONS,
     THUMBNAIL_FRAME_PERCENTAGES,
@@ -825,12 +859,14 @@ async def lifespan(app: FastAPI):
     # Check for deprecated environment variables and warn about migration
     check_deprecated_env_vars()
 
-    # Warn about in-memory rate limiting limitations
+    # Warn about in-memory rate limiting limitations (security issue #446)
     if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
         logger.warning(
-            "Rate limiting is using in-memory storage. "
-            "For production deployments with multiple instances, configure Redis: "
-            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379"
+            "SECURITY: Rate limiting is using in-memory storage. "
+            "With multiple API instances, attackers can bypass rate limits by distributing "
+            "requests across instances. For production with load balancing, configure Redis: "
+            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379 "
+            "(or set VLOG_REDIS_URL which will be auto-detected)"
         )
     create_tables()
     await database.connect()
@@ -873,6 +909,15 @@ async def lifespan(app: FastAPI):
     # Start background task for periodic session cleanup
     _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
 
+    # Issue #207: Start background tasks for dynamic metrics (heartbeat ages, storage reconciliation)
+    await start_metrics_background_tasks(database, storage_path=VIDEOS_DIR)
+
+    # Issue #203: Start webhook delivery background worker (with crash recovery)
+    from api.webhook_service import start_webhook_delivery_worker, stop_webhook_delivery_worker
+
+    await start_webhook_delivery_worker()
+    logger.info("Webhook delivery worker started (with crash recovery)")
+
     yield
 
     # Cancel background cleanup task
@@ -882,6 +927,13 @@ async def lifespan(app: FastAPI):
             await _session_cleanup_task
         except asyncio.CancelledError:
             pass
+
+    # Issue #203: Stop webhook delivery worker gracefully
+    await stop_webhook_delivery_worker(timeout=10.0)
+    logger.info("Webhook delivery worker stopped")
+
+    # Issue #207: Stop metrics background tasks
+    await stop_metrics_background_tasks()
 
     await database.disconnect()
 
@@ -920,6 +972,10 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID"],
 )
+
+# HTTP metrics middleware (outermost - captures all requests including CORS preflight)
+# Issue #207: Tracks requests in progress, duration, and total count
+app.add_middleware(HTTPMetricsMiddleware, api_name="admin")
 
 # Serve video files for preview
 app.mount("/videos", StaticFiles(directory=str(VIDEOS_DIR)), name="videos")
@@ -972,13 +1028,54 @@ async def health_check():
 
 
 @app.get("/metrics")
-async def metrics_endpoint():
+@limiter.limit("60/minute")
+async def metrics_endpoint(request: Request):
     """
     Prometheus metrics endpoint.
 
     Returns metrics in Prometheus text format for scraping.
-    No authentication required for metrics collection.
+
+    Authentication behavior is controlled by settings:
+    - metrics.enabled: If false, returns 404 (default: true)
+    - metrics.auth_required: If true, requires X-Admin-Secret header (default: false)
+
+    Security note: For production deployments, consider either:
+    1. Setting metrics.auth_required=true and using X-Admin-Secret header
+    2. Network-level isolation (only allow Prometheus server to access /metrics)
+
+    Rate limited to 60/minute to prevent brute-force attacks on authentication.
+
+    Related: Issue #436
     """
+    # Check if metrics endpoint is enabled
+    metrics_enabled = await get_db_setting("metrics.enabled", True)
+    if not metrics_enabled:
+        raise HTTPException(status_code=404, detail="Metrics endpoint disabled")
+
+    # Check if authentication is required
+    auth_required = await get_db_setting("metrics.auth_required", False)
+    if auth_required:
+        # Validate X-Admin-Secret header
+        admin_secret = request.headers.get("X-Admin-Secret", "")
+        if not ADMIN_API_SECRET:
+            # No secret configured but auth required - deny access
+            security_logger.warning(
+                "Metrics auth required but ADMIN_API_SECRET not configured",
+                extra={"event": "metrics_auth_misconfigured", "path": "/metrics"},
+            )
+            raise HTTPException(status_code=500, detail="Metrics authentication misconfigured")
+
+        if not admin_secret or not hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+            security_logger.warning(
+                "Metrics endpoint auth failed",
+                extra={
+                    "event": "metrics_auth_failure",
+                    "path": "/metrics",
+                    "client_ip": get_real_ip(request),
+                },
+            )
+            raise HTTPException(status_code=403, detail="Authentication required for metrics")
+
     return Response(content=get_metrics(), media_type="text/plain; charset=utf-8")
 
 
@@ -1665,6 +1762,12 @@ async def upload_video(
                 duration=0,
                 source_width=0,
                 source_height=0,
+                # Required columns with defaults (Python-level defaults don't apply with databases lib)
+                thumbnail_source="auto",
+                streaming_format=STREAMING_FORMAT,
+                primary_codec=STREAMING_CODEC,
+                is_featured=False,
+                has_chapters=False,
             )
             video_id = await database.execute(query)
         except HTTPException:
@@ -1763,6 +1866,22 @@ async def upload_video(
         },
     )
 
+    # Trigger webhook event (Issue #203)
+    try:
+        from api.webhook_service import trigger_webhook_event
+
+        await trigger_webhook_event(
+            "video.uploaded",
+            {
+                "video_id": video_id,
+                "slug": slug,
+                "title": title,
+                "filename": file.filename,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to trigger webhook for video.uploaded: {e}")
+
     return {
         "status": "ok",
         "video_id": video_id,
@@ -1811,8 +1930,10 @@ async def update_video(
             update_data["published_at"] = None
         else:
             try:
-                # Parse ISO format datetime (e.g., "2024-01-15T14:30")
-                update_data["published_at"] = datetime.fromisoformat(published_at)
+                # Parse ISO format datetime (e.g., "2024-01-15T14:30" or "2024-01-15T14:30:00.000Z")
+                # Python 3.9 doesn't support "Z" suffix, replace with +00:00
+                parsed_date = published_at.replace("Z", "+00:00")
+                update_data["published_at"] = datetime.fromisoformat(parsed_date)
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM)")
 
@@ -2378,16 +2499,24 @@ async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse
 
 @app.delete("/api/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def delete_video(request: Request, video_id: int, permanent: bool = False):
+async def delete_video(
+    request: Request,
+    video_id: int,
+    permanent: bool = False,
+):
     """
     Soft-delete a video (moves to archive) or permanently delete if permanent=True.
 
-    Soft-delete:
+    Args:
+        video_id: The video ID to delete
+        permanent: If True, permanently delete. If False (default), soft-delete to archive.
+
+    Soft-delete (permanent=False):
     - Moves video files to archive directory
     - Sets deleted_at timestamp
     - Video can be restored within retention period
 
-    Permanent delete:
+    Permanent delete (permanent=True):
     - Removes all files permanently
     - Deletes all database records
     - Cannot be undone
@@ -2415,6 +2544,12 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
         # Delete files AFTER successful transaction (file ops can't be rolled back)
         video_dir = VIDEOS_DIR / row["slug"]
         if video_dir.exists():
+            # Issue #207: Track storage bytes for deleted video files
+            try:
+                video_size = sum(f.stat().st_size for f in video_dir.rglob("*") if f.is_file())
+                STORAGE_VIDEOS_BYTES.dec(video_size)
+            except OSError:
+                pass  # Size calculation failed, reconciliation will correct
             shutil.rmtree(video_dir)
 
         # Delete archived files if any
@@ -2499,6 +2634,22 @@ async def delete_video(request: Request, video_id: int, permanent: bool = False)
             resource_name=row["slug"],
             details={"permanent": False, "title": row["title"]},
         )
+
+        # Trigger webhook event (Issue #203)
+        try:
+            from api.webhook_service import trigger_webhook_event
+
+            await trigger_webhook_event(
+                "video.deleted",
+                {
+                    "video_id": video_id,
+                    "slug": row["slug"],
+                    "title": row["title"],
+                    "permanent": False,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to trigger webhook for video.deleted: {e}")
 
         return {"status": "ok", "message": "Video moved to archive"}
 
@@ -3019,6 +3170,21 @@ async def restore_video(request: Request, video_id: int):
         resource_name=row["slug"],
         details={"title": row["title"]},
     )
+
+    # Trigger webhook event (Issue #203)
+    try:
+        from api.webhook_service import trigger_webhook_event
+
+        await trigger_webhook_event(
+            "video.restored",
+            {
+                "video_id": video_id,
+                "slug": row["slug"],
+                "title": row["title"],
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to trigger webhook for video.restored: {e}")
 
     return {"status": "ok", "message": "Video restored from archive"}
 
@@ -4618,9 +4784,17 @@ async def enable_worker(request: Request, worker_id: str):
 
 @app.delete("/api/workers/{worker_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
-async def delete_worker(request: Request, worker_id: str, revoke_keys: bool = True):
+async def delete_worker(
+    request: Request,
+    worker_id: str,
+    revoke_keys: bool = True,
+):
     """
     Delete a worker and optionally revoke its API keys.
+
+    Args:
+        worker_id: The worker UUID to delete
+        revoke_keys: If True (default), revoke all API keys. If False, keep keys active.
 
     This will:
     - Release any claimed job back to pending
@@ -6403,19 +6577,13 @@ async def claim_reencode_job(request: Request):
     Uses atomic UPDATE with RETURNING to prevent race conditions when
     multiple workers try to claim jobs simultaneously.
     """
-    # Verify worker API key
+    # Verify worker API key using shared helper (supports both argon2 and SHA-256)
     api_key = request.headers.get("X-Worker-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Worker API key required")
 
-    # Verify the API key exists and is active
-    key_record = await fetch_one_with_retry(
-        sa.text("SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL").bindparams(
-            key_hash=hashlib.sha256(api_key.encode()).hexdigest()
-        )
-    )
-    if not key_record:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+    # authenticate_api_key raises HTTPException(401) if invalid
+    await authenticate_api_key(api_key, request)
 
     # Atomic claim using UPDATE with subquery and RETURNING
     # This prevents race conditions when multiple workers claim simultaneously
@@ -6467,18 +6635,13 @@ async def update_reencode_job(
     Used by workers to mark jobs as completed/failed.
     Requires worker API key authentication.
     """
-    # Verify worker API key
+    # Verify worker API key using shared helper (supports both argon2 and SHA-256)
     api_key = request.headers.get("X-Worker-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Worker API key required")
 
-    key_record = await fetch_one_with_retry(
-        sa.text("SELECT id FROM worker_api_keys WHERE key_hash = :key_hash AND revoked_at IS NULL").bindparams(
-            key_hash=hashlib.sha256(api_key.encode()).hexdigest()
-        )
-    )
-    if not key_record:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+    # authenticate_api_key raises HTTPException(401) if invalid
+    await authenticate_api_key(api_key, request)
 
     # Validate job exists
     job = await fetch_one_with_retry(
@@ -7904,9 +8067,7 @@ async def list_chapters(request: Request, video_id: int):
 
     # Fetch chapters ordered by position
     chapter_rows = await fetch_all_with_retry(
-        chapters.select()
-        .where(chapters.c.video_id == video_id)
-        .order_by(chapters.c.position)
+        chapters.select().where(chapters.c.video_id == video_id).order_by(chapters.c.position)
     )
 
     chapter_list = [
@@ -7946,7 +8107,7 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
     if video["duration"] and data.start_time >= video["duration"]:
         raise HTTPException(
             status_code=400,
-            detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)"
+            detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)",
         )
 
     # Check chapter limit
@@ -7954,10 +8115,7 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
         sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
     )
     if chapter_count >= MAX_CHAPTERS_PER_VIDEO:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Maximum chapters per video ({MAX_CHAPTERS_PER_VIDEO}) reached"
-        )
+        raise HTTPException(status_code=400, detail=f"Maximum chapters per video ({MAX_CHAPTERS_PER_VIDEO}) reached")
 
     async with database.transaction():
         # Get next position with FOR UPDATE to prevent race conditions
@@ -7988,14 +8146,10 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
         chapter_id = result
 
         # Update has_chapters flag on video
-        await database.execute(
-            videos.update().where(videos.c.id == video_id).values(has_chapters=True)
-        )
+        await database.execute(videos.update().where(videos.c.id == video_id).values(has_chapters=True))
 
     # Fetch the created chapter
-    new_chapter = await fetch_one_with_retry(
-        chapters.select().where(chapters.c.id == chapter_id)
-    )
+    new_chapter = await fetch_one_with_retry(chapters.select().where(chapters.c.id == chapter_id))
 
     # Audit log
     log_audit(
@@ -8026,9 +8180,7 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
 async def get_chapter(request: Request, video_id: int, chapter_id: int):
     """Get a specific chapter."""
     chapter = await fetch_one_with_retry(
-        chapters.select()
-        .where(chapters.c.id == chapter_id)
-        .where(chapters.c.video_id == video_id)
+        chapters.select().where(chapters.c.id == chapter_id).where(chapters.c.video_id == video_id)
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -8052,9 +8204,7 @@ async def update_chapter(request: Request, video_id: int, chapter_id: int, data:
     """Update an existing chapter."""
     # Verify chapter exists
     chapter = await fetch_one_with_retry(
-        chapters.select()
-        .where(chapters.c.id == chapter_id)
-        .where(chapters.c.video_id == video_id)
+        chapters.select().where(chapters.c.id == chapter_id).where(chapters.c.video_id == video_id)
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -8067,13 +8217,11 @@ async def update_chapter(request: Request, video_id: int, chapter_id: int, data:
         update_values["description"] = data.description
     if data.start_time is not None:
         # Validate against video duration
-        video = await fetch_one_with_retry(
-            videos.select().where(videos.c.id == video_id)
-        )
+        video = await fetch_one_with_retry(videos.select().where(videos.c.id == video_id))
         if video["duration"] and data.start_time >= video["duration"]:
             raise HTTPException(
                 status_code=400,
-                detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)"
+                detail=f"start_time ({data.start_time}s) must be less than video duration ({video['duration']}s)",
             )
         update_values["start_time"] = data.start_time
     if data.end_time is not None:
@@ -8084,14 +8232,10 @@ async def update_chapter(request: Request, video_id: int, chapter_id: int, data:
         update_values["end_time"] = data.end_time
 
     # Update chapter
-    await db_execute_with_retry(
-        chapters.update().where(chapters.c.id == chapter_id).values(**update_values)
-    )
+    await db_execute_with_retry(chapters.update().where(chapters.c.id == chapter_id).values(**update_values))
 
     # Fetch updated chapter
-    updated_chapter = await fetch_one_with_retry(
-        chapters.select().where(chapters.c.id == chapter_id)
-    )
+    updated_chapter = await fetch_one_with_retry(chapters.select().where(chapters.c.id == chapter_id))
 
     # Audit log
     log_audit(
@@ -8123,9 +8267,7 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
     """Delete a chapter and reorder remaining chapters."""
     # Verify chapter exists
     chapter = await fetch_one_with_retry(
-        chapters.select()
-        .where(chapters.c.id == chapter_id)
-        .where(chapters.c.video_id == video_id)
+        chapters.select().where(chapters.c.id == chapter_id).where(chapters.c.video_id == video_id)
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -8134,9 +8276,7 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
 
     async with database.transaction():
         # Delete the chapter
-        await database.execute(
-            chapters.delete().where(chapters.c.id == chapter_id)
-        )
+        await database.execute(chapters.delete().where(chapters.c.id == chapter_id))
 
         # Reorder remaining chapters (compact positions)
         await database.execute(
@@ -8155,9 +8295,7 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
 
         # Update has_chapters flag if no chapters remain
         if remaining_count == 0:
-            await database.execute(
-                videos.update().where(videos.c.id == video_id).values(has_chapters=False)
-            )
+            await database.execute(videos.update().where(videos.c.id == video_id).values(has_chapters=False))
 
     # Audit log
     log_audit(
@@ -8250,6 +8388,235 @@ async def reorder_chapters(request: Request, video_id: int, data: ReorderChapter
     return {"status": "ok"}
 
 
+@app.post("/api/videos/{video_id}/chapters/auto-detect")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def auto_detect_chapters(
+    request: Request, video_id: int, data: AutoDetectChaptersRequest
+) -> AutoDetectChaptersResponse:
+    """
+    Auto-detect chapters for a video from metadata or transcription (Issue #493).
+
+    Supports three detection sources:
+    - 'metadata': Extract chapter markers embedded in video file via ffprobe
+    - 'transcription': Generate chapters from speech-to-text analysis
+    - 'both': Try metadata first, fall back to transcription
+
+    Args:
+        video_id: ID of the video to detect chapters for
+        data: Detection parameters (source, min_chapter_length, replace_existing)
+
+    Returns:
+        AutoDetectChaptersResponse with created chapters
+
+    Raises:
+        404: Video not found
+        400: Chapters already exist (if replace_existing=False)
+        400: No chapters could be detected
+    """
+    # Verify video exists
+    video = await fetch_one_with_retry(
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Check for existing chapters
+    existing_count = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
+    )
+
+    if existing_count > 0 and not data.replace_existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video already has {existing_count} chapter(s). Set replace_existing=true to overwrite.",
+        )
+
+    # Attempt chapter detection based on source
+    # Timeout protects against hung ffprobe processes or slow I/O
+    DETECTION_TIMEOUT_SECONDS = 60.0
+    detected_chapters = []
+    source_used = None
+
+    async def detect_chapters():
+        """Inner function for timeout-wrapped detection."""
+        nonlocal detected_chapters, source_used
+
+        if data.source in (ChapterDetectionSource.METADATA, ChapterDetectionSource.BOTH):
+            try:
+                detected_chapters = await extract_chapters_from_metadata(
+                    video_id=video_id,
+                )
+                if detected_chapters:
+                    source_used = "metadata"
+            except Exception as e:
+                # Log but don't fail - might try transcription next
+                logger.error("Metadata chapter extraction failed for video %d: %s", video_id, e)
+
+        # Try transcription if metadata didn't produce results
+        if not detected_chapters and data.source in (
+            ChapterDetectionSource.TRANSCRIPTION,
+            ChapterDetectionSource.BOTH,
+        ):
+            # Get transcription from database
+            transcription = await fetch_one_with_retry(
+                transcriptions.select().where(transcriptions.c.video_id == video_id)
+            )
+
+            if transcription and transcription["status"] == TranscriptionStatus.COMPLETED:
+                transcript_text = transcription.get("transcript_text", "")
+                if transcript_text:
+                    detected_chapters = await generate_chapters_from_transcription(
+                        transcript_text=transcript_text,
+                        video_duration=video["duration"] or 0,
+                        min_chapter_length=data.min_chapter_length,
+                    )
+                    if detected_chapters:
+                        source_used = "transcription"
+            elif data.source == ChapterDetectionSource.TRANSCRIPTION:
+                # Only fail if transcription was specifically requested
+                raise HTTPException(
+                    status_code=400,
+                    detail="No completed transcription available. Run transcription first.",
+                )
+
+    try:
+        await asyncio.wait_for(detect_chapters(), timeout=DETECTION_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error("Chapter detection timed out for video %d after %.0fs", video_id, DETECTION_TIMEOUT_SECONDS)
+        raise HTTPException(
+            status_code=504,
+            detail=f"Chapter detection timed out after {int(DETECTION_TIMEOUT_SECONDS)}s",
+        )
+
+    # Filter by minimum length
+    if detected_chapters:
+        detected_chapters = filter_chapters_by_length(
+            detected_chapters,
+            min_chapter_length=data.min_chapter_length,
+            video_duration=video["duration"] or 0,
+        )
+
+    if not detected_chapters:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No chapters detected from {data.source.value}. No embedded chapters or data.",
+        )
+
+    # Check chapter limit
+    if len(detected_chapters) > MAX_CHAPTERS_PER_VIDEO:
+        detected_chapters = detected_chapters[:MAX_CHAPTERS_PER_VIDEO]
+
+    # Create chapters in database with retry logic
+    now = datetime.now(timezone.utc)
+    result_holder = {"created_chapters": []}
+
+    async def do_create_chapters_transaction():
+        """Execute chapter creation - wrapped with retry logic for transient errors."""
+        async with database.transaction():
+            # Lock video row to prevent concurrent chapter modifications
+            await database.execute(
+                sa.text("SELECT id FROM videos WHERE id = :vid FOR UPDATE"),
+                {"vid": video_id},
+            )
+
+            # Re-check chapter count inside transaction (race condition protection)
+            current_count = await database.fetch_val(
+                sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
+            )
+            if current_count > 0 and not data.replace_existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Chapters were added by another request. Retry with replace_existing=true.",
+                )
+
+            # Delete existing chapters if replacing
+            if data.replace_existing and current_count > 0:
+                await database.execute(chapters.delete().where(chapters.c.video_id == video_id))
+
+            # Batch insert all chapters with a single INSERT ... RETURNING query
+            if detected_chapters:
+                # Build values for batch insert
+                chapter_values = [
+                    {
+                        "video_id": video_id,
+                        "title": detected.title,
+                        "description": None,
+                        "start_time": detected.start_time,
+                        "end_time": detected.end_time,
+                        "position": position,
+                        "created_at": now,
+                    }
+                    for position, detected in enumerate(detected_chapters)
+                ]
+
+                # Use INSERT ... RETURNING for batch insert with IDs
+                insert_query = (
+                    chapters.insert()
+                    .values(chapter_values)
+                    .returning(
+                        chapters.c.id,
+                        chapters.c.title,
+                        chapters.c.start_time,
+                        chapters.c.end_time,
+                        chapters.c.position,
+                    )
+                )
+                inserted_rows = await database.fetch_all(insert_query)
+
+                # Build response objects from returned rows
+                result_holder["created_chapters"] = [
+                    ChapterResponse(
+                        id=row["id"],
+                        video_id=video_id,
+                        title=row["title"],
+                        description=None,
+                        start_time=row["start_time"],
+                        end_time=row["end_time"],
+                        position=row["position"],
+                        created_at=now,
+                        updated_at=None,
+                    )
+                    for row in inserted_rows
+                ]
+
+            # Update has_chapters flag
+            await database.execute(videos.update().where(videos.c.id == video_id).values(has_chapters=True))
+
+    try:
+        await execute_with_retry(do_create_chapters_transaction)
+    except DatabaseLockedError:
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily unavailable, please retry",
+        )
+
+    created_chapters = result_holder["created_chapters"]
+
+    # Audit log
+    log_audit(
+        AuditAction.CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="chapter",
+        resource_id=video_id,
+        resource_name=video["slug"],
+        details={
+            "action": "auto-detect",
+            "source": source_used,
+            "chapters_created": len(created_chapters),
+            "replaced_existing": data.replace_existing and existing_count > 0,
+        },
+    )
+
+    return AutoDetectChaptersResponse(
+        video_id=video_id,
+        chapters_created=len(created_chapters),
+        source_used=source_used,
+        chapters=created_chapters,
+        message=f"Successfully created {len(created_chapters)} chapter(s) from {source_used}",
+    )
+
+
 # =============================================================================
 # Sprite Sheet Queue (Issue #413 Phase 7B)
 # =============================================================================
@@ -8303,19 +8670,14 @@ async def queue_sprite_generation(
     """
     # Verify video exists and is ready
     video = await fetch_one_with_retry(
-        videos.select()
-        .where(videos.c.id == video_id)
-        .where(videos.c.deleted_at.is_(None))
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
     )
 
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
     if video["status"] != "ready":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Video must be in 'ready' status (current: {video['status']})"
-        )
+        raise HTTPException(status_code=400, detail=f"Video must be in 'ready' status (current: {video['status']})")
 
     # Check if already queued and pending
     existing = await fetch_one_with_retry(
@@ -8343,7 +8705,9 @@ async def queue_sprite_generation(
 
     # Update video sprite status to pending
     await db_execute_with_retry(
-        videos.update().where(videos.c.id == video_id).values(
+        videos.update()
+        .where(videos.c.id == video_id)
+        .values(
             sprite_sheet_status="pending",
             sprite_sheet_error=None,
         )
@@ -8401,7 +8765,9 @@ async def queue_all_for_sprites(
             )
         )
         await db_execute_with_retry(
-            videos.update().where(videos.c.id == row["id"]).values(
+            videos.update()
+            .where(videos.c.id == row["id"])
+            .values(
                 sprite_sheet_status="pending",
                 sprite_sheet_error=None,
             )
@@ -8508,9 +8874,7 @@ async def get_video_sprite_status(request: Request, video_id: int) -> SpriteStat
     Get sprite sheet status for a specific video.
     """
     video = await fetch_one_with_retry(
-        videos.select()
-        .where(videos.c.id == video_id)
-        .where(videos.c.deleted_at.is_(None))
+        videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
     )
 
     if not video:
@@ -8547,19 +8911,820 @@ async def cancel_sprite_job(request: Request, job_id: int) -> dict:
     if job["status"] != "pending":
         raise HTTPException(status_code=400, detail=f"Cannot cancel job with status '{job['status']}'")
 
-    await db_execute_with_retry(
-        sprite_queue.update().where(sprite_queue.c.id == job_id).values(status="cancelled")
-    )
+    await db_execute_with_retry(sprite_queue.update().where(sprite_queue.c.id == job_id).values(status="cancelled"))
 
     # Reset video sprite status
     await db_execute_with_retry(
-        videos.update().where(videos.c.id == job["video_id"]).values(
+        videos.update()
+        .where(videos.c.id == job["video_id"])
+        .values(
             sprite_sheet_status=None,
             sprite_sheet_error=None,
         )
     )
 
     return {"status": "ok", "message": f"Job {job_id} cancelled"}
+
+
+# =============================================================================
+# Dead Letter Queue Monitoring (Issue #457)
+# =============================================================================
+
+
+@app.get("/api/admin/job-queue/dead-letter")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_dead_letter_queue(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200, description="Number of entries to return"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
+):
+    """
+    Get dead letter queue entries with monitoring information.
+
+    Returns failed jobs that were moved to the DLQ, including error details
+    and timing information for debugging and reprocessing.
+
+    Response includes DLQ depth for alerting thresholds (e.g., >10 jobs).
+    """
+    from api.redis_client import get_redis
+
+    redis = await get_redis()
+    if not redis:
+        return {
+            "available": False,
+            "message": "Redis not available",
+            "entries": [],
+            "total_count": 0,
+            "depth_warning": False,
+        }
+
+    try:
+        from api.job_queue import DEAD_LETTER_STREAM
+
+        # Get total count for depth monitoring
+        dlq_length = await redis.xlen(DEAD_LETTER_STREAM)
+
+        # Read entries from the stream (newest first)
+        # Use XREVRANGE to get newest first
+        entries_raw = await redis.xrevrange(
+            DEAD_LETTER_STREAM,
+            max="+",
+            min="-",
+            count=limit,
+        )
+
+        # Skip offset entries if needed (simple pagination)
+        if offset > 0:
+            entries_raw = await redis.xrevrange(
+                DEAD_LETTER_STREAM,
+                max="+",
+                min="-",
+                count=limit + offset,
+            )
+            entries_raw = entries_raw[offset:] if len(entries_raw) > offset else []
+
+        entries = []
+        for message_id, data in entries_raw:
+            entry = {
+                "message_id": message_id,
+                "job_id": int(data.get("job_id", 0)),
+                "video_id": int(data.get("video_id", 0)),
+                "video_slug": data.get("video_slug", ""),
+                "priority": data.get("priority", "normal"),
+                "error": data.get("error", "Unknown error"),
+                "failed_at": data.get("failed_at"),
+                "created_at": data.get("created_at"),
+                "original_stream": data.get("original_stream", ""),
+            }
+            entries.append(entry)
+
+        # Depth warning threshold (configurable via settings in the future)
+        depth_warning_threshold = 10
+        depth_warning = dlq_length > depth_warning_threshold
+
+        return {
+            "available": True,
+            "entries": entries,
+            "total_count": dlq_length,
+            "depth_warning": depth_warning,
+            "depth_warning_threshold": depth_warning_threshold,
+        }
+
+    except Exception as e:
+        logger.error(f"Error reading dead letter queue: {e}")
+        return {
+            "available": False,
+            "message": sanitize_error_message(str(e), context="read_dlq"),
+            "entries": [],
+            "total_count": 0,
+            "depth_warning": False,
+        }
+
+
+@app.post("/api/admin/job-queue/dead-letter/{message_id}/reprocess")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def reprocess_dead_letter_job(
+    request: Request,
+    message_id: str = FastAPIPath(..., pattern=r"^\d+-\d+$", description="Redis stream message ID"),
+    priority: str = Query(default="normal", pattern="^(high|normal|low)$"),
+):
+    """
+    Reprocess a job from the dead letter queue.
+
+    Moves the job back to the appropriate priority stream for reprocessing.
+    The original DLQ entry is removed after successful requeue.
+
+    Args:
+        message_id: The Redis stream message ID from the DLQ
+        priority: Priority for the requeued job (defaults to original or 'normal')
+    """
+    from api.job_queue import DEAD_LETTER_STREAM, PRIORITY_STREAMS
+    from api.redis_client import get_redis
+
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis not available")
+
+    try:
+        # Read the specific message from DLQ
+        entries = await redis.xrange(
+            DEAD_LETTER_STREAM,
+            min=message_id,
+            max=message_id,
+            count=1,
+        )
+
+        if not entries:
+            raise HTTPException(status_code=404, detail=f"Message {message_id} not found in DLQ")
+
+        _, data = entries[0]
+
+        # Get the job from database to verify it exists and check status
+        job_id = int(data.get("job_id", 0))
+        video_id = int(data.get("video_id", 0))
+
+        job = await fetch_one_with_retry(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
+
+        video = await fetch_one_with_retry(
+            videos.select().where(videos.c.id == video_id).where(videos.c.deleted_at.is_(None))
+        )
+
+        if not video:
+            # Video was deleted, just remove from DLQ
+            await redis.xdel(DEAD_LETTER_STREAM, message_id)
+            return {
+                "status": "skipped",
+                "message": f"Video {video_id} no longer exists, removed from DLQ",
+            }
+
+        # Reset the video and job status for reprocessing
+        if job:
+            # Reset job status
+            await db_execute_with_retry(
+                transcoding_jobs.update()
+                .where(transcoding_jobs.c.id == job_id)
+                .values(
+                    worker_id=None,
+                    claimed_at=None,
+                    completed_at=None,
+                    current_step=None,
+                    progress_percent=0,
+                    last_error=None,
+                    attempt=job["attempt"] + 1 if job["attempt"] else 1,
+                )
+            )
+        else:
+            # Create a new job if old one doesn't exist
+            # db_execute_with_retry returns the inserted row ID
+            new_job_id = await db_execute_with_retry(
+                transcoding_jobs.insert().values(
+                    video_id=video_id,
+                    attempt=1,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+            job_id = new_job_id if new_job_id else job_id
+
+        # Reset video status
+        await db_execute_with_retry(
+            videos.update().where(videos.c.id == video_id).values(status="pending", error_message=None)
+        )
+
+        # Publish to the appropriate priority stream
+        job_dispatch = JobDispatch(
+            job_id=job_id,
+            video_id=video_id,
+            video_slug=data.get("video_slug", video["slug"]),
+            source_filename=video.get("source_filename"),
+            source_width=video.get("source_width"),
+            source_height=video.get("source_height"),
+            duration=video.get("duration"),
+            priority=priority,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        stream_name = PRIORITY_STREAMS.get(priority, PRIORITY_STREAMS["normal"])
+        await redis.xadd(
+            stream_name,
+            job_dispatch.to_stream_dict(),
+            maxlen=1000,
+        )
+
+        # Remove from DLQ
+        await redis.xdel(DEAD_LETTER_STREAM, message_id)
+
+        logger.info(f"Reprocessed DLQ job {job_id} for video {video_id} with priority {priority}")
+
+        return {
+            "status": "ok",
+            "message": f"Job {job_id} requeued with priority {priority}",
+            "job_id": job_id,
+            "video_id": video_id,
+            "video_slug": video["slug"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reprocessing DLQ message {message_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="reprocess_dlq"),
+        )
+
+
+@app.delete("/api/admin/job-queue/dead-letter/{message_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_dead_letter_entry(
+    request: Request,
+    message_id: str = FastAPIPath(..., pattern=r"^\d+-\d+$", description="Redis stream message ID"),
+):
+    """
+    Delete a specific entry from the dead letter queue.
+
+    Use this when a job should not be retried (e.g., intentionally cancelled,
+    obsolete, or already manually resolved).
+    """
+    from api.job_queue import DEAD_LETTER_STREAM
+    from api.redis_client import get_redis
+
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis not available")
+
+    try:
+        # Verify the message exists
+        entries = await redis.xrange(
+            DEAD_LETTER_STREAM,
+            min=message_id,
+            max=message_id,
+            count=1,
+        )
+
+        if not entries:
+            raise HTTPException(status_code=404, detail=f"Message {message_id} not found in DLQ")
+
+        # Delete the message
+        deleted = await redis.xdel(DEAD_LETTER_STREAM, message_id)
+
+        if deleted:
+            return {"status": "ok", "message": f"Deleted message {message_id} from DLQ"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to delete message")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting DLQ message {message_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="delete_dlq"),
+        )
+
+
+@app.get("/api/admin/job-queue/stats")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_job_queue_stats(request: Request):
+    """
+    Get job queue statistics including DLQ depth.
+
+    Returns comprehensive queue statistics for monitoring dashboards.
+    Includes per-priority stream lengths and DLQ depth for alerting.
+    """
+    job_queue = await get_job_queue()
+    stats = await job_queue.get_queue_stats()
+
+    # Add DLQ warning threshold info
+    dlq_depth = stats.get("dead_letter_queue", 0)
+    depth_warning_threshold = 10
+    stats["dlq_warning"] = dlq_depth > depth_warning_threshold
+    stats["dlq_warning_threshold"] = depth_warning_threshold
+
+    return stats
+
+
+# ============ Webhook Management Endpoints (Issue #203) ============
+
+
+@app.get("/api/webhooks")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_webhooks(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum webhooks to return"),
+    offset: int = Query(default=0, ge=0, description="Number of webhooks to skip"),
+    active_only: bool = Query(default=False, description="Only return active webhooks"),
+) -> WebhookListResponse:
+    """
+    List all configured webhooks with pagination.
+
+    Returns webhooks with their configuration and delivery statistics.
+    Secrets are never included in responses.
+
+    Query Parameters:
+    - limit: Maximum webhooks to return (default 50, max 100)
+    - offset: Number of webhooks to skip (default 0)
+    - active_only: Filter to only active webhooks (default false)
+    """
+    # Build query with optional filter
+    base_query = webhooks.select()
+    if active_only:
+        base_query = base_query.where(webhooks.c.active == True)  # noqa: E712
+
+    # Get total count for pagination
+    count_query = sa.select(sa.func.count()).select_from(webhooks)
+    if active_only:
+        count_query = count_query.where(webhooks.c.active == True)  # noqa: E712
+    total_count = await fetch_val_with_retry(count_query) or 0
+
+    # Apply pagination
+    query = base_query.order_by(webhooks.c.created_at.desc()).limit(limit).offset(offset)
+    rows = await fetch_all_with_retry(query)
+
+    webhook_list = []
+    for row in rows:
+        try:
+            events = json.loads(row["events"]) if row["events"] else []
+        except (json.JSONDecodeError, TypeError):
+            events = []
+
+        webhook_list.append(
+            WebhookResponse(
+                id=row["id"],
+                name=row["name"],
+                url=row["url"],
+                events=events,
+                active=row["active"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                last_triggered_at=row["last_triggered_at"],
+                total_deliveries=row["total_deliveries"] or 0,
+                successful_deliveries=row["successful_deliveries"] or 0,
+                failed_deliveries=row["failed_deliveries"] or 0,
+                has_secret=bool(row["secret"]),
+            )
+        )
+
+    return WebhookListResponse(webhooks=webhook_list, total_count=total_count)
+
+
+@app.get("/api/webhooks/stats")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_webhook_stats(request: Request) -> WebhookStatsResponse:
+    """
+    Get webhook system statistics.
+
+    Returns overview statistics including total webhooks,
+    pending/failed deliveries, and 24-hour delivery counts.
+    """
+    now = datetime.now(timezone.utc)
+    yesterday = now - timedelta(days=1)
+
+    # Count webhooks
+    total_webhooks = await fetch_val_with_retry(sa.select(sa.func.count()).select_from(webhooks))
+    active_webhooks = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(webhooks).where(webhooks.c.active == True)  # noqa: E712
+    )
+
+    # Count deliveries
+    pending_deliveries = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(webhook_deliveries).where(webhook_deliveries.c.status == "pending")
+    )
+    failed_deliveries = await fetch_val_with_retry(
+        sa.select(sa.func.count())
+        .select_from(webhook_deliveries)
+        .where(webhook_deliveries.c.status == "failed_permanent")
+    )
+
+    # 24-hour stats
+    total_24h = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(webhook_deliveries).where(webhook_deliveries.c.created_at >= yesterday)
+    )
+    successful_24h = await fetch_val_with_retry(
+        sa.select(sa.func.count())
+        .select_from(webhook_deliveries)
+        .where(webhook_deliveries.c.created_at >= yesterday)
+        .where(webhook_deliveries.c.status == "delivered")
+    )
+
+    return WebhookStatsResponse(
+        total_webhooks=total_webhooks or 0,
+        active_webhooks=active_webhooks or 0,
+        pending_deliveries=pending_deliveries or 0,
+        failed_deliveries=failed_deliveries or 0,
+        total_deliveries_24h=total_24h or 0,
+        successful_deliveries_24h=successful_24h or 0,
+    )
+
+
+@app.post("/api/webhooks", status_code=201)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_webhook(request: Request, data: WebhookCreate) -> WebhookResponse:
+    """
+    Create a new webhook subscription.
+
+    Configure a new webhook to receive event notifications.
+    Provide a list of event types to subscribe to.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Prepare headers JSON
+    headers_json = json.dumps(data.headers) if data.headers else None
+
+    try:
+        result = await database.execute(
+            webhooks.insert().values(
+                name=data.name,
+                url=data.url,
+                events=json.dumps(data.events),
+                secret=data.secret,
+                active=data.active,
+                headers=headers_json,
+                created_at=now,
+                total_deliveries=0,
+                successful_deliveries=0,
+                failed_deliveries=0,
+            )
+        )
+
+        webhook_id = result
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_CREATE,
+            entity_type="webhook",
+            entity_id=webhook_id,
+            details={"name": data.name, "url": data.url, "events": data.events},
+        )
+
+        return WebhookResponse(
+            id=webhook_id,
+            name=data.name,
+            url=data.url,
+            events=data.events,
+            active=data.active,
+            created_at=now,
+            total_deliveries=0,
+            successful_deliveries=0,
+            failed_deliveries=0,
+            has_secret=bool(data.secret),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to create webhook: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="create_webhook"),
+        )
+
+
+@app.get("/api/webhooks/{webhook_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_webhook(request: Request, webhook_id: int) -> WebhookResponse:
+    """
+    Get a specific webhook by ID.
+
+    Returns the webhook configuration and delivery statistics.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    try:
+        events = json.loads(row["events"]) if row["events"] else []
+    except (json.JSONDecodeError, TypeError):
+        events = []
+
+    return WebhookResponse(
+        id=row["id"],
+        name=row["name"],
+        url=row["url"],
+        events=events,
+        active=row["active"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        last_triggered_at=row["last_triggered_at"],
+        total_deliveries=row["total_deliveries"] or 0,
+        successful_deliveries=row["successful_deliveries"] or 0,
+        failed_deliveries=row["failed_deliveries"] or 0,
+        has_secret=bool(row["secret"]),
+    )
+
+
+@app.put("/api/webhooks/{webhook_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_webhook(request: Request, webhook_id: int, data: WebhookUpdate) -> WebhookResponse:
+    """
+    Update an existing webhook.
+
+    Only provided fields will be updated.
+    Set secret to empty string to remove the signing key.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    now = datetime.now(timezone.utc)
+    update_values = {"updated_at": now}
+
+    if data.name is not None:
+        update_values["name"] = data.name
+    if data.url is not None:
+        update_values["url"] = data.url
+    if data.events is not None:
+        update_values["events"] = json.dumps(data.events)
+    if data.secret is not None:
+        update_values["secret"] = data.secret if data.secret else None
+    if data.active is not None:
+        update_values["active"] = data.active
+    if data.headers is not None:
+        update_values["headers"] = json.dumps(data.headers) if data.headers else None
+
+    try:
+        await database.execute(webhooks.update().where(webhooks.c.id == webhook_id).values(**update_values))
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_UPDATE,
+            entity_type="webhook",
+            entity_id=webhook_id,
+            details={"fields_updated": list(update_values.keys())},
+        )
+
+        # Fetch updated record
+        updated = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+        try:
+            events = json.loads(updated["events"]) if updated["events"] else []
+        except (json.JSONDecodeError, TypeError):
+            events = []
+
+        return WebhookResponse(
+            id=updated["id"],
+            name=updated["name"],
+            url=updated["url"],
+            events=events,
+            active=updated["active"],
+            created_at=updated["created_at"],
+            updated_at=updated["updated_at"],
+            last_triggered_at=updated["last_triggered_at"],
+            total_deliveries=updated["total_deliveries"] or 0,
+            successful_deliveries=updated["successful_deliveries"] or 0,
+            failed_deliveries=updated["failed_deliveries"] or 0,
+            has_secret=bool(updated["secret"]),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to update webhook {webhook_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="update_webhook"),
+        )
+
+
+@app.delete("/api/webhooks/{webhook_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_webhook(request: Request, webhook_id: int):
+    """
+    Delete a webhook.
+
+    Permanently removes the webhook and all associated delivery history.
+    This action cannot be undone.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    try:
+        # Deliveries will be cascade-deleted by FK constraint
+        await database.execute(webhooks.delete().where(webhooks.c.id == webhook_id))
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_DELETE,
+            entity_type="webhook",
+            entity_id=webhook_id,
+            details={"name": row["name"], "url": row["url"]},
+        )
+
+        return {"status": "ok", "message": f"Webhook '{row['name']}' deleted"}
+
+    except Exception as e:
+        logger.error(f"Failed to delete webhook {webhook_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="delete_webhook"),
+        )
+
+
+@app.post("/api/webhooks/{webhook_id}/test")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def test_webhook(
+    request: Request,
+    webhook_id: int,
+    data: WebhookTestRequest = WebhookTestRequest(),
+) -> WebhookTestResponse:
+    """
+    Send a test webhook delivery.
+
+    Sends a test payload to the webhook URL to verify configuration.
+    The test payload includes a 'test': true flag.
+    """
+    from api.webhook_service import test_webhook as do_test_webhook
+
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    result = await do_test_webhook(webhook_id, data.event_type)
+
+    return WebhookTestResponse(
+        success=result["success"],
+        status_code=result.get("status_code"),
+        response_body=result.get("response_body"),
+        error_message=result.get("error_message"),
+        duration_ms=result["duration_ms"],
+    )
+
+
+@app.get("/api/webhooks/{webhook_id}/deliveries")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_webhook_deliveries(
+    request: Request,
+    webhook_id: int,
+    status: Optional[str] = Query(None, pattern="^(pending|delivered|failed|failed_permanent)$"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> WebhookDeliveryListResponse:
+    """
+    List delivery attempts for a webhook.
+
+    Returns delivery history with filtering by status.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    # Build query
+    query = (
+        webhook_deliveries.select()
+        .where(webhook_deliveries.c.webhook_id == webhook_id)
+        .order_by(webhook_deliveries.c.created_at.desc())
+    )
+
+    count_query = (
+        sa.select(sa.func.count()).select_from(webhook_deliveries).where(webhook_deliveries.c.webhook_id == webhook_id)
+    )
+
+    if status:
+        query = query.where(webhook_deliveries.c.status == status)
+        count_query = count_query.where(webhook_deliveries.c.status == status)
+
+    total = await fetch_val_with_retry(count_query)
+    rows = await fetch_all_with_retry(query.limit(limit).offset(offset))
+
+    deliveries = [
+        WebhookDeliveryResponse(
+            id=r["id"],
+            webhook_id=r["webhook_id"],
+            event_type=r["event_type"],
+            status=r["status"],
+            attempt_number=r["attempt_number"],
+            response_status=r["response_status"],
+            error_message=r["error_message"],
+            duration_ms=r["duration_ms"],
+            created_at=r["created_at"],
+            next_retry_at=r["next_retry_at"],
+            delivered_at=r["delivered_at"],
+        )
+        for r in rows
+    ]
+
+    return WebhookDeliveryListResponse(
+        deliveries=deliveries,
+        count=len(deliveries),
+        total=total or 0,
+    )
+
+
+@app.get("/api/webhooks/{webhook_id}/deliveries/{delivery_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_webhook_delivery(
+    request: Request,
+    webhook_id: int,
+    delivery_id: int,
+) -> WebhookDeliveryDetailResponse:
+    """
+    Get detailed information about a specific delivery.
+
+    Includes the full event data and request/response bodies.
+    """
+    row = await fetch_one_with_retry(
+        webhook_deliveries.select()
+        .where(webhook_deliveries.c.id == delivery_id)
+        .where(webhook_deliveries.c.webhook_id == webhook_id)
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    try:
+        event_data = json.loads(row["event_data"]) if row["event_data"] else None
+    except (json.JSONDecodeError, TypeError):
+        event_data = None
+
+    return WebhookDeliveryDetailResponse(
+        id=row["id"],
+        webhook_id=row["webhook_id"],
+        event_type=row["event_type"],
+        status=row["status"],
+        attempt_number=row["attempt_number"],
+        response_status=row["response_status"],
+        error_message=row["error_message"],
+        duration_ms=row["duration_ms"],
+        created_at=row["created_at"],
+        next_retry_at=row["next_retry_at"],
+        delivered_at=row["delivered_at"],
+        event_data=event_data,
+        request_body=row["request_body"],
+        response_body=row["response_body"],
+    )
+
+
+@app.post("/api/webhooks/{webhook_id}/deliveries/{delivery_id}/retry")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def retry_webhook_delivery(
+    request: Request,
+    webhook_id: int,
+    delivery_id: int,
+):
+    """
+    Retry a failed webhook delivery.
+
+    Resets the delivery status to pending and schedules immediate retry.
+    """
+    row = await fetch_one_with_retry(
+        webhook_deliveries.select()
+        .where(webhook_deliveries.c.id == delivery_id)
+        .where(webhook_deliveries.c.webhook_id == webhook_id)
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    if row["status"] == "delivered":
+        raise HTTPException(status_code=400, detail="Cannot retry a delivered webhook")
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        await database.execute(
+            webhook_deliveries.update()
+            .where(webhook_deliveries.c.id == delivery_id)
+            .values(
+                status="pending",
+                attempt_number=1,  # Reset attempts
+                next_retry_at=now,
+                error_message=None,
+            )
+        )
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_RETRY,
+            entity_type="webhook_delivery",
+            entity_id=delivery_id,
+            details={"webhook_id": webhook_id},
+        )
+
+        return {"status": "ok", "message": "Delivery scheduled for retry"}
+
+    except Exception as e:
+        logger.error(f"Failed to retry delivery {delivery_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="retry_delivery"),
+        )
 
 
 if __name__ == "__main__":

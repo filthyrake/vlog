@@ -239,3 +239,82 @@ class TestPortValidation:
             with caplog.at_level(logging.WARNING):
                 result = get_int_env("VLOG_PUBLIC_PORT", 9000, min_val=1, max_val=65535)
                 assert result == 9000
+
+
+class TestRateLimitStorageAutoDetect:
+    """Tests for RATE_LIMIT_STORAGE_URL auto-detection from VLOG_REDIS_URL.
+
+    Issue #446: Rate limiting defaults to in-memory storage, which doesn't work
+    correctly with multiple API instances. This tests the auto-detection logic
+    that uses VLOG_REDIS_URL when no explicit rate limit storage is configured.
+    """
+
+    def test_defaults_to_memory_when_no_redis(self):
+        """Should default to memory:// when neither REDIS_URL nor explicit storage is set."""
+        import importlib
+
+        # Clear both env vars
+        env = {"VLOG_TEST_MODE": "1"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            import config
+
+            importlib.reload(config)
+            assert config.RATE_LIMIT_STORAGE_URL == "memory://"
+
+    def test_auto_detects_redis_from_redis_url(self):
+        """Should use VLOG_REDIS_URL for rate limiting when no explicit storage is set."""
+        import importlib
+
+        env = {
+            "VLOG_TEST_MODE": "1",
+            "VLOG_REDIS_URL": "redis://auto-detect-host:6379",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            import config
+
+            importlib.reload(config)
+            assert config.RATE_LIMIT_STORAGE_URL == "redis://auto-detect-host:6379"
+
+    def test_explicit_storage_takes_precedence_over_redis_url(self):
+        """Explicit VLOG_RATE_LIMIT_STORAGE_URL should override auto-detection."""
+        import importlib
+
+        env = {
+            "VLOG_TEST_MODE": "1",
+            "VLOG_REDIS_URL": "redis://redis-host:6379",
+            "VLOG_RATE_LIMIT_STORAGE_URL": "redis://explicit-host:6380",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            import config
+
+            importlib.reload(config)
+            assert config.RATE_LIMIT_STORAGE_URL == "redis://explicit-host:6380"
+
+    def test_explicit_memory_overrides_redis_url(self):
+        """Explicit memory:// should override even when REDIS_URL is set."""
+        import importlib
+
+        env = {
+            "VLOG_TEST_MODE": "1",
+            "VLOG_REDIS_URL": "redis://redis-host:6379",
+            "VLOG_RATE_LIMIT_STORAGE_URL": "memory://",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            import config
+
+            importlib.reload(config)
+            assert config.RATE_LIMIT_STORAGE_URL == "memory://"
+
+    def test_empty_redis_url_falls_back_to_memory(self):
+        """Empty string VLOG_REDIS_URL should fall back to memory://."""
+        import importlib
+
+        env = {
+            "VLOG_TEST_MODE": "1",
+            "VLOG_REDIS_URL": "",  # Empty string is falsy
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            import config
+
+            importlib.reload(config)
+            assert config.RATE_LIMIT_STORAGE_URL == "memory://"

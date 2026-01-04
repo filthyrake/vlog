@@ -92,10 +92,22 @@ Response: `VideoListResponse[]`
     "status": "ready",
     "created_at": "2024-01-15T10:30:00",
     "published_at": "2024-01-15T12:00:00",
-    "thumbnail_url": "/videos/my-video/thumbnail.jpg"
+    "thumbnail_url": "/videos/my-video/thumbnail.jpg",
+    "view_count": 1523,
+    "streaming_format": "cmaf",
+    "primary_codec": "hevc",
+    "is_featured": false
   }
 ]
 ```
+
+**Additional Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| view_count | int | Total playback sessions |
+| streaming_format | string | `hls_ts` (legacy) or `cmaf` (modern fMP4) |
+| primary_codec | string | `h264`, `hevc`, or `av1` |
+| is_featured | bool | Featured on homepage |
 
 #### Get Video Details
 ```
@@ -292,13 +304,89 @@ When `VLOG_ADMIN_API_SECRET` is set, all `/api/*` endpoints require this header.
 **Browser Session Authentication:**
 
 The Admin API also supports HTTP-only cookie sessions for browser-based access:
-- Sessions are created via the admin UI login
+- Sessions are created via the login endpoint below
 - Session expiry configurable via `VLOG_ADMIN_SESSION_EXPIRY_HOURS` (default: 24)
 - Sessions use secure cookies when `VLOG_SECURE_COOKIES=true` (requires HTTPS)
+- **CSRF Protection:** POST/PUT/DELETE/PATCH requests require `X-CSRF-Token` header when using session auth
 
 **Error Responses:**
 - `401 Unauthorized` - No authentication provided
-- `403 Forbidden` - Invalid secret or expired session
+- `403 Forbidden` - Invalid secret, expired session, or missing/invalid CSRF token
+
+#### Login
+```
+POST /api/auth/login
+```
+
+Request body:
+```json
+{
+  "password": "admin-password"
+}
+```
+
+Response (success):
+```json
+{
+  "status": "ok",
+  "message": "Logged in successfully"
+}
+```
+
+Sets HTTP-only session cookie. The password is validated against `VLOG_ADMIN_PASSWORD`.
+
+#### Logout
+```
+POST /api/auth/logout
+```
+
+Clears the session cookie.
+
+Response:
+```json
+{
+  "status": "ok",
+  "message": "Logged out successfully"
+}
+```
+
+#### Check Session
+```
+GET /api/auth/check
+```
+
+Verify if current session is valid.
+
+Response (authenticated):
+```json
+{
+  "authenticated": true,
+  "session_expires_at": "2024-01-16T10:30:00Z"
+}
+```
+
+Response (not authenticated):
+```json
+{
+  "authenticated": false
+}
+```
+
+#### Get CSRF Token
+```
+GET /api/auth/csrf-token
+```
+
+Get a CSRF token for session-based authentication. Required for POST/PUT/DELETE/PATCH requests.
+
+Response:
+```json
+{
+  "csrf_token": "abc123..."
+}
+```
+
+Use this token in the `X-CSRF-Token` header for mutation requests.
 
 ### Health Check
 
@@ -1325,6 +1413,205 @@ Error response format:
 | processing | Currently being transcribed |
 | completed | Transcription complete |
 | failed | Transcription failed |
+
+---
+
+## Webhooks (Admin API)
+
+Webhooks allow external systems to receive real-time notifications when events occur in VLog.
+
+### List Webhooks
+```
+GET /api/webhooks
+```
+
+Response: `WebhookResponse[]`
+```json
+[
+  {
+    "id": 1,
+    "name": "Discord Notifications",
+    "url": "https://discord.com/api/webhooks/...",
+    "events": ["video.ready", "video.failed"],
+    "active": true,
+    "secret": "hmac-secret-key",
+    "created_at": "2024-01-15T10:30:00Z",
+    "last_triggered_at": "2024-01-15T12:00:00Z",
+    "total_deliveries": 50,
+    "successful_deliveries": 48,
+    "failed_deliveries": 2
+  }
+]
+```
+
+### Create Webhook
+```
+POST /api/webhooks
+```
+
+Request body:
+```json
+{
+  "name": "My Webhook",
+  "url": "https://example.com/webhook",
+  "events": ["video.ready", "video.failed", "transcription.completed"],
+  "secret": "optional-hmac-secret",
+  "active": true,
+  "headers": {"X-Custom-Header": "value"}
+}
+```
+
+**Supported Events:**
+| Event | Description |
+|-------|-------------|
+| `video.uploaded` | New video uploaded |
+| `video.ready` | Video transcoding completed |
+| `video.failed` | Video transcoding failed |
+| `video.deleted` | Video soft-deleted |
+| `video.restored` | Video restored from archive |
+| `transcription.completed` | Transcription completed |
+| `worker.registered` | New worker registered |
+| `worker.offline` | Worker went offline |
+
+**Security:**
+- URLs are validated for SSRF protection (private/internal IPs blocked)
+- Payloads are signed with HMAC-SHA256 using the webhook's secret
+- Signature is sent in `X-VLog-Signature` header
+
+### Get Webhook
+```
+GET /api/webhooks/{webhook_id}
+```
+
+### Update Webhook
+```
+PUT /api/webhooks/{webhook_id}
+```
+
+### Delete Webhook
+```
+DELETE /api/webhooks/{webhook_id}
+```
+
+### Test Webhook
+```
+POST /api/webhooks/{webhook_id}/test
+```
+
+Sends a test payload to verify connectivity. Response includes delivery status.
+
+### List Webhook Deliveries
+```
+GET /api/webhooks/{webhook_id}/deliveries
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| status | string | null | Filter: pending, delivered, failed, failed_permanent |
+| limit | int | 50 | Max items (1-100) |
+| offset | int | 0 | Pagination offset |
+
+Response: `WebhookDeliveryResponse[]`
+```json
+[
+  {
+    "id": 1,
+    "webhook_id": 1,
+    "event_type": "video.ready",
+    "status": "delivered",
+    "attempt_number": 1,
+    "response_status": 200,
+    "duration_ms": 150,
+    "created_at": "2024-01-15T12:00:00Z",
+    "delivered_at": "2024-01-15T12:00:01Z"
+  }
+]
+```
+
+### Retry Failed Delivery
+```
+POST /api/webhooks/{webhook_id}/deliveries/{delivery_id}/retry
+```
+
+Requeue a failed delivery for retry.
+
+### Webhook Payload Format
+
+All webhook payloads follow this structure:
+```json
+{
+  "event": "video.ready",
+  "timestamp": "2024-01-15T12:00:00Z",
+  "data": {
+    "video_id": 123,
+    "title": "My Video",
+    "slug": "my-video",
+    "status": "ready"
+  }
+}
+```
+
+**Verification:**
+```python
+import hmac
+import hashlib
+
+def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
+```
+
+---
+
+## Video Downloads (Public API)
+
+When enabled, allows downloading video files.
+
+### Get Download Configuration
+```
+GET /api/config/downloads
+```
+
+Response:
+```json
+{
+  "enabled": true,
+  "allow_original": false,
+  "allow_transcoded": true,
+  "available_qualities": ["1080p", "720p", "480p"]
+}
+```
+
+### Download Original Video
+```
+GET /api/videos/{slug}/download/original
+```
+
+Returns the original source file. Only available if `allow_original` is enabled.
+
+Response: Binary file stream with `Content-Disposition: attachment` header.
+
+**Rate Limiting:**
+- Default: 10 downloads per hour per IP
+- Configurable via `VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR`
+
+### Download Transcoded Video
+```
+GET /api/videos/{slug}/download/{quality}
+```
+
+Path parameters:
+| Parameter | Description |
+|-----------|-------------|
+| quality | Quality level: 2160p, 1440p, 1080p, 720p, 480p, 360p |
+
+Returns the transcoded MP4 file for the specified quality.
+
+**Error Responses:**
+- `404 Not Found` - Video or quality not found
+- `403 Forbidden` - Downloads disabled
+- `429 Too Many Requests` - Rate limit exceeded
 
 ---
 

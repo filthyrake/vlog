@@ -645,7 +645,9 @@ class SettingsService:
                     raise SettingsValidationError(f"Value {value} is above maximum {constraints['max']}")
             if "enum_values" in constraints and constraints["enum_values"] is not None:
                 if value not in constraints["enum_values"]:
-                    raise SettingsValidationError(f"Value '{value}' not in allowed values: {constraints['enum_values']}")
+                    raise SettingsValidationError(
+                        f"Value '{value}' not in allowed values: {constraints['enum_values']}"
+                    )
             if "pattern" in constraints and constraints["pattern"] is not None:
                 import re
 
@@ -1002,6 +1004,107 @@ KNOWN_SETTINGS = [
         "Footer tagline text",
         {"max_length": 100},
     ),
+    # Metrics settings (Issue #436)
+    (
+        "metrics.enabled",
+        "metrics",
+        "boolean",
+        "Enable Prometheus metrics endpoint (/metrics)",
+        None,
+    ),
+    (
+        "metrics.auth_required",
+        "metrics",
+        "boolean",
+        "Require authentication for metrics endpoint (recommended for public deployments)",
+        None,
+    ),
+    # Download settings (Issue #202)
+    (
+        "downloads.enabled",
+        "downloads",
+        "boolean",
+        "Enable video download feature (disabled by default for security)",
+        None,
+    ),
+    (
+        "downloads.allow_original",
+        "downloads",
+        "boolean",
+        "Allow downloading original source files (as uploaded)",
+        None,
+    ),
+    (
+        "downloads.allow_transcoded",
+        "downloads",
+        "boolean",
+        "Allow downloading transcoded quality variants (e.g., 1080p MP4)",
+        None,
+    ),
+    (
+        "downloads.rate_limit_per_hour",
+        "downloads",
+        "integer",
+        "Download rate limit per IP per hour (0 to disable)",
+        {"min": 0, "max": 1000},
+    ),
+    (
+        "downloads.max_concurrent",
+        "downloads",
+        "integer",
+        "Maximum concurrent downloads per IP",
+        {"min": 1, "max": 10},
+    ),
+    # Webhook settings (Issue #203)
+    (
+        "webhooks.enabled",
+        "webhooks",
+        "boolean",
+        "Enable webhook notification system",
+        None,
+    ),
+    (
+        "webhooks.max_retries",
+        "webhooks",
+        "integer",
+        "Maximum delivery retry attempts before permanent failure",
+        {"min": 1, "max": 10},
+    ),
+    (
+        "webhooks.retry_base_delay",
+        "webhooks",
+        "integer",
+        "Base delay in seconds for retry backoff calculation",
+        {"min": 5, "max": 300},
+    ),
+    (
+        "webhooks.retry_backoff_multiplier",
+        "webhooks",
+        "float",
+        "Exponential backoff multiplier for retries",
+        {"min": 1.0, "max": 5.0},
+    ),
+    (
+        "webhooks.request_timeout",
+        "webhooks",
+        "integer",
+        "Timeout in seconds for webhook HTTP requests",
+        {"min": 1, "max": 60},
+    ),
+    (
+        "webhooks.max_concurrent_deliveries",
+        "webhooks",
+        "integer",
+        "Maximum concurrent webhook delivery tasks",
+        {"min": 1, "max": 50},
+    ),
+    (
+        "webhooks.delivery_batch_size",
+        "webhooks",
+        "integer",
+        "Number of pending deliveries to process per batch",
+        {"min": 1, "max": 100},
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1060,6 +1163,23 @@ SETTING_TO_ENV_MAP = {
     "display.show_view_counts": "VLOG_DISPLAY_SHOW_VIEW_COUNTS",
     "display.show_tagline": "VLOG_DISPLAY_SHOW_TAGLINE",
     "display.tagline": "VLOG_DISPLAY_TAGLINE",
+    # Metrics settings (Issue #436)
+    "metrics.enabled": "VLOG_METRICS_ENABLED",
+    "metrics.auth_required": "VLOG_METRICS_AUTH_REQUIRED",
+    # Download settings (Issue #202)
+    "downloads.enabled": "VLOG_DOWNLOADS_ENABLED",
+    "downloads.allow_original": "VLOG_DOWNLOADS_ALLOW_ORIGINAL",
+    "downloads.allow_transcoded": "VLOG_DOWNLOADS_ALLOW_TRANSCODED",
+    "downloads.rate_limit_per_hour": "VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR",
+    "downloads.max_concurrent": "VLOG_DOWNLOADS_MAX_CONCURRENT",
+    # Webhook settings (Issue #203)
+    "webhooks.enabled": "VLOG_WEBHOOKS_ENABLED",
+    "webhooks.max_retries": "VLOG_WEBHOOKS_MAX_RETRIES",
+    "webhooks.retry_base_delay": "VLOG_WEBHOOKS_RETRY_BASE_DELAY",
+    "webhooks.retry_backoff_multiplier": "VLOG_WEBHOOKS_RETRY_BACKOFF_MULTIPLIER",
+    "webhooks.request_timeout": "VLOG_WEBHOOKS_REQUEST_TIMEOUT",
+    "webhooks.max_concurrent_deliveries": "VLOG_WEBHOOKS_MAX_CONCURRENT_DELIVERIES",
+    "webhooks.delivery_batch_size": "VLOG_WEBHOOKS_DELIVERY_BATCH_SIZE",
 }
 
 

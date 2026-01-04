@@ -16,9 +16,10 @@ import signal
 import threading
 import time
 import uuid
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 import sqlalchemy as sa
 
@@ -39,7 +40,7 @@ from api.database import (
     videos,
 )
 from api.db_retry import DatabaseRetryableError, execute_with_retry, fetch_one_with_retry
-from api.enums import QualityStatus, TranscodingStep, VideoStatus
+from api.enums import JobFailureMode, PlaylistValidation, QualityStatus, TranscodingStep, VideoStatus
 from api.errors import truncate_error
 
 # Import config for backwards compatibility and fallback values
@@ -399,7 +400,9 @@ def calculate_ffmpeg_timeout(duration_of_video: float, target_height: int = 1080
     return max(FFMPEG_TIMEOUT_MINIMUM, min(timeout, FFMPEG_TIMEOUT_MAXIMUM))
 
 
-async def cleanup_ffmpeg_process(target_subprocess: asyncio.subprocess.Process, logging_description: str = "FFmpeg") -> None:
+async def cleanup_ffmpeg_process(
+    target_subprocess: asyncio.subprocess.Process, logging_description: str = "FFmpeg"
+) -> None:
     """
     Clean up an FFmpeg subprocess, handling race conditions where the process
     may exit between checking returncode and calling kill().
@@ -810,13 +813,18 @@ async def get_output_dimensions(segment_path: Path, timeout: float = 10.0) -> Tu
         return (0, 0)
 
 
-async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True) -> Tuple[bool, Optional[str]]:
+async def validate_hls_playlist(
+    playlist_path: Path,
+    validation_mode: Union[PlaylistValidation, bool] = PlaylistValidation.CHECK_SEGMENTS,
+) -> Tuple[bool, Optional[str]]:
     """
     Validate an HLS playlist is complete and well-formed.
 
     Args:
         playlist_path: Path to the .m3u8 playlist file
-        check_segments: If True, also verify all referenced segments exist and are non-empty
+        validation_mode: Level of validation to perform.
+            Use PlaylistValidation.CHECK_SEGMENTS or PlaylistValidation.STRUCTURE_ONLY.
+            Boolean values are deprecated but supported for backwards compatibility.
 
     Returns:
         Tuple[bool, Optional[str]]: (is_valid, error_message)
@@ -824,6 +832,22 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
     """
     if not playlist_path.exists():
         return False, "Playlist file does not exist"
+
+    # Handle backwards compatibility with boolean values
+    if isinstance(validation_mode, bool):
+        warnings.warn(
+            "Passing boolean to validate_hls_playlist() is deprecated. "
+            "Use PlaylistValidation.CHECK_SEGMENTS or PlaylistValidation.STRUCTURE_ONLY instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        should_check_segments = validation_mode
+    elif isinstance(validation_mode, PlaylistValidation):
+        should_check_segments = validation_mode == PlaylistValidation.CHECK_SEGMENTS
+    else:
+        raise TypeError(
+            f"validation_mode must be PlaylistValidation or bool, got {type(validation_mode).__name__}: {validation_mode!r}"
+        )
 
     try:
         content = playlist_path.read_text()
@@ -836,7 +860,7 @@ async def validate_hls_playlist(playlist_path: Path, check_segments: bool = True
         if "#EXT-X-ENDLIST" not in content:
             return False, "Missing #EXT-X-ENDLIST (incomplete transcode)"
 
-        if not check_segments:
+        if not should_check_segments:
             return True, None
 
         # Validate all referenced segment files exist and are non-empty
@@ -929,7 +953,7 @@ async def is_hls_playlist_complete(playlist_path: Path) -> bool:
 
     This is a convenience wrapper around validate_hls_playlist().
     """
-    is_valid, error = await validate_hls_playlist(playlist_path, check_segments=True)
+    is_valid, error = await validate_hls_playlist(playlist_path, PlaylistValidation.CHECK_SEGMENTS)
     if not is_valid and error:
         # Log validation failures for debugging
         print(f"      Playlist validation failed: {error}")
@@ -1420,9 +1444,7 @@ async def generate_master_playlist_cmaf(
             extracted = await extract_codec_string_from_file(init_segment)
             if extracted:
                 quality_codec_strings[quality["name"]] = extracted
-                logger.debug(
-                    f"Extracted codec string for {quality['name']}: {extracted}"
-                )
+                logger.debug(f"Extracted codec string for {quality['name']}: {extracted}")
 
     for quality in qualities_with_bandwidth:
         # Use extracted codec string if available, otherwise use defaults
@@ -1433,8 +1455,8 @@ async def generate_master_playlist_cmaf(
         else:
             quality_codec = default_codec_string
         master_content += (
-            f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},'
-            f'RESOLUTION={quality["width"]}x{quality["height"]},'
+            f"#EXT-X-STREAM-INF:BANDWIDTH={quality['bandwidth']},"
+            f"RESOLUTION={quality['width']}x{quality['height']},"
             f'CODECS="{quality_codec}"\n'
         )
         # Original quality uses legacy TS format at root, transcoded use CMAF subdirs
@@ -1839,19 +1861,42 @@ async def mark_job_completed(job_id: int):
     )
 
 
-async def mark_job_failed(job_id: int, error: str, final: bool = False):
+async def mark_job_failed(
+    job_id: int,
+    error: str,
+    failure_mode: Union[JobFailureMode, bool] = JobFailureMode.RETRYABLE,
+):
     """Mark job as failed.
 
     Args:
         job_id: The job ID
         error: Error message
-        final: If True, sets completed_at to indicate job is finished (no more retries)
+        failure_mode: Whether this is a permanent or retryable failure.
+            Use JobFailureMode.PERMANENT or JobFailureMode.RETRYABLE.
+            Boolean values are deprecated but supported for backwards compatibility
+            (True = PERMANENT, False = RETRYABLE).
     """
+    # Handle backwards compatibility with boolean values
+    if isinstance(failure_mode, bool):
+        warnings.warn(
+            "Passing boolean to mark_job_failed() is deprecated. "
+            "Use JobFailureMode.PERMANENT or JobFailureMode.RETRYABLE instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        is_permanent = failure_mode
+    elif isinstance(failure_mode, JobFailureMode):
+        is_permanent = failure_mode == JobFailureMode.PERMANENT
+    else:
+        raise TypeError(
+            f"failure_mode must be JobFailureMode or bool, got {type(failure_mode).__name__}: {failure_mode!r}"
+        )
+
     values = {
         "last_error": error[:500],
         "last_checkpoint": datetime.now(timezone.utc),
     }
-    if final:
+    if is_permanent:
         values["completed_at"] = datetime.now(timezone.utc)
 
     await database.execute(transcoding_jobs.update().where(transcoding_jobs.c.id == job_id).values(**values))
@@ -2017,7 +2062,7 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             # Max retries exceeded - use transaction to ensure consistency
             print("    Max retries exceeded, marking as failed")
             async with database.transaction():
-                await mark_job_failed(job["id"], "Max retry attempts exceeded", final=True)
+                await mark_job_failed(job["id"], "Max retry attempts exceeded", JobFailureMode.PERMANENT)
                 await database.execute(
                     videos.update()
                     .where(videos.c.id == job["video_id"])
@@ -2153,7 +2198,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 print(f"  ERROR: {error_msg}")
                 # Probe failures are typically unrecoverable (corrupted/unsupported file)
                 # Mark as final failure immediately
-                await mark_job_failed(job_id, error_msg, final=True)
+                await mark_job_failed(job_id, error_msg, JobFailureMode.PERMANENT)
                 await database.execute(
                     videos.update()
                     .where(videos.c.id == video_id)
@@ -2683,9 +2728,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         elif failed_qualities:
             # Partial success - some qualities failed
             completed = len(successful_qualities)
-            print(
-                f"  WARNING: Partial transcoding success - {completed}/{total_qualities} quality variants completed"
-            )
+            print(f"  WARNING: Partial transcoding success - {completed}/{total_qualities} quality variants completed")
             print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
                 print(f"    - {failed['name']}: {truncate_error(failed['error'], ERROR_DETAIL_MAX_LENGTH)}")
@@ -2788,7 +2831,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         )
                     )
                     await database.execute(
-                        videos.update().where(videos.c.id == video_id).values(
+                        videos.update()
+                        .where(videos.c.id == video_id)
+                        .values(
                             sprite_sheet_status="pending",
                             sprite_sheet_error=None,
                         )
@@ -2801,6 +2846,24 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # NOTE: Source file is intentionally kept for potential future re-transcoding
         # (e.g., if new quality presets are added or original quality is needed)
         print(f"  Done! Video is ready. Source file preserved at: {source_file}")
+
+        # Trigger webhook event for video.ready (Issue #203)
+        try:
+            from api.webhook_service import trigger_webhook_event
+
+            await trigger_webhook_event(
+                "video.ready",
+                {
+                    "video_id": video_id,
+                    "slug": video_slug,
+                    "title": video_row["title"] if video_row else "",
+                    "qualities": [q["name"] for q in successful_qualities],
+                    "streaming_format": streaming_format,
+                },
+            )
+        except Exception as webhook_err:
+            print(f"  Warning: Failed to trigger webhook for video.ready: {webhook_err}")
+
         return True
 
     except Exception as e:
@@ -2811,7 +2874,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
         if job and job["attempt_number"] < job["max_attempts"]:
             # Will be retried on next worker restart or stale job check
-            await mark_job_failed(job_id, str(e), final=False)
+            await mark_job_failed(job_id, str(e), JobFailureMode.RETRYABLE)
             await database.execute(
                 videos.update()
                 .where(videos.c.id == video_id)
@@ -2832,7 +2895,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             )
         else:
             # Final failure - mark job as completed (finished, even though failed)
-            await mark_job_failed(job_id, str(e), final=True)
+            await mark_job_failed(job_id, str(e), JobFailureMode.PERMANENT)
             await database.execute(
                 videos.update()
                 .where(videos.c.id == video_id)
@@ -2851,6 +2914,23 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         last_error=str(e),
                     )
                 )
+
+            # Trigger webhook event for video.failed (permanent failure) (Issue #203)
+            try:
+                from api.webhook_service import trigger_webhook_event
+
+                await trigger_webhook_event(
+                    "video.failed",
+                    {
+                        "video_id": video_id,
+                        "slug": video_slug,
+                        "error": str(e)[:500],
+                        "attempt_number": job["attempt_number"] if job else 1,
+                        "max_attempts": job["max_attempts"] if job else 3,
+                    },
+                )
+            except Exception as webhook_err:
+                print(f"  Warning: Failed to trigger webhook for video.failed: {webhook_err}")
 
         return False
 
@@ -2899,7 +2979,7 @@ async def check_stale_jobs(worker_state: Optional[WorkerState] = None):
         if job["attempt_number"] >= job["max_attempts"]:
             print(f"Stale job for '{video['slug']}' exceeded max retries, marking failed")
             async with database.transaction():
-                await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)", final=True)
+                await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)", JobFailureMode.PERMANENT)
                 await database.execute(
                     videos.update()
                     .where(videos.c.id == job["video_id"])

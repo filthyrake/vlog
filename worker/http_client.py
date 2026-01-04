@@ -750,6 +750,10 @@ class WorkerAPIClient:
         """
         Mark job as complete.
 
+        Issue #455: Generates a unique completion_token for idempotency on retry.
+        If the request fails and is retried, the server will recognize the token
+        and return early if the completion was already processed.
+
         Args:
             job_id: The job ID
             qualities: List of quality info dicts with name, width, height, bitrate
@@ -762,7 +766,10 @@ class WorkerAPIClient:
         Returns:
             Server response
         """
-        data = {"qualities": qualities}
+        # Issue #455: Generate idempotency token for retry safety
+        completion_token = f"{job_id}-{uuid.uuid4()}"
+
+        data = {"qualities": qualities, "completion_token": completion_token}
         if duration is not None:
             data["duration"] = duration
         if source_width is not None:
@@ -1126,6 +1133,33 @@ class WorkerAPIClient:
             "POST",
             f"/api/worker/upload/{video_id}/segment/finalize",
             json=data,
+            timeout=TIMEOUT_DEFAULT,
+        )
+
+    async def verify_job_complete(self, job_id: int) -> dict:
+        """
+        Verify that job completion was recorded and files are present (Issue #461).
+
+        Workers call this before cleaning up their local work directory to ensure
+        the server has all the files and the completion was recorded in the database.
+
+        Args:
+            job_id: The job ID to verify
+
+        Returns:
+            Dict with:
+                - all_files_present: True if all expected files exist on disk
+                - video_status: Current status in database
+                - job_completed: Whether job completion was recorded
+                - qualities_present: List of quality directories found
+                - missing_files: List of any expected but missing files
+
+        Raises:
+            WorkerAPIError: On HTTP error or connection failure
+        """
+        return await self._request(
+            "GET",
+            f"/api/worker/{job_id}/verify-complete",
             timeout=TIMEOUT_DEFAULT,
         )
 

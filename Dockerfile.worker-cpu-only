@@ -18,6 +18,13 @@ ARG BUILD_TIMESTAMP=""
 # =============================================================================
 FROM python:${PYTHON_VERSION} AS builder
 
+# Install build dependencies for packages with C extensions (argon2-cffi)
+# These are only needed in the builder stage, not runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 # Copy package files for dependency installation

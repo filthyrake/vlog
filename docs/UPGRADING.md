@@ -181,6 +181,89 @@ kubectl rollout restart deployment/vlog-worker-intel -n vlog
 
 ---
 
+### Upgrading to v0.2.x (Webhooks & Downloads)
+
+This version adds webhook notifications, video downloads, and security improvements.
+
+**New Features:**
+- **Webhook Notifications** - Event-driven notifications for external integrations
+- **Video Downloads** - Allow users to download video files
+- **argon2id API Key Hashing** - Upgraded from SHA-256 for worker authentication
+- **Deployment Events** - Track worker container deployments
+- **Enhanced Bulk Operations** - Improved batch operations in Admin UI
+
+**Database Migrations:**
+
+```bash
+# Run all migrations
+alembic upgrade head
+
+# Migrations included:
+# 026 - worker_api_keys hash_version column (argon2id migration)
+# 027 - webhooks and webhook_deliveries tables
+# 028 - deployment_events table
+```
+
+**New Environment Variables (all optional):**
+
+```bash
+# Webhook settings
+VLOG_WEBHOOKS_ENABLED=true
+VLOG_WEBHOOKS_MAX_RETRIES=5
+VLOG_WEBHOOKS_RETRY_BASE_DELAY=30
+VLOG_WEBHOOKS_REQUEST_TIMEOUT=10
+
+# Video downloads
+VLOG_DOWNLOADS_ENABLED=false           # Disabled by default
+VLOG_DOWNLOADS_ALLOW_ORIGINAL=false    # Original files require explicit enable
+VLOG_DOWNLOADS_ALLOW_TRANSCODED=true
+VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR=10
+VLOG_DOWNLOADS_MAX_CONCURRENT=2
+```
+
+**New API Endpoints:**
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/auth/login` | Session-based admin authentication |
+| `POST /api/auth/logout` | End admin session |
+| `GET /api/auth/check` | Verify session status |
+| `GET /api/auth/csrf-token` | Get CSRF token for forms |
+| `GET/POST /api/webhooks` | Webhook management |
+| `GET /api/webhooks/{id}/deliveries` | View delivery history |
+| `POST /api/webhooks/{id}/test` | Test webhook delivery |
+| `GET /api/videos/{slug}/download` | Download video files |
+
+**Security Changes:**
+
+Worker API keys are now hashed using argon2id instead of SHA-256:
+- Existing keys continue to work (auto-migrated on use)
+- New keys use argon2id by default
+- No action required for existing workers
+
+**Post-Upgrade Steps:**
+
+1. Verify new tables exist:
+   ```bash
+   psql -U vlog -d vlog -c "\dt webhooks; \dt webhook_deliveries; \dt deployment_events;"
+   ```
+
+2. Verify API endpoints work:
+   ```bash
+   curl http://localhost:9001/api/webhooks
+   curl http://localhost:9000/api/videos/test/download  # Should return 403 if disabled
+   ```
+
+3. Optional: Enable downloads:
+   ```bash
+   export VLOG_DOWNLOADS_ENABLED=true
+   sudo systemctl restart vlog-public
+   ```
+
+4. Optional: Configure webhooks via Admin UI
+
+---
+
 ### Upgrading to v0.1.x (Database-Backed Settings)
 
 This version introduces the database-backed settings system.
@@ -433,6 +516,9 @@ kubectl rollout undo deployment/vlog-worker-intel -n vlog
 | 0.1.x | 013_add_streaming_format | streaming_format, primary_codec columns |
 | 0.1.x | 014_add_reencode_queue | Re-encode queue table |
 | 0.1.x | 015_extend_video_qualities | segment_format column |
+| 0.2.x | 026_add_hash_version | worker_api_keys hash_version for argon2id |
+| 0.2.x | 027_add_webhooks | webhooks and webhook_deliveries tables |
+| 0.2.x | 028_add_deployment_events | deployment_events table |
 
 ### API Changes
 
@@ -448,6 +534,14 @@ kubectl rollout undo deployment/vlog-worker-intel -n vlog
 | 0.1.x | `/api/metrics` | Added (Worker API) |
 | 0.1.x | `/api/reencode/*` | Added (Admin API) |
 | 0.1.x | `/api/settings/*` | Added (Admin API) |
+| 0.2.x | `/api/auth/login` | Added (Admin API) |
+| 0.2.x | `/api/auth/logout` | Added (Admin API) |
+| 0.2.x | `/api/auth/check` | Added (Admin API) |
+| 0.2.x | `/api/auth/csrf-token` | Added (Admin API) |
+| 0.2.x | `/api/webhooks` | Added (Admin API) |
+| 0.2.x | `/api/webhooks/{id}/deliveries` | Added (Admin API) |
+| 0.2.x | `/api/webhooks/{id}/test` | Added (Admin API) |
+| 0.2.x | `/api/videos/{slug}/download` | Added (Public API) |
 
 ### Configuration Changes
 
@@ -456,12 +550,14 @@ kubectl rollout undo deployment/vlog-worker-intel -n vlog
 | 0.0.3 | `VLOG_DISPLAY_*` | Added (display settings) |
 | 0.0.3 | `VLOG_HTTP_CIRCUIT_BREAKER_*` | Added (circuit breaker) |
 | 0.0.3 | `VLOG_WORKER_STREAMING_UPLOAD` | Added (streaming upload) |
-| 0.0.3 | `VLOG_SPRITE_*` | Added (sprite sheet settings) |
+| 0.0.3 | `VLOG_SPRITE_SHEET_*` | Added (sprite sheet settings) |
 | 0.0.3 | `VLOG_WORKER_VERSION_CHECK_*` | Added (version gating) |
 | 0.1.x | `VLOG_STREAMING_FORMAT` | Added (default: cmaf) |
 | 0.1.x | `VLOG_STREAMING_CODEC` | Added (default: hevc) |
 | 0.1.x | `VLOG_CDN_ENABLED` | Added |
 | 0.1.x | `VLOG_CDN_BASE_URL` | Added |
+| 0.2.x | `VLOG_WEBHOOKS_*` | Added (webhook delivery settings) |
+| 0.2.x | `VLOG_DOWNLOADS_*` | Added (video download settings) |
 
 ---
 

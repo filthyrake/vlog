@@ -45,11 +45,8 @@ videos = sa.Table(
     sa.Column(
         "status",
         sa.String(20),
-        sa.CheckConstraint(
-            "status IN ('pending', 'processing', 'ready', 'failed')",
-            name="ck_videos_status"
-        ),
-        default="pending"
+        sa.CheckConstraint("status IN ('pending', 'processing', 'ready', 'failed')", name="ck_videos_status"),
+        default="pending",
     ),  # pending, processing, ready, failed
     sa.Column("error_message", sa.Text, nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
@@ -59,31 +56,22 @@ videos = sa.Table(
     sa.Column(
         "thumbnail_source",
         sa.String(20),
-        sa.CheckConstraint(
-            "thumbnail_source IN ('auto', 'selected', 'custom')",
-            name="ck_videos_thumbnail_source"
-        ),
-        default="auto"
+        sa.CheckConstraint("thumbnail_source IN ('auto', 'selected', 'custom')", name="ck_videos_thumbnail_source"),
+        default="auto",
     ),  # auto, selected, custom
     sa.Column("thumbnail_timestamp", sa.Float, nullable=True),  # timestamp for selected thumbnails
     # Streaming format columns (added in migration 013)
     sa.Column(
         "streaming_format",
         sa.String(10),
-        sa.CheckConstraint(
-            "streaming_format IN ('hls_ts', 'cmaf')",
-            name="ck_videos_streaming_format"
-        ),
-        default="hls_ts"
+        sa.CheckConstraint("streaming_format IN ('hls_ts', 'cmaf')", name="ck_videos_streaming_format"),
+        default="hls_ts",
     ),  # hls_ts (legacy MPEG-TS) or cmaf (modern fMP4)
     sa.Column(
         "primary_codec",
         sa.String(10),
-        sa.CheckConstraint(
-            "primary_codec IN ('h264', 'hevc', 'av1')",
-            name="ck_videos_primary_codec"
-        ),
-        default="h264"
+        sa.CheckConstraint("primary_codec IN ('h264', 'hevc', 'av1')", name="ck_videos_primary_codec"),
+        default="h264",
     ),  # Video codec used
     # Featured video columns (Issue #413 Phase 3)
     sa.Column("is_featured", sa.Boolean, default=False),  # Admin-curated featured flag
@@ -96,7 +84,7 @@ videos = sa.Table(
         sa.String(20),
         sa.CheckConstraint(
             "sprite_sheet_status IS NULL OR sprite_sheet_status IN ('pending', 'generating', 'ready', 'failed')",
-            name="ck_videos_sprite_sheet_status"
+            name="ck_videos_sprite_sheet_status",
         ),
         nullable=True,
     ),  # pending, generating, ready, failed
@@ -126,8 +114,8 @@ video_qualities = sa.Table(
         sa.String(10),
         sa.CheckConstraint(
             "quality IN ('2160p', '1440p', '1080p', '720p', '480p', '360p', 'original')",
-            name="ck_video_qualities_quality"
-        )
+            name="ck_video_qualities_quality",
+        ),
     ),  # 2160p, 1080p, etc.
     sa.Column("width", sa.Integer),
     sa.Column("height", sa.Integer),
@@ -162,9 +150,9 @@ playback_sessions = sa.Table(
         sa.String(10),
         sa.CheckConstraint(
             "quality_used IN ('2160p', '1440p', '1080p', '720p', '480p', '360p', 'original') OR quality_used IS NULL",
-            name="ck_playback_sessions_quality_used"
+            name="ck_playback_sessions_quality_used",
         ),
-        nullable=True
+        nullable=True,
     ),  # primary quality
     sa.Column("completed", sa.Boolean, default=False),  # watched >= 90%
     sa.Index("ix_playback_sessions_video_id", "video_id"),
@@ -174,55 +162,11 @@ playback_sessions = sa.Table(
 
 # Transcoding jobs with checkpoint support
 #
-# STATE SEMANTICS:
-# ----------------
-# Job States (derived from fields):
-# - Unclaimed: claimed_at = NULL AND completed_at = NULL
-#   → Job is available for any worker to claim
-# - Claimed: claimed_at != NULL AND claim_expires_at > NOW() AND completed_at = NULL
-#   → Worker actively processing, claim is valid
-# - Expired: claimed_at != NULL AND claim_expires_at <= NOW() AND completed_at = NULL
-#   → Worker failed to update, job ready for reclaim by stale checker
-# - Completed: completed_at != NULL
-#   → Transcoding finished successfully
-# - Failed: last_error != NULL AND attempt_number >= max_attempts
-#   → Permanently failed after all retry attempts
-# - Retrying: last_error != NULL AND attempt_number < max_attempts AND claimed_at = NULL
-#   → Failed but available for retry
+# Job state is derived from nullable field combinations. For explicit state
+# determination and SQL condition generation, use the TranscodingJobStateMachine
+# class in api/job_state.py.
 #
-# FIELD SEMANTICS:
-# ----------------
-# - video_id: Foreign key to videos table, unique (one job per video)
-# - worker_id: UUID of worker processing this job (NULL = unclaimed)
-# - claimed_at: Timestamp when worker claimed job (NULL = unclaimed)
-# - claim_expires_at: When claim expires (NULL = no active claim)
-#   → Extended by WORKER_CLAIM_DURATION_MINUTES on each progress update
-#   → Typically 30 minutes from last update
-# - started_at: First claim timestamp (persists across retries)
-# - last_checkpoint: Last progress update timestamp
-# - completed_at: Job completion timestamp (NULL = not complete)
-# - attempt_number: Current retry attempt (1-based, default 1)
-# - max_attempts: Maximum allowed attempts (default 3)
-# - last_error: Error message from most recent failure (NULL = no error)
-# - processed_by_worker_id/name: Permanent audit record of worker that processed job
-#   → Set on first claim, persists even if job is reclaimed
-#
-# STATE TRANSITIONS:
-# -----------------
-# 1. Creation: Upload → unclaimed (all claim fields NULL)
-# 2. Claim: Worker claims → set claimed_at, claim_expires_at, worker_id, started_at
-# 3. Progress: Worker updates → extend claim_expires_at, update last_checkpoint
-# 4. Complete: Worker finishes → set completed_at
-# 5. Fail (retriable): Worker fails → clear claim fields, increment attempt_number
-# 6. Fail (permanent): attempt_number >= max_attempts → keep claim data for audit
-# 7. Expire: claim_expires_at passes → stale checker clears claim fields
-#
-# CONSTRAINTS & INDEXES:
-# ---------------------
-# - video_id: UNIQUE (one job per video)
-# - claim_expires_at: INDEXED (for stale job detection)
-#
-# See docs/TRANSCODING_ARCHITECTURE.md for complete state machine documentation.
+# See also: docs/TRANSCODING_ARCHITECTURE.md
 transcoding_jobs = sa.Table(
     "transcoding_jobs",
     metadata,
@@ -235,10 +179,9 @@ transcoding_jobs = sa.Table(
         "progress_percent",
         sa.Integer,
         sa.CheckConstraint(
-            "progress_percent >= 0 AND progress_percent <= 100",
-            name="ck_transcoding_jobs_progress_percent_range"
+            "progress_percent >= 0 AND progress_percent <= 100", name="ck_transcoding_jobs_progress_percent_range"
         ),
-        default=0
+        default=0,
     ),
     # Timing
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
@@ -273,19 +216,19 @@ quality_progress = sa.Table(
         sa.String(10),
         sa.CheckConstraint(
             "quality IN ('2160p', '1440p', '1080p', '720p', '480p', '360p', 'original')",
-            name="ck_quality_progress_quality"
+            name="ck_quality_progress_quality",
         ),
-        nullable=False
+        nullable=False,
     ),  # 2160p, 1080p, etc.
     sa.Column(
         "status",
         sa.String(20),
         sa.CheckConstraint(
             "status IN ('pending', 'in_progress', 'uploading', 'completed', 'failed', 'skipped', 'uploaded')",
-            name="ck_quality_progress_status"
+            name="ck_quality_progress_status",
         ),
         nullable=False,
-        default="pending"
+        default="pending",
     ),  # pending, in_progress, uploading, completed, failed, skipped, uploaded
     sa.Column("segments_total", sa.Integer, nullable=True),
     sa.Column("segments_completed", sa.Integer, default=0),
@@ -293,10 +236,9 @@ quality_progress = sa.Table(
         "progress_percent",
         sa.Integer,
         sa.CheckConstraint(
-            "progress_percent >= 0 AND progress_percent <= 100",
-            name="ck_quality_progress_percent_range"
+            "progress_percent >= 0 AND progress_percent <= 100", name="ck_quality_progress_percent_range"
         ),
-        default=0
+        default=0,
     ),
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
@@ -316,11 +258,10 @@ transcriptions = sa.Table(
         "status",
         sa.String(20),
         sa.CheckConstraint(
-            "status IN ('pending', 'processing', 'completed', 'failed')",
-            name="ck_transcriptions_status"
+            "status IN ('pending', 'processing', 'completed', 'failed')", name="ck_transcriptions_status"
         ),
         nullable=False,
-        default="pending"
+        default="pending",
     ),  # pending, processing, completed, failed
     sa.Column("language", sa.String(10), default="en"),  # detected or specified language
     # Timing
@@ -405,22 +346,16 @@ workers = sa.Table(
     sa.Column(
         "worker_type",
         sa.String(20),
-        sa.CheckConstraint(
-            "worker_type IN ('local', 'remote')",
-            name="ck_workers_worker_type"
-        ),
-        default="remote"
+        sa.CheckConstraint("worker_type IN ('local', 'remote')", name="ck_workers_worker_type"),
+        default="remote",
     ),  # 'local' or 'remote'
     sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_heartbeat", sa.DateTime(timezone=True), nullable=True),
     sa.Column(
         "status",
         sa.String(20),
-        sa.CheckConstraint(
-            "status IN ('active', 'idle', 'busy', 'offline', 'disabled')",
-            name="ck_workers_status"
-        ),
-        default="active"
+        sa.CheckConstraint("status IN ('active', 'idle', 'busy', 'offline', 'disabled')", name="ck_workers_status"),
+        default="active",
     ),  # 'active', 'idle', 'busy', 'offline', 'disabled'
     sa.Column(
         "current_job_id",
@@ -441,7 +376,7 @@ workers = sa.Table(
 # -------------
 # 1. Generation: POST /api/worker/register → generates 256-bit API key
 #    → Key shown once at registration, never retrievable again
-#    → Stored as SHA-256 hash for security
+#    → Stored as argon2id hash for security (SHA-256 for legacy keys)
 # 2. Usage: Worker includes key in X-API-Key header
 #    → Fast lookup via key_prefix (first 8 chars)
 #    → Full hash verification for security
@@ -454,8 +389,11 @@ workers = sa.Table(
 # FIELD SEMANTICS:
 # ----------------
 # - worker_id: Foreign key to workers table (CASCADE on delete)
-# - key_hash: SHA-256 hash of the API key (64 hex chars)
+# - key_hash: Hash of the API key (format depends on hash_version)
 #   → Never store plaintext keys
+# - hash_version: Algorithm version (1=SHA-256 legacy, 2=argon2id)
+#   → New keys use argon2id (version 2)
+#   → Legacy keys use SHA-256 (version 1)
 # - key_prefix: First 8 chars of API key (for fast lookup)
 #   → Used to quickly find candidate keys before full hash verification
 # - created_at: When key was generated
@@ -474,7 +412,8 @@ worker_api_keys = sa.Table(
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("worker_id", sa.Integer, sa.ForeignKey("workers.id", ondelete="CASCADE"), nullable=False),
-    sa.Column("key_hash", sa.String(64), nullable=False),  # SHA-256 hash
+    sa.Column("key_hash", sa.String(255), nullable=False),  # argon2id (~100 chars) or SHA-256 (64 chars)
+    sa.Column("hash_version", sa.Integer, nullable=False, server_default="2"),  # 1=SHA-256, 2=argon2id
     sa.Column("key_prefix", sa.String(8), nullable=False),  # First 8 chars for lookup
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
@@ -496,7 +435,7 @@ deployment_events = sa.Table(
         sa.String(20),
         sa.CheckConstraint(
             "event_type IN ('restart', 'stop', 'update', 'deploy', 'rollback', 'version_change')",
-            name="ck_deployment_events_type"
+            name="ck_deployment_events_type",
         ),
         nullable=False,
     ),  # Type of deployment event
@@ -506,8 +445,7 @@ deployment_events = sa.Table(
         "status",
         sa.String(20),
         sa.CheckConstraint(
-            "status IN ('pending', 'in_progress', 'completed', 'failed')",
-            name="ck_deployment_events_status"
+            "status IN ('pending', 'in_progress', 'completed', 'failed')", name="ck_deployment_events_status"
         ),
         default="pending",
     ),  # Status of the deployment
@@ -577,17 +515,14 @@ custom_field_definitions = sa.Table(
         sa.String(20),
         sa.CheckConstraint(
             "field_type IN ('text', 'number', 'date', 'select', 'multi_select', 'url')",
-            name="ck_custom_field_definitions_field_type"
+            name="ck_custom_field_definitions_field_type",
         ),
-        nullable=False
+        nullable=False,
     ),
     sa.Column("options", sa.Text, nullable=True),  # JSON array for select/multi_select
     sa.Column("required", sa.Boolean, default=False, nullable=False),
     sa.Column(
-        "category_id",
-        sa.Integer,
-        sa.ForeignKey("categories.id", ondelete="CASCADE"),
-        nullable=True
+        "category_id", sa.Integer, sa.ForeignKey("categories.id", ondelete="CASCADE"), nullable=True
     ),  # NULL = global field
     sa.Column("position", sa.Integer, default=0, nullable=False),
     sa.Column("constraints", sa.Text, nullable=True),  # JSON validation rules
@@ -613,18 +548,8 @@ custom_field_definitions = sa.Table(
 video_custom_fields = sa.Table(
     "video_custom_fields",
     metadata,
-    sa.Column(
-        "video_id",
-        sa.Integer,
-        sa.ForeignKey("videos.id", ondelete="CASCADE"),
-        nullable=False
-    ),
-    sa.Column(
-        "field_id",
-        sa.Integer,
-        sa.ForeignKey("custom_field_definitions.id", ondelete="CASCADE"),
-        nullable=False
-    ),
+    sa.Column("video_id", sa.Integer, sa.ForeignKey("videos.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("field_id", sa.Integer, sa.ForeignKey("custom_field_definitions.id", ondelete="CASCADE"), nullable=False),
     sa.Column("value", sa.Text, nullable=True),  # JSON-encoded value
     sa.PrimaryKeyConstraint("video_id", "field_id"),
     sa.Index("ix_video_custom_fields_video_id", "video_id"),
@@ -690,10 +615,9 @@ settings = sa.Table(
         "value_type",
         sa.String(50),
         sa.CheckConstraint(
-            "value_type IN ('string', 'integer', 'float', 'boolean', 'enum', 'json')",
-            name="ck_settings_value_type"
+            "value_type IN ('string', 'integer', 'float', 'boolean', 'enum', 'json')", name="ck_settings_value_type"
         ),
-        default="string"
+        default="string",
     ),
     sa.Column("constraints", sa.Text, nullable=True),  # JSON-encoded
     sa.Column("updated_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
@@ -806,10 +730,7 @@ chapters = sa.Table(
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
     # Constraints per reviewer feedback
     sa.CheckConstraint("start_time >= 0", name="ck_chapters_start_time_positive"),
-    sa.CheckConstraint(
-        "end_time IS NULL OR end_time > start_time",
-        name="ck_chapters_end_time_valid"
-    ),
+    sa.CheckConstraint("end_time IS NULL OR end_time > start_time", name="ck_chapters_end_time_valid"),
     sa.UniqueConstraint("video_id", "position", name="uq_chapter_video_position"),
     sa.Index("ix_chapters_video_id", "video_id"),
     sa.Index("ix_chapters_position", "position"),
@@ -831,36 +752,26 @@ reencode_queue = sa.Table(
     sa.Column(
         "target_format",
         sa.String(20),
-        sa.CheckConstraint(
-            "target_format IN ('hls_ts', 'cmaf')",
-            name="ck_reencode_queue_target_format"
-        ),
+        sa.CheckConstraint("target_format IN ('hls_ts', 'cmaf')", name="ck_reencode_queue_target_format"),
         default="cmaf",
     ),
     sa.Column(
         "target_codec",
         sa.String(10),
-        sa.CheckConstraint(
-            "target_codec IN ('h264', 'hevc', 'av1')",
-            name="ck_reencode_queue_target_codec"
-        ),
+        sa.CheckConstraint("target_codec IN ('h264', 'hevc', 'av1')", name="ck_reencode_queue_target_codec"),
         default="hevc",
     ),
     sa.Column(
         "priority",
         sa.String(10),
-        sa.CheckConstraint(
-            "priority IN ('high', 'normal', 'low')",
-            name="ck_reencode_queue_priority"
-        ),
+        sa.CheckConstraint("priority IN ('high', 'normal', 'low')", name="ck_reencode_queue_priority"),
         default="normal",
     ),
     sa.Column(
         "status",
         sa.String(20),
         sa.CheckConstraint(
-            "status IN ('pending', 'in_progress', 'completed', 'failed', 'cancelled')",
-            name="ck_reencode_queue_status"
+            "status IN ('pending', 'in_progress', 'completed', 'failed', 'cancelled')", name="ck_reencode_queue_status"
         ),
         default="pending",
     ),
@@ -895,18 +806,14 @@ sprite_queue = sa.Table(
     sa.Column(
         "priority",
         sa.String(10),
-        sa.CheckConstraint(
-            "priority IN ('high', 'normal', 'low')",
-            name="ck_sprite_queue_priority"
-        ),
+        sa.CheckConstraint("priority IN ('high', 'normal', 'low')", name="ck_sprite_queue_priority"),
         default="normal",
     ),
     sa.Column(
         "status",
         sa.String(20),
         sa.CheckConstraint(
-            "status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')",
-            name="ck_sprite_queue_status"
+            "status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')", name="ck_sprite_queue_status"
         ),
         default="pending",
     ),
@@ -922,6 +829,101 @@ sprite_queue = sa.Table(
     sa.Index("ix_sprite_queue_status", "status"),
     sa.Index("ix_sprite_queue_video_id", "video_id"),
     sa.Index("ix_sprite_queue_priority_created", "priority", "created_at"),
+)
+
+
+# Webhook subscriptions for external integrations (Issue #203)
+# Allows external systems to receive notifications about VLog events
+#
+# SUPPORTED EVENTS:
+# -----------------
+# - video.uploaded: New video uploaded
+# - video.ready: Transcoding completed
+# - video.failed: Transcoding failed
+# - video.deleted: Video deleted
+# - video.restored: Video restored from archive
+# - transcription.completed: Transcription finished
+# - worker.registered: New worker registered
+# - worker.offline: Worker went offline
+#
+# SECURITY:
+# ---------
+# - Payloads are signed with HMAC-SHA256 using the webhook's secret
+# - Signature is sent in X-VLog-Signature header
+# - Recommend verifying signature on receiving end
+#
+# See: https://github.com/filthyrake/vlog/issues/203
+webhooks = sa.Table(
+    "webhooks",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String(100), nullable=False),  # Human-readable name
+    sa.Column("url", sa.String(500), nullable=False),  # Webhook endpoint URL
+    sa.Column("events", sa.Text, nullable=False),  # JSON array: ["video.ready", "video.failed"]
+    sa.Column("secret", sa.String(64), nullable=True),  # HMAC-SHA256 signing key
+    sa.Column("active", sa.Boolean, default=True),  # Can be disabled without deletion
+    sa.Column("headers", sa.Text, nullable=True),  # JSON: custom headers to include
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_triggered_at", sa.DateTime(timezone=True), nullable=True),
+    # Statistics for monitoring
+    sa.Column("total_deliveries", sa.Integer, default=0),
+    sa.Column("successful_deliveries", sa.Integer, default=0),
+    sa.Column("failed_deliveries", sa.Integer, default=0),
+    sa.Index("ix_webhooks_active", "active"),
+    sa.Index("ix_webhooks_created_at", "created_at"),
+)
+
+# Webhook delivery attempts and history (Issue #203)
+# Tracks each delivery attempt with retry support
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> delivered (success)
+# pending -> pending (retry scheduled)
+# pending -> failed_permanent (max retries exceeded)
+#
+# RETRY STRATEGY:
+# ---------------
+# Exponential backoff: delay = base_delay * (backoff_multiplier ^ attempt_number)
+# Default: 30s, 60s, 120s, 240s, 480s (5 attempts over ~15 minutes)
+webhook_deliveries = sa.Table(
+    "webhook_deliveries",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "webhook_id",
+        sa.Integer,
+        sa.ForeignKey("webhooks.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("event_type", sa.String(50), nullable=False),  # video.ready, etc.
+    sa.Column("event_data", sa.Text, nullable=False),  # JSON payload
+    sa.Column("request_body", sa.Text, nullable=True),  # Full request sent
+    sa.Column("response_status", sa.Integer, nullable=True),  # HTTP status code
+    sa.Column("response_body", sa.Text, nullable=True),  # Response (truncated)
+    sa.Column("error_message", sa.Text, nullable=True),  # Error if request failed
+    sa.Column("attempt_number", sa.Integer, default=1),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'delivered', 'failed', 'failed_permanent')",
+            name="ck_webhook_deliveries_status",
+        ),
+        default="pending",
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("duration_ms", sa.Integer, nullable=True),  # Request duration
+    sa.Index("ix_webhook_deliveries_webhook_id", "webhook_id"),
+    sa.Index("ix_webhook_deliveries_status", "status"),
+    sa.Index("ix_webhook_deliveries_event_type", "event_type"),
+    sa.Index("ix_webhook_deliveries_next_retry_at", "next_retry_at"),
+    sa.Index("ix_webhook_deliveries_created_at", "created_at"),
+    # Composite index for efficient pending delivery queries
+    sa.Index("ix_webhook_deliveries_status_next_retry", "status", "next_retry_at"),
 )
 
 

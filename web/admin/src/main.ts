@@ -8,8 +8,8 @@
  * 4. Starting Alpine.js (to ensure correct execution order)
  */
 
-// Import Alpine.js - we control when it starts
-import Alpine from 'alpinejs';
+// Import Alpine.js CSP build - avoids unsafe-eval for stricter CSP
+import Alpine from '@alpinejs/csp';
 
 // Import design tokens
 import '@/styles/tokens.css';

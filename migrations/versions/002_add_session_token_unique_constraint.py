@@ -51,13 +51,19 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove unique constraint from playback_sessions.session_token column."""
-    # Drop the unique index
-    op.drop_index("ix_playback_sessions_session_token", table_name="playback_sessions")
+    # Check if the index exists before trying to drop it
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    indexes = [idx["name"] for idx in inspector.get_indexes("playback_sessions")]
 
-    # Recreate the non-unique index
-    op.create_index(
-        "ix_playback_sessions_session_token",
-        "playback_sessions",
-        ["session_token"],
-        unique=False,
-    )
+    if "ix_playback_sessions_session_token" in indexes:
+        # Drop the unique index
+        op.drop_index("ix_playback_sessions_session_token", table_name="playback_sessions")
+
+        # Recreate the non-unique index
+        op.create_index(
+            "ix_playback_sessions_session_token",
+            "playback_sessions",
+            ["session_token"],
+            unique=False,
+        )

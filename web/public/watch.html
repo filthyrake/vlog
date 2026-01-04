@@ -3,15 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; worker-src 'self' blob:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self';">
     <title>Watch - Damen's VLog</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <link rel="stylesheet" href="/static/css/bundle.css">
     <link rel="stylesheet" href="/static/css/pages/player.css">
-    <style>[x-cloak] { display: none !important; }</style>
-    <script src="/static/js/utils.js"></script>
+    <script defer src="/static/js/utils.js"></script>
     <script defer src="/static/js/pages/watch.js"></script>
-    <script defer src="/static/vendor/alpine.min.js"></script>
+    <script defer src="/static/vendor/alpine.csp.min.js"></script>
     <!-- Shaka Player for DASH/HLS playback (preferred for CMAF) -->
     <script src="/static/vendor/shaka-player.compiled.min.js"></script>
     <!-- hls.js for legacy HLS playback (fallback) -->
@@ -36,7 +35,7 @@
                     placeholder="Search videos..."
                     class="site-header__search-input"
                     x-model="searchQuery"
-                    @keydown.enter="navigateToSearch()"
+                    @keydown.enter="navigateToSearch"
                 >
             </div>
 
@@ -44,9 +43,9 @@
             <button
                 type="button"
                 class="site-header__menu-btn"
-                @click="openMobileNav()"
+                @click="openMobileNav"
                 aria-label="Open menu"
-                :aria-expanded="mobileNavOpen.toString()"
+                :aria-expanded="_mobileNavExpanded"
                 aria-controls="mobile-nav-drawer"
                 x-ref="menuBtn"
             >
@@ -67,19 +66,19 @@
     <!-- Mobile Navigation Drawer -->
     <div
         class="mobile-nav"
-        :class="{ 'mobile-nav--open': mobileNavOpen }"
+        :class="_mobileNavClass"
         x-show="mobileNavOpen"
         x-cloak
-        @keydown.escape.window="closeMobileNav()"
+        @keydown.escape.window="closeMobileNav"
     >
-        <div class="mobile-nav__backdrop" @click="closeMobileNav()"></div>
+        <div class="mobile-nav__backdrop" @click="closeMobileNav"></div>
         <div id="mobile-nav-drawer" class="mobile-nav__drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
             <div class="mobile-nav__header">
                 <span class="mobile-nav__title">Menu</span>
                 <button
                     type="button"
                     class="mobile-nav__close"
-                    @click="closeMobileNav()"
+                    @click="closeMobileNav"
                     aria-label="Close menu"
                     x-ref="closeBtn"
                 >
@@ -94,12 +93,12 @@
                     <div class="mobile-nav__section-title">Navigation</div>
                     <a href="/" class="mobile-nav__link">Home</a>
                 </div>
-                <div class="mobile-nav__section" x-show="video?.category_name">
+                <div class="mobile-nav__section" x-show="_videoShowCategory">
                     <div class="mobile-nav__section-title">Category</div>
                     <a
-                        :href="'/category/' + (video?.category_slug || '')"
+                        :href="_videoCategoryHref"
                         class="mobile-nav__link"
-                        x-text="video?.category_name"
+                        x-text="_videoCategoryName"
                     ></a>
                 </div>
             </nav>
@@ -120,7 +119,7 @@
         </div>
 
         <!-- Video Content with Related Videos Sidebar -->
-        <div x-show="!loading && !error && video" x-cloak class="watch-layout">
+        <div x-show="_showVideo" x-cloak class="watch-layout">
             <!-- Main Column -->
             <div class="watch-layout__main">
                 <!-- Breadcrumb -->
@@ -129,13 +128,13 @@
                     <li class="breadcrumb__item">
                         <a href="/" class="breadcrumb__link">Home</a>
                     </li>
-                    <li class="breadcrumb__item" x-show="video?.category_name">
+                    <li class="breadcrumb__item" x-show="_videoShowCategory">
                         <span class="breadcrumb__separator" aria-hidden="true">/</span>
-                        <a :href="'/category/' + (video?.category_slug || '')" class="breadcrumb__link" x-text="video?.category_name"></a>
+                        <a :href="_videoCategoryHref" class="breadcrumb__link" x-text="_videoCategoryName"></a>
                     </li>
                     <li class="breadcrumb__item">
                         <span class="breadcrumb__separator" aria-hidden="true">/</span>
-                        <span class="breadcrumb__current" aria-current="page" x-text="video?.title"></span>
+                        <span class="breadcrumb__current" aria-current="page" x-text="_videoTitle"></span>
                     </li>
                 </ol>
             </nav>
@@ -148,35 +147,31 @@
                         preload="auto"
                         playsinline
                         controls
-                        :poster="video?.thumbnail_url"
-                        :aria-label="video?.title"
+                        :poster="_videoThumbnailUrl"
+                        :aria-label="_videoTitle"
                     >
                     </video>
-                    <!-- Watermark overlay (loaded dynamically if enabled) -->
-                    <template x-if="watermark?.enabled && watermark?.type === 'image'">
+                    <!-- Watermark overlay (loaded dynamically if enabled, styles applied via JS for CSP compliance) -->
+                    <template x-if="_showImageWatermark">
                         <div
                             class="player-watermark"
-                            :class="watermark?.position"
-                            :style="`--watermark-padding: ${watermark?.padding || 16}px; opacity: ${watermark?.opacity || 0.5};`"
+                            :class="_watermarkPosition"
                         >
                             <img
-                                :src="watermark?.image_url"
-                                :style="`max-width: ${watermark?.max_width_percent || 15}%;`"
+                                :src="_watermarkImageUrl"
                                 alt=""
                                 draggable="false"
                             >
                         </div>
                     </template>
-                    <template x-if="watermark?.enabled && watermark?.type === 'text'">
+                    <template x-if="_showTextWatermark">
                         <div
                             class="player-watermark"
-                            :class="watermark?.position"
-                            :style="`--watermark-padding: ${watermark?.padding || 16}px; opacity: ${watermark?.opacity || 0.5};`"
+                            :class="_watermarkPosition"
                         >
                             <span
                                 class="player-watermark-text"
-                                :style="`font-size: ${watermark?.text_size || 16}px; color: ${watermark?.text_color || 'white'};`"
-                                x-text="watermark?.text"
+                                x-text="_watermarkText"
                             ></span>
                         </div>
                     </template>
@@ -186,51 +181,65 @@
 
             <!-- Video Info -->
             <div class="bg-dark-900 rounded-xl p-6">
-                <h1 class="text-2xl font-bold text-white mb-2" x-text="video?.title"></h1>
+                <h1 class="text-2xl font-bold text-white mb-2" x-text="_videoTitle"></h1>
 
                 <div class="flex flex-wrap gap-4 text-dark-400 text-sm mb-4">
-                    <span x-text="formatDate(video?.published_at)"></span>
-                    <span x-text="formatDuration(video?.duration)"></span>
-                    <span x-text="video?.source_width + 'x' + video?.source_height"></span>
+                    <span x-text="_videoPublishedDate"></span>
+                    <span x-text="_videoDuration"></span>
+                    <span x-text="_videoResolution"></span>
                 </div>
 
                 <!-- Quality Info -->
-                <div class="flex flex-wrap gap-2 mb-4" x-show="video?.qualities?.length">
+                <div class="flex flex-wrap gap-2 mb-4" x-show="_videoHasQualities">
                     <span class="text-dark-500 text-sm">Available in:</span>
-                    <template x-for="q in video?.qualities" :key="q.quality">
+                    <template x-for="(q, idx) in _videoQualities" :key="idx">
                         <span class="bg-dark-800 px-2 py-1 rounded text-sm text-dark-300" x-text="q.quality"></span>
                     </template>
                 </div>
 
-                <!-- Category -->
-                <div x-show="video?.category_name" class="mb-4">
+                <!-- Download Button (Issue #202) -->
+                <div x-show="_showDownloadButton" class="mb-4">
                     <a
-                        :href="'/category/' + (video?.category_slug || '')"
+                        :href="_videoDownloadHref"
+                        class="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                        download
+                    >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Download Original
+                    </a>
+                </div>
+
+                <!-- Category -->
+                <div x-show="_videoShowCategory" class="mb-4">
+                    <a
+                        :href="_videoCategoryHref"
                         class="inline-block bg-blue-600/20 text-blue-400 px-3 py-1 rounded-full text-sm hover:bg-blue-600/30"
-                        x-text="video?.category_name"
+                        x-text="_videoCategoryName"
                     ></a>
                 </div>
 
                 <!-- Description -->
-                <div class="border-t border-dark-800 pt-4 mt-4" x-show="video?.description">
+                <div class="border-t border-dark-800 pt-4 mt-4" x-show="_videoHasDescription">
                     <h2 class="text-lg font-semibold mb-2">Description</h2>
-                    <p class="text-dark-300 whitespace-pre-wrap" x-text="video?.description"></p>
+                    <p class="text-dark-300 whitespace-pre-wrap" x-text="_videoDescription"></p>
                 </div>
             </div>
 
                 <!-- Related Videos - Mobile (below video info) -->
-                <div class="watch-layout__related--mobile" x-show="relatedVideos.length > 0">
+                <div class="watch-layout__related--mobile" x-show="_hasRelatedVideos">
                     <h2 class="text-lg font-semibold text-white mb-4">Related Videos</h2>
                     <div class="flex flex-col gap-3">
-                        <template x-for="related in relatedVideos.slice(0, 6)" :key="related.id">
-                            <a :href="'/watch/' + related.slug" class="video-card video-card--list group">
+                        <template x-for="(related, idx) in _mobileRelatedVideos" :key="idx">
+                            <a :href="related._href" class="video-card video-card--list group">
                                 <div class="video-card--list__thumbnail">
                                     <img :src="related.thumbnail_url" :alt="related.title" loading="lazy" class="video-card--list__img">
-                                    <span class="video-card__duration" x-text="formatDuration(related.duration)"></span>
+                                    <span class="video-card__duration" x-text="related._duration"></span>
                                 </div>
                                 <div class="video-card--list__info">
                                     <h3 class="video-card--list__title" x-text="related.title"></h3>
-                                    <p class="video-card--list__meta" x-text="related.category_name || 'Uncategorized'"></p>
+                                    <p class="video-card--list__meta" x-text="related._category"></p>
                                 </div>
                             </a>
                         </template>
@@ -239,12 +248,12 @@
             </div>
 
             <!-- Related Videos Sidebar - Desktop -->
-            <aside class="watch-layout__sidebar" x-show="!loadingRelated || relatedVideos.length > 0">
+            <aside class="watch-layout__sidebar" x-show="_showRelatedSidebar">
                 <h2 class="text-lg font-semibold text-white mb-4">Related Videos</h2>
 
                 <!-- Loading skeleton -->
-                <div x-show="loadingRelated && relatedVideos.length === 0" class="flex flex-col gap-3">
-                    <template x-for="i in 6" :key="i">
+                <div x-show="_showRelatedLoading" class="flex flex-col gap-3">
+                    <template x-for="(i, idx) in _skeletonArray6" :key="idx">
                         <div class="skeleton-card skeleton-card--horizontal">
                             <div class="skeleton skeleton-card__thumbnail--small"></div>
                             <div class="skeleton-card__info">
@@ -256,32 +265,32 @@
                 </div>
 
                 <!-- Error state with retry -->
-                <div x-show="relatedError && relatedVideos.length === 0" class="text-center py-4">
+                <div x-show="_showRelatedError" class="text-center py-4">
                     <p class="text-dark-400 text-sm mb-2">Failed to load related videos</p>
-                    <button @click="loadRelatedVideos(video.slug)" class="text-blue-400 hover:underline text-sm">
+                    <button @click="retryRelatedVideos" class="text-blue-400 hover:underline text-sm">
                         Try again
                     </button>
                 </div>
 
                 <!-- Related videos list -->
-                <div x-show="!loadingRelated && relatedVideos.length > 0" class="flex flex-col gap-3">
-                    <template x-for="related in relatedVideos" :key="related.id">
-                        <a :href="'/watch/' + related.slug" class="video-card video-card--list group">
+                <div x-show="_showRelatedList" class="flex flex-col gap-3">
+                    <template x-for="(related, idx) in relatedVideos" :key="idx">
+                        <a :href="related._href" class="video-card video-card--list group">
                             <div class="video-card--list__thumbnail">
                                 <img :src="related.thumbnail_url" :alt="related.title" loading="lazy" class="video-card--list__img">
-                                <span class="video-card__duration" x-text="formatDuration(related.duration)"></span>
+                                <span class="video-card__duration" x-text="related._duration"></span>
                             </div>
                             <div class="video-card--list__info">
                                 <h3 class="video-card--list__title" x-text="related.title"></h3>
-                                <p class="video-card--list__meta" x-text="related.category_name || 'Uncategorized'"></p>
-                                <p x-show="showViewCounts" class="video-card--list__views text-dark-500 text-xs" x-text="VLogUtils.formatViewCount(related.view_count)"></p>
+                                <p class="video-card--list__meta" x-text="related._category"></p>
+                                <p x-show="showViewCounts" class="video-card--list__views text-dark-500 text-xs" x-text="related._viewCount"></p>
                             </div>
                         </a>
                     </template>
                 </div>
 
                 <!-- Empty state -->
-                <div x-show="!loadingRelated && !relatedError && relatedVideos.length === 0" class="text-center py-4">
+                <div x-show="_showRelatedEmpty" class="text-center py-4">
                     <p class="text-dark-400 text-sm">No related videos found</p>
                 </div>
             </aside>
@@ -294,7 +303,7 @@
             <div class="site-footer__content">
                 <div class="site-footer__brand">
                     <a href="/" class="site-footer__logo">Damen's VLog</a>
-                    <p class="site-footer__tagline" x-show="showTagline && tagline" x-text="tagline"></p>
+                    <p class="site-footer__tagline" x-show="_showFooterTagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
                     <div class="site-footer__nav-group">
@@ -304,7 +313,7 @@
                 </nav>
             </div>
             <div class="site-footer__bottom">
-                <p class="site-footer__copyright">&copy; <span x-text="new Date().getFullYear()"></span> Damen's VLog. All rights reserved.</p>
+                <p class="site-footer__copyright">&copy; <span x-text="_currentYear"></span> Damen's VLog. All rights reserved.</p>
             </div>
         </div>
     </footer>

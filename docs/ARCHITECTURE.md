@@ -30,15 +30,15 @@ VLog is a self-hosted video platform built with Python/FastAPI for the backend a
         +-----------v-----------+   +-------v-------+   +-----------v-----------+
         |  PostgreSQL Database  |   | Redis (opt.)  |   |     Worker API        |
         |   (vlog database)     |   | Job Queue &   |   |     FastAPI :9002     |
-        +-----------+-----------+   |  Pub/Sub      |   +-----------+-----------+
-                    |               +-------+-------+               |
+        |   + Settings Service  |   |  Pub/Sub      |   +-----------+-----------+
+        +-----------+-----------+   +-------+-------+               |
                     |                       |                       |
      +--------------+--+--------------------+-------+---------------+
      |                 |                    |       |               |
 +----v----+    +-------v-----+    +--------v--+  +--v----------+  +-v------------+
-| Local   |    | Transcription|   | NAS Storage|  | Kubernetes |  | Real-time    |
-|Transcoder|   | Worker       |   | /mnt/nas/  |  | Workers    |  | SSE Updates  |
-|(inotify) |   | (whisper)    |   | vlog-storage| | (remote)   |  | (Admin UI)   |
+| Local   |    | Transcription|   | NAS Storage|  | Kubernetes |  | Webhook      |
+|Transcoder|   | Worker       |   | /mnt/nas/  |  | Workers    |  | Delivery &   |
+|(inotify) |   | (whisper)    |   | vlog-storage| | (remote)   |  | SSE Updates  |
 +----------+   +--------------+   +------------+  +------------+  +--------------+
 ```
 
@@ -96,11 +96,13 @@ Central coordinator for distributed transcoding:
 - Atomic job claiming with expiration
 - Progress updates (reflected in admin UI)
 - Source file download and HLS upload
+- Deployment event tracking
 
 **Security:**
-- API key authentication (SHA-256 hashed)
-- Prefix-based key lookup
+- API key authentication (argon2id hashed, migrated from SHA-256)
+- Prefix-based key lookup for efficient authentication
 - Per-worker revocation
+- Version gating to prevent stale workers from processing
 
 ### Shared API Utilities
 
@@ -118,6 +120,9 @@ Central coordinator for distributed transcoding:
 | `redis_client.py` | Redis connection pool with circuit breaker pattern |
 | `job_queue.py` | Redis Streams job queue abstraction with priority levels |
 | `pubsub.py` | Redis Pub/Sub for real-time progress updates |
+| `settings_service.py` | Database-backed settings with caching and env var fallback |
+| `webhook_service.py` | Webhook notification delivery with circuit breaker |
+| `worker_auth.py` | API key authentication with argon2id hashing |
 
 ### 4. Local Transcoding Worker
 
@@ -253,7 +258,7 @@ PostgreSQL provides concurrent read/write support, making it suitable for multi-
 - `playlist_items` - Many-to-many with ordering between playlists and videos
 - `chapters` - Video chapter markers for timeline navigation
 - `sprite_queue` - Background sprite sheet generation jobs
-- `custom_field_definitions` - User-defined metadata field definitions (Issue #224)
+- `custom_field_definitions` - User-defined metadata field definitions
 - `video_custom_fields` - Custom field values per video
 - `viewers` - Cookie-based viewer tracking
 - `playback_sessions` - Watch analytics (partitioned by month)
@@ -261,7 +266,12 @@ PostgreSQL provides concurrent read/write support, making it suitable for multi-
 - `quality_progress` - Per-quality transcoding progress
 - `transcriptions` - Whisper transcription records
 - `workers` - Registered remote workers with status tracking
-- `worker_api_keys` - API key authentication (SHA-256 hashed)
+- `worker_api_keys` - API key authentication (argon2id with hash_version tracking)
+- `settings` - Runtime configuration with categories, types, and constraints
+- `webhooks` - Webhook endpoint configurations with event subscriptions
+- `webhook_deliveries` - Delivery history with retry tracking
+- `reencode_queue` - Background re-encode job queue with priority levels
+- `deployment_events` - Worker deployment tracking for rollbacks
 
 ### 8. Redis (Optional)
 
@@ -374,6 +384,90 @@ VLog exposes comprehensive metrics at `/metrics` (Admin API) and `/api/metrics` 
 - Rotating file handler with configurable retention
 
 See [MONITORING.md](MONITORING.md) for complete metrics documentation.
+
+### 13. Settings Service
+
+**Location:** `api/settings_service.py`
+
+Database-backed runtime configuration system replacing environment variables:
+
+**Features:**
+- In-memory caching with configurable TTL (default: 60 seconds)
+- Fallback to environment variables during migration
+- Type coercion and validation (integer, float, boolean, string, json)
+- Constraints (min, max, allowed values)
+- Category-based organization
+- Thread-safe cache operations
+
+**Setting Categories:**
+- `transcoding.*` - HLS segment duration, quality settings
+- `transcription.*` - Whisper model, language settings
+- `rate_limiting.*` - Per-endpoint rate limits
+- `webhooks.*` - Webhook delivery configuration
+- `storage.*` - Path and retention settings
+- `alerts.*` - Alert thresholds and webhook URLs
+
+**CLI Management:**
+```bash
+vlog settings list                     # List all settings
+vlog settings get transcoding.hls_segment_duration
+vlog settings set transcoding.hls_segment_duration 10
+vlog settings migrate-from-env         # Import from environment
+```
+
+### 14. Webhook Notification Service
+
+**Location:** `api/webhook_service.py`
+
+Event-driven notification system for external integrations:
+
+**Supported Events:**
+- `video.ready` / `video.processing` / `video.failed`
+- `video.deleted` / `video.restored` / `video.purged`
+- `transcription.complete` / `transcription.failed`
+- `worker.connected` / `worker.disconnected`
+
+**Security Features:**
+- HMAC-SHA256 signature verification
+- SSRF protection (blocks private IP ranges, localhost, link-local)
+- Per-webhook secret keys
+- Circuit breaker pattern (opens after consecutive failures)
+
+**Delivery Features:**
+- Exponential backoff retry (configurable max retries)
+- Concurrent delivery with configurable parallelism
+- Delivery history with response tracking
+- Manual retry from admin UI
+
+**Flow:**
+```
+Event occurs → Create delivery records for matching webhooks →
+Background worker sends HTTP POST → Record response →
+Retry on failure with backoff → Circuit breaker if persistent failure
+```
+
+### 15. Video Downloads
+
+**Location:** `api/public.py` (download endpoints)
+
+Optional feature allowing users to download video files:
+
+**Download Types:**
+- Original source file (if enabled)
+- Transcoded quality variants (1080p, 720p, etc.)
+
+**Security:**
+- Disabled by default
+- Per-IP rate limiting (requests/hour)
+- Concurrent download limiting
+- Original downloads separately toggleable
+
+**Endpoints:**
+- `GET /api/videos/{slug}/download` - Download highest quality
+- `GET /api/videos/{slug}/download?quality=720p` - Specific quality
+- `GET /api/videos/{slug}/download?original=true` - Original file
+
+See [CONFIGURATION.md](CONFIGURATION.md#video-download-settings) for configuration options.
 
 ## Data Flow
 
