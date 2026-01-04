@@ -122,14 +122,10 @@ def get_int_env(
 
     # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
-        logger.warning(
-            f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}"
-        )
+        logger.warning(f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}")
         return default_value
     if max_val is not None and result > max_val:
-        logger.warning(
-            f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}"
-        )
+        logger.warning(f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}")
         return default_value
 
     return result
@@ -172,17 +168,14 @@ def get_float_env(
 
     # Range validation (only applied to user-provided values)
     if min_val is not None and result < min_val:
-        logger.warning(
-            f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}"
-        )
+        logger.warning(f"{env_var_name}={result} is below minimum {min_val}, using default {default_value}")
         return default_value
     if max_val is not None and result > max_val:
-        logger.warning(
-            f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}"
-        )
+        logger.warning(f"{env_var_name}={result} is above maximum {max_val}, using default {default_value}")
         return default_value
 
     return result
+
 
 # Supported video file extensions (centralized to avoid duplication)
 SUPPORTED_VIDEO_EXTENSIONS = frozenset([".mp4", ".mkv", ".webm", ".mov", ".avi"])
@@ -579,6 +572,27 @@ SPRITE_SHEET_MEMORY_THRESHOLD_PERCENT = get_int_env(
 
 # Maximum video duration (in seconds) that the sprite worker will process
 # Videos longer than this will be skipped to prevent OOM (default: 4 hours)
-SPRITE_SHEET_MAX_VIDEO_DURATION = get_int_env(
-    "VLOG_SPRITE_SHEET_MAX_VIDEO_DURATION", 14400, min_val=600
-)
+SPRITE_SHEET_MAX_VIDEO_DURATION = get_int_env("VLOG_SPRITE_SHEET_MAX_VIDEO_DURATION", 14400, min_val=600)
+
+# =============================================================================
+# Video Download Configuration (Issue #202)
+# Allow users to download videos in original or transcoded formats
+# =============================================================================
+
+# Master switch for download feature - disabled by default for security
+# Set VLOG_DOWNLOADS_ENABLED=true to enable
+DOWNLOADS_ENABLED = os.getenv("VLOG_DOWNLOADS_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Allow downloading original source files (as uploaded)
+DOWNLOADS_ALLOW_ORIGINAL = os.getenv("VLOG_DOWNLOADS_ALLOW_ORIGINAL", "false").lower() in ("true", "1", "yes")
+
+# Allow downloading transcoded quality variants (e.g., 1080p, 720p MP4)
+DOWNLOADS_ALLOW_TRANSCODED = os.getenv("VLOG_DOWNLOADS_ALLOW_TRANSCODED", "true").lower() in ("true", "1", "yes")
+
+# Rate limit for download requests per IP (requests per hour)
+# Set to 0 to disable rate limiting for downloads
+DOWNLOADS_RATE_LIMIT_PER_HOUR = get_int_env("VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR", 10, min_val=0)
+
+# Maximum concurrent downloads per IP (prevents bandwidth abuse)
+# This is tracked in-memory so resets on server restart
+DOWNLOADS_MAX_CONCURRENT = get_int_env("VLOG_DOWNLOADS_MAX_CONCURRENT", 2, min_val=1, max_val=10)
