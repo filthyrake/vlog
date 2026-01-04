@@ -162,55 +162,11 @@ playback_sessions = sa.Table(
 
 # Transcoding jobs with checkpoint support
 #
-# STATE SEMANTICS:
-# ----------------
-# Job States (derived from fields):
-# - Unclaimed: claimed_at = NULL AND completed_at = NULL
-#   → Job is available for any worker to claim
-# - Claimed: claimed_at != NULL AND claim_expires_at > NOW() AND completed_at = NULL
-#   → Worker actively processing, claim is valid
-# - Expired: claimed_at != NULL AND claim_expires_at <= NOW() AND completed_at = NULL
-#   → Worker failed to update, job ready for reclaim by stale checker
-# - Completed: completed_at != NULL
-#   → Transcoding finished successfully
-# - Failed: last_error != NULL AND attempt_number >= max_attempts
-#   → Permanently failed after all retry attempts
-# - Retrying: last_error != NULL AND attempt_number < max_attempts AND claimed_at = NULL
-#   → Failed but available for retry
+# Job state is derived from nullable field combinations. For explicit state
+# determination and SQL condition generation, use the TranscodingJobStateMachine
+# class in api/job_state.py.
 #
-# FIELD SEMANTICS:
-# ----------------
-# - video_id: Foreign key to videos table, unique (one job per video)
-# - worker_id: UUID of worker processing this job (NULL = unclaimed)
-# - claimed_at: Timestamp when worker claimed job (NULL = unclaimed)
-# - claim_expires_at: When claim expires (NULL = no active claim)
-#   → Extended by WORKER_CLAIM_DURATION_MINUTES on each progress update
-#   → Typically 30 minutes from last update
-# - started_at: First claim timestamp (persists across retries)
-# - last_checkpoint: Last progress update timestamp
-# - completed_at: Job completion timestamp (NULL = not complete)
-# - attempt_number: Current retry attempt (1-based, default 1)
-# - max_attempts: Maximum allowed attempts (default 3)
-# - last_error: Error message from most recent failure (NULL = no error)
-# - processed_by_worker_id/name: Permanent audit record of worker that processed job
-#   → Set on first claim, persists even if job is reclaimed
-#
-# STATE TRANSITIONS:
-# -----------------
-# 1. Creation: Upload → unclaimed (all claim fields NULL)
-# 2. Claim: Worker claims → set claimed_at, claim_expires_at, worker_id, started_at
-# 3. Progress: Worker updates → extend claim_expires_at, update last_checkpoint
-# 4. Complete: Worker finishes → set completed_at
-# 5. Fail (retriable): Worker fails → clear claim fields, increment attempt_number
-# 6. Fail (permanent): attempt_number >= max_attempts → keep claim data for audit
-# 7. Expire: claim_expires_at passes → stale checker clears claim fields
-#
-# CONSTRAINTS & INDEXES:
-# ---------------------
-# - video_id: UNIQUE (one job per video)
-# - claim_expires_at: INDEXED (for stale job detection)
-#
-# See docs/TRANSCODING_ARCHITECTURE.md for complete state machine documentation.
+# See also: docs/TRANSCODING_ARCHITECTURE.md
 transcoding_jobs = sa.Table(
     "transcoding_jobs",
     metadata,

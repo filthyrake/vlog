@@ -18,12 +18,8 @@ Video Status States:
 - ready: Transcoding complete, ready to stream
 - failed: Transcoding failed permanently (max retries exceeded)
 
-Job States (derived from fields):
-- Unclaimed: claimed_at = NULL, available for workers
-- Claimed: claimed_at != NULL, claim_expires_at > NOW(), actively processing
-- Expired: claimed_at != NULL, claim_expires_at <= NOW(), ready for reclaim
-- Completed: completed_at != NULL, transcoding finished
-- Failed: last_error != NULL AND attempt_number >= max_attempts, permanent failure
+Job States: See api/job_state.py for explicit state machine implementation.
+States: unclaimed, claimed, expired, completed, failed, retrying
 
 Worker States:
 - active: Recently heartbeated, available for work
