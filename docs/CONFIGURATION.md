@@ -315,7 +315,7 @@ VLOG_ADMIN_CORS_ORIGINS=http://your-server:9001,http://192.168.1.100:9001
 | `VLOG_RATE_LIMIT_WORKER_DEFAULT` | `300/minute` | Default limit for worker API endpoints |
 | `VLOG_RATE_LIMIT_WORKER_REGISTER` | `5/hour` | Limit for worker registration |
 | `VLOG_RATE_LIMIT_WORKER_PROGRESS` | `600/minute` | Limit for progress update endpoints |
-| `VLOG_RATE_LIMIT_STORAGE_URL` | `memory://` | Storage backend URL |
+| `VLOG_RATE_LIMIT_STORAGE_URL` | (auto) | Storage backend URL (see below) |
 
 **Rate Limit Format:** `count/period` where period is `second`, `minute`, `hour`, or `day`
 
@@ -323,23 +323,39 @@ VLOG_ADMIN_CORS_ORIGINS=http://your-server:9001,http://192.168.1.100:9001
 - `memory://` - In-memory storage (per-process, resets on restart)
 - `redis://localhost:6379` - Redis storage (shared across processes)
 
-**⚠️ Multi-Instance Deployments:**
+**🔒 SECURITY: Multi-Instance Rate Limiting**
 
-The default in-memory storage does not work correctly when running multiple API instances behind a load balancer. Each process maintains its own rate limit counter, so:
-- With N instances, effective rate limit is N × configured limit
-- Users can bypass rate limits by hitting different instances
+> **Warning:** In-memory rate limiting is a **security vulnerability** in multi-instance deployments. Attackers can bypass rate limits by distributing requests across instances.
 
-For production deployments with multiple instances, you **must** use Redis:
+**Auto-Detection (Recommended):**
+
+If `VLOG_REDIS_URL` is configured, rate limiting will automatically use Redis storage. This is the recommended setup for production:
 
 ```bash
-# Install redis Python package
-pip install redis
-
-# Configure Redis backend
-export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
+# Configure Redis for VLog features - rate limiting will auto-detect
+export VLOG_REDIS_URL=redis://localhost:6379
 ```
 
-The API will log a warning at startup if rate limiting is enabled with in-memory storage.
+**Explicit Configuration:**
+
+To explicitly control rate limit storage (overrides auto-detection):
+
+```bash
+# Use Redis for rate limiting
+export VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
+
+# Or force in-memory (single instance only!)
+export VLOG_RATE_LIMIT_STORAGE_URL=memory://
+```
+
+**Why Redis is Required for Multi-Instance:**
+
+Each API process maintains its own rate limit counter with in-memory storage:
+- With N instances, effective rate limit is N × configured limit
+- Attackers can bypass rate limits by hitting different instances
+- This is a security issue, not just a misconfiguration
+
+The API will log a `SECURITY` warning at startup if rate limiting is using in-memory storage.
 
 ### Redis Configuration
 
@@ -446,10 +462,14 @@ With in-memory cache, different instances may show slightly different analytics 
 
 ### Rate Limiting
 
-By default, rate limiting uses in-memory storage (per-process). For consistent rate limiting across instances:
+**Auto-Detection:** If `VLOG_REDIS_URL` is set, rate limiting automatically uses Redis storage.
+
+For explicit configuration:
 ```bash
 VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379
 ```
+
+> ⚠️ **Security:** In-memory rate limiting allows attackers to bypass limits by distributing requests across instances. See the Rate Limiting section above for details.
 
 ### Database
 

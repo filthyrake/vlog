@@ -847,12 +847,14 @@ async def lifespan(app: FastAPI):
     # Check for deprecated environment variables and warn about migration
     check_deprecated_env_vars()
 
-    # Warn about in-memory rate limiting limitations
+    # Warn about in-memory rate limiting limitations (security issue #446)
     if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
         logger.warning(
-            "Rate limiting is using in-memory storage. "
-            "For production deployments with multiple instances, configure Redis: "
-            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379"
+            "SECURITY: Rate limiting is using in-memory storage. "
+            "With multiple API instances, attackers can bypass rate limits by distributing "
+            "requests across instances. For production with load balancing, configure Redis: "
+            "VLOG_RATE_LIMIT_STORAGE_URL=redis://localhost:6379 "
+            "(or set VLOG_REDIS_URL which will be auto-detected)"
         )
     create_tables()
     await database.connect()
