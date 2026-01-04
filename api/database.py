@@ -832,6 +832,101 @@ sprite_queue = sa.Table(
 )
 
 
+# Webhook subscriptions for external integrations (Issue #203)
+# Allows external systems to receive notifications about VLog events
+#
+# SUPPORTED EVENTS:
+# -----------------
+# - video.uploaded: New video uploaded
+# - video.ready: Transcoding completed
+# - video.failed: Transcoding failed
+# - video.deleted: Video deleted
+# - video.restored: Video restored from archive
+# - transcription.completed: Transcription finished
+# - worker.registered: New worker registered
+# - worker.offline: Worker went offline
+#
+# SECURITY:
+# ---------
+# - Payloads are signed with HMAC-SHA256 using the webhook's secret
+# - Signature is sent in X-VLog-Signature header
+# - Recommend verifying signature on receiving end
+#
+# See: https://github.com/filthyrake/vlog/issues/203
+webhooks = sa.Table(
+    "webhooks",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("name", sa.String(100), nullable=False),  # Human-readable name
+    sa.Column("url", sa.String(500), nullable=False),  # Webhook endpoint URL
+    sa.Column("events", sa.Text, nullable=False),  # JSON array: ["video.ready", "video.failed"]
+    sa.Column("secret", sa.String(64), nullable=True),  # HMAC-SHA256 signing key
+    sa.Column("active", sa.Boolean, default=True),  # Can be disabled without deletion
+    sa.Column("headers", sa.Text, nullable=True),  # JSON: custom headers to include
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_triggered_at", sa.DateTime(timezone=True), nullable=True),
+    # Statistics for monitoring
+    sa.Column("total_deliveries", sa.Integer, default=0),
+    sa.Column("successful_deliveries", sa.Integer, default=0),
+    sa.Column("failed_deliveries", sa.Integer, default=0),
+    sa.Index("ix_webhooks_active", "active"),
+    sa.Index("ix_webhooks_created_at", "created_at"),
+)
+
+# Webhook delivery attempts and history (Issue #203)
+# Tracks each delivery attempt with retry support
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> delivered (success)
+# pending -> pending (retry scheduled)
+# pending -> failed_permanent (max retries exceeded)
+#
+# RETRY STRATEGY:
+# ---------------
+# Exponential backoff: delay = base_delay * (backoff_multiplier ^ attempt_number)
+# Default: 30s, 60s, 120s, 240s, 480s (5 attempts over ~15 minutes)
+webhook_deliveries = sa.Table(
+    "webhook_deliveries",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "webhook_id",
+        sa.Integer,
+        sa.ForeignKey("webhooks.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("event_type", sa.String(50), nullable=False),  # video.ready, etc.
+    sa.Column("event_data", sa.Text, nullable=False),  # JSON payload
+    sa.Column("request_body", sa.Text, nullable=True),  # Full request sent
+    sa.Column("response_status", sa.Integer, nullable=True),  # HTTP status code
+    sa.Column("response_body", sa.Text, nullable=True),  # Response (truncated)
+    sa.Column("error_message", sa.Text, nullable=True),  # Error if request failed
+    sa.Column("attempt_number", sa.Integer, default=1),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'delivered', 'failed', 'failed_permanent')",
+            name="ck_webhook_deliveries_status",
+        ),
+        default="pending",
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("duration_ms", sa.Integer, nullable=True),  # Request duration
+    sa.Index("ix_webhook_deliveries_webhook_id", "webhook_id"),
+    sa.Index("ix_webhook_deliveries_status", "status"),
+    sa.Index("ix_webhook_deliveries_event_type", "event_type"),
+    sa.Index("ix_webhook_deliveries_next_retry_at", "next_retry_at"),
+    sa.Index("ix_webhook_deliveries_created_at", "created_at"),
+    # Composite index for efficient pending delivery queries
+    sa.Index("ix_webhook_deliveries_status_next_retry", "status", "next_retry_at"),
+)
+
+
 def create_tables():
     """
     Create database tables directly using SQLAlchemy metadata.

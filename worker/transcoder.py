@@ -400,7 +400,9 @@ def calculate_ffmpeg_timeout(duration_of_video: float, target_height: int = 1080
     return max(FFMPEG_TIMEOUT_MINIMUM, min(timeout, FFMPEG_TIMEOUT_MAXIMUM))
 
 
-async def cleanup_ffmpeg_process(target_subprocess: asyncio.subprocess.Process, logging_description: str = "FFmpeg") -> None:
+async def cleanup_ffmpeg_process(
+    target_subprocess: asyncio.subprocess.Process, logging_description: str = "FFmpeg"
+) -> None:
     """
     Clean up an FFmpeg subprocess, handling race conditions where the process
     may exit between checking returncode and calling kill().
@@ -1442,9 +1444,7 @@ async def generate_master_playlist_cmaf(
             extracted = await extract_codec_string_from_file(init_segment)
             if extracted:
                 quality_codec_strings[quality["name"]] = extracted
-                logger.debug(
-                    f"Extracted codec string for {quality['name']}: {extracted}"
-                )
+                logger.debug(f"Extracted codec string for {quality['name']}: {extracted}")
 
     for quality in qualities_with_bandwidth:
         # Use extracted codec string if available, otherwise use defaults
@@ -1455,8 +1455,8 @@ async def generate_master_playlist_cmaf(
         else:
             quality_codec = default_codec_string
         master_content += (
-            f'#EXT-X-STREAM-INF:BANDWIDTH={quality["bandwidth"]},'
-            f'RESOLUTION={quality["width"]}x{quality["height"]},'
+            f"#EXT-X-STREAM-INF:BANDWIDTH={quality['bandwidth']},"
+            f"RESOLUTION={quality['width']}x{quality['height']},"
             f'CODECS="{quality_codec}"\n'
         )
         # Original quality uses legacy TS format at root, transcoded use CMAF subdirs
@@ -2728,9 +2728,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         elif failed_qualities:
             # Partial success - some qualities failed
             completed = len(successful_qualities)
-            print(
-                f"  WARNING: Partial transcoding success - {completed}/{total_qualities} quality variants completed"
-            )
+            print(f"  WARNING: Partial transcoding success - {completed}/{total_qualities} quality variants completed")
             print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
                 print(f"    - {failed['name']}: {truncate_error(failed['error'], ERROR_DETAIL_MAX_LENGTH)}")
@@ -2833,7 +2831,9 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         )
                     )
                     await database.execute(
-                        videos.update().where(videos.c.id == video_id).values(
+                        videos.update()
+                        .where(videos.c.id == video_id)
+                        .values(
                             sprite_sheet_status="pending",
                             sprite_sheet_error=None,
                         )
@@ -2846,6 +2846,24 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # NOTE: Source file is intentionally kept for potential future re-transcoding
         # (e.g., if new quality presets are added or original quality is needed)
         print(f"  Done! Video is ready. Source file preserved at: {source_file}")
+
+        # Trigger webhook event for video.ready (Issue #203)
+        try:
+            from api.webhook_service import trigger_webhook_event
+
+            await trigger_webhook_event(
+                "video.ready",
+                {
+                    "video_id": video_id,
+                    "slug": video_slug,
+                    "title": video_row["title"] if video_row else "",
+                    "qualities": [q["name"] for q in successful_qualities],
+                    "streaming_format": streaming_format,
+                },
+            )
+        except Exception as webhook_err:
+            print(f"  Warning: Failed to trigger webhook for video.ready: {webhook_err}")
+
         return True
 
     except Exception as e:
@@ -2896,6 +2914,23 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         last_error=str(e),
                     )
                 )
+
+            # Trigger webhook event for video.failed (permanent failure) (Issue #203)
+            try:
+                from api.webhook_service import trigger_webhook_event
+
+                await trigger_webhook_event(
+                    "video.failed",
+                    {
+                        "video_id": video_id,
+                        "slug": video_slug,
+                        "error": str(e)[:500],
+                        "attempt_number": job["attempt_number"] if job else 1,
+                        "max_attempts": job["max_attempts"] if job else 3,
+                    },
+                )
+            except Exception as webhook_err:
+                print(f"  Warning: Failed to trigger webhook for video.failed: {webhook_err}")
 
         return False
 

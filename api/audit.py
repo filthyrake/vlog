@@ -97,6 +97,12 @@ class AuditAction(str, Enum):
     PLAYLIST_VIDEO_REMOVE = "playlist_video_remove"
     PLAYLIST_REORDER = "playlist_reorder"
 
+    # Webhook actions (Issue #203)
+    WEBHOOK_CREATE = "webhook_create"
+    WEBHOOK_UPDATE = "webhook_update"
+    WEBHOOK_DELETE = "webhook_delete"
+    WEBHOOK_RETRY = "webhook_retry"
+
 
 class AuditLogger:
     """

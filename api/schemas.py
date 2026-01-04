@@ -1,7 +1,10 @@
+import ipaddress
 import math
+import socket
 from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional, Set
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -1307,3 +1310,295 @@ class SpriteQueueJobsResponse(BaseModel):
     jobs: List[SpriteQueueJob]
     count: int
     total: int
+
+
+# ============ Webhook Models (Issue #203) ============
+
+# SSRF Protection: Blocked IP ranges for webhook URLs
+# These ranges are internal/private networks that should never be webhook targets
+BLOCKED_IP_RANGES = [
+    ipaddress.ip_network("0.0.0.0/8"),  # Current network
+    ipaddress.ip_network("10.0.0.0/8"),  # Private network
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local (AWS metadata)
+    ipaddress.ip_network("172.16.0.0/12"),  # Private network
+    ipaddress.ip_network("192.168.0.0/16"),  # Private network
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 unique local
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+]
+
+# Known cloud metadata endpoints that must be blocked
+BLOCKED_HOSTNAMES = {
+    "metadata.google.internal",
+    "metadata.google.internal.",
+    "169.254.169.254",  # AWS/GCP/Azure metadata
+}
+
+# Minimum secret length for HMAC signing security
+MINIMUM_SECRET_LENGTH = 32
+
+
+def validate_webhook_url(url: str) -> str:
+    """
+    Validate webhook URL for SSRF protection.
+
+    Blocks:
+    - Internal/private IP ranges (10.x, 172.16.x, 192.168.x, 127.x)
+    - Cloud metadata endpoints (169.254.169.254)
+    - Link-local addresses
+    - IPv6 private ranges
+
+    Args:
+        url: The webhook URL to validate
+
+    Returns:
+        The validated URL
+
+    Raises:
+        ValueError: If URL is invalid or targets a blocked address
+    """
+    # Basic URL format validation
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise ValueError("Invalid URL format")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL must have a valid hostname")
+
+    # Normalize hostname for comparison
+    hostname_lower = hostname.lower()
+
+    # Block known metadata hostnames
+    if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.rstrip(".") in BLOCKED_HOSTNAMES:
+        raise ValueError("URL targets a blocked hostname (cloud metadata endpoint)")
+
+    # Try to resolve hostname and check IP
+    try:
+        # Get all IP addresses for the hostname
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for family, _, _, _, sockaddr in addr_info:
+            if family == socket.AF_INET:
+                ip = ipaddress.ip_address(sockaddr[0])
+            elif family == socket.AF_INET6:
+                ip = ipaddress.ip_address(sockaddr[0])
+            else:
+                continue
+
+            # Check against blocked ranges
+            for blocked_range in BLOCKED_IP_RANGES:
+                if ip in blocked_range:
+                    raise ValueError(f"URL targets a blocked IP range ({ip} is in {blocked_range})")
+
+    except socket.gaierror:
+        # DNS resolution failed - allow for now, will fail on actual delivery
+        # This allows webhooks to be configured before DNS is set up
+        pass
+    except ValueError as e:
+        # Re-raise validation errors
+        if "blocked" in str(e).lower():
+            raise
+        # Other IP parsing errors are ignored
+        pass
+
+    return url
+
+
+class WebhookEventType(str, Enum):
+    """Supported webhook event types."""
+
+    VIDEO_UPLOADED = "video.uploaded"
+    VIDEO_READY = "video.ready"
+    VIDEO_FAILED = "video.failed"
+    VIDEO_DELETED = "video.deleted"
+    VIDEO_RESTORED = "video.restored"
+    TRANSCRIPTION_COMPLETED = "transcription.completed"
+    WORKER_REGISTERED = "worker.registered"
+    WORKER_OFFLINE = "worker.offline"
+
+
+# Valid event type strings for validation
+WEBHOOK_EVENT_TYPES: Set[str] = {e.value for e in WebhookEventType}
+
+
+class WebhookCreate(BaseModel):
+    """Request to create a new webhook subscription."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Human-readable webhook name")
+    url: str = Field(..., min_length=10, max_length=500, description="Webhook endpoint URL")
+    events: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=20,
+        description="List of event types to subscribe to",
+    )
+    secret: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Secret key for HMAC-SHA256 payload signing",
+    )
+    active: bool = Field(default=True, description="Whether the webhook is active")
+    headers: Optional[dict] = Field(
+        default=None,
+        description="Custom headers to include in webhook requests",
+    )
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        # Use SSRF-protected URL validation
+        return validate_webhook_url(v)
+
+    @field_validator("events")
+    @classmethod
+    def validate_events(cls, v: List[str]) -> List[str]:
+        for event in v:
+            if event not in WEBHOOK_EVENT_TYPES:
+                valid_events = ", ".join(sorted(WEBHOOK_EVENT_TYPES))
+                raise ValueError(f"Invalid event type: {event}. Valid types: {valid_events}")
+        return v
+
+    @field_validator("secret")
+    @classmethod
+    def validate_secret(cls, v: Optional[str]) -> Optional[str]:
+        # Enforce minimum secret length for security
+        if v is not None and len(v) < MINIMUM_SECRET_LENGTH:
+            raise ValueError(f"Secret must be at least {MINIMUM_SECRET_LENGTH} characters for security")
+        return v
+
+
+class WebhookUpdate(BaseModel):
+    """Request to update an existing webhook."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    url: Optional[str] = Field(default=None, min_length=10, max_length=500)
+    events: Optional[List[str]] = Field(default=None, min_length=1, max_length=20)
+    secret: Optional[str] = Field(default=None, max_length=64)
+    active: Optional[bool] = None
+    headers: Optional[dict] = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            # Use SSRF-protected URL validation
+            return validate_webhook_url(v)
+        return v
+
+    @field_validator("events")
+    @classmethod
+    def validate_events(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is not None:
+            for event in v:
+                if event not in WEBHOOK_EVENT_TYPES:
+                    valid_events = ", ".join(sorted(WEBHOOK_EVENT_TYPES))
+                    raise ValueError(f"Invalid event type: {event}. Valid types: {valid_events}")
+        return v
+
+    @field_validator("secret")
+    @classmethod
+    def validate_secret(cls, v: Optional[str]) -> Optional[str]:
+        # Enforce minimum secret length for security
+        if v is not None and len(v) < MINIMUM_SECRET_LENGTH:
+            raise ValueError(f"Secret must be at least {MINIMUM_SECRET_LENGTH} characters for security")
+        return v
+
+
+class WebhookResponse(BaseModel):
+    """Response for a single webhook."""
+
+    id: int
+    name: str
+    url: str
+    events: List[str]
+    active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    last_triggered_at: Optional[datetime] = None
+    total_deliveries: int = 0
+    successful_deliveries: int = 0
+    failed_deliveries: int = 0
+    # Secret is never returned for security
+    has_secret: bool = False
+
+
+class WebhookListResponse(BaseModel):
+    """Response for webhook listing."""
+
+    webhooks: List[WebhookResponse]
+    total_count: int
+
+
+class WebhookDeliveryResponse(BaseModel):
+    """Response for a single webhook delivery attempt."""
+
+    id: int
+    webhook_id: int
+    event_type: str
+    status: str  # pending, delivered, failed, failed_permanent
+    attempt_number: int
+    response_status: Optional[int] = None
+    error_message: Optional[str] = None
+    duration_ms: Optional[int] = None
+    created_at: datetime
+    next_retry_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+
+
+class WebhookDeliveryDetailResponse(WebhookDeliveryResponse):
+    """Detailed response for a webhook delivery including payload data."""
+
+    event_data: Optional[dict] = None
+    request_body: Optional[str] = None
+    response_body: Optional[str] = None
+
+
+class WebhookDeliveryListResponse(BaseModel):
+    """Response for webhook delivery listing."""
+
+    deliveries: List[WebhookDeliveryResponse]
+    count: int
+    total: int
+
+
+class WebhookTestRequest(BaseModel):
+    """Request to test a webhook with a sample payload."""
+
+    event_type: str = Field(
+        default="video.ready",
+        description="Event type to simulate",
+    )
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, v: str) -> str:
+        if v not in WEBHOOK_EVENT_TYPES:
+            valid_events = ", ".join(sorted(WEBHOOK_EVENT_TYPES))
+            raise ValueError(f"Invalid event type: {v}. Valid types: {valid_events}")
+        return v
+
+
+class WebhookTestResponse(BaseModel):
+    """Response from testing a webhook."""
+
+    success: bool
+    status_code: Optional[int] = None
+    response_body: Optional[str] = None
+    error_message: Optional[str] = None
+    duration_ms: int
+
+
+class WebhookStatsResponse(BaseModel):
+    """Overview statistics for all webhooks."""
+
+    total_webhooks: int = 0
+    active_webhooks: int = 0
+    pending_deliveries: int = 0
+    failed_deliveries: int = 0
+    total_deliveries_24h: int = 0
+    successful_deliveries_24h: int = 0

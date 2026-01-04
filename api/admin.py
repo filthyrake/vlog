@@ -68,6 +68,8 @@ from api.database import (
     video_qualities,
     video_tags,
     videos,
+    webhook_deliveries,
+    webhooks,
     worker_api_keys,
     workers,
 )
@@ -178,6 +180,16 @@ from api.schemas import (
     VideoResponse,
     VideoTagInfo,
     VideoTagsUpdate,
+    WebhookCreate,
+    WebhookDeliveryDetailResponse,
+    WebhookDeliveryListResponse,
+    WebhookDeliveryResponse,
+    WebhookListResponse,
+    WebhookResponse,
+    WebhookStatsResponse,
+    WebhookTestRequest,
+    WebhookTestResponse,
+    WebhookUpdate,
     WorkerDashboardResponse,
     WorkerDashboardStatus,
     WorkerDetailResponse,
@@ -900,6 +912,12 @@ async def lifespan(app: FastAPI):
     # Issue #207: Start background tasks for dynamic metrics (heartbeat ages, storage reconciliation)
     await start_metrics_background_tasks(database, storage_path=VIDEOS_DIR)
 
+    # Issue #203: Start webhook delivery background worker (with crash recovery)
+    from api.webhook_service import start_webhook_delivery_worker, stop_webhook_delivery_worker
+
+    await start_webhook_delivery_worker()
+    logger.info("Webhook delivery worker started (with crash recovery)")
+
     yield
 
     # Cancel background cleanup task
@@ -909,6 +927,10 @@ async def lifespan(app: FastAPI):
             await _session_cleanup_task
         except asyncio.CancelledError:
             pass
+
+    # Issue #203: Stop webhook delivery worker gracefully
+    await stop_webhook_delivery_worker(timeout=10.0)
+    logger.info("Webhook delivery worker stopped")
 
     # Issue #207: Stop metrics background tasks
     await stop_metrics_background_tasks()
@@ -1844,6 +1866,22 @@ async def upload_video(
         },
     )
 
+    # Trigger webhook event (Issue #203)
+    try:
+        from api.webhook_service import trigger_webhook_event
+
+        await trigger_webhook_event(
+            "video.uploaded",
+            {
+                "video_id": video_id,
+                "slug": slug,
+                "title": title,
+                "filename": file.filename,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to trigger webhook for video.uploaded: {e}")
+
     return {
         "status": "ok",
         "video_id": video_id,
@@ -2597,6 +2635,22 @@ async def delete_video(
             details={"permanent": False, "title": row["title"]},
         )
 
+        # Trigger webhook event (Issue #203)
+        try:
+            from api.webhook_service import trigger_webhook_event
+
+            await trigger_webhook_event(
+                "video.deleted",
+                {
+                    "video_id": video_id,
+                    "slug": row["slug"],
+                    "title": row["title"],
+                    "permanent": False,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to trigger webhook for video.deleted: {e}")
+
         return {"status": "ok", "message": "Video moved to archive"}
 
 
@@ -3116,6 +3170,21 @@ async def restore_video(request: Request, video_id: int):
         resource_name=row["slug"],
         details={"title": row["title"]},
     )
+
+    # Trigger webhook event (Issue #203)
+    try:
+        from api.webhook_service import trigger_webhook_event
+
+        await trigger_webhook_event(
+            "video.restored",
+            {
+                "video_id": video_id,
+                "slug": row["slug"],
+                "title": row["title"],
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to trigger webhook for video.restored: {e}")
 
     return {"status": "ok", "message": "Video restored from archive"}
 
@@ -8452,9 +8521,7 @@ async def auto_detect_chapters(
 
             # Re-check chapter count inside transaction (race condition protection)
             current_count = await database.fetch_val(
-                sa.select(sa.func.count()).select_from(chapters).where(
-                    chapters.c.video_id == video_id
-                )
+                sa.select(sa.func.count()).select_from(chapters).where(chapters.c.video_id == video_id)
             )
             if current_count > 0 and not data.replace_existing:
                 raise HTTPException(
@@ -8464,9 +8531,7 @@ async def auto_detect_chapters(
 
             # Delete existing chapters if replacing
             if data.replace_existing and current_count > 0:
-                await database.execute(
-                    chapters.delete().where(chapters.c.video_id == video_id)
-                )
+                await database.execute(chapters.delete().where(chapters.c.video_id == video_id))
 
             # Batch insert all chapters with a single INSERT ... RETURNING query
             if detected_chapters:
@@ -8485,12 +8550,16 @@ async def auto_detect_chapters(
                 ]
 
                 # Use INSERT ... RETURNING for batch insert with IDs
-                insert_query = chapters.insert().values(chapter_values).returning(
-                    chapters.c.id,
-                    chapters.c.title,
-                    chapters.c.start_time,
-                    chapters.c.end_time,
-                    chapters.c.position,
+                insert_query = (
+                    chapters.insert()
+                    .values(chapter_values)
+                    .returning(
+                        chapters.c.id,
+                        chapters.c.title,
+                        chapters.c.start_time,
+                        chapters.c.end_time,
+                        chapters.c.position,
+                    )
                 )
                 inserted_rows = await database.fetch_all(insert_query)
 
@@ -8511,9 +8580,7 @@ async def auto_detect_chapters(
                 ]
 
             # Update has_chapters flag
-            await database.execute(
-                videos.update().where(videos.c.id == video_id).values(has_chapters=True)
-            )
+            await database.execute(videos.update().where(videos.c.id == video_id).values(has_chapters=True))
 
     try:
         await execute_with_retry(do_create_chapters_transaction)
@@ -9154,6 +9221,510 @@ async def get_job_queue_stats(request: Request):
     stats["dlq_warning_threshold"] = depth_warning_threshold
 
     return stats
+
+
+# ============ Webhook Management Endpoints (Issue #203) ============
+
+
+@app.get("/api/webhooks")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_webhooks(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum webhooks to return"),
+    offset: int = Query(default=0, ge=0, description="Number of webhooks to skip"),
+    active_only: bool = Query(default=False, description="Only return active webhooks"),
+) -> WebhookListResponse:
+    """
+    List all configured webhooks with pagination.
+
+    Returns webhooks with their configuration and delivery statistics.
+    Secrets are never included in responses.
+
+    Query Parameters:
+    - limit: Maximum webhooks to return (default 50, max 100)
+    - offset: Number of webhooks to skip (default 0)
+    - active_only: Filter to only active webhooks (default false)
+    """
+    # Build query with optional filter
+    base_query = webhooks.select()
+    if active_only:
+        base_query = base_query.where(webhooks.c.active == True)  # noqa: E712
+
+    # Get total count for pagination
+    count_query = sa.select(sa.func.count()).select_from(webhooks)
+    if active_only:
+        count_query = count_query.where(webhooks.c.active == True)  # noqa: E712
+    total_count = await fetch_val_with_retry(count_query) or 0
+
+    # Apply pagination
+    query = base_query.order_by(webhooks.c.created_at.desc()).limit(limit).offset(offset)
+    rows = await fetch_all_with_retry(query)
+
+    webhook_list = []
+    for row in rows:
+        try:
+            events = json.loads(row["events"]) if row["events"] else []
+        except (json.JSONDecodeError, TypeError):
+            events = []
+
+        webhook_list.append(
+            WebhookResponse(
+                id=row["id"],
+                name=row["name"],
+                url=row["url"],
+                events=events,
+                active=row["active"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                last_triggered_at=row["last_triggered_at"],
+                total_deliveries=row["total_deliveries"] or 0,
+                successful_deliveries=row["successful_deliveries"] or 0,
+                failed_deliveries=row["failed_deliveries"] or 0,
+                has_secret=bool(row["secret"]),
+            )
+        )
+
+    return WebhookListResponse(webhooks=webhook_list, total_count=total_count)
+
+
+@app.get("/api/webhooks/stats")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_webhook_stats(request: Request) -> WebhookStatsResponse:
+    """
+    Get webhook system statistics.
+
+    Returns overview statistics including total webhooks,
+    pending/failed deliveries, and 24-hour delivery counts.
+    """
+    now = datetime.now(timezone.utc)
+    yesterday = now - timedelta(days=1)
+
+    # Count webhooks
+    total_webhooks = await fetch_val_with_retry(sa.select(sa.func.count()).select_from(webhooks))
+    active_webhooks = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(webhooks).where(webhooks.c.active == True)  # noqa: E712
+    )
+
+    # Count deliveries
+    pending_deliveries = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(webhook_deliveries).where(webhook_deliveries.c.status == "pending")
+    )
+    failed_deliveries = await fetch_val_with_retry(
+        sa.select(sa.func.count())
+        .select_from(webhook_deliveries)
+        .where(webhook_deliveries.c.status == "failed_permanent")
+    )
+
+    # 24-hour stats
+    total_24h = await fetch_val_with_retry(
+        sa.select(sa.func.count()).select_from(webhook_deliveries).where(webhook_deliveries.c.created_at >= yesterday)
+    )
+    successful_24h = await fetch_val_with_retry(
+        sa.select(sa.func.count())
+        .select_from(webhook_deliveries)
+        .where(webhook_deliveries.c.created_at >= yesterday)
+        .where(webhook_deliveries.c.status == "delivered")
+    )
+
+    return WebhookStatsResponse(
+        total_webhooks=total_webhooks or 0,
+        active_webhooks=active_webhooks or 0,
+        pending_deliveries=pending_deliveries or 0,
+        failed_deliveries=failed_deliveries or 0,
+        total_deliveries_24h=total_24h or 0,
+        successful_deliveries_24h=successful_24h or 0,
+    )
+
+
+@app.post("/api/webhooks", status_code=201)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_webhook(request: Request, data: WebhookCreate) -> WebhookResponse:
+    """
+    Create a new webhook subscription.
+
+    Configure a new webhook to receive event notifications.
+    Provide a list of event types to subscribe to.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Prepare headers JSON
+    headers_json = json.dumps(data.headers) if data.headers else None
+
+    try:
+        result = await database.execute(
+            webhooks.insert().values(
+                name=data.name,
+                url=data.url,
+                events=json.dumps(data.events),
+                secret=data.secret,
+                active=data.active,
+                headers=headers_json,
+                created_at=now,
+                total_deliveries=0,
+                successful_deliveries=0,
+                failed_deliveries=0,
+            )
+        )
+
+        webhook_id = result
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_CREATE,
+            entity_type="webhook",
+            entity_id=webhook_id,
+            details={"name": data.name, "url": data.url, "events": data.events},
+        )
+
+        return WebhookResponse(
+            id=webhook_id,
+            name=data.name,
+            url=data.url,
+            events=data.events,
+            active=data.active,
+            created_at=now,
+            total_deliveries=0,
+            successful_deliveries=0,
+            failed_deliveries=0,
+            has_secret=bool(data.secret),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to create webhook: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="create_webhook"),
+        )
+
+
+@app.get("/api/webhooks/{webhook_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_webhook(request: Request, webhook_id: int) -> WebhookResponse:
+    """
+    Get a specific webhook by ID.
+
+    Returns the webhook configuration and delivery statistics.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    try:
+        events = json.loads(row["events"]) if row["events"] else []
+    except (json.JSONDecodeError, TypeError):
+        events = []
+
+    return WebhookResponse(
+        id=row["id"],
+        name=row["name"],
+        url=row["url"],
+        events=events,
+        active=row["active"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        last_triggered_at=row["last_triggered_at"],
+        total_deliveries=row["total_deliveries"] or 0,
+        successful_deliveries=row["successful_deliveries"] or 0,
+        failed_deliveries=row["failed_deliveries"] or 0,
+        has_secret=bool(row["secret"]),
+    )
+
+
+@app.put("/api/webhooks/{webhook_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_webhook(request: Request, webhook_id: int, data: WebhookUpdate) -> WebhookResponse:
+    """
+    Update an existing webhook.
+
+    Only provided fields will be updated.
+    Set secret to empty string to remove the signing key.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    now = datetime.now(timezone.utc)
+    update_values = {"updated_at": now}
+
+    if data.name is not None:
+        update_values["name"] = data.name
+    if data.url is not None:
+        update_values["url"] = data.url
+    if data.events is not None:
+        update_values["events"] = json.dumps(data.events)
+    if data.secret is not None:
+        update_values["secret"] = data.secret if data.secret else None
+    if data.active is not None:
+        update_values["active"] = data.active
+    if data.headers is not None:
+        update_values["headers"] = json.dumps(data.headers) if data.headers else None
+
+    try:
+        await database.execute(webhooks.update().where(webhooks.c.id == webhook_id).values(**update_values))
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_UPDATE,
+            entity_type="webhook",
+            entity_id=webhook_id,
+            details={"fields_updated": list(update_values.keys())},
+        )
+
+        # Fetch updated record
+        updated = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+        try:
+            events = json.loads(updated["events"]) if updated["events"] else []
+        except (json.JSONDecodeError, TypeError):
+            events = []
+
+        return WebhookResponse(
+            id=updated["id"],
+            name=updated["name"],
+            url=updated["url"],
+            events=events,
+            active=updated["active"],
+            created_at=updated["created_at"],
+            updated_at=updated["updated_at"],
+            last_triggered_at=updated["last_triggered_at"],
+            total_deliveries=updated["total_deliveries"] or 0,
+            successful_deliveries=updated["successful_deliveries"] or 0,
+            failed_deliveries=updated["failed_deliveries"] or 0,
+            has_secret=bool(updated["secret"]),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to update webhook {webhook_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="update_webhook"),
+        )
+
+
+@app.delete("/api/webhooks/{webhook_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_webhook(request: Request, webhook_id: int):
+    """
+    Delete a webhook.
+
+    Permanently removes the webhook and all associated delivery history.
+    This action cannot be undone.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    try:
+        # Deliveries will be cascade-deleted by FK constraint
+        await database.execute(webhooks.delete().where(webhooks.c.id == webhook_id))
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_DELETE,
+            entity_type="webhook",
+            entity_id=webhook_id,
+            details={"name": row["name"], "url": row["url"]},
+        )
+
+        return {"status": "ok", "message": f"Webhook '{row['name']}' deleted"}
+
+    except Exception as e:
+        logger.error(f"Failed to delete webhook {webhook_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="delete_webhook"),
+        )
+
+
+@app.post("/api/webhooks/{webhook_id}/test")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def test_webhook(
+    request: Request,
+    webhook_id: int,
+    data: WebhookTestRequest = WebhookTestRequest(),
+) -> WebhookTestResponse:
+    """
+    Send a test webhook delivery.
+
+    Sends a test payload to the webhook URL to verify configuration.
+    The test payload includes a 'test': true flag.
+    """
+    from api.webhook_service import test_webhook as do_test_webhook
+
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    result = await do_test_webhook(webhook_id, data.event_type)
+
+    return WebhookTestResponse(
+        success=result["success"],
+        status_code=result.get("status_code"),
+        response_body=result.get("response_body"),
+        error_message=result.get("error_message"),
+        duration_ms=result["duration_ms"],
+    )
+
+
+@app.get("/api/webhooks/{webhook_id}/deliveries")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_webhook_deliveries(
+    request: Request,
+    webhook_id: int,
+    status: Optional[str] = Query(None, pattern="^(pending|delivered|failed|failed_permanent)$"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> WebhookDeliveryListResponse:
+    """
+    List delivery attempts for a webhook.
+
+    Returns delivery history with filtering by status.
+    """
+    row = await fetch_one_with_retry(webhooks.select().where(webhooks.c.id == webhook_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    # Build query
+    query = (
+        webhook_deliveries.select()
+        .where(webhook_deliveries.c.webhook_id == webhook_id)
+        .order_by(webhook_deliveries.c.created_at.desc())
+    )
+
+    count_query = (
+        sa.select(sa.func.count()).select_from(webhook_deliveries).where(webhook_deliveries.c.webhook_id == webhook_id)
+    )
+
+    if status:
+        query = query.where(webhook_deliveries.c.status == status)
+        count_query = count_query.where(webhook_deliveries.c.status == status)
+
+    total = await fetch_val_with_retry(count_query)
+    rows = await fetch_all_with_retry(query.limit(limit).offset(offset))
+
+    deliveries = [
+        WebhookDeliveryResponse(
+            id=r["id"],
+            webhook_id=r["webhook_id"],
+            event_type=r["event_type"],
+            status=r["status"],
+            attempt_number=r["attempt_number"],
+            response_status=r["response_status"],
+            error_message=r["error_message"],
+            duration_ms=r["duration_ms"],
+            created_at=r["created_at"],
+            next_retry_at=r["next_retry_at"],
+            delivered_at=r["delivered_at"],
+        )
+        for r in rows
+    ]
+
+    return WebhookDeliveryListResponse(
+        deliveries=deliveries,
+        count=len(deliveries),
+        total=total or 0,
+    )
+
+
+@app.get("/api/webhooks/{webhook_id}/deliveries/{delivery_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_webhook_delivery(
+    request: Request,
+    webhook_id: int,
+    delivery_id: int,
+) -> WebhookDeliveryDetailResponse:
+    """
+    Get detailed information about a specific delivery.
+
+    Includes the full event data and request/response bodies.
+    """
+    row = await fetch_one_with_retry(
+        webhook_deliveries.select()
+        .where(webhook_deliveries.c.id == delivery_id)
+        .where(webhook_deliveries.c.webhook_id == webhook_id)
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    try:
+        event_data = json.loads(row["event_data"]) if row["event_data"] else None
+    except (json.JSONDecodeError, TypeError):
+        event_data = None
+
+    return WebhookDeliveryDetailResponse(
+        id=row["id"],
+        webhook_id=row["webhook_id"],
+        event_type=row["event_type"],
+        status=row["status"],
+        attempt_number=row["attempt_number"],
+        response_status=row["response_status"],
+        error_message=row["error_message"],
+        duration_ms=row["duration_ms"],
+        created_at=row["created_at"],
+        next_retry_at=row["next_retry_at"],
+        delivered_at=row["delivered_at"],
+        event_data=event_data,
+        request_body=row["request_body"],
+        response_body=row["response_body"],
+    )
+
+
+@app.post("/api/webhooks/{webhook_id}/deliveries/{delivery_id}/retry")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def retry_webhook_delivery(
+    request: Request,
+    webhook_id: int,
+    delivery_id: int,
+):
+    """
+    Retry a failed webhook delivery.
+
+    Resets the delivery status to pending and schedules immediate retry.
+    """
+    row = await fetch_one_with_retry(
+        webhook_deliveries.select()
+        .where(webhook_deliveries.c.id == delivery_id)
+        .where(webhook_deliveries.c.webhook_id == webhook_id)
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    if row["status"] == "delivered":
+        raise HTTPException(status_code=400, detail="Cannot retry a delivered webhook")
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        await database.execute(
+            webhook_deliveries.update()
+            .where(webhook_deliveries.c.id == delivery_id)
+            .values(
+                status="pending",
+                attempt_number=1,  # Reset attempts
+                next_retry_at=now,
+                error_message=None,
+            )
+        )
+
+        await log_audit(
+            action=AuditAction.WEBHOOK_RETRY,
+            entity_type="webhook_delivery",
+            entity_id=delivery_id,
+            details={"webhook_id": webhook_id},
+        )
+
+        return {"status": "ok", "message": "Delivery scheduled for retry"}
+
+    except Exception as e:
+        logger.error(f"Failed to retry delivery {delivery_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e), context="retry_delivery"),
+        )
 
 
 if __name__ == "__main__":
