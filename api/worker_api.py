@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Optional
 
 import sqlalchemy as sa
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
@@ -136,6 +136,10 @@ from api.worker_schemas import (
     WorkerStatusResponse,
 )
 from config import (
+    API_INCLUDE_LEGACY_ROUTES,
+    API_VERSION,
+    OPENAPI_DESCRIPTION,
+    OPENAPI_TITLE,
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
@@ -161,6 +165,8 @@ from config import (
     WORKER_HEARTBEAT_INTERVAL,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
+
+from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger("security.worker_auth")
@@ -1069,14 +1075,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="VLog Worker API",
-    description="API for distributed transcoding workers",
-    version="1.0.0",
+    title=f"{OPENAPI_TITLE} Worker",
+    description=f"{OPENAPI_DESCRIPTION} - Worker API for distributed transcoding",
+    version=API_VERSION,
     lifespan=lifespan,
 )
 
+# Create versioned API router for worker endpoints
+v1_router = APIRouter(tags=["Worker API v1"])
+
 # Request ID middleware for tracing
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(VersionHeaderMiddleware)
 
 # CORS - allow all origins since workers use API key auth (not cookies)
 # Note: allow_credentials must be False with wildcard origins per CORS spec
@@ -1103,7 +1113,7 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 # =============================================================================
 
 
-@app.post("/api/worker/register", response_model=WorkerRegisterResponse)
+@v1_router.post("/worker/register", response_model=WorkerRegisterResponse)
 @limiter.limit(RATE_LIMIT_WORKER_REGISTER)
 async def register_worker(
     request: Request,
@@ -1216,7 +1226,7 @@ async def register_worker(
 # =============================================================================
 
 
-@app.post("/api/worker/heartbeat", response_model=HeartbeatResponse)
+@v1_router.post("/worker/heartbeat", response_model=HeartbeatResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def worker_heartbeat(
     request: Request,
@@ -1371,7 +1381,7 @@ def worker_has_gpu(worker: dict) -> bool:
     return False
 
 
-@app.post("/api/worker/claim", response_model=ClaimJobResponse)
+@v1_router.post("/worker/claim", response_model=ClaimJobResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def claim_job(
     request: Request,
@@ -1744,7 +1754,7 @@ async def claim_job(
 # =============================================================================
 
 
-@app.post("/api/worker/{job_id}/progress", response_model=ProgressUpdateResponse)
+@v1_router.post("/worker/{job_id}/progress", response_model=ProgressUpdateResponse)
 @limiter.limit(RATE_LIMIT_WORKER_PROGRESS)
 async def update_progress(
     request: Request,
@@ -1861,7 +1871,7 @@ async def update_progress(
 # =============================================================================
 
 
-@app.post("/api/worker/{job_id}/complete", response_model=CompleteJobResponse)
+@v1_router.post("/worker/{job_id}/complete", response_model=CompleteJobResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def complete_job(
     request: Request,
@@ -2071,7 +2081,7 @@ async def complete_job(
 # =============================================================================
 
 
-@app.post("/api/worker/{job_id}/fail", response_model=FailJobResponse)
+@v1_router.post("/worker/{job_id}/fail", response_model=FailJobResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def fail_job(
     request: Request,
@@ -2190,7 +2200,7 @@ async def fail_job(
 # =============================================================================
 
 
-@app.get("/api/worker/source/{video_id}")
+@v1_router.get("/worker/source/{video_id}")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def download_source(
     request: Request,
@@ -2237,7 +2247,7 @@ async def download_source(
     )
 
 
-@app.post("/api/worker/upload/{video_id}/quality/{quality_name}", response_model=StatusResponse)
+@v1_router.post("/worker/upload/{video_id}/quality/{quality_name}", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_quality(
     request: Request,
@@ -2333,7 +2343,7 @@ async def upload_quality(
     return StatusResponse(status="ok", message=f"Quality {quality_name} uploaded successfully")
 
 
-@app.post("/api/worker/upload/{video_id}/finalize", response_model=StatusResponse)
+@v1_router.post("/worker/upload/{video_id}/finalize", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_finalize(
     request: Request,
@@ -2411,7 +2421,7 @@ async def upload_finalize(
     return StatusResponse(status="ok", message="Finalize files uploaded successfully")
 
 
-@app.post("/api/worker/upload/{video_id}", response_model=StatusResponse)
+@v1_router.post("/worker/upload/{video_id}", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_hls(
     request: Request,
@@ -2931,7 +2941,7 @@ async def finalize_segment_upload(
 # =============================================================================
 
 
-@app.get("/api/workers", response_model=WorkerListResponse)
+@v1_router.get("/workers", response_model=WorkerListResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def list_workers(
     request: Request,
@@ -3003,7 +3013,7 @@ async def list_workers(
     )
 
 
-@app.post("/api/workers/{worker_id}/revoke", response_model=StatusResponse)
+@v1_router.post("/workers/{worker_id}/revoke", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_REGISTER)
 async def revoke_worker(
     request: Request,
@@ -3036,7 +3046,7 @@ async def revoke_worker(
     return StatusResponse(status="ok", message=f"Worker {worker_id} has been revoked")
 
 
-@app.get("/api/health")
+@v1_router.get("/health")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def health_check(request: Request):
     """
@@ -3119,7 +3129,7 @@ async def metrics_endpoint(request: Request):
 # =============================================================================
 
 
-@app.post("/api/reencode/claim")
+@v1_router.post("/reencode/claim")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def claim_reencode_job(
     request: Request,
@@ -3176,7 +3186,7 @@ async def claim_reencode_job(
     }
 
 
-@app.get("/api/reencode/{job_id}/download")
+@v1_router.get("/reencode/{job_id}/download")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def download_reencode_source(
     request: Request,
@@ -3249,7 +3259,7 @@ async def download_reencode_source(
         raise HTTPException(status_code=500, detail=f"Failed to package files: {e}")
 
 
-@app.post("/api/reencode/{job_id}/upload")
+@v1_router.post("/reencode/{job_id}/upload")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_reencode_result(
     request: Request,
@@ -3348,7 +3358,7 @@ async def upload_reencode_result(
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
 
-@app.patch("/api/reencode/{job_id}")
+@v1_router.patch("/reencode/{job_id}")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def update_reencode_job(
     request: Request,
@@ -3393,7 +3403,7 @@ async def update_reencode_job(
 # =============================================================================
 
 
-@app.get("/api/worker/{job_id}/verify-complete")
+@v1_router.get("/worker/{job_id}/verify-complete")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def verify_job_completion(
     request: Request,
@@ -3505,6 +3515,29 @@ async def verify_job_completion(
     )
 
     return result
+
+
+# =============================================================================
+# API Router Mounting (Issue #218)
+# Mount versioned routers and configure OpenAPI documentation
+# =============================================================================
+
+# Mount v1 router at /api/v1
+app.include_router(v1_router, prefix="/api/v1")
+logger.info("Mounted Worker API v1 at /api/v1")
+
+# Mount legacy routes at /api for backwards compatibility (if enabled)
+if API_INCLUDE_LEGACY_ROUTES:
+    app.include_router(v1_router, prefix="/api", include_in_schema=False)
+    logger.info("Mounted legacy worker routes at /api (aliased to v1)")
+
+
+# Configure custom OpenAPI schema
+def custom_openapi():
+    return configure_openapi_schema(app)
+
+
+app.openapi = custom_openapi
 
 
 if __name__ == "__main__":

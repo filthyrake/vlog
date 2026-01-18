@@ -217,6 +217,43 @@ ARCHIVE_RETENTION_DAYS = get_int_env("VLOG_ARCHIVE_RETENTION_DAYS", 30, min_val=
 PUBLIC_PORT = get_int_env("VLOG_PUBLIC_PORT", 9000, min_val=1, max_val=65535)
 ADMIN_PORT = get_int_env("VLOG_ADMIN_PORT", 9001, min_val=1, max_val=65535)
 
+# =============================================================================
+# API Versioning Configuration (Issue #218)
+# Supports versioned API routes (e.g., /api/v1/videos) and OpenAPI documentation
+# =============================================================================
+
+# Current API version (used in route prefixes and documentation)
+# Changing this does NOT affect existing routes - it only sets the "current" version marker
+API_VERSION = os.getenv("VLOG_API_VERSION", "v1")
+
+# List of supported API versions (for documentation and deprecation notices)
+# Versions listed here will have routes registered and documentation generated
+API_SUPPORTED_VERSIONS = ["v1"]
+
+# Enable deprecation notices for older API versions
+# When True, deprecated versions include Deprecation and Sunset headers
+API_DEPRECATION_NOTICE = os.getenv("VLOG_API_DEPRECATION_NOTICE", "true").lower() in ("true", "1", "yes")
+
+# Sunset date for deprecated API versions (ISO 8601 format)
+# Leave empty to not include Sunset header
+API_DEPRECATION_SUNSET = os.getenv("VLOG_API_DEPRECATION_SUNSET", "")
+
+# Include legacy unversioned routes (/api/videos) that alias to current version
+# Set to false to require explicit version in all API requests
+API_INCLUDE_LEGACY_ROUTES = os.getenv("VLOG_API_INCLUDE_LEGACY_ROUTES", "true").lower() in ("true", "1", "yes")
+
+# OpenAPI documentation customization
+OPENAPI_TITLE = os.getenv("VLOG_OPENAPI_TITLE", "VLog API")
+OPENAPI_DESCRIPTION = os.getenv(
+    "VLOG_OPENAPI_DESCRIPTION",
+    "Self-hosted video platform API with versioned endpoints",
+)
+OPENAPI_TERMS_OF_SERVICE = os.getenv("VLOG_OPENAPI_TERMS_OF_SERVICE", "")
+OPENAPI_CONTACT_NAME = os.getenv("VLOG_OPENAPI_CONTACT_NAME", "")
+OPENAPI_CONTACT_EMAIL = os.getenv("VLOG_OPENAPI_CONTACT_EMAIL", "")
+OPENAPI_LICENSE_NAME = os.getenv("VLOG_OPENAPI_LICENSE_NAME", "")
+OPENAPI_LICENSE_URL = os.getenv("VLOG_OPENAPI_LICENSE_URL", "")
+
 # Transcoding quality presets (YouTube-style)
 QUALITY_PRESETS = [
     {"name": "2160p", "height": 2160, "bitrate": "15000k", "audio_bitrate": "192k"},
