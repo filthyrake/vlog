@@ -17,11 +17,9 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
-import sqlalchemy as sa
-
-from api.database import database, live_stream_segments, live_streams
+from api.database import live_stream_segments, live_streams
 from api.db_retry import fetch_all_with_retry, fetch_one_with_retry
 from config import (
     LIVE_HLS_PLAYLIST_LENGTH,
@@ -263,8 +261,9 @@ async def update_variant_playlist(
     if not segments:
         return
 
-    # Limit to playlist length
-    if len(segments) > LIVE_HLS_PLAYLIST_LENGTH:
+    # Limit to playlist length only when no explicit DVR cutoff is used.
+    # When cutoff is set, the DVR time window already constrains the playlist size.
+    if not cutoff and len(segments) > LIVE_HLS_PLAYLIST_LENGTH:
         segments = segments[-LIVE_HLS_PLAYLIST_LENGTH:]
 
     # Get media sequence (first segment's sequence number)

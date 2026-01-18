@@ -12,6 +12,7 @@ This allows live streams to become permanent VOD recordings seamlessly.
 """
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -20,9 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from slugify import slugify
-
-from api.database import database, live_stream_segments, live_streams, video_qualities, videos
+from api.database import live_stream_segments, live_streams, video_qualities, videos
 from api.db_retry import db_execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
 from api.live_playlist import QUALITY_BANDWIDTH, generate_master_playlist, generate_variant_playlist
 from config import LIVE_HLS_SEGMENT_DURATION, LIVE_STORAGE_PATH, VIDEOS_DIR
@@ -72,23 +71,26 @@ async def create_vod_from_stream(stream_id: int) -> Optional[int]:
         try:
             qualities = json.loads(stream["qualities"])
         except json.JSONDecodeError:
-            pass
+            # Invalid qualities JSON; treat as empty and return None
+            logger.warning(f"Failed to decode qualities JSON for stream {slug}")
+            qualities = []
 
     if not qualities:
         logger.warning(f"No qualities found for stream {slug}")
         return None
 
-    # Calculate total duration from segments
+    # Calculate total duration by summing segment durations from the first quality
+    # (all qualities should have the same duration)
     total_duration = 0.0
-    for quality in qualities:
+    if qualities:
         segments = await fetch_all_with_retry(
             live_stream_segments.select()
             .where(live_stream_segments.c.stream_id == stream_id)
-            .where(live_stream_segments.c.quality == quality)
+            .where(live_stream_segments.c.quality == qualities[0])
         )
         for seg in segments:
             duration_ms = seg["duration_ms"] or (LIVE_HLS_SEGMENT_DURATION * 1000)
-            total_duration = max(total_duration, duration_ms / 1000.0 * seg["sequence_number"])
+            total_duration += duration_ms / 1000.0
 
     # Get resolution from first quality
     primary_quality = qualities[0] if qualities else "720p"
@@ -159,7 +161,7 @@ async def create_vod_from_stream(stream_id: int) -> Optional[int]:
             try:
                 await loop.run_in_executor(
                     None,
-                    lambda s=src_init, d=dst_init: _hardlink_or_copy(s, d),
+                    functools.partial(_hardlink_or_copy, src_init, dst_init),
                 )
             except Exception as e:
                 logger.warning(f"Failed to copy init segment: {e}")
@@ -180,7 +182,7 @@ async def create_vod_from_stream(stream_id: int) -> Optional[int]:
                 try:
                     await loop.run_in_executor(
                         None,
-                        lambda s=src_seg, d=dst_seg: _hardlink_or_copy(s, d),
+                        functools.partial(_hardlink_or_copy, src_seg, dst_seg),
                     )
                 except Exception as e:
                     logger.warning(f"Failed to copy segment {seg['filename']}: {e}")
@@ -197,7 +199,7 @@ async def create_vod_from_stream(stream_id: int) -> Optional[int]:
             playlist_path = dst_dir / "stream.m3u8"
             await loop.run_in_executor(
                 None,
-                lambda p=playlist_path, c=playlist_content: p.write_text(c),
+                functools.partial(playlist_path.write_text, playlist_content),
             )
 
     # Generate master playlist
@@ -205,7 +207,7 @@ async def create_vod_from_stream(stream_id: int) -> Optional[int]:
     master_path = video_dir / "master.m3u8"
     await loop.run_in_executor(
         None,
-        lambda p=master_path, c=master_content: p.write_text(c),
+        functools.partial(master_path.write_text, master_content),
     )
 
     # Copy thumbnail if exists
@@ -215,7 +217,7 @@ async def create_vod_from_stream(stream_id: int) -> Optional[int]:
         try:
             await loop.run_in_executor(
                 None,
-                lambda s=thumb_src, d=thumb_dst: shutil.copy2(str(s), str(d)),
+                functools.partial(shutil.copy2, str(thumb_src), str(thumb_dst)),
             )
         except Exception as e:
             logger.debug(f"No thumbnail to copy: {e}")

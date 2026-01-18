@@ -26,13 +26,14 @@ from typing import Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
-from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import IntegrityError
 from starlette.responses import Response
 
 from api.common import get_real_ip
-from api.database import database, live_stream_segments, live_streams
-from api.db_retry import db_execute_with_retry, fetch_one_with_retry
+from api.database import live_stream_segments, live_streams
+from api.db_retry import db_execute_with_retry
 from api.live_auth import verify_stream_key
+from api.live_playlist import update_master_playlist, update_variant_playlist
 from api.live_schemas import IngestStatusResponse, SegmentUploadResponse
 
 from config import (
@@ -130,8 +131,17 @@ def validate_path_containment(path: Path, base_dir: Path) -> bool:
         resolved_path = path.resolve()
         resolved_base = base_dir.resolve()
 
-        # Check if resolved path starts with the base directory
-        return str(resolved_path).startswith(str(resolved_base) + os.sep) or resolved_path == resolved_base
+        # Use pathlib's semantic containment check (Python 3.9+)
+        try:
+            return resolved_path.is_relative_to(resolved_base)
+        except AttributeError:
+            # Fallback for older Python versions: use normalized string comparison
+            resolved_path_str = os.path.normcase(str(resolved_path))
+            resolved_base_str = os.path.normcase(str(resolved_base))
+            return (
+                resolved_path_str == resolved_base_str
+                or resolved_path_str.startswith(resolved_base_str + os.sep)
+            )
     except (OSError, ValueError):
         # Any error during resolution means the path is suspicious
         return False
@@ -212,7 +222,9 @@ def prepare_stream_update_values(stream: dict, quality: str, now: datetime) -> d
         try:
             current_qualities = json.loads(stream["qualities"])
         except json.JSONDecodeError:
-            pass
+            # Invalid JSON in qualities field; treat as empty and continue
+            logger.warning("Invalid JSON in stream qualities; treating as empty")
+            current_qualities = []
 
     if quality not in current_qualities:
         current_qualities.append(quality)
@@ -264,9 +276,9 @@ async def put_init_segment(
                 detail=f"Segment too large. Max: {LIVE_MAX_SEGMENT_SIZE} bytes",
             )
 
-    # Read request body with timeout (50MB at 100KB/s = 500s, with 50% margin = 720s)
+    # Read request body with timeout (50MB at 125KB/s ≈ 400s, with 50% margin ≈ 600s)
     try:
-        data = await asyncio.wait_for(request.body(), timeout=720.0)
+        data = await asyncio.wait_for(request.body(), timeout=600.0)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=408, detail="Upload timeout - slow connection")
 
@@ -302,6 +314,21 @@ async def put_init_segment(
     _active_uploads.add(upload_key)
     try:
         await write_segment_atomic(dest_path, data)
+
+        # Update stream status to indicate ingest has started (without incrementing segment count)
+        if stream["status"] == "idle":
+            try:
+                await db_execute_with_retry(
+                    live_streams.update()
+                    .where(live_streams.c.id == stream["id"])
+                    .values(
+                        status="live",
+                        started_at=datetime.now(timezone.utc),
+                    )
+                )
+            except Exception as e:
+                # Log but don't fail; init upload should succeed even if metadata update fails
+                logger.warning(f"Failed to update stream status after init segment for {slug}: {e}")
     finally:
         _active_uploads.discard(upload_key)
 
@@ -365,9 +392,9 @@ async def put_media_segment(
                 detail=f"Segment too large. Max: {LIVE_MAX_SEGMENT_SIZE} bytes",
             )
 
-    # Read request body with timeout (50MB at 100KB/s = 500s, with 50% margin = 720s)
+    # Read request body with timeout (50MB at 125KB/s ≈ 400s, with 50% margin ≈ 600s)
     try:
-        data = await asyncio.wait_for(request.body(), timeout=720.0)
+        data = await asyncio.wait_for(request.body(), timeout=600.0)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=408, detail="Upload timeout - slow connection")
 
@@ -398,6 +425,7 @@ async def put_media_segment(
         try:
             duration_ms = int(x_segment_duration)
         except ValueError:
+            # Invalid duration header; ignore and use default segment duration
             pass
 
     now = datetime.now(timezone.utc)
@@ -433,9 +461,11 @@ async def put_media_segment(
                     received_at=now,
                 )
             )
-        except Exception as e:
+        except IntegrityError as e:
             # Unique constraint violation = segment already exists (idempotent)
-            if "uq_live_segment_stream_quality_seq" in str(e).lower() or "unique" in str(e).lower():
+            # Check constraint name or generic "unique" for database compatibility
+            error_msg = str(e).lower()
+            if "uq_live_segment_stream_quality_seq" in error_msg or "unique" in error_msg:
                 logger.debug(f"Segment {safe_filename} already exists for {slug}/{quality}")
                 segment_is_duplicate = True
             else:
@@ -450,6 +480,16 @@ async def put_media_segment(
                 .where(live_streams.c.id == stream_id)
                 .values(**update_values)
             )
+
+            # Update playlists after successful segment upload
+            try:
+                await update_variant_playlist(
+                    stream_id, slug, quality, stream["dvr_window_seconds"]
+                )
+                await update_master_playlist(stream_id, slug)
+            except Exception as playlist_error:
+                # Log but don't fail the upload if playlist update fails
+                logger.warning(f"Failed to update playlists for {slug}/{quality}: {playlist_error}")
 
     except Exception as e:
         # Clean up orphaned file if DB operations failed after file write
@@ -501,7 +541,9 @@ async def get_ingest_status(
         try:
             qualities = json.loads(stream["qualities"])
         except json.JSONDecodeError:
-            pass
+            # Malformed qualities JSON; log and return empty list
+            logger.warning(f"Invalid qualities JSON for stream {slug}")
+            qualities = []
 
     return IngestStatusResponse(
         stream_id=stream["id"],

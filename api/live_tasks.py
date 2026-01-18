@@ -7,18 +7,16 @@ Handles:
 """
 
 import asyncio
-import json
 import logging
-import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 import sqlalchemy as sa
 
-from api.database import database, live_stream_segments, live_streams
-from api.db_retry import db_execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
-from api.live_playlist import finalize_playlists_for_vod, update_all_playlists_for_stream
+from api.database import live_stream_segments, live_streams
+from api.db_retry import db_execute_with_retry, fetch_all_with_retry
+from api.live_playlist import finalize_playlists_for_vod
+from api.live_vod import trigger_vod_recording
 from config import (
     LIVE_DVR_CLEANUP_BATCH_SIZE,
     LIVE_DVR_CLEANUP_INTERVAL,
@@ -169,13 +167,13 @@ async def detect_stale_streams() -> int:
 
         logger.info(f"Stream {stream['slug']} marked as ended (stale timeout)")
 
-        # Finalize playlists for VOD
+        # Finalize playlists and trigger VOD recording
         if stream["auto_record_vod"]:
             try:
                 await finalize_playlists_for_vod(stream["id"])
-                # TODO: Trigger VOD recording
+                await trigger_vod_recording(stream["id"])
             except Exception as e:
-                logger.error(f"Failed to finalize playlists for stream {stream['slug']}: {e}")
+                logger.error(f"Failed to create VOD for stream {stream['slug']}: {e}")
 
         transitions += 1
 
@@ -257,6 +255,7 @@ async def stop_live_background_tasks(timeout: float = 10.0):
             try:
                 await task
             except asyncio.CancelledError:
+                # Task cancellation during shutdown is expected; suppress this error
                 pass
 
     _dvr_cleanup_task = None

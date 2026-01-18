@@ -10042,7 +10042,19 @@ async def end_live_stream(request: Request, slug: str) -> LiveStreamResponse:
     # Trigger VOD recording if auto_record_vod is enabled
     if row["auto_record_vod"]:
         from api.live_vod import trigger_vod_recording
-        asyncio.create_task(trigger_vod_recording(row["id"]))
+
+        def _log_vod_task_result(task: asyncio.Task) -> None:
+            """Log errors from fire-and-forget VOD recording task."""
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                logger.info(f"VOD recording task was cancelled for stream {slug}")
+                return
+            if exc is not None:
+                logger.error(f"VOD recording failed for stream {slug}: {exc}")
+
+        vod_task = asyncio.create_task(trigger_vod_recording(row["id"]))
+        vod_task.add_done_callback(_log_vod_task_result)
         logger.info(f"Triggered VOD recording for stream {slug}")
 
     return _build_live_stream_response(dict(updated_row))

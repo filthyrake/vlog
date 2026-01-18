@@ -117,6 +117,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Check if input source exists
+# Use arrays for FFmpeg options to properly handle arguments with spaces
+INPUT_OPTS=()
 if [[ "$INPUT_SOURCE" == /dev/* ]]; then
     if [ ! -e "$INPUT_SOURCE" ]; then
         echo -e "${RED}Error: Video device $INPUT_SOURCE not found${NC}"
@@ -124,13 +126,13 @@ if [[ "$INPUT_SOURCE" == /dev/* ]]; then
         ls -la /dev/video* 2>/dev/null || echo "  (none found)"
         exit 1
     fi
-    INPUT_OPTS="-f v4l2 -framerate 30 -video_size $RESOLUTION -i $INPUT_SOURCE"
+    INPUT_OPTS=(-f v4l2 -framerate 30 -video_size "$RESOLUTION" -i "$INPUT_SOURCE")
     # Add audio input from default device
     if command -v arecord &>/dev/null; then
-        INPUT_OPTS="$INPUT_OPTS -f alsa -i default"
+        INPUT_OPTS+=(-f alsa -i default)
     fi
 elif [ -f "$INPUT_SOURCE" ]; then
-    INPUT_OPTS="-re -i $INPUT_SOURCE"
+    INPUT_OPTS=(-re -i "$INPUT_SOURCE")
 else
     echo -e "${RED}Error: Input source '$INPUT_SOURCE' not found${NC}"
     exit 1
@@ -157,13 +159,13 @@ while true; do
     # Run FFmpeg
     # Using CMAF (fMP4) for better compatibility with HTTP segment push
     ffmpeg \
-        $INPUT_OPTS \
+        "${INPUT_OPTS[@]}" \
         -c:v libx264 \
         -preset fast \
         -tune zerolatency \
         -b:v "$VIDEO_BITRATE" \
         -maxrate "$VIDEO_BITRATE" \
-        -bufsize "$(echo "$VIDEO_BITRATE" | sed 's/k$//')k" \
+        -bufsize "${VIDEO_BITRATE}" \
         -g 60 \
         -keyint_min 60 \
         -sc_threshold 0 \
