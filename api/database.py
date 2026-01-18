@@ -926,6 +926,123 @@ webhook_deliveries = sa.Table(
     sa.Index("ix_webhook_deliveries_status_next_retry", "status", "next_retry_at"),
 )
 
+# Live streaming via HTTP segment push
+#
+# STREAM STATES:
+# --------------
+# - idle: Stream created but not yet started (no segments received)
+# - live: Actively receiving segments
+# - ending: No segments received for threshold period (grace period)
+# - ended: Stream explicitly ended or stale timeout exceeded
+#
+# ARCHITECTURE:
+# -------------
+# - Client (FFmpeg) encodes locally into HLS/CMAF segments
+# - Client pushes segments to VLog API via HTTP PUT
+# - VLog stores segments, writes playlists to disk on each segment
+# - Viewers watch via standard HLS playback (static file serving)
+# - On stream end, segments become a VOD recording
+#
+# AUTH:
+# -----
+# - Stream keys follow worker API key pattern (argon2id hashed)
+# - Keys are prefixed with "sk_live_" for easy identification
+# - Prefix lookup for fast authentication
+#
+# See: https://github.com/filthyrake/vlog/issues/XXX
+live_streams = sa.Table(
+    "live_streams",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("title", sa.String(255), nullable=False),
+    sa.Column("slug", sa.String(255), unique=True, nullable=False),
+    sa.Column("description", sa.Text, default=""),
+    # Auth (argon2id hashed like worker API keys)
+    sa.Column("stream_key_hash", sa.Text, nullable=False),
+    sa.Column("stream_key_prefix", sa.String(8), nullable=False),
+    sa.Column("hash_version", sa.Integer, nullable=False, server_default="2"),
+    # Status
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('idle', 'live', 'ending', 'ended')",
+            name="ck_live_streams_status",
+        ),
+        default="idle",
+    ),
+    sa.Column("qualities", sa.Text, nullable=True),  # JSON: ["720p", "480p"]
+    # Timestamps
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_segment_at", sa.DateTime(timezone=True), nullable=True),
+    # Metrics
+    sa.Column("segment_count", sa.Integer, default=0),
+    # DVR/VOD
+    sa.Column("dvr_enabled", sa.Boolean, default=True),
+    sa.Column("dvr_window_seconds", sa.Integer, default=7200),  # 2 hours
+    sa.Column("auto_record_vod", sa.Boolean, default=True),
+    sa.Column(
+        "vod_video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column(
+        "category_id",
+        sa.Integer,
+        sa.ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_live_streams_slug", "slug"),
+    sa.Index("ix_live_streams_status", "status"),
+    sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
+    sa.Index("ix_live_streams_created_at", "created_at"),
+)
+
+# Live stream segment tracking for DVR and VOD recording
+#
+# SEGMENT SEMANTICS:
+# ------------------
+# - Each segment is a single HLS/CMAF fragment
+# - Segments are stored on disk at: live/{slug}/{quality}/seg_{sequence}.m4s
+# - Init segments stored at: live/{slug}/{quality}/init.mp4
+# - Playlists generated dynamically from database records
+#
+# DVR CLEANUP:
+# ------------
+# - Background task deletes segments older than dvr_window_seconds
+# - Batched DELETEs (10 at a time) to reduce lock contention
+# - Async file deletion to avoid blocking segment uploads
+#
+# VOD RECORDING:
+# --------------
+# - On stream end, segments are hardlinked to videos directory
+# - Fallback to copy if hardlinks fail (different filesystems)
+live_stream_segments = sa.Table(
+    "live_stream_segments",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("quality", sa.String(10), nullable=False),
+    sa.Column("filename", sa.String(255), nullable=False),
+    sa.Column("sequence_number", sa.Integer, nullable=False),
+    sa.Column("duration_ms", sa.Integer, nullable=True),
+    sa.Column("size_bytes", sa.Integer, nullable=False),
+    sa.Column("received_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("stream_id", "quality", "sequence_number", name="uq_live_segment_stream_quality_seq"),
+    # Critical indexes for performance (from Brendan's review)
+    sa.Index("ix_live_segments_stream_quality_seq", "stream_id", "quality", "sequence_number"),
+    sa.Index("ix_live_segments_received_at", "received_at"),
+    sa.Index("ix_live_segments_cleanup", "stream_id", "received_at"),
+)
+
 
 def create_tables():
     """
