@@ -203,9 +203,8 @@ class DeprecationHeadersRoute(APIRoute):
                             self.version_info.sunset_date
                         )
 
-                    # Link to current version documentation
-                    current_docs_url = f"/api/{API_VERSION}/docs"
-                    response.headers["Link"] = f'<{current_docs_url}>; rel="successor-version"'
+                    # Link to API documentation (FastAPI serves docs at /docs by default)
+                    response.headers["Link"] = '</docs>; rel="successor-version"'
                 except Exception as e:
                     # Don't fail the response if deprecation headers can't be added
                     logger.warning(f"Failed to add deprecation headers: {e}")
