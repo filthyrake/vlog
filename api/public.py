@@ -2439,6 +2439,155 @@ async def get_display_config(request: Request):
 
 
 # ============================================================================
+# Theme/Branding Configuration (Issue #214)
+# ============================================================================
+
+# Cached theme settings (refreshed every 60 seconds)
+_cached_theme_settings: Dict[str, Any] = {}
+_cached_theme_settings_time: float = 0
+_THEME_SETTINGS_CACHE_TTL = 60  # seconds
+
+
+async def get_theme_settings() -> Dict[str, Any]:
+    """
+    Get theme and branding settings from database with caching.
+
+    Returns dict with branding, theme colors, and layout configuration.
+    """
+    import time
+
+    global _cached_theme_settings, _cached_theme_settings_time
+
+    now = time.time()
+    if _cached_theme_settings and (now - _cached_theme_settings_time) < _THEME_SETTINGS_CACHE_TTL:
+        return _cached_theme_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            # Branding
+            "site_name": await service.get("branding.site_name", "VLog"),
+            "logo_path": await service.get("branding.logo_path", None),
+            "favicon_path": await service.get("branding.favicon_path", None),
+            "footer_text": await service.get("branding.footer_text", None),
+            "footer_links": await service.get("branding.footer_links", []),
+            # Theme colors
+            "primary_color": await service.get("theme.primary_color", "#3B82F6"),
+            "secondary_color": await service.get("theme.secondary_color", "#1E40AF"),
+            "accent_color": await service.get("theme.accent_color", "#60A5FA"),
+            "mode": await service.get("theme.mode", "auto"),
+            "custom_css": await service.get("theme.custom_css", None),
+            # Layout
+            "homepage_style": await service.get("layout.homepage_style", "grid"),
+            "videos_per_page": await service.get("layout.videos_per_page", 24),
+            "grid_columns": await service.get("layout.grid_columns", 4),
+            "show_sidebar": await service.get("layout.show_sidebar", True),
+            "show_related_videos": await service.get("layout.show_related_videos", True),
+        }
+
+        _cached_theme_settings = settings
+        _cached_theme_settings_time = now
+
+    except Exception as e:
+        logger.debug(f"Failed to get theme settings from DB, using defaults: {e}")
+        _cached_theme_settings = {
+            "site_name": "VLog",
+            "logo_path": None,
+            "favicon_path": None,
+            "footer_text": None,
+            "footer_links": [],
+            "primary_color": "#3B82F6",
+            "secondary_color": "#1E40AF",
+            "accent_color": "#60A5FA",
+            "mode": "auto",
+            "custom_css": None,
+            "homepage_style": "grid",
+            "videos_per_page": 24,
+            "grid_columns": 4,
+            "show_sidebar": True,
+            "show_related_videos": True,
+        }
+        _cached_theme_settings_time = now
+
+    return _cached_theme_settings
+
+
+@v1_router.get("/config/theme", summary="Get theme config", description="Get theme and branding configuration.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_theme_config(request: Request):
+    """
+    Get theme and branding configuration for the public UI.
+
+    Returns branding settings (site name, logo, footer), theme colors,
+    and layout preferences.
+    """
+    settings = await get_theme_settings()
+    return settings
+
+
+@v1_router.get("/branding/logo", summary="Get logo image", description="Serve the site logo image.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_logo(request: Request):
+    """Serve the logo image for public display."""
+    settings = await get_theme_settings()
+
+    if not settings.get("logo_path"):
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    logo_path = NAS_STORAGE / settings["logo_path"]
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    ext = logo_path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        logo_path,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},  # Cache for 1 day
+    )
+
+
+@v1_router.get("/branding/favicon", summary="Get favicon", description="Serve the site favicon.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_favicon(request: Request):
+    """Serve the favicon for public display."""
+    settings = await get_theme_settings()
+
+    if not settings.get("favicon_path"):
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    favicon_path = NAS_STORAGE / settings["favicon_path"]
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    ext = favicon_path.suffix.lower()
+    content_types = {
+        ".ico": "image/x-icon",
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        favicon_path,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},  # Cache for 1 day
+    )
+
+
+# ============================================================================
 # Download Configuration (Issue #202)
 # ============================================================================
 

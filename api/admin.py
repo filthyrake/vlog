@@ -5885,6 +5885,411 @@ async def delete_watermark_image(request: Request):
         raise HTTPException(status_code=500, detail="Failed to delete watermark image")
 
 
+# ============================================================================
+# Branding Settings Endpoints (Issue #214)
+# ============================================================================
+
+# Cached branding settings
+_cached_branding_settings: Optional[Dict[str, Any]] = None
+_cached_branding_settings_time: float = 0
+_BRANDING_SETTINGS_CACHE_TTL = 60  # seconds
+
+
+async def get_branding_settings() -> Dict[str, Any]:
+    """Get branding settings from database with caching."""
+    import time
+
+    global _cached_branding_settings, _cached_branding_settings_time
+
+    now = time.time()
+    if _cached_branding_settings and (now - _cached_branding_settings_time) < _BRANDING_SETTINGS_CACHE_TTL:
+        return _cached_branding_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "site_name": await service.get("branding.site_name", "VLog"),
+            "logo_path": await service.get("branding.logo_path", None),
+            "favicon_path": await service.get("branding.favicon_path", None),
+            "footer_text": await service.get("branding.footer_text", None),
+            "footer_links": await service.get("branding.footer_links", []),
+        }
+
+        _cached_branding_settings = settings
+        _cached_branding_settings_time = now
+
+    except Exception as e:
+        logger.debug(f"Failed to get branding settings from DB, using defaults: {e}")
+        _cached_branding_settings = {
+            "site_name": "VLog",
+            "logo_path": None,
+            "favicon_path": None,
+            "footer_text": None,
+            "footer_links": [],
+        }
+        _cached_branding_settings_time = now
+
+    return _cached_branding_settings
+
+
+@v1_router.get("/settings/branding")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_branding_settings(request: Request):
+    """
+    Get current branding configuration.
+
+    Returns the current branding settings from database.
+    """
+    settings = await get_branding_settings()
+
+    logo_exists = False
+    if settings["logo_path"]:
+        logo_file = NAS_STORAGE / settings["logo_path"]
+        logo_exists = logo_file.exists()
+
+    favicon_exists = False
+    if settings["favicon_path"]:
+        favicon_file = NAS_STORAGE / settings["favicon_path"]
+        favicon_exists = favicon_file.exists()
+
+    return {
+        "site_name": settings["site_name"],
+        "logo_path": settings["logo_path"],
+        "logo_exists": logo_exists,
+        "logo_url": "/api/v1/settings/branding/logo" if logo_exists else None,
+        "favicon_path": settings["favicon_path"],
+        "favicon_exists": favicon_exists,
+        "favicon_url": "/api/v1/settings/branding/favicon" if favicon_exists else None,
+        "footer_text": settings["footer_text"],
+        "footer_links": settings["footer_links"],
+    }
+
+
+@v1_router.get("/settings/branding/logo")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_logo_image(request: Request):
+    """Serve the logo image for admin preview."""
+    settings = await get_branding_settings()
+
+    if not settings["logo_path"]:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    logo_path = NAS_STORAGE / settings["logo_path"]
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    ext = logo_path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(logo_path, media_type=content_type)
+
+
+@v1_router.post("/settings/branding/logo/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_logo_image(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a new logo image.
+
+    Accepts: PNG, JPEG, WebP, SVG, GIF (max 10MB)
+    For best results, use a PNG or SVG with transparency.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"}
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported image format. Allowed: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_THUMBNAIL_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+        )
+
+    settings = await get_branding_settings()
+
+    if settings["logo_path"]:
+        target_path = NAS_STORAGE / settings["logo_path"]
+    else:
+        target_path = NAS_STORAGE / f"branding/logo{ext}"
+
+    # Ensure branding directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_path = NAS_STORAGE / f"logo_temp_{uuid.uuid4()}{ext}"
+    try:
+        total_size = 0
+        with open(temp_path, "wb") as f:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > MAX_THUMBNAIL_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+                    )
+                f.write(chunk)
+
+        shutil.move(str(temp_path), str(target_path))
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=str(target_path.name),
+            details={"action": "logo_upload", "original_filename": file.filename, "size": total_size},
+        )
+
+        relative_path = str(target_path.relative_to(NAS_STORAGE))
+
+        # Update the setting in database
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.logo_path", relative_path, updated_by="admin")
+
+        # Invalidate cache
+        global _cached_branding_settings
+        _cached_branding_settings = None
+
+        return {
+            "status": "ok",
+            "message": "Logo uploaded successfully",
+            "path": relative_path,
+            "size": total_size,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if temp_path.exists():
+            temp_path.unlink()
+        logger.error(f"Failed to upload logo: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save logo image")
+
+
+@v1_router.delete("/settings/branding/logo")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_logo_image(request: Request):
+    """Delete the current logo image."""
+    settings = await get_branding_settings()
+
+    if not settings["logo_path"]:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    logo_path = NAS_STORAGE / settings["logo_path"]
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    try:
+        logo_path.unlink()
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=settings["logo_path"],
+            details={"action": "logo_delete"},
+        )
+
+        # Clear the setting
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.logo_path", None, updated_by="admin")
+
+        # Invalidate cache
+        global _cached_branding_settings
+        _cached_branding_settings = None
+
+        return {"status": "ok", "message": "Logo deleted successfully"}
+    except Exception as e:
+        logger.error(f"Failed to delete logo: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete logo image")
+
+
+@v1_router.get("/settings/branding/favicon")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_favicon(request: Request):
+    """Serve the favicon for admin preview."""
+    settings = await get_branding_settings()
+
+    if not settings["favicon_path"]:
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    favicon_path = NAS_STORAGE / settings["favicon_path"]
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    ext = favicon_path.suffix.lower()
+    content_types = {
+        ".ico": "image/x-icon",
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(favicon_path, media_type=content_type)
+
+
+@v1_router.post("/settings/branding/favicon/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_favicon(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a new favicon.
+
+    Accepts: ICO, PNG, SVG (max 1MB)
+    For best results, use a square image (32x32 or 64x64 for ICO, any size for SVG).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".ico", ".png", ".svg"}
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported favicon format. Allowed: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    max_favicon_size = 1 * 1024 * 1024  # 1MB
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > max_favicon_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {max_favicon_size // (1024 * 1024)}MB",
+        )
+
+    settings = await get_branding_settings()
+
+    if settings["favicon_path"]:
+        target_path = NAS_STORAGE / settings["favicon_path"]
+    else:
+        target_path = NAS_STORAGE / f"branding/favicon{ext}"
+
+    # Ensure branding directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_path = NAS_STORAGE / f"favicon_temp_{uuid.uuid4()}{ext}"
+    try:
+        total_size = 0
+        with open(temp_path, "wb") as f:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > max_favicon_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {max_favicon_size // (1024 * 1024)}MB",
+                    )
+                f.write(chunk)
+
+        shutil.move(str(temp_path), str(target_path))
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=str(target_path.name),
+            details={"action": "favicon_upload", "original_filename": file.filename, "size": total_size},
+        )
+
+        relative_path = str(target_path.relative_to(NAS_STORAGE))
+
+        # Update the setting in database
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.favicon_path", relative_path, updated_by="admin")
+
+        # Invalidate cache
+        global _cached_branding_settings
+        _cached_branding_settings = None
+
+        return {
+            "status": "ok",
+            "message": "Favicon uploaded successfully",
+            "path": relative_path,
+            "size": total_size,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if temp_path.exists():
+            temp_path.unlink()
+        logger.error(f"Failed to upload favicon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save favicon")
+
+
+@v1_router.delete("/settings/branding/favicon")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_favicon(request: Request):
+    """Delete the current favicon."""
+    settings = await get_branding_settings()
+
+    if not settings["favicon_path"]:
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    favicon_path = NAS_STORAGE / settings["favicon_path"]
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    try:
+        favicon_path.unlink()
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=settings["favicon_path"],
+            details={"action": "favicon_delete"},
+        )
+
+        # Clear the setting
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.favicon_path", None, updated_by="admin")
+
+        # Invalidate cache
+        global _cached_branding_settings
+        _cached_branding_settings = None
+
+        return {"status": "ok", "message": "Favicon deleted successfully"}
+    except Exception as e:
+        logger.error(f"Failed to delete favicon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete favicon")
+
+
 # =============================================================================
 # Runtime Settings API (Database-backed configuration)
 # See: https://github.com/filthyrake/vlog/issues/400
