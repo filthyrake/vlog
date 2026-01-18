@@ -66,6 +66,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
           format: 'table'
+          trivyignores: '.trivyignore'
 
       - name: Run Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.33.1
@@ -76,6 +77,7 @@ jobs:
           exit-code: '0'
           format: 'sarif'
           output: 'trivy-image-results.sarif'
+          trivyignores: '.trivyignore'
 
       - name: Upload image scan results
         uses: github/codeql-action/upload-sarif@v4
