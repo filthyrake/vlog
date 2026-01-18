@@ -20,8 +20,8 @@ Usage:
 """
 
 import logging
+import re
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Request, Response
@@ -44,6 +44,93 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Regex pattern for valid API version format (e.g., "v1", "v2", "v10")
+API_VERSION_PATTERN = re.compile(r"^v\d+$")
+
+
+def sanitize_header_value(value: str) -> str:
+    """
+    Sanitize a string for use in HTTP headers.
+
+    Removes carriage return and newline characters to prevent
+    HTTP header injection (CRLF injection) attacks.
+
+    Args:
+        value: The string to sanitize
+
+    Returns:
+        Sanitized string safe for use in HTTP headers
+    """
+    if not value:
+        return value
+    return value.replace("\r", "").replace("\n", "")
+
+
+def validate_config() -> None:
+    """
+    Validate API versioning configuration at startup.
+
+    Raises:
+        ValueError: If configuration is invalid
+
+    This function is called at module load to fail fast on
+    misconfiguration rather than causing runtime errors.
+    """
+    # Validate API_VERSION is set and non-empty
+    if not API_VERSION:
+        raise ValueError(
+            "VLOG_API_VERSION must be set and non-empty. "
+            "Example: VLOG_API_VERSION=v1"
+        )
+
+    # Validate API_VERSION matches expected format
+    if not API_VERSION_PATTERN.match(API_VERSION):
+        raise ValueError(
+            f"VLOG_API_VERSION '{API_VERSION}' has invalid format. "
+            f"Must match pattern 'v' followed by a number (e.g., 'v1', 'v2'). "
+            f"This prevents path injection vulnerabilities."
+        )
+
+    # Validate API_SUPPORTED_VERSIONS is set and non-empty
+    if not API_SUPPORTED_VERSIONS:
+        raise ValueError(
+            "API_SUPPORTED_VERSIONS must contain at least one version. "
+            "Check config.py to ensure API_SUPPORTED_VERSIONS is properly defined."
+        )
+
+    # Validate all supported versions match the expected format
+    for version in API_SUPPORTED_VERSIONS:
+        if not API_VERSION_PATTERN.match(version):
+            raise ValueError(
+                f"API_SUPPORTED_VERSIONS contains invalid version '{version}'. "
+                f"All versions must match pattern 'v' followed by a number."
+            )
+
+    # Warn if current version is not in supported versions
+    if API_VERSION not in API_SUPPORTED_VERSIONS:
+        logger.warning(
+            f"API_VERSION '{API_VERSION}' is not in API_SUPPORTED_VERSIONS "
+            f"{API_SUPPORTED_VERSIONS}. This may cause unexpected behavior."
+        )
+
+    # Validate deprecation sunset date format if set
+    if API_DEPRECATION_SUNSET:
+        # Check for CRLF injection attempts
+        if "\r" in API_DEPRECATION_SUNSET or "\n" in API_DEPRECATION_SUNSET:
+            raise ValueError(
+                "VLOG_API_DEPRECATION_SUNSET contains invalid characters (CR/LF). "
+                "This could enable HTTP header injection attacks."
+            )
+
+    logger.debug(
+        f"API versioning config validated: version={API_VERSION}, "
+        f"supported={API_SUPPORTED_VERSIONS}"
+    )
+
+
+# Validate configuration at module load (fail fast)
+validate_config()
 
 
 @dataclass
@@ -100,17 +187,28 @@ class DeprecationHeadersRoute(APIRoute):
         original_handler = super().get_route_handler()
 
         async def custom_handler(request: Request) -> Response:
-            response: Response = await original_handler(request)
+            try:
+                response: Response = await original_handler(request)
+            except Exception:
+                # Let exception propagate - deprecation headers aren't critical for errors
+                raise
 
             if self.version_info and self.version_info.is_deprecated:
-                response.headers["Deprecation"] = "true"
+                try:
+                    response.headers["Deprecation"] = "true"
 
-                if self.version_info.sunset_date:
-                    response.headers["Sunset"] = self.version_info.sunset_date
+                    if self.version_info.sunset_date:
+                        # Sanitize to prevent header injection
+                        response.headers["Sunset"] = sanitize_header_value(
+                            self.version_info.sunset_date
+                        )
 
-                # Link to current version documentation
-                current_docs_url = f"/api/{API_VERSION}/docs"
-                response.headers["Link"] = f'<{current_docs_url}>; rel="successor-version"'
+                    # Link to current version documentation
+                    current_docs_url = f"/api/{API_VERSION}/docs"
+                    response.headers["Link"] = f'<{current_docs_url}>; rel="successor-version"'
+                except Exception as e:
+                    # Don't fail the response if deprecation headers can't be added
+                    logger.warning(f"Failed to add deprecation headers: {e}")
 
             return response
 
@@ -172,15 +270,29 @@ class VersionHeaderMiddleware(BaseHTTPMiddleware):
     Headers added:
     - X-API-Version: Current API version
     - X-API-Supported-Versions: Comma-separated list of supported versions
+
+    This middleware includes error handling to ensure version header
+    failures don't crash the API or prevent responses from being sent.
     """
 
     async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as e:
+            # Log that versioning failed on this request, then re-raise
+            logger.debug(f"Request failed before version headers could be added: {e}")
+            raise
 
-        # Only add version headers to API responses
-        if request.url.path.startswith("/api"):
-            response.headers["X-API-Version"] = API_VERSION
-            response.headers["X-API-Supported-Versions"] = ",".join(API_SUPPORTED_VERSIONS)
+        # Only add version headers to API responses (precise matching)
+        if request.url.path.startswith("/api/") or request.url.path == "/api":
+            try:
+                response.headers["X-API-Version"] = API_VERSION
+                response.headers["X-API-Supported-Versions"] = ",".join(
+                    API_SUPPORTED_VERSIONS
+                )
+            except Exception as e:
+                # Don't fail the request if header setting fails
+                logger.warning(f"Failed to add version headers: {e}")
 
         return response
 
@@ -201,6 +313,9 @@ def configure_openapi_schema(
     - Version-specific server entries
     - Enhanced endpoint descriptions
 
+    Includes error handling to return a minimal valid schema on failure,
+    ensuring the /docs endpoint remains functional.
+
     Args:
         app: FastAPI application instance
         title: Override title (uses OPENAPI_TITLE if not provided)
@@ -210,63 +325,93 @@ def configure_openapi_schema(
     Returns:
         Dict containing the OpenAPI schema
     """
+    # Return cached schema if available
     if app.openapi_schema:
         return app.openapi_schema
 
-    from fastapi.openapi.utils import get_openapi
+    try:
+        from fastapi.openapi.utils import get_openapi
 
-    # Build info object
-    info: Dict[str, Any] = {
-        "title": title or OPENAPI_TITLE,
-        "version": version or API_VERSION,
-        "description": description or OPENAPI_DESCRIPTION,
-    }
+        # Build info object
+        info: Dict[str, Any] = {
+            "title": title or OPENAPI_TITLE,
+            "version": version or API_VERSION,
+            "description": description or OPENAPI_DESCRIPTION,
+        }
 
-    if OPENAPI_TERMS_OF_SERVICE:
-        info["termsOfService"] = OPENAPI_TERMS_OF_SERVICE
+        if OPENAPI_TERMS_OF_SERVICE:
+            info["termsOfService"] = OPENAPI_TERMS_OF_SERVICE
 
-    if OPENAPI_CONTACT_NAME or OPENAPI_CONTACT_EMAIL:
-        info["contact"] = {}
-        if OPENAPI_CONTACT_NAME:
-            info["contact"]["name"] = OPENAPI_CONTACT_NAME
-        if OPENAPI_CONTACT_EMAIL:
-            info["contact"]["email"] = OPENAPI_CONTACT_EMAIL
+        if OPENAPI_CONTACT_NAME or OPENAPI_CONTACT_EMAIL:
+            info["contact"] = {}
+            if OPENAPI_CONTACT_NAME:
+                info["contact"]["name"] = OPENAPI_CONTACT_NAME
+            if OPENAPI_CONTACT_EMAIL:
+                info["contact"]["email"] = OPENAPI_CONTACT_EMAIL
 
-    if OPENAPI_LICENSE_NAME:
-        info["license"] = {"name": OPENAPI_LICENSE_NAME}
-        if OPENAPI_LICENSE_URL:
-            info["license"]["url"] = OPENAPI_LICENSE_URL
+        if OPENAPI_LICENSE_NAME:
+            info["license"] = {"name": OPENAPI_LICENSE_NAME}
+            if OPENAPI_LICENSE_URL:
+                info["license"]["url"] = OPENAPI_LICENSE_URL
 
-    openapi_schema = get_openapi(
-        title=info["title"],
-        version=info["version"],
-        description=info["description"],
-        routes=app.routes,
-    )
+        openapi_schema = get_openapi(
+            title=info["title"],
+            version=info["version"],
+            description=info["description"],
+            routes=app.routes,
+        )
 
-    # Add additional info fields
-    if "termsOfService" in info:
-        openapi_schema["info"]["termsOfService"] = info["termsOfService"]
-    if "contact" in info:
-        openapi_schema["info"]["contact"] = info["contact"]
-    if "license" in info:
-        openapi_schema["info"]["license"] = info["license"]
+        # Add additional info fields
+        if "termsOfService" in info:
+            openapi_schema["info"]["termsOfService"] = info["termsOfService"]
+        if "contact" in info:
+            openapi_schema["info"]["contact"] = info["contact"]
+        if "license" in info:
+            openapi_schema["info"]["license"] = info["license"]
 
-    # Add version information to description
-    version_info_text = "\n\n## API Versions\n\n"
-    for v_info in get_all_versions():
-        status = "**Current**" if v_info.is_current else "Deprecated" if v_info.is_deprecated else "Supported"
-        version_info_text += f"- `{v_info.version}`: {status}\n"
-        if v_info.is_deprecated and v_info.sunset_date:
-            version_info_text += f"  - Sunset date: {v_info.sunset_date}\n"
+        # Add version information to description
+        version_info_text = "\n\n## API Versions\n\n"
+        for v_info in get_all_versions():
+            status = (
+                "**Current**"
+                if v_info.is_current
+                else "Deprecated"
+                if v_info.is_deprecated
+                else "Supported"
+            )
+            version_info_text += f"- `{v_info.version}`: {status}\n"
+            if v_info.is_deprecated and v_info.sunset_date:
+                version_info_text += f"  - Sunset date: {v_info.sunset_date}\n"
 
-    openapi_schema["info"]["description"] = (openapi_schema["info"].get("description", "") + version_info_text).strip()
+        openapi_schema["info"]["description"] = (
+            openapi_schema["info"].get("description", "") + version_info_text
+        ).strip()
 
-    # Add servers for each version
-    openapi_schema["servers"] = [{"url": f"/api/{API_VERSION}", "description": f"Current API ({API_VERSION})"}]
+        # Add servers for each version
+        openapi_schema["servers"] = [
+            {"url": f"/api/{API_VERSION}", "description": f"Current API ({API_VERSION})"}
+        ]
 
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
+        app.openapi_schema = openapi_schema
+        return app.openapi_schema
+
+    except Exception as e:
+        # Log the error and return a minimal valid schema
+        logger.error(f"OpenAPI schema generation failed: {e}", exc_info=True)
+
+        # Return minimal valid OpenAPI schema so /docs still works
+        minimal_schema = {
+            "openapi": "3.1.0",
+            "info": {
+                "title": title or OPENAPI_TITLE or "API",
+                "version": version or API_VERSION or "1.0.0",
+                "description": f"OpenAPI schema generation encountered an error: {str(e)}",
+            },
+            "paths": {},
+        }
+
+        # Don't cache the error schema - allow retry on next request
+        return minimal_schema
 
 
 def setup_versioned_api(app, routers: Dict[str, APIRouter]) -> None:
@@ -307,69 +452,3 @@ def setup_versioned_api(app, routers: Dict[str, APIRouter]) -> None:
         return configure_openapi_schema(app)
 
     app.openapi = custom_openapi
-
-
-# Response examples for common endpoints (for OpenAPI documentation)
-RESPONSE_EXAMPLES = {
-    "video_list": {
-        "description": "List of videos with pagination",
-        "content": {
-            "application/json": {
-                "example": {
-                    "videos": [
-                        {
-                            "id": 1,
-                            "slug": "example-video",
-                            "title": "Example Video",
-                            "status": "published",
-                            "duration": 120.5,
-                            "created_at": "2025-01-01T00:00:00Z",
-                        }
-                    ],
-                    "total": 1,
-                    "page": 1,
-                    "per_page": 20,
-                }
-            }
-        },
-    },
-    "video_detail": {
-        "description": "Video details",
-        "content": {
-            "application/json": {
-                "example": {
-                    "id": 1,
-                    "slug": "example-video",
-                    "title": "Example Video",
-                    "description": "A sample video",
-                    "status": "published",
-                    "duration": 120.5,
-                    "qualities": ["1080p", "720p", "480p"],
-                    "created_at": "2025-01-01T00:00:00Z",
-                }
-            }
-        },
-    },
-    "error_not_found": {
-        "description": "Resource not found",
-        "content": {"application/json": {"example": {"detail": "Video not found"}}},
-    },
-    "error_validation": {
-        "description": "Validation error",
-        "content": {
-            "application/json": {
-                "example": {
-                    "detail": [{"loc": ["query", "page"], "msg": "value must be greater than 0", "type": "value_error"}]
-                }
-            }
-        },
-    },
-    "error_rate_limit": {
-        "description": "Rate limit exceeded",
-        "content": {
-            "application/json": {
-                "example": {"error": "Rate limit exceeded", "retry_after": 60}
-            }
-        },
-    },
-}
