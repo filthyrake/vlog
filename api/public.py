@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import sqlalchemy as sa
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -88,6 +88,8 @@ from api.schemas import (
     VideoTagInfo,
 )
 from config import (
+    API_INCLUDE_LEGACY_ROUTES,
+    API_VERSION,
     CORS_ALLOWED_ORIGINS,
     DOWNLOADS_ALLOW_ORIGINAL,
     DOWNLOADS_ALLOW_TRANSCODED,
@@ -95,6 +97,8 @@ from config import (
     DOWNLOADS_MAX_CONCURRENT,
     DOWNLOADS_RATE_LIMIT_PER_HOUR,
     NAS_STORAGE,
+    OPENAPI_DESCRIPTION,
+    OPENAPI_TITLE,
     PUBLIC_PORT,
     QUALITY_NAMES,
     RATE_LIMIT_ENABLED,
@@ -117,6 +121,7 @@ from config import (
     WATERMARK_TEXT_SIZE,
     WATERMARK_TYPE,
 )
+from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +309,16 @@ async def lifespan(app: FastAPI):
     await database.disconnect()
 
 
-app = FastAPI(title="VLog", description="Self-hosted video platform", lifespan=lifespan)
+app = FastAPI(
+    title=OPENAPI_TITLE,
+    description=OPENAPI_DESCRIPTION,
+    version=API_VERSION,
+    lifespan=lifespan,
+)
+
+# Create versioned API router
+# All /api endpoints are registered on this router and mounted with version prefix
+v1_router = APIRouter(tags=["API v1"])
 
 # Register rate limiter with the app
 app.state.limiter = limiter
@@ -324,6 +338,7 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(VersionHeaderMiddleware)
 
 # CORS middleware for HLS playback and analytics
 # If CORS_ALLOWED_ORIGINS is empty, allow same-origin only (no CORS headers)
@@ -913,7 +928,7 @@ def build_video_list_response(
     ]
 
 
-@app.get("/api/videos")
+@v1_router.get("/videos", summary="List videos", description="Get a paginated list of published videos with filtering and sorting options.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_videos(
     request: Request,
@@ -1102,7 +1117,7 @@ async def list_videos(
 MAX_BULK_VIDEO_IDS = 20
 
 
-@app.get("/api/videos/bulk")
+@v1_router.get("/videos/bulk", summary="Bulk get videos", description="Get multiple videos by their slugs in a single request.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_videos_bulk(
     request: Request,
@@ -1204,7 +1219,7 @@ async def get_videos_bulk(
     return build_video_list_response(ordered_rows, video_tags_map)
 
 
-@app.get("/api/videos/{slug}")
+@v1_router.get("/videos/{slug}", summary="Get video", description="Get detailed information about a specific video by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video(request: Request, slug: str) -> VideoResponse:
     """Get a single video by slug."""
@@ -1329,7 +1344,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
     )
 
 
-@app.get("/api/videos/{slug}/progress")
+@v1_router.get("/videos/{slug}/progress", summary="Get video progress", description="Get transcoding progress for a video.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video_progress(request: Request, slug: str) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
@@ -1396,7 +1411,7 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
     )
 
 
-@app.get("/api/videos/{slug}/transcript")
+@v1_router.get("/videos/{slug}/transcript", summary="Get video transcript", description="Get the transcription for a video if available.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
@@ -1495,7 +1510,7 @@ async def _fetch_related_videos_tier(
     return await fetch_all_with_retry(query)
 
 
-@app.get("/api/videos/{slug}/related")
+@v1_router.get("/videos/{slug}/related", summary="Get related videos", description="Get videos related to the specified video based on tags and category.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_related_videos(
     request: Request,
@@ -1633,7 +1648,7 @@ async def get_related_videos(
     return result
 
 
-@app.get("/api/categories")
+@v1_router.get("/categories", summary="List categories", description="Get all video categories.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_categories(request: Request) -> List[CategoryResponse]:
     """List all categories with video counts."""
@@ -1663,7 +1678,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
     ]
 
 
-@app.get("/api/categories/{slug}")
+@v1_router.get("/categories/{slug}", summary="Get category", description="Get a category by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_category(request: Request, slug: str) -> CategoryResponse:
     """Get a single category by slug."""
@@ -1701,7 +1716,7 @@ async def get_category(request: Request, slug: str) -> CategoryResponse:
     )
 
 
-@app.get("/api/tags")
+@v1_router.get("/tags", summary="List tags", description="Get all video tags.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_tags(request: Request) -> List[TagResponse]:
     """List all tags with video counts."""
@@ -1731,7 +1746,7 @@ async def list_tags(request: Request) -> List[TagResponse]:
     ]
 
 
-@app.get("/api/tags/{slug}")
+@v1_router.get("/tags/{slug}", summary="Get tag", description="Get a tag by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_tag(request: Request, slug: str) -> TagResponse:
     """Get a single tag by slug."""
@@ -1778,7 +1793,7 @@ def _get_video_url_prefix() -> str:
 VALID_PLAYLIST_TYPES = {"playlist", "collection", "series", "course"}
 
 
-@app.get("/api/playlists")
+@v1_router.get("/playlists", summary="List playlists", description="Get all public playlists.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_public_playlists(
     request: Request,
@@ -1865,7 +1880,7 @@ async def list_public_playlists(
     return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
 
 
-@app.get("/api/playlists/{slug}")
+@v1_router.get("/playlists/{slug}", summary="Get playlist", description="Get a playlist by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResponse:
     """Get a public playlist by slug with its videos."""
@@ -1937,7 +1952,7 @@ async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResp
     )
 
 
-@app.get("/api/playlists/{slug}/videos")
+@v1_router.get("/playlists/{slug}/videos", summary="Get playlist videos", description="Get videos in a playlist.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_public_playlist_videos(request: Request, slug: str) -> List[PlaylistVideoInfo]:
     """Get videos in a public playlist."""
@@ -1989,7 +2004,7 @@ async def get_public_playlist_videos(request: Request, slug: str) -> List[Playli
 # ============================================================================
 
 
-@app.get("/api/config/watermark")
+@v1_router.get("/config/watermark", summary="Get watermark config", description="Get watermark configuration for video overlay.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_watermark_config(request: Request):
     """
@@ -2130,7 +2145,7 @@ async def get_display_settings() -> Dict[str, Any]:
     return _cached_display_settings
 
 
-@app.get("/api/config/display")
+@v1_router.get("/config/display", summary="Get display config", description="Get display configuration for the video player.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_display_config(request: Request):
     """
@@ -2255,7 +2270,7 @@ def reset_download_settings_cache() -> None:
     _cached_download_settings_time = 0
 
 
-@app.get("/api/config/downloads")
+@v1_router.get("/config/downloads", summary="Get downloads config", description="Get download configuration and availability.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_download_config(request: Request):
     """
@@ -2369,7 +2384,7 @@ async def _release_download_slot(client_ip: str) -> None:
             _active_downloads_per_ip[client_ip] = current - 1
 
 
-@app.get("/api/videos/{slug}/download/original")
+@v1_router.get("/videos/{slug}/download/original", summary="Download original video", description="Download the original video file if downloads are enabled.")
 @limiter.limit(
     # Note: This rate limit is configured at startup from env vars.
     # Changing the database setting requires a restart to take effect.
@@ -2518,7 +2533,7 @@ async def download_original(
 # ============================================================================
 
 
-@app.post("/api/analytics/session")
+@v1_router.post("/analytics/session", summary="Create analytics session", description="Start a new playback analytics session.")
 @limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
 async def start_analytics_session(
     request: Request,
@@ -2591,7 +2606,7 @@ async def start_analytics_session(
     return PlaybackSessionResponse(session_token=session_token)
 
 
-@app.post("/api/analytics/heartbeat")
+@v1_router.post("/analytics/heartbeat", summary="Send analytics heartbeat", description="Send periodic heartbeat during video playback.")
 @limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
 async def analytics_heartbeat(request: Request, data: PlaybackHeartbeat):
     """Update playback session with current progress."""
@@ -2628,7 +2643,7 @@ async def analytics_heartbeat(request: Request, data: PlaybackHeartbeat):
     return {"status": "ok"}
 
 
-@app.post("/api/analytics/end")
+@v1_router.post("/analytics/end", summary="End analytics session", description="End a playback analytics session.")
 @limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
 async def end_analytics_session(request: Request, data: PlaybackEnd):
     """End a playback session."""
@@ -2669,6 +2684,29 @@ async def end_analytics_session(request: Request, data: PlaybackEnd):
         VIDEOS_WATCH_TIME_SECONDS_TOTAL.inc(duration_watched)
 
     return {"status": "ok"}
+
+
+# =============================================================================
+# API Router Mounting (Issue #218)
+# Mount versioned routers and configure OpenAPI documentation
+# =============================================================================
+
+# Mount v1 router at /api/v1
+app.include_router(v1_router, prefix="/api/v1")
+logger.info("Mounted API v1 at /api/v1")
+
+# Mount legacy routes at /api for backwards compatibility (if enabled)
+if API_INCLUDE_LEGACY_ROUTES:
+    app.include_router(v1_router, prefix="/api", include_in_schema=False)
+    logger.info("Mounted legacy routes at /api (aliased to v1)")
+
+
+# Configure custom OpenAPI schema
+def custom_openapi():
+    return configure_openapi_schema(app)
+
+
+app.openapi = custom_openapi
 
 
 if __name__ == "__main__":
