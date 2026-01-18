@@ -96,6 +96,9 @@ from config import (
     DOWNLOADS_ENABLED,
     DOWNLOADS_MAX_CONCURRENT,
     DOWNLOADS_RATE_LIMIT_PER_HOUR,
+    AUTOPLAY_ENABLED,
+    UPNEXT_ENABLED,
+    AUTOPLAY_COUNTDOWN_SECONDS,
     NAS_STORAGE,
     OPENAPI_DESCRIPTION,
     OPENAPI_TITLE,
@@ -1648,6 +1651,130 @@ async def get_related_videos(
     return result
 
 
+@v1_router.get("/videos/{slug}/next", summary="Get next video", description="Get the next suggested video for autoplay.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_next_video(
+    request: Request,
+    slug: str,
+) -> Optional[VideoListResponse]:
+    """
+    Get the next video suggestion for autoplay.
+
+    Returns the single best related video for the "Up Next" feature.
+    Uses the same tiered algorithm as related videos but returns only
+    the top result.
+
+    Args:
+        slug: The current video slug
+
+    Returns:
+        Single video suggestion, or null if no related videos found
+    """
+    # Validate slug to prevent injection attacks
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
+    # Build cache key with SHA256 hash
+    NEXT_VIDEO_CACHE_VERSION = "v1"
+    cache_key_raw = f"next:{NEXT_VIDEO_CACHE_VERSION}:{slug}"
+    cache_key = f"next:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
+
+    # Check cache first
+    cached = _video_list_cache.get(cache_key)
+    if cached is not None:
+        if cached == []:
+            return None
+        try:
+            return VideoListResponse(**cached[0])
+        except Exception as e:
+            logger.warning(f"Cached next video schema mismatch, invalidating: {e}")
+            _video_list_cache.delete(cache_key)
+
+    # Get the source video
+    video_query = (
+        sa.select(videos.c.id, videos.c.category_id)
+        .where(videos.c.slug == slug)
+        .where(videos.c.status == VideoStatus.READY)
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_id = video["id"]
+    category_id = video["category_id"]
+
+    # Get source video's tag IDs
+    tag_query = sa.select(video_tags.c.tag_id).where(video_tags.c.video_id == video_id).limit(10)
+    tag_rows = await fetch_all_with_retry(tag_query)
+    source_tag_ids = [r["tag_id"] for r in tag_rows] if tag_rows else []
+
+    seen_ids: set = {video_id}
+    next_video = None
+
+    # Tier 1: Same category + shared tags (highest relevance)
+    if category_id is not None and source_tag_ids and not next_video:
+        tier1 = await _fetch_related_videos_tier(
+            category_id=category_id,
+            tag_ids=source_tag_ids,
+            exclude_ids=seen_ids,
+            limit=1,
+        )
+        if tier1:
+            next_video = tier1[0]
+
+    # Tier 2: Same category only
+    if not next_video and category_id is not None:
+        tier2 = await _fetch_related_videos_tier(
+            category_id=category_id,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=1,
+        )
+        if tier2:
+            next_video = tier2[0]
+
+    # Tier 3: Shared tags only
+    if not next_video and source_tag_ids:
+        tier3 = await _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=source_tag_ids,
+            exclude_ids=seen_ids,
+            limit=1,
+        )
+        if tier3:
+            next_video = tier3[0]
+
+    # Tier 4: Recent videos fallback
+    if not next_video:
+        tier4 = await _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=1,
+        )
+        if tier4:
+            next_video = tier4[0]
+
+    if not next_video:
+        # Cache empty result to avoid repeated lookups
+        _video_list_cache.set(cache_key, [])
+        return None
+
+    # Get tags for the next video
+    video_tags_map = await get_video_tags([next_video["id"]])
+
+    # Build response
+    result = build_video_list_response([next_video], video_tags_map)
+
+    # Cache the result
+    _video_list_cache.set(cache_key, [v.model_dump() for v in result])
+
+    return result[0] if result else None
+
+
 @v1_router.get("/categories", summary="List categories", description="Get all video categories.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_categories(request: Request) -> List[CategoryResponse]:
@@ -2288,6 +2415,79 @@ async def get_download_config(request: Request):
         "enabled": True,
         "allow_original": settings["allow_original"],
         "allow_transcoded": settings["allow_transcoded"],
+    }
+
+
+# ============================================================================
+# Playback Configuration (Issue #211)
+# ============================================================================
+
+# Cached playback settings (refreshed every 60 seconds)
+_cached_playback_settings: Dict[str, Any] = {}
+_cached_playback_settings_time: float = 0
+_PLAYBACK_SETTINGS_CACHE_TTL = 60  # seconds
+
+
+async def get_playback_settings() -> Dict[str, Any]:
+    """
+    Get playback settings from database with caching.
+
+    Returns dict with:
+    - autoplay_enabled: bool (default True)
+    - upnext_enabled: bool (default True)
+    - autoplay_countdown_seconds: int (default 10)
+    """
+    import time
+
+    global _cached_playback_settings, _cached_playback_settings_time
+
+    now = time.time()
+    if _cached_playback_settings and (now - _cached_playback_settings_time) < _PLAYBACK_SETTINGS_CACHE_TTL:
+        return _cached_playback_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "autoplay_enabled": await service.get("playback.autoplay_enabled", AUTOPLAY_ENABLED),
+            "upnext_enabled": await service.get("playback.upnext_enabled", UPNEXT_ENABLED),
+            "autoplay_countdown_seconds": await service.get(
+                "playback.autoplay_countdown_seconds", AUTOPLAY_COUNTDOWN_SECONDS
+            ),
+        }
+
+        _cached_playback_settings = settings
+        _cached_playback_settings_time = now
+
+    except Exception as e:
+        logger.debug(f"Failed to get playback settings from DB, using defaults: {e}")
+        _cached_playback_settings = {
+            "autoplay_enabled": AUTOPLAY_ENABLED,
+            "upnext_enabled": UPNEXT_ENABLED,
+            "autoplay_countdown_seconds": AUTOPLAY_COUNTDOWN_SECONDS,
+        }
+        _cached_playback_settings_time = now
+
+    return _cached_playback_settings
+
+
+@v1_router.get("/config/playback", summary="Get playback config", description="Get playback configuration for autoplay and up-next features.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_playback_config(request: Request):
+    """
+    Get playback configuration for the UI.
+
+    Returns autoplay and up-next settings that control video player behavior.
+    This is used by the watch page to enable/disable autoplay features.
+    """
+    settings = await get_playback_settings()
+
+    return {
+        "autoplay_enabled": settings["autoplay_enabled"],
+        "upnext_enabled": settings["upnext_enabled"],
+        "autoplay_countdown_seconds": settings["autoplay_countdown_seconds"],
     }
 
 
