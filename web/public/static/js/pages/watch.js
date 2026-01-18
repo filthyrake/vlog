@@ -202,6 +202,7 @@ function watchPage() {
         nextVideo: null,
         upNextCountdown: 0,
         _upNextCountdownInterval: null,
+        _nextVideoAbortController: null,
         _showUpNext: false,
         _autoplayEnabled: true, // User preference (stored in localStorage)
         // Precomputed Up Next display values for Alpine CSP
@@ -527,10 +528,16 @@ function watchPage() {
         async loadNextVideo(slug) {
             if (!slug) return;
 
+            // Cancel any in-flight request
+            if (this._nextVideoAbortController) {
+                this._nextVideoAbortController.abort();
+            }
+            this._nextVideoAbortController = new AbortController();
+
             try {
                 const res = await VLogUtils.fetchWithTimeout(
                     `/api/videos/${encodeURIComponent(slug)}/next`,
-                    {},
+                    { signal: this._nextVideoAbortController.signal },
                     5000
                 );
 
@@ -563,6 +570,10 @@ function watchPage() {
                 this.updateNextVideoDisplayFlags();
                 debugLog('Next video loaded:', this.nextVideo.title);
             } catch (e) {
+                // Handle abort separately (including Safari quirks)
+                if (e.name === 'AbortError' || this._nextVideoAbortController?.signal?.aborted) {
+                    return;
+                }
                 debugLog('Failed to load next video:', e);
                 this.nextVideo = null;
             }
@@ -614,7 +625,7 @@ function watchPage() {
                 this._upNextCountdownText = this.upNextCountdown.toString();
 
                 if (this.upNextCountdown <= 0) {
-                    this.playNextVideo();
+                    this.navigateToNextVideo();
                 }
             }, 1000);
         },
@@ -630,20 +641,39 @@ function watchPage() {
             debugLog('Up Next countdown cancelled');
         },
 
-        // Issue #211: Play the next video (navigate to it)
-        playNextVideo() {
+        // Issue #211: Navigate to the next video
+        navigateToNextVideo() {
             this.cancelUpNextCountdown();
-            if (this.nextVideo?._href) {
-                debugLog('Playing next video:', this.nextVideo.title);
-                window.location.href = this.nextVideo._href;
+
+            // Validate URL before navigation (defense in depth)
+            if (!this.nextVideo?._href || typeof this.nextVideo._href !== 'string') {
+                debugLog('Cannot navigate to next video: invalid URL');
+                return;
             }
+
+            // Verify URL is a valid internal path
+            if (!this.nextVideo._href.startsWith('/watch/')) {
+                debugLog('Cannot navigate to next video: unexpected URL format');
+                return;
+            }
+
+            debugLog('Navigating to next video:', this.nextVideo.title);
+            window.location.href = this.nextVideo._href;
         },
 
         // Issue #211: Toggle autoplay preference
         toggleAutoplay() {
-            this._autoplayEnabled = !this._autoplayEnabled;
-            VLogUtils.preferences.set('autoplay', this._autoplayEnabled);
-            debugLog('Autoplay preference set to:', this._autoplayEnabled);
+            const newValue = !this._autoplayEnabled;
+
+            try {
+                VLogUtils.preferences.set('autoplay', newValue);
+                this._autoplayEnabled = newValue;
+                debugLog('Autoplay preference set to:', this._autoplayEnabled);
+            } catch (e) {
+                // localStorage quota exceeded or unavailable - log but don't crash
+                console.warn('Failed to save autoplay preference:', e.name);
+                // Don't update state if save failed - keep UI consistent with storage
+            }
 
             // If we just disabled autoplay and countdown is running, cancel it
             if (!this._autoplayEnabled && this._showUpNext) {

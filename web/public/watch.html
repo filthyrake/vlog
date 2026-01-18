@@ -187,7 +187,7 @@
                                 <span class="upnext-label">Up Next in</span>
                                 <span class="upnext-countdown" x-text="_upNextCountdownText"></span>
                             </div>
-                            <a :href="_nextVideoHref" class="upnext-video" @click="playNextVideo">
+                            <a :href="_nextVideoHref" class="upnext-video" @click="navigateToNextVideo">
                                 <div class="upnext-thumbnail">
                                     <img :src="_nextVideoThumbnail" :alt="_nextVideoTitle" loading="lazy">
                                     <span class="upnext-duration" x-text="_nextVideoDuration"></span>
@@ -207,7 +207,7 @@
                                 <button
                                     type="button"
                                     class="upnext-btn upnext-btn--play"
-                                    @click="playNextVideo"
+                                    @click="navigateToNextVideo"
                                 >
                                     Play Now
                                 </button>

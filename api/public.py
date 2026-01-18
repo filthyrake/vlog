@@ -13,7 +13,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import sqlalchemy as sa
@@ -134,8 +134,9 @@ _cached_watermark_settings_time: float = 0
 _WATERMARK_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
 
 # Video list cache for performance (Issue #429)
-# Caches video list query results for 30 seconds to reduce database load
-_video_list_cache = AnalyticsCache(ttl_seconds=30, enabled=True, max_size=500)
+# Caches video list query results for 300 seconds to reduce database load
+# Performance review (Issue #211): Increased from 30s to 300s for reduced DB load
+_video_list_cache = AnalyticsCache(ttl_seconds=300, enabled=True, max_size=500)
 
 
 async def get_watermark_settings() -> Dict[str, Any]:
@@ -1513,50 +1514,34 @@ async def _fetch_related_videos_tier(
     return await fetch_all_with_retry(query)
 
 
-@v1_router.get("/videos/{slug}/related", summary="Get related videos", description="Get videos related to the specified video based on tags and category.")
-@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
-async def get_related_videos(
-    request: Request,
+async def _find_related_videos_for_slug(
     slug: str,
-    limit: int = Query(default=12, ge=1, le=24, description="Maximum number of related videos to return"),
-) -> List[VideoListResponse]:
+    limit: int = 12,
+    parallelize: bool = False,
+) -> List[Dict[str, Any]]:
     """
-    Get related videos for a given video.
+    Shared helper to find related videos for a given video slug.
 
-    Algorithm priority (with early termination when limit reached):
+    Implements the tiered algorithm:
     1. Same category + shared tags (highest relevance)
     2. Same category only
     3. Shared tags only
     4. Recent videos (fallback)
 
-    Results are cached for 30 seconds using the video list cache.
-
     Args:
-        slug: The video slug to find related videos for
-        limit: Maximum number of related videos (1-24, default 12)
+        slug: The source video slug
+        limit: Maximum number of related videos to return
+        parallelize: If True, run all tier queries in parallel (optimal for limit=1)
 
     Returns:
-        List of related videos sorted by relevance tier then recency
+        List of related video row dicts, or empty list if source not found
+
+    Raises:
+        HTTPException: If video not found (404)
     """
-    # Validate slug to prevent injection attacks
+    # Validate slug
     if not validate_slug(slug):
         raise HTTPException(status_code=400, detail="Invalid video slug")
-
-    # Build cache key with SHA256 hash to prevent cache poisoning
-    # High priority fix (Margo): Include schema version in cache key
-    RELATED_VIDEOS_CACHE_VERSION = "v1"  # Increment on schema changes
-    cache_key_raw = f"related:{RELATED_VIDEOS_CACHE_VERSION}:{slug}|{limit}"
-    cache_key = f"related:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
-
-    # Check cache first
-    cached = _video_list_cache.get(cache_key)
-    if cached is not None:
-        try:
-            return [VideoListResponse(**v) for v in cached]
-        except Exception as e:
-            # Cache schema mismatch after deploy, invalidate and regenerate
-            logger.warning(f"Cached related videos schema mismatch, invalidating: {e}")
-            _video_list_cache.delete(cache_key)
 
     # Get the source video with its category
     video_query = (
@@ -1579,9 +1564,70 @@ async def get_related_videos(
     tag_rows = await fetch_all_with_retry(tag_query)
     source_tag_ids = [r["tag_id"] for r in tag_rows] if tag_rows else []
 
-    # Collect related videos using tiered algorithm with early termination
-    related_videos: List[Dict[str, Any]] = []
     seen_ids: set = {video_id}  # Always exclude the source video
+
+    if parallelize:
+        # Performance optimization: Run all tiers in parallel for limit=1 (Issue #211)
+        # This is optimal when we just need one result and don't know which tier will succeed
+        # Build list of (priority, coroutine) tuples - only include applicable tiers
+        tier_coros: List[Tuple[int, Any]] = []
+
+        # Tier 1: Same category + shared tags (highest relevance)
+        if category_id is not None and source_tag_ids:
+            tier_coros.append((1, _fetch_related_videos_tier(
+                category_id=category_id,
+                tag_ids=source_tag_ids,
+                exclude_ids=seen_ids,
+                limit=limit,
+            )))
+
+        # Tier 2: Same category only
+        if category_id is not None:
+            tier_coros.append((2, _fetch_related_videos_tier(
+                category_id=category_id,
+                tag_ids=None,
+                exclude_ids=seen_ids,
+                limit=limit,
+            )))
+
+        # Tier 3: Shared tags only
+        if source_tag_ids:
+            tier_coros.append((3, _fetch_related_videos_tier(
+                category_id=None,
+                tag_ids=source_tag_ids,
+                exclude_ids=seen_ids,
+                limit=limit,
+            )))
+
+        # Tier 4: Recent videos fallback (always included)
+        tier_coros.append((4, _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=limit,
+        )))
+
+        # Run all applicable tiers in parallel
+        tier_results = await asyncio.gather(
+            *[coro for _, coro in tier_coros],
+            return_exceptions=True
+        )
+
+        # Match results back to priorities and find first non-empty by priority
+        results_with_priority = list(zip([p for p, _ in tier_coros], tier_results))
+        results_with_priority.sort(key=lambda x: x[0])  # Sort by priority
+
+        for priority, tier_result in results_with_priority:
+            if isinstance(tier_result, Exception):
+                logger.warning(f"Tier {priority} query failed: {tier_result}")
+                continue
+            if tier_result:
+                return tier_result[:limit]
+
+        return []
+
+    # Sequential execution with early termination (optimal for larger limits)
+    related_videos: List[Dict[str, Any]] = []
 
     # Tier 1: Same category + shared tags (highest relevance)
     if category_id is not None and source_tag_ids:
@@ -1638,6 +1684,52 @@ async def get_related_videos(
                 related_videos.append(v)
                 seen_ids.add(v["id"])
 
+    return related_videos
+
+
+@v1_router.get("/videos/{slug}/related", summary="Get related videos", description="Get videos related to the specified video based on tags and category.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_related_videos(
+    request: Request,
+    slug: str,
+    limit: int = Query(default=12, ge=1, le=24, description="Maximum number of related videos to return"),
+) -> List[VideoListResponse]:
+    """
+    Get related videos for a given video.
+
+    Algorithm priority (with early termination when limit reached):
+    1. Same category + shared tags (highest relevance)
+    2. Same category only
+    3. Shared tags only
+    4. Recent videos (fallback)
+
+    Results are cached for 300 seconds using the video list cache.
+
+    Args:
+        slug: The video slug to find related videos for
+        limit: Maximum number of related videos (1-24, default 12)
+
+    Returns:
+        List of related videos sorted by relevance tier then recency
+    """
+    # Build cache key with SHA256 hash to prevent cache poisoning
+    RELATED_VIDEOS_CACHE_VERSION = "v1"  # Increment on schema changes
+    cache_key_raw = f"related:{RELATED_VIDEOS_CACHE_VERSION}:{slug}|{limit}"
+    cache_key = f"related:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
+
+    # Check cache first
+    cached = _video_list_cache.get(cache_key)
+    if cached is not None:
+        try:
+            return [VideoListResponse(**v) for v in cached]
+        except Exception as e:
+            # Cache schema mismatch after deploy, invalidate and regenerate
+            logger.warning(f"Cached related videos schema mismatch, invalidating: {e}")
+            _video_list_cache.delete(cache_key)
+
+    # Use shared helper for the tiered algorithm
+    related_videos = await _find_related_videos_for_slug(slug, limit=limit, parallelize=False)
+
     # Get tags for all related videos
     video_ids = [v["id"] for v in related_videos]
     video_tags_map = await get_video_tags(video_ids)
@@ -1662,7 +1754,7 @@ async def get_next_video(
 
     Returns the single best related video for the "Up Next" feature.
     Uses the same tiered algorithm as related videos but returns only
-    the top result.
+    the top result. Parallelizes tier queries for optimal latency.
 
     Args:
         slug: The current video slug
@@ -1670,10 +1762,6 @@ async def get_next_video(
     Returns:
         Single video suggestion, or null if no related videos found
     """
-    # Validate slug to prevent injection attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
-
     # Build cache key with SHA256 hash
     NEXT_VIDEO_CACHE_VERSION = "v1"
     cache_key_raw = f"next:{NEXT_VIDEO_CACHE_VERSION}:{slug}"
@@ -1690,78 +1778,16 @@ async def get_next_video(
             logger.warning(f"Cached next video schema mismatch, invalidating: {e}")
             _video_list_cache.delete(cache_key)
 
-    # Get the source video
-    video_query = (
-        sa.select(videos.c.id, videos.c.category_id)
-        .where(videos.c.slug == slug)
-        .where(videos.c.status == VideoStatus.READY)
-        .where(videos.c.deleted_at.is_(None))
-        .where(videos.c.published_at.is_not(None))
-    )
-    video = await fetch_one_with_retry(video_query)
+    # Use shared helper with parallelization for optimal latency (Issue #211)
+    # For limit=1, running all tiers in parallel is faster than sequential with early termination
+    related_videos = await _find_related_videos_for_slug(slug, limit=1, parallelize=True)
 
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    video_id = video["id"]
-    category_id = video["category_id"]
-
-    # Get source video's tag IDs
-    tag_query = sa.select(video_tags.c.tag_id).where(video_tags.c.video_id == video_id).limit(10)
-    tag_rows = await fetch_all_with_retry(tag_query)
-    source_tag_ids = [r["tag_id"] for r in tag_rows] if tag_rows else []
-
-    seen_ids: set = {video_id}
-    next_video = None
-
-    # Tier 1: Same category + shared tags (highest relevance)
-    if category_id is not None and source_tag_ids and not next_video:
-        tier1 = await _fetch_related_videos_tier(
-            category_id=category_id,
-            tag_ids=source_tag_ids,
-            exclude_ids=seen_ids,
-            limit=1,
-        )
-        if tier1:
-            next_video = tier1[0]
-
-    # Tier 2: Same category only
-    if not next_video and category_id is not None:
-        tier2 = await _fetch_related_videos_tier(
-            category_id=category_id,
-            tag_ids=None,
-            exclude_ids=seen_ids,
-            limit=1,
-        )
-        if tier2:
-            next_video = tier2[0]
-
-    # Tier 3: Shared tags only
-    if not next_video and source_tag_ids:
-        tier3 = await _fetch_related_videos_tier(
-            category_id=None,
-            tag_ids=source_tag_ids,
-            exclude_ids=seen_ids,
-            limit=1,
-        )
-        if tier3:
-            next_video = tier3[0]
-
-    # Tier 4: Recent videos fallback
-    if not next_video:
-        tier4 = await _fetch_related_videos_tier(
-            category_id=None,
-            tag_ids=None,
-            exclude_ids=seen_ids,
-            limit=1,
-        )
-        if tier4:
-            next_video = tier4[0]
-
-    if not next_video:
+    if not related_videos:
         # Cache empty result to avoid repeated lookups
         _video_list_cache.set(cache_key, [])
         return None
+
+    next_video = related_videos[0]
 
     # Get tags for the next video
     video_tags_map = await get_video_tags([next_video["id"]])
@@ -2436,9 +2462,10 @@ async def get_playback_settings() -> Dict[str, Any]:
     - autoplay_enabled: bool (default True)
     - upnext_enabled: bool (default True)
     - autoplay_countdown_seconds: int (default 10)
-    """
-    import time
 
+    Note: No locking needed - dict reads are atomic and stale data
+    for 60s is acceptable for these settings.
+    """
     global _cached_playback_settings, _cached_playback_settings_time
 
     now = time.time()
@@ -2462,7 +2489,7 @@ async def get_playback_settings() -> Dict[str, Any]:
         _cached_playback_settings_time = now
 
     except Exception as e:
-        logger.debug(f"Failed to get playback settings from DB, using defaults: {e}")
+        logger.warning(f"Failed to get playback settings from DB, using defaults: {e}")
         _cached_playback_settings = {
             "autoplay_enabled": AUTOPLAY_ENABLED,
             "upnext_enabled": UPNEXT_ENABLED,
