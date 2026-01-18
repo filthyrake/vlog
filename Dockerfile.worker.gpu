@@ -75,7 +75,11 @@ COPY api/ api/
 COPY worker/ worker/
 COPY cli/ cli/
 
-RUN pip3 install --no-cache-dir --prefix=/install .
+RUN pip3 install --no-cache-dir --prefix=/install . && \
+    # Force upgrade security-patched packages after all deps are resolved
+    pip3 install --no-cache-dir --prefix=/install --upgrade \
+        "filelock>=3.20.3" \
+        "jaraco-context>=6.1.0"
 
 # =============================================================================
 # Stage 2: Runtime - Minimal production image
