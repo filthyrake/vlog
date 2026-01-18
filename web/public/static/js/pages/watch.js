@@ -561,10 +561,18 @@ function watchPage() {
                     return;
                 }
 
+                // Validate slug before using it to construct URLs (defense-in-depth)
+                const slug = typeof data.slug === 'string' ? data.slug : '';
+                if (!SLUG_PATTERN.test(slug)) {
+                    debugLog('Invalid next video slug received:', data.slug);
+                    this.nextVideo = null;
+                    return;
+                }
+
                 // Enrich with display values
                 this.nextVideo = {
                     ...data,
-                    _href: '/watch/' + data.slug,
+                    _href: '/watch/' + encodeURIComponent(slug),
                     _duration: VLogUtils.formatDuration(data.duration)
                 };
                 this.updateNextVideoDisplayFlags();
@@ -613,11 +621,20 @@ function watchPage() {
                 return;
             }
 
+            // Clear any existing countdown first (e.g., if video 'ended' fires multiple times)
+            this.cancelUpNextCountdown();
+
             const countdownSeconds = this.playbackConfig?.autoplay_countdown_seconds || 10;
             this.upNextCountdown = countdownSeconds;
             this._upNextCountdownText = countdownSeconds.toString();
             this._showUpNext = true;
             debugLog('Starting Up Next countdown:', countdownSeconds, 'seconds');
+
+            // Focus the cancel button for keyboard accessibility
+            this.$nextTick(() => {
+                const cancelBtn = this.$el.querySelector('.upnext-btn--cancel');
+                if (cancelBtn) cancelBtn.focus();
+            });
 
             // Start countdown interval
             this._upNextCountdownInterval = setInterval(() => {

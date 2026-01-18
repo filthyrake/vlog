@@ -181,13 +181,26 @@
                         x-show="_showUpNext"
                         x-cloak
                         class="upnext-overlay"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="upnext-label"
+                        aria-describedby="upnext-description"
+                        @keydown.escape="cancelUpNextCountdown"
                     >
                         <div class="upnext-content">
                             <div class="upnext-header">
-                                <span class="upnext-label">Up Next in</span>
-                                <span class="upnext-countdown" x-text="_upNextCountdownText"></span>
+                                <span id="upnext-label" class="upnext-label">Up Next in</span>
+                                <span
+                                    class="upnext-countdown"
+                                    x-text="_upNextCountdownText"
+                                    aria-live="polite"
+                                    aria-label="Seconds until next video"
+                                ></span>
                             </div>
-                            <a :href="_nextVideoHref" class="upnext-video" @click="navigateToNextVideo">
+                            <p id="upnext-description" class="sr-only">
+                                The next video will start automatically when the countdown reaches zero. Use the Cancel button to stop autoplay or the Play Now button to start immediately.
+                            </p>
+                            <a :href="_nextVideoHref" class="upnext-video" @click.prevent="navigateToNextVideo">
                                 <div class="upnext-thumbnail">
                                     <img :src="_nextVideoThumbnail" :alt="_nextVideoTitle" loading="lazy">
                                     <span class="upnext-duration" x-text="_nextVideoDuration"></span>
@@ -217,7 +230,7 @@
                                     <input
                                         type="checkbox"
                                         :checked="_autoplayEnabled"
-                                        @change="toggleAutoplay"
+                                        @click.prevent="toggleAutoplay"
                                     >
                                     <span>Autoplay</span>
                                 </label>

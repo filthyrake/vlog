@@ -134,9 +134,12 @@ _cached_watermark_settings_time: float = 0
 _WATERMARK_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
 
 # Video list cache for performance (Issue #429)
-# Caches video list query results for 300 seconds to reduce database load
-# Performance review (Issue #211): Increased from 30s to 300s for reduced DB load
-_video_list_cache = AnalyticsCache(ttl_seconds=300, enabled=True, max_size=500)
+# Caches video list query results to reduce database load.
+# Performance review (Issue #211): Increased default from 30s to 300s for reduced DB load.
+# TTL is configurable via the VIDEO_LIST_CACHE_TTL environment variable (seconds).
+_VIDEO_LIST_CACHE_TTL_DEFAULT = 300
+_VIDEO_LIST_CACHE_TTL = int(os.getenv("VIDEO_LIST_CACHE_TTL", _VIDEO_LIST_CACHE_TTL_DEFAULT))
+_video_list_cache = AnalyticsCache(ttl_seconds=_VIDEO_LIST_CACHE_TTL, enabled=True, max_size=500)
 
 
 async def get_watermark_settings() -> Dict[str, Any]:
