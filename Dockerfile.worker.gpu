@@ -49,6 +49,7 @@ WORKDIR /build
 COPY pyproject.toml ./
 
 # Install Python dependencies to a specific location for copying
+# Note: filelock and jaraco-context are security patches for transitive dependencies
 RUN pip3 install --no-cache-dir --prefix=/install \
     fastapi>=0.100.0 \
     uvicorn>=0.23.0 \
@@ -63,7 +64,9 @@ RUN pip3 install --no-cache-dir --prefix=/install \
     httpx>=0.25.0 \
     watchdog>=3.0.0 \
     slowapi>=0.1.9 \
-    limits>=3.0.0
+    limits>=3.0.0 \
+    "filelock>=3.20.3" \
+    "jaraco-context>=6.1.0"
 
 # Copy source code and install the package
 COPY config.py ./
@@ -92,6 +95,7 @@ RUN dnf install -y \
     ffmpeg \
     ffmpeg-libs \
     curl \
+    && dnf update -y \
     && dnf clean all
 
 # Install Intel VAAPI driver for Arc/Battlemage support
