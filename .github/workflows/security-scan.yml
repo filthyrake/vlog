@@ -114,8 +114,9 @@ jobs:
           # Ignored vulnerabilities (review quarterly):
           # - PYSEC-2024-87: Jinja2 sandbox escape - not exploitable in our use case (no user templates)
           # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
+          # - GHSA-qmgc-5h2g-mvrw: filelock TOCTOU - fix requires Python 3.10+, container image is patched
           # Last reviewed: 2026-01-17
-          pip-audit --ignore-vuln PYSEC-2024-87 --ignore-vuln GHSA-34jh-p97f-mpxf
+          pip-audit --ignore-vuln PYSEC-2024-87 --ignore-vuln GHSA-34jh-p97f-mpxf --ignore-vuln GHSA-qmgc-5h2g-mvrw
 
   security-summary:
     name: Security Scan Summary
