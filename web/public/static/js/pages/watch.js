@@ -197,6 +197,21 @@ function watchPage() {
         // Precomputed arrays for skeleton loaders (Alpine CSP)
         _skeletonArray6: [1, 2, 3, 4, 5, 6],
 
+        // Up Next / Autoplay state (Issue #211)
+        playbackConfig: null,
+        nextVideo: null,
+        upNextCountdown: 0,
+        _upNextCountdownInterval: null,
+        _nextVideoAbortController: null,
+        _showUpNext: false,
+        _autoplayEnabled: true, // User preference (stored in localStorage)
+        // Precomputed Up Next display values for Alpine CSP
+        _nextVideoTitle: '',
+        _nextVideoThumbnail: '',
+        _nextVideoDuration: '',
+        _nextVideoHref: '',
+        _upNextCountdownText: '',
+
         async loadDisplayConfig() {
             try {
                 const res = await VLogUtils.fetchWithTimeout('/api/config/display', {}, 5000);
@@ -372,6 +387,7 @@ function watchPage() {
             this.loadWatermarkConfig();
             this.loadDisplayConfig();
             this.loadDownloadConfig();  // Issue #202
+            this.loadPlaybackConfig();  // Issue #211
 
             const slug = window.location.pathname.split('/').pop();
             if (!slug || !SLUG_PATTERN.test(slug)) {
@@ -408,6 +424,9 @@ function watchPage() {
 
                 // Load related videos (non-blocking, don't wait)
                 this.loadRelatedVideos(slug);
+
+                // Load next video for Up Next / autoplay (Issue #211)
+                this.loadNextVideo(slug);
             } catch (e) {
                 this.error = e.message;
                 this.loading = false;
@@ -480,6 +499,202 @@ function watchPage() {
             } catch (e) {
                 // Downloads are optional, fail silently
                 debugLog('Failed to load download config:', e);
+            }
+        },
+
+        // Issue #211: Load playback configuration (autoplay/up-next settings)
+        async loadPlaybackConfig() {
+            try {
+                const res = await VLogUtils.fetchWithTimeout('/api/config/playback', {}, 5000);
+                if (res.ok) {
+                    this.playbackConfig = await res.json();
+                    debugLog('Playback config loaded:', this.playbackConfig);
+                }
+            } catch (e) {
+                // Use defaults on error
+                debugLog('Failed to load playback config, using defaults:', e);
+                this.playbackConfig = {
+                    autoplay_enabled: true,
+                    upnext_enabled: true,
+                    autoplay_countdown_seconds: 10
+                };
+            }
+
+            // Load user's autoplay preference from localStorage
+            this._autoplayEnabled = VLogUtils.preferences.get('autoplay', true);
+        },
+
+        // Issue #211: Load next video for autoplay
+        async loadNextVideo(slug) {
+            if (!slug) return;
+
+            // Cancel any in-flight request
+            if (this._nextVideoAbortController) {
+                this._nextVideoAbortController.abort();
+            }
+            this._nextVideoAbortController = new AbortController();
+
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/next`,
+                    { signal: this._nextVideoAbortController.signal },
+                    5000
+                );
+
+                if (!res.ok) {
+                    debugLog('No next video available');
+                    this.nextVideo = null;
+                    return;
+                }
+
+                // Guard JSON parsing
+                let data;
+                try {
+                    data = await res.json();
+                } catch (parseError) {
+                    debugLog('Invalid JSON response for next video');
+                    return;
+                }
+
+                if (!data) {
+                    this.nextVideo = null;
+                    return;
+                }
+
+                // Validate slug before using it to construct URLs (defense-in-depth)
+                const slug = typeof data.slug === 'string' ? data.slug : '';
+                if (!SLUG_PATTERN.test(slug)) {
+                    debugLog('Invalid next video slug received:', data.slug);
+                    this.nextVideo = null;
+                    return;
+                }
+
+                // Enrich with display values
+                this.nextVideo = {
+                    ...data,
+                    _href: '/watch/' + encodeURIComponent(slug),
+                    _duration: VLogUtils.formatDuration(data.duration)
+                };
+                this.updateNextVideoDisplayFlags();
+                debugLog('Next video loaded:', this.nextVideo.title);
+            } catch (e) {
+                // Handle abort separately (including Safari quirks)
+                if (e.name === 'AbortError' || this._nextVideoAbortController?.signal?.aborted) {
+                    return;
+                }
+                debugLog('Failed to load next video:', e);
+                this.nextVideo = null;
+            }
+        },
+
+        // Update precomputed next video display values for Alpine CSP
+        updateNextVideoDisplayFlags() {
+            if (this.nextVideo) {
+                this._nextVideoTitle = this.nextVideo.title || '';
+                this._nextVideoThumbnail = this.nextVideo.thumbnail_url || '';
+                this._nextVideoDuration = this.nextVideo._duration || '';
+                this._nextVideoHref = this.nextVideo._href || '';
+            } else {
+                this._nextVideoTitle = '';
+                this._nextVideoThumbnail = '';
+                this._nextVideoDuration = '';
+                this._nextVideoHref = '';
+            }
+        },
+
+        // Issue #211: Check if autoplay should be enabled
+        shouldAutoplay() {
+            // Global setting must be enabled
+            if (!this.playbackConfig?.autoplay_enabled) return false;
+            if (!this.playbackConfig?.upnext_enabled) return false;
+            // User preference must be enabled
+            if (!this._autoplayEnabled) return false;
+            // Must have a next video
+            if (!this.nextVideo) return false;
+            return true;
+        },
+
+        // Issue #211: Start the Up Next countdown
+        startUpNextCountdown() {
+            if (!this.shouldAutoplay()) {
+                debugLog('Autoplay disabled or no next video');
+                return;
+            }
+
+            // Clear any existing countdown first (e.g., if video 'ended' fires multiple times)
+            this.cancelUpNextCountdown();
+
+            const countdownSeconds = this.playbackConfig?.autoplay_countdown_seconds || 10;
+            this.upNextCountdown = countdownSeconds;
+            this._upNextCountdownText = countdownSeconds.toString();
+            this._showUpNext = true;
+            debugLog('Starting Up Next countdown:', countdownSeconds, 'seconds');
+
+            // Focus the cancel button for keyboard accessibility
+            this.$nextTick(() => {
+                const cancelBtn = this.$el.querySelector('.upnext-btn--cancel');
+                if (cancelBtn) cancelBtn.focus();
+            });
+
+            // Start countdown interval
+            this._upNextCountdownInterval = setInterval(() => {
+                this.upNextCountdown--;
+                this._upNextCountdownText = this.upNextCountdown.toString();
+
+                if (this.upNextCountdown <= 0) {
+                    this.navigateToNextVideo();
+                }
+            }, 1000);
+        },
+
+        // Issue #211: Cancel the Up Next countdown
+        cancelUpNextCountdown() {
+            if (this._upNextCountdownInterval) {
+                clearInterval(this._upNextCountdownInterval);
+                this._upNextCountdownInterval = null;
+            }
+            this._showUpNext = false;
+            this.upNextCountdown = 0;
+            debugLog('Up Next countdown cancelled');
+        },
+
+        // Issue #211: Navigate to the next video
+        navigateToNextVideo() {
+            this.cancelUpNextCountdown();
+
+            // Validate URL before navigation (defense in depth)
+            if (!this.nextVideo?._href || typeof this.nextVideo._href !== 'string') {
+                debugLog('Cannot navigate to next video: invalid URL');
+                return;
+            }
+
+            // Verify URL is a valid internal path
+            if (!this.nextVideo._href.startsWith('/watch/')) {
+                debugLog('Cannot navigate to next video: unexpected URL format');
+                return;
+            }
+
+            debugLog('Navigating to next video:', this.nextVideo.title);
+            window.location.href = this.nextVideo._href;
+        },
+
+        // Issue #211: Toggle autoplay preference
+        toggleAutoplay() {
+            const newValue = !this._autoplayEnabled;
+
+            try {
+                VLogUtils.preferences.set('autoplay', newValue);
+                this._autoplayEnabled = newValue;
+                debugLog('Autoplay preference set to:', this._autoplayEnabled);
+            } catch (e) {
+                // localStorage quota exceeded or unavailable - log but don't crash
+                console.warn('Failed to save autoplay preference:', e.name);
+                // Don't update state if save failed - keep UI consistent with storage
+            }
+
+            // If we just disabled autoplay and countdown is running, cancel it
+            if (!this._autoplayEnabled && this._showUpNext) {
+                this.cancelUpNextCountdown();
             }
         },
 
@@ -673,6 +888,9 @@ function watchPage() {
                         console.warn('Failed to clear watch history:', e);
                     }
                 }
+
+                // Issue #211: Start Up Next countdown when video ends
+                this.startUpNextCountdown();
             });
 
             // Handle page unload
@@ -681,6 +899,10 @@ function watchPage() {
                 // Clean up save interval
                 if (this._watchSaveInterval) {
                     clearInterval(this._watchSaveInterval);
+                }
+                // Clean up Up Next countdown (Issue #211)
+                if (this._upNextCountdownInterval) {
+                    clearInterval(this._upNextCountdownInterval);
                 }
                 if (this.playerControls) {
                     this.playerControls.destroy();

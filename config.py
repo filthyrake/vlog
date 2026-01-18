@@ -651,3 +651,17 @@ DOWNLOADS_RATE_LIMIT_PER_HOUR = get_int_env("VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR"
 # Maximum concurrent downloads per IP (prevents bandwidth abuse)
 # This is tracked in-memory so resets on server restart
 DOWNLOADS_MAX_CONCURRENT = get_int_env("VLOG_DOWNLOADS_MAX_CONCURRENT", 2, min_val=1, max_val=10)
+
+# =============================================================================
+# Playback Configuration (Issue #211)
+# Autoplay and "Up Next" settings for video player
+# =============================================================================
+
+# Enable autoplay feature globally (can be overridden by user preferences)
+AUTOPLAY_ENABLED = os.getenv("VLOG_AUTOPLAY_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Enable "Up Next" suggestions after video ends
+UPNEXT_ENABLED = os.getenv("VLOG_UPNEXT_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Countdown duration in seconds before autoplay starts (5-30)
+AUTOPLAY_COUNTDOWN_SECONDS = get_int_env("VLOG_AUTOPLAY_COUNTDOWN_SECONDS", 10, min_val=5, max_val=30)

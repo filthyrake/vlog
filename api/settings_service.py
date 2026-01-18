@@ -1055,6 +1055,28 @@ KNOWN_SETTINGS = [
         "Maximum concurrent downloads per IP",
         {"min": 1, "max": 10},
     ),
+    # Playback settings (Issue #211)
+    (
+        "playback.autoplay_enabled",
+        "playback",
+        "boolean",
+        "Enable autoplay feature globally (can be overridden by user preferences)",
+        None,
+    ),
+    (
+        "playback.upnext_enabled",
+        "playback",
+        "boolean",
+        "Enable 'Up Next' suggestions after video ends",
+        None,
+    ),
+    (
+        "playback.autoplay_countdown_seconds",
+        "playback",
+        "integer",
+        "Countdown duration in seconds before autoplay starts",
+        {"min": 5, "max": 30},
+    ),
     # Webhook settings (Issue #203)
     (
         "webhooks.enabled",
@@ -1172,6 +1194,10 @@ SETTING_TO_ENV_MAP = {
     "downloads.allow_transcoded": "VLOG_DOWNLOADS_ALLOW_TRANSCODED",
     "downloads.rate_limit_per_hour": "VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR",
     "downloads.max_concurrent": "VLOG_DOWNLOADS_MAX_CONCURRENT",
+    # Playback settings (Issue #211)
+    "playback.autoplay_enabled": "VLOG_AUTOPLAY_ENABLED",
+    "playback.upnext_enabled": "VLOG_UPNEXT_ENABLED",
+    "playback.autoplay_countdown_seconds": "VLOG_AUTOPLAY_COUNTDOWN_SECONDS",
     # Webhook settings (Issue #203)
     "webhooks.enabled": "VLOG_WEBHOOKS_ENABLED",
     "webhooks.max_retries": "VLOG_WEBHOOKS_MAX_RETRIES",

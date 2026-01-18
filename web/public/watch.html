@@ -175,6 +175,69 @@
                             ></span>
                         </div>
                     </template>
+
+                    <!-- Up Next Overlay (Issue #211) -->
+                    <div
+                        x-show="_showUpNext"
+                        x-cloak
+                        class="upnext-overlay"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="upnext-label"
+                        aria-describedby="upnext-description"
+                        @keydown.escape="cancelUpNextCountdown"
+                    >
+                        <div class="upnext-content">
+                            <div class="upnext-header">
+                                <span id="upnext-label" class="upnext-label">Up Next in</span>
+                                <span
+                                    class="upnext-countdown"
+                                    x-text="_upNextCountdownText"
+                                    aria-live="polite"
+                                    aria-label="Seconds until next video"
+                                ></span>
+                            </div>
+                            <p id="upnext-description" class="sr-only">
+                                The next video will start automatically when the countdown reaches zero. Use the Cancel button to stop autoplay or the Play Now button to start immediately.
+                            </p>
+                            <a :href="_nextVideoHref" class="upnext-video" @click.prevent="navigateToNextVideo">
+                                <div class="upnext-thumbnail">
+                                    <img :src="_nextVideoThumbnail" :alt="_nextVideoTitle" loading="lazy">
+                                    <span class="upnext-duration" x-text="_nextVideoDuration"></span>
+                                </div>
+                                <div class="upnext-info">
+                                    <h3 class="upnext-title" x-text="_nextVideoTitle"></h3>
+                                </div>
+                            </a>
+                            <div class="upnext-actions">
+                                <button
+                                    type="button"
+                                    class="upnext-btn upnext-btn--cancel"
+                                    @click="cancelUpNextCountdown"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    class="upnext-btn upnext-btn--play"
+                                    @click="navigateToNextVideo"
+                                >
+                                    Play Now
+                                </button>
+                            </div>
+                            <div class="upnext-toggle">
+                                <label class="upnext-toggle-label">
+                                    <input
+                                        type="checkbox"
+                                        :checked="_autoplayEnabled"
+                                        @click.prevent="toggleAutoplay"
+                                    >
+                                    <span>Autoplay</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Custom controls are injected by VLogPlayerControls (native controls removed on init) -->
                 </div>
             </div>
