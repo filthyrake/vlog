@@ -427,6 +427,12 @@ RATE_LIMIT_WORKER_DEFAULT = os.getenv("VLOG_RATE_LIMIT_WORKER_DEFAULT", "300/min
 RATE_LIMIT_WORKER_REGISTER = os.getenv("VLOG_RATE_LIMIT_WORKER_REGISTER", "5/hour")
 RATE_LIMIT_WORKER_PROGRESS = os.getenv("VLOG_RATE_LIMIT_WORKER_PROGRESS", "600/minute")
 
+# Live ingest API limits (per stream key, not per IP since authenticated)
+# 300 segments/minute is ~5 segments/second which covers 4-second segments with margin
+RATE_LIMIT_LIVE_SEGMENT = os.getenv("VLOG_RATE_LIMIT_LIVE_SEGMENT", "300/minute")
+# Global per-IP limit to prevent flood attacks via multiple stream keys
+RATE_LIMIT_LIVE_GLOBAL = os.getenv("VLOG_RATE_LIMIT_LIVE_GLOBAL", "1000/minute")
+
 # Storage backend for rate limiting
 # Options: "memory" (per-process), or a Redis URL like "redis://localhost:6379"
 # SECURITY: In-memory rate limiting doesn't work with multiple API instances.
@@ -665,3 +671,59 @@ UPNEXT_ENABLED = os.getenv("VLOG_UPNEXT_ENABLED", "true").lower() in ("true", "1
 
 # Countdown duration in seconds before autoplay starts (5-30)
 AUTOPLAY_COUNTDOWN_SECONDS = get_int_env("VLOG_AUTOPLAY_COUNTDOWN_SECONDS", 10, min_val=5, max_val=30)
+
+# =============================================================================
+# Live Streaming Configuration
+# HTTP segment push for live streaming without RTMP/SRT servers
+# =============================================================================
+
+# Master switch for live streaming feature
+LIVE_ENABLED = os.getenv("VLOG_LIVE_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Storage path for live stream segments
+LIVE_STORAGE_PATH = NAS_STORAGE / os.getenv("VLOG_LIVE_SUBDIR", "live")
+
+# Default DVR window in seconds (2 hours)
+LIVE_DEFAULT_DVR_WINDOW = get_int_env("VLOG_LIVE_DEFAULT_DVR_WINDOW", 7200, min_val=60, max_val=86400)
+
+# Stale stream detection threshold in seconds
+# If no segment received within this period, stream enters "ending" state
+LIVE_STALE_THRESHOLD = get_int_env("VLOG_LIVE_STALE_THRESHOLD", 60, min_val=10, max_val=300)
+
+# Grace period multiplier for stale detection
+# Stream finalizes to "ended" after stale_threshold * this multiplier
+LIVE_STALE_GRACE_MULTIPLIER = 2
+
+# Maximum segment size (50MB - generous for high bitrate 4K)
+LIVE_MAX_SEGMENT_SIZE = get_int_env("VLOG_LIVE_MAX_SEGMENT_SIZE", 50 * 1024 * 1024, min_val=1024 * 1024)
+
+# Rate limiting: segments per minute per stream
+LIVE_SEGMENT_RATE_LIMIT = get_int_env("VLOG_LIVE_SEGMENT_RATE_LIMIT", 300, min_val=10)
+
+# Global rate limit: segments per minute per source IP
+LIVE_GLOBAL_SEGMENT_RATE_LIMIT = get_int_env("VLOG_LIVE_GLOBAL_SEGMENT_RATE_LIMIT", 1000, min_val=100)
+
+# Maximum concurrent live streams
+LIVE_MAX_CONCURRENT_STREAMS = get_int_env("VLOG_LIVE_MAX_CONCURRENT_STREAMS", 10, min_val=1)
+
+# DVR cleanup interval in seconds
+LIVE_DVR_CLEANUP_INTERVAL = get_int_env("VLOG_LIVE_DVR_CLEANUP_INTERVAL", 30, min_val=10, max_val=300)
+
+# Batch size for DVR cleanup DELETEs (reduces lock contention)
+LIVE_DVR_CLEANUP_BATCH_SIZE = get_int_env("VLOG_LIVE_DVR_CLEANUP_BATCH_SIZE", 10, min_val=1, max_val=100)
+
+# HLS segment duration for live streams (must match FFmpeg -hls_time)
+LIVE_HLS_SEGMENT_DURATION = get_int_env("VLOG_LIVE_HLS_SEGMENT_DURATION", 4, min_val=1, max_val=10)
+
+# Number of segments to include in live playlist (sliding window)
+LIVE_HLS_PLAYLIST_LENGTH = get_int_env("VLOG_LIVE_HLS_PLAYLIST_LENGTH", 5, min_val=3, max_val=30)
+
+# Allowed quality names for live streams
+LIVE_ALLOWED_QUALITIES = frozenset({"2160p", "1440p", "1080p", "720p", "480p", "360p"})
+
+# Ensure live storage directory exists (skip in test/CI environments)
+if not os.environ.get("VLOG_TEST_MODE"):
+    try:
+        LIVE_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass  # CI environment without NAS access

@@ -55,6 +55,8 @@ from api.database import (
     create_tables,
     custom_field_definitions,
     database,
+    live_stream_segments,
+    live_streams,
     playback_sessions,
     playlist_items,
     playlists,
@@ -205,6 +207,16 @@ from api.settings_service import (
     get_setting as get_db_setting,
 )
 from api.worker_auth import authenticate_api_key
+from api.live_auth import generate_stream_key, get_key_prefix, hash_stream_key, revoke_stream_key
+from api.live_schemas import (
+    LiveStreamCreate,
+    LiveStreamCreatedResponse,
+    LiveStreamKeyRegenerateResponse,
+    LiveStreamListResponse,
+    LiveStreamResponse,
+    LiveStreamStatus,
+    LiveStreamUpdate,
+)
 from config import (
     API_INCLUDE_LEGACY_ROUTES,
     API_VERSION,
@@ -243,6 +255,9 @@ from config import (
     VIDEOS_DIR,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
     check_deprecated_env_vars,
+    LIVE_ENABLED,
+    LIVE_STORAGE_PATH,
+    LIVE_MAX_CONCURRENT_STREAMS,
 )
 from worker.transcoder import generate_thumbnail, get_video_info
 
@@ -9740,6 +9755,355 @@ async def retry_webhook_delivery(
             status_code=500,
             detail=sanitize_error_message(str(e), context="retry_delivery"),
         )
+
+
+# =============================================================================
+# Live Streaming Admin API
+# HTTP segment push for live streaming without RTMP/SRT servers
+# =============================================================================
+
+
+def _parse_qualities_json(qualities_str: Optional[str]) -> List[str]:
+    """Parse qualities JSON string to list."""
+    if not qualities_str:
+        return []
+    try:
+        return json.loads(qualities_str)
+    except json.JSONDecodeError:
+        return []
+
+
+def _build_live_stream_response(row: dict) -> LiveStreamResponse:
+    """Build LiveStreamResponse from database row."""
+    return LiveStreamResponse(
+        id=row["id"],
+        title=row["title"],
+        slug=row["slug"],
+        description=row["description"] or "",
+        status=LiveStreamStatus(row["status"]),
+        qualities=_parse_qualities_json(row["qualities"]),
+        category_id=row["category_id"],
+        dvr_enabled=row["dvr_enabled"],
+        dvr_window_seconds=row["dvr_window_seconds"],
+        auto_record_vod=row["auto_record_vod"],
+        segment_count=row["segment_count"],
+        vod_video_id=row["vod_video_id"],
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+        last_segment_at=row["last_segment_at"],
+    )
+
+
+@v1_router.get("/live/streams")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_live_streams(
+    request: Request,
+    status: Optional[str] = Query(None, description="Filter by status (idle, live, ending, ended)"),
+) -> LiveStreamListResponse:
+    """List all live streams."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    query = live_streams.select().order_by(live_streams.c.created_at.desc())
+
+    if status:
+        valid_statuses = ["idle", "live", "ending", "ended"]
+        if status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
+        query = query.where(live_streams.c.status == status)
+
+    rows = await fetch_all_with_retry(query)
+
+    return LiveStreamListResponse(
+        streams=[_build_live_stream_response(dict(row)) for row in rows],
+        total=len(rows),
+    )
+
+
+@v1_router.post("/live/streams", status_code=201)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_live_stream(request: Request, data: LiveStreamCreate) -> LiveStreamCreatedResponse:
+    """Create a new live stream. Returns the stream key (shown once)."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    # Check concurrent stream limit
+    active_count = await database.fetch_val(
+        sa.select(sa.func.count()).select_from(live_streams).where(
+            live_streams.c.status.in_(["idle", "live", "ending"])
+        )
+    )
+    if active_count >= LIVE_MAX_CONCURRENT_STREAMS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum concurrent streams ({LIVE_MAX_CONCURRENT_STREAMS}) reached",
+        )
+
+    # Generate slug
+    slug = slugify(data.title)
+
+    # Check for duplicate slug
+    existing = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if existing:
+        # Append random suffix
+        slug = f"{slug}-{secrets.token_hex(4)}"
+
+    # Generate stream key
+    stream_key = generate_stream_key()
+    key_hash = hash_stream_key(stream_key)
+    key_prefix = get_key_prefix(stream_key)
+
+    now = datetime.now(timezone.utc)
+
+    # Insert stream
+    query = live_streams.insert().values(
+        title=data.title,
+        slug=slug,
+        description=data.description,
+        stream_key_hash=key_hash,
+        stream_key_prefix=key_prefix,
+        hash_version=2,  # argon2id
+        status="idle",
+        category_id=data.category_id,
+        dvr_enabled=data.dvr_enabled,
+        dvr_window_seconds=data.dvr_window_seconds,
+        auto_record_vod=data.auto_record_vod,
+        created_at=now,
+    )
+    stream_id = await db_execute_with_retry(query)
+
+    # Create storage directory
+    stream_dir = LIVE_STORAGE_PATH / slug
+    try:
+        stream_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Failed to create live stream directory {stream_dir}: {e}")
+
+    # Audit log
+    log_audit(
+        AuditAction.CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=stream_id,
+        resource_name=slug,
+        details={"title": data.title},
+    )
+
+    return LiveStreamCreatedResponse(
+        id=stream_id,
+        title=data.title,
+        slug=slug,
+        description=data.description,
+        status=LiveStreamStatus.IDLE,
+        stream_key=stream_key,  # Only shown once
+        category_id=data.category_id,
+        dvr_enabled=data.dvr_enabled,
+        dvr_window_seconds=data.dvr_window_seconds,
+        auto_record_vod=data.auto_record_vod,
+        created_at=now,
+    )
+
+
+@v1_router.get("/live/streams/{slug}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_live_stream(request: Request, slug: str) -> LiveStreamResponse:
+    """Get details of a live stream."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    return _build_live_stream_response(dict(row))
+
+
+@v1_router.patch("/live/streams/{slug}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_live_stream(request: Request, slug: str, data: LiveStreamUpdate) -> LiveStreamResponse:
+    """Update a live stream."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Build update values
+    update_values = {}
+    if data.title is not None:
+        update_values["title"] = data.title
+    if data.description is not None:
+        update_values["description"] = data.description
+    if data.category_id is not None:
+        update_values["category_id"] = data.category_id
+    if data.dvr_enabled is not None:
+        update_values["dvr_enabled"] = data.dvr_enabled
+    if data.dvr_window_seconds is not None:
+        update_values["dvr_window_seconds"] = data.dvr_window_seconds
+    if data.auto_record_vod is not None:
+        update_values["auto_record_vod"] = data.auto_record_vod
+
+    if update_values:
+        await db_execute_with_retry(
+            live_streams.update().where(live_streams.c.slug == slug).values(**update_values)
+        )
+
+    # Fetch updated row
+    updated_row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=row["id"],
+        resource_name=slug,
+        details=update_values,
+    )
+
+    return _build_live_stream_response(dict(updated_row))
+
+
+@v1_router.post("/live/streams/{slug}/regenerate-key")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def regenerate_stream_key(request: Request, slug: str) -> LiveStreamKeyRegenerateResponse:
+    """Regenerate the stream key for a live stream."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Cannot regenerate key for live stream
+    if row["status"] == "live":
+        raise HTTPException(status_code=400, detail="Cannot regenerate key while stream is live")
+
+    # Generate new key
+    new_key = generate_stream_key()
+    new_hash = hash_stream_key(new_key)
+    new_prefix = get_key_prefix(new_key)
+
+    await db_execute_with_retry(
+        live_streams.update()
+        .where(live_streams.c.slug == slug)
+        .values(stream_key_hash=new_hash, stream_key_prefix=new_prefix)
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=row["id"],
+        resource_name=slug,
+        details={"action": "regenerate_key"},
+    )
+
+    return LiveStreamKeyRegenerateResponse(stream_key=new_key)
+
+
+@v1_router.post("/live/streams/{slug}/end")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def end_live_stream(request: Request, slug: str) -> LiveStreamResponse:
+    """End a live stream. This triggers VOD recording if enabled."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    if row["status"] == "ended":
+        raise HTTPException(status_code=400, detail="Stream has already ended")
+
+    # Revoke the stream key atomically
+    await revoke_stream_key(row["id"])
+
+    # Fetch updated row
+    updated_row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=row["id"],
+        resource_name=slug,
+        details={"action": "end_stream"},
+    )
+
+    # Trigger VOD recording if auto_record_vod is enabled
+    if row["auto_record_vod"]:
+        from api.live_vod import trigger_vod_recording
+
+        def _log_vod_task_result(task: asyncio.Task) -> None:
+            """Log errors from fire-and-forget VOD recording task."""
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                logger.info(f"VOD recording task was cancelled for stream {slug}")
+                return
+            if exc is not None:
+                logger.error(f"VOD recording failed for stream {slug}: {exc}")
+
+        vod_task = asyncio.create_task(trigger_vod_recording(row["id"]))
+        vod_task.add_done_callback(_log_vod_task_result)
+        logger.info(f"Triggered VOD recording for stream {slug}")
+
+    return _build_live_stream_response(dict(updated_row))
+
+
+@v1_router.delete("/live/streams/{slug}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_live_stream(request: Request, slug: str):
+    """Delete a live stream and its segments."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Cannot delete live stream
+    if row["status"] == "live":
+        raise HTTPException(status_code=400, detail="Cannot delete while stream is live. End it first.")
+
+    stream_id = row["id"]
+
+    # Delete segments from database (CASCADE should handle this, but be explicit)
+    await db_execute_with_retry(
+        live_stream_segments.delete().where(live_stream_segments.c.stream_id == stream_id)
+    )
+
+    # Delete stream from database
+    await db_execute_with_retry(live_streams.delete().where(live_streams.c.id == stream_id))
+
+    # Delete storage directory
+    stream_dir = LIVE_STORAGE_PATH / slug
+    if stream_dir.exists():
+        try:
+            shutil.rmtree(stream_dir)
+        except OSError as e:
+            logger.error(f"Failed to delete live stream directory {stream_dir}: {e}")
+
+    # Audit log
+    log_audit(
+        AuditAction.DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=stream_id,
+        resource_name=slug,
+    )
+
+    return {"status": "ok", "message": f"Stream '{slug}' deleted"}
 
 
 # =============================================================================

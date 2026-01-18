@@ -42,6 +42,8 @@ from api.database import (
     configure_database,
     custom_field_definitions,
     database,
+    live_stream_segments,
+    live_streams,
     playback_sessions,
     playlists,
     quality_progress,
@@ -99,6 +101,8 @@ from config import (
     AUTOPLAY_ENABLED,
     UPNEXT_ENABLED,
     AUTOPLAY_COUNTDOWN_SECONDS,
+    LIVE_ENABLED,
+    LIVE_STORAGE_PATH,
     NAS_STORAGE,
     OPENAPI_DESCRIPTION,
     OPENAPI_TITLE,
@@ -123,6 +127,10 @@ from config import (
     WATERMARK_TEXT_COLOR,
     WATERMARK_TEXT_SIZE,
     WATERMARK_TYPE,
+)
+from api.live_schemas import (
+    PublicLiveStreamListResponse,
+    PublicLiveStreamResponse,
 )
 from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 
@@ -312,7 +320,24 @@ async def lifespan(app: FastAPI):
         )
     await database.connect()
     await configure_database()
+
+    # Start live streaming background tasks
+    if LIVE_ENABLED:
+        from api.live_tasks import start_live_background_tasks
+        await start_live_background_tasks()
+        logger.info("Started live streaming background tasks")
+
     yield
+
+    # Stop live streaming background tasks
+    if LIVE_ENABLED:
+        from api.live_tasks import stop_live_background_tasks
+        from api.live_ingest import stop_accepting_uploads, wait_for_active_uploads
+        stop_accepting_uploads()
+        await wait_for_active_uploads(timeout=10.0)
+        await stop_live_background_tasks(timeout=10.0)
+        logger.info("Stopped live streaming background tasks")
+
     await database.disconnect()
 
 
@@ -436,6 +461,21 @@ HLSStaticFiles = StreamingStaticFiles
 # Skip in test mode since CI doesn't have the storage directory
 if not os.environ.get("VLOG_TEST_MODE"):
     app.mount("/videos", HLSStaticFiles(directory=str(VIDEOS_DIR)), name="videos")
+
+# Serve live stream segments and playlists
+if not os.environ.get("VLOG_TEST_MODE") and LIVE_ENABLED:
+    try:
+        LIVE_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+        app.mount("/live", HLSStaticFiles(directory=str(LIVE_STORAGE_PATH)), name="live")
+        logger.info(f"Mounted live storage at /live from {LIVE_STORAGE_PATH}")
+    except (PermissionError, OSError) as e:
+        logger.warning(f"Could not mount live storage: {e}")
+
+# Mount live ingest API (for segment push from FFmpeg)
+if LIVE_ENABLED:
+    from api.live_ingest import router as live_ingest_router
+    app.include_router(live_ingest_router)
+    logger.info("Mounted live ingest API at /api/live/ingest")
 
 # Serve static web files
 WEB_DIR = Path(__file__).parent.parent / "web" / "public"
@@ -2153,6 +2193,91 @@ async def get_public_playlist_videos(request: Request, slug: str) -> List[Playli
         )
         for row in rows
     ]
+
+
+# ============================================================================
+# Live Streaming Public API
+# ============================================================================
+
+
+def _parse_qualities_json(qualities_str: Optional[str]) -> List[str]:
+    """Parse qualities JSON string to list."""
+    if not qualities_str:
+        return []
+    try:
+        return json.loads(qualities_str)
+    except json.JSONDecodeError:
+        return []
+
+
+@v1_router.get("/live/streams", summary="List live streams", description="Get all public live streams.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def list_public_live_streams(request: Request) -> PublicLiveStreamListResponse:
+    """
+    List live streams that are currently live or recently ended.
+
+    Only returns streams with status 'live' or 'ending'.
+    """
+    if not LIVE_ENABLED:
+        return PublicLiveStreamListResponse(streams=[], total=0)
+
+    rows = await fetch_all_with_retry(
+        live_streams.select()
+        .where(live_streams.c.status.in_(["live", "ending"]))
+        .order_by(live_streams.c.started_at.desc())
+    )
+
+    streams = []
+    for row in rows:
+        streams.append(
+            PublicLiveStreamResponse(
+                title=row["title"],
+                slug=row["slug"],
+                description=row["description"] or "",
+                status=row["status"],
+                qualities=_parse_qualities_json(row["qualities"]),
+                category_id=row["category_id"],
+                started_at=row["started_at"],
+                dvr_enabled=row["dvr_enabled"],
+                dvr_window_seconds=row["dvr_window_seconds"],
+            )
+        )
+
+    return PublicLiveStreamListResponse(streams=streams, total=len(streams))
+
+
+@v1_router.get("/live/streams/{slug}", summary="Get live stream", description="Get information about a live stream.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_live_stream(request: Request, slug: str) -> PublicLiveStreamResponse:
+    """
+    Get public information about a live stream.
+
+    Returns stream info if it exists and is live or ending.
+    Returns 404 if stream doesn't exist or is not active.
+    """
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(
+        live_streams.select()
+        .where(live_streams.c.slug == slug)
+        .where(live_streams.c.status.in_(["live", "ending"]))
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Live stream not found")
+
+    return PublicLiveStreamResponse(
+        title=row["title"],
+        slug=row["slug"],
+        description=row["description"] or "",
+        status=row["status"],
+        qualities=_parse_qualities_json(row["qualities"]),
+        category_id=row["category_id"],
+        started_at=row["started_at"],
+        dvr_enabled=row["dvr_enabled"],
+        dvr_window_seconds=row["dvr_window_seconds"],
+    )
 
 
 # ============================================================================
