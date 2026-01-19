@@ -3,7 +3,7 @@
  * Manages settings, watermark, and custom fields
  */
 
-import { settingsApi } from '@/api/endpoints/settings';
+import { settingsApi, type BrandingSettings } from '@/api/endpoints/settings';
 import { customFieldsApi } from '@/api/endpoints/custom-fields';
 import type { SettingDefinition, WatermarkSettings, CustomField, CustomFieldType, CustomFieldConstraint } from '@/api/types';
 
@@ -45,6 +45,23 @@ export interface SettingsState {
   customFieldSaving: boolean;
   customFieldMessage: string;
   customFieldError: string;
+
+  // Branding settings (Issue #214)
+  brandingSettings: BrandingSettings | null;
+  brandingLoading: boolean;
+  brandingSaving: boolean;
+  brandingSiteName: string;
+  brandingFooterText: string;
+  brandingModified: boolean;
+  brandingFooterModified: boolean;
+  logoFile: File | null;
+  logoUploading: boolean;
+  logoUploadProgress: number;
+  faviconFile: File | null;
+  faviconUploading: boolean;
+  faviconUploadProgress: number;
+  brandingMessage: string;
+  brandingError: boolean;
 }
 
 export interface SettingsActions {
@@ -78,6 +95,15 @@ export interface SettingsActions {
   closeCustomFieldModal(): void;
   saveCustomField(): Promise<void>;
   deleteCustomField(field: CustomField): Promise<void>;
+
+  // Branding operations (Issue #214)
+  loadBrandingSettings(): Promise<void>;
+  saveBrandingSiteName(): Promise<void>;
+  saveBrandingFooterText(): Promise<void>;
+  uploadLogo(): XMLHttpRequest | null;
+  deleteLogo(): Promise<void>;
+  uploadFavicon(): XMLHttpRequest | null;
+  deleteFavicon(): Promise<void>;
 }
 
 export type SettingsStore = SettingsState & SettingsActions;
@@ -130,6 +156,23 @@ export function createSettingsStore(): SettingsStore {
     customFieldSaving: false,
     customFieldMessage: '',
     customFieldError: '',
+
+    // Branding state (Issue #214)
+    brandingSettings: null,
+    brandingLoading: false,
+    brandingSaving: false,
+    brandingSiteName: '',
+    brandingFooterText: '',
+    brandingModified: false,
+    brandingFooterModified: false,
+    logoFile: null,
+    logoUploading: false,
+    logoUploadProgress: 0,
+    faviconFile: null,
+    faviconUploading: false,
+    faviconUploadProgress: 0,
+    brandingMessage: '',
+    brandingError: false,
 
     // ===========================================================================
     // Settings Operations
@@ -526,6 +569,157 @@ export function createSettingsStore(): SettingsStore {
         this.customFields = this.customFields.filter((f) => f.id !== field.id);
       } catch (e) {
         this.customFieldError = e instanceof Error ? e.message : 'Failed to delete custom field';
+      }
+    },
+
+    // ===========================================================================
+    // Branding Operations (Issue #214)
+    // ===========================================================================
+
+    async loadBrandingSettings(): Promise<void> {
+      this.brandingLoading = true;
+      this.brandingError = false;
+      this.brandingMessage = '';
+
+      try {
+        this.brandingSettings = await settingsApi.branding.get();
+        this.brandingSiteName = this.brandingSettings.site_name || '';
+        this.brandingFooterText = this.brandingSettings.footer_text || '';
+        this.brandingModified = false;
+        this.brandingFooterModified = false;
+      } catch (e) {
+        this.brandingError = true;
+        this.brandingMessage = e instanceof Error ? e.message : 'Failed to load branding settings';
+      } finally {
+        this.brandingLoading = false;
+      }
+    },
+
+    async saveBrandingSiteName(): Promise<void> {
+      this.brandingSaving = true;
+      this.brandingError = false;
+      this.brandingMessage = '';
+
+      try {
+        await settingsApi.setValue('branding.site_name', this.brandingSiteName || 'VLog');
+        this.brandingModified = false;
+        this.brandingMessage = 'Site name saved';
+        // Reload to get updated state
+        await this.loadBrandingSettings();
+      } catch (e) {
+        this.brandingError = true;
+        this.brandingMessage = e instanceof Error ? e.message : 'Failed to save site name';
+      } finally {
+        this.brandingSaving = false;
+      }
+    },
+
+    async saveBrandingFooterText(): Promise<void> {
+      this.brandingSaving = true;
+      this.brandingError = false;
+      this.brandingMessage = '';
+
+      try {
+        await settingsApi.setValue('branding.footer_text', this.brandingFooterText || null);
+        this.brandingFooterModified = false;
+        this.brandingMessage = 'Footer text saved';
+        // Reload to get updated state
+        await this.loadBrandingSettings();
+      } catch (e) {
+        this.brandingError = true;
+        this.brandingMessage = e instanceof Error ? e.message : 'Failed to save footer text';
+      } finally {
+        this.brandingSaving = false;
+      }
+    },
+
+    uploadLogo(): XMLHttpRequest | null {
+      if (!this.logoFile) return null;
+
+      this.logoUploading = true;
+      this.logoUploadProgress = 0;
+      this.brandingMessage = '';
+      this.brandingError = false;
+
+      return settingsApi.branding.upload(
+        this.logoFile,
+        (percent) => {
+          this.logoUploadProgress = percent;
+        },
+        async () => {
+          this.brandingMessage = 'Logo uploaded successfully';
+          this.logoUploading = false;
+          this.logoFile = null;
+          // Reload settings to get new image URL
+          await this.loadBrandingSettings();
+        },
+        (error) => {
+          this.brandingError = true;
+          this.brandingMessage = error.message;
+          this.logoUploading = false;
+        }
+      );
+    },
+
+    async deleteLogo(): Promise<void> {
+      this.brandingLoading = true;
+      this.brandingMessage = '';
+      this.brandingError = false;
+
+      try {
+        await settingsApi.branding.deleteLogo();
+        this.brandingMessage = 'Logo deleted';
+        await this.loadBrandingSettings();
+      } catch (e) {
+        this.brandingError = true;
+        this.brandingMessage = e instanceof Error ? e.message : 'Failed to delete logo';
+      } finally {
+        this.brandingLoading = false;
+      }
+    },
+
+    uploadFavicon(): XMLHttpRequest | null {
+      if (!this.faviconFile) return null;
+
+      this.faviconUploading = true;
+      this.faviconUploadProgress = 0;
+      this.brandingMessage = '';
+      this.brandingError = false;
+
+      return settingsApi.branding.uploadFavicon(
+        this.faviconFile,
+        (percent) => {
+          this.faviconUploadProgress = percent;
+        },
+        async () => {
+          this.brandingMessage = 'Favicon uploaded successfully';
+          this.faviconUploading = false;
+          this.faviconFile = null;
+          // Reload settings to get new URL
+          await this.loadBrandingSettings();
+        },
+        (error) => {
+          this.brandingError = true;
+          this.brandingMessage = error.message;
+          this.faviconUploading = false;
+        }
+      );
+    },
+
+    async deleteFavicon(): Promise<void> {
+      this.brandingLoading = true;
+      this.brandingMessage = '';
+      this.brandingError = false;
+
+      try {
+        await settingsApi.branding.deleteFavicon();
+        this.brandingMessage = 'Favicon deleted';
+        await this.loadBrandingSettings();
+      } catch (e) {
+        this.brandingError = true;
+        this.brandingMessage = e instanceof Error ? e.message : 'Failed to delete favicon';
+      } finally {
+        this.brandingLoading = false;
       }
     },
   };

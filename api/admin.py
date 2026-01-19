@@ -95,7 +95,7 @@ from api.metrics import (
 )
 from api.pagination import encode_cursor, validate_cursor
 from api.partition_manager import ensure_partitions_exist, is_table_partitioned
-from api.public import get_video_url_prefix, get_watermark_settings
+from api.public import get_video_url_prefix, get_watermark_settings, reset_theme_settings_cache
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
 from api.schemas import (
@@ -5885,6 +5885,733 @@ async def delete_watermark_image(request: Request):
         raise HTTPException(status_code=500, detail="Failed to delete watermark image")
 
 
+# ============================================================================
+# Branding Settings Endpoints (Issue #214)
+# ============================================================================
+
+# Cached branding settings with lock for thread safety
+_cached_branding_settings: Optional[Dict[str, Any]] = None
+_cached_branding_settings_time: float = 0
+_BRANDING_SETTINGS_CACHE_TTL = 60  # seconds
+_branding_cache_lock = asyncio.Lock()
+
+
+def validate_safe_path(base: Path, user_path: str) -> Path:
+    """
+    Validate that a path stays within the base directory.
+
+    Args:
+        base: The base directory that the path must be contained within
+        user_path: The user-provided path component
+
+    Returns:
+        The validated, resolved path
+
+    Raises:
+        HTTPException: If path traversal is detected
+    """
+    if not user_path:
+        raise HTTPException(status_code=400, detail="Path cannot be empty")
+
+    # Check for obvious path traversal attempts
+    if ".." in user_path:
+        logger.warning(f"Path traversal attempt blocked: {user_path}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    try:
+        full_path = (base / user_path).resolve()
+        base_resolved = base.resolve()
+
+        # Verify the resolved path is within the base directory
+        full_path.relative_to(base_resolved)
+
+        return full_path
+    except (ValueError, OSError) as e:
+        logger.warning(f"Path validation failed for {user_path}: {e}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def sanitize_svg(content: bytes) -> bytes:
+    """
+    Sanitize SVG content by removing potentially dangerous elements and attributes.
+
+    Removes:
+    - <script> tags
+    - Event handler attributes (onclick, onload, onerror, etc.)
+    - javascript: URLs
+    - data: URLs (can contain scripts)
+    - <foreignObject> elements (can embed HTML)
+
+    Args:
+        content: Raw SVG file content
+
+    Returns:
+        Sanitized SVG content
+    """
+    try:
+        # Decode to string for regex processing
+        svg_str = content.decode("utf-8")
+
+        # Remove script tags and their content
+        svg_str = re.sub(r"<script[^>]*>.*?</script>", "", svg_str, flags=re.IGNORECASE | re.DOTALL)
+        svg_str = re.sub(r"<script[^>]*/>", "", svg_str, flags=re.IGNORECASE)
+
+        # Remove foreignObject elements (can embed arbitrary HTML)
+        svg_str = re.sub(r"<foreignObject[^>]*>.*?</foreignObject>", "", svg_str, flags=re.IGNORECASE | re.DOTALL)
+        svg_str = re.sub(r"<foreignObject[^>]*/>", "", svg_str, flags=re.IGNORECASE)
+
+        # Remove all event handler attributes (on*)
+        svg_str = re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', "", svg_str, flags=re.IGNORECASE)
+        svg_str = re.sub(r"\s+on\w+\s*=\s*[^\s>]+", "", svg_str, flags=re.IGNORECASE)
+
+        # Remove javascript: URLs
+        svg_str = re.sub(r'href\s*=\s*["\']javascript:[^"\']*["\']', 'href=""', svg_str, flags=re.IGNORECASE)
+        svg_str = re.sub(r"xlink:href\s*=\s*[\"']javascript:[^\"']*[\"']", 'xlink:href=""', svg_str, flags=re.IGNORECASE)
+
+        # Remove data: URLs (can contain embedded scripts)
+        svg_str = re.sub(r'href\s*=\s*["\']data:[^"\']*["\']', 'href=""', svg_str, flags=re.IGNORECASE)
+        svg_str = re.sub(r"xlink:href\s*=\s*[\"']data:[^\"']*[\"']", 'xlink:href=""', svg_str, flags=re.IGNORECASE)
+
+        # Remove set and animate elements that can modify attributes to dangerous values
+        svg_str = re.sub(r"<set[^>]*attributeName\s*=\s*[\"']on\w+[\"'][^>]*>", "", svg_str, flags=re.IGNORECASE)
+
+        return svg_str.encode("utf-8")
+    except UnicodeDecodeError:
+        # If we can't decode as UTF-8, reject the file
+        raise HTTPException(status_code=400, detail="Invalid SVG encoding")
+
+
+def sanitize_custom_css(css: str) -> str:
+    """
+    Sanitize custom CSS to only allow CSS variable declarations.
+
+    This prevents CSS injection attacks by restricting custom CSS to:
+    - CSS custom property (variable) declarations
+    - Only in :root or body selectors
+
+    Blocks:
+    - url() values (prevent data exfiltration)
+    - @import rules
+    - expression() (IE-specific)
+    - javascript: URLs
+    - Arbitrary selectors (only :root and body allowed)
+
+    Args:
+        css: The custom CSS string to sanitize
+
+    Returns:
+        Sanitized CSS containing only safe variable declarations
+    """
+    if not css or not css.strip():
+        return ""
+
+    # Remove comments (both block and potentially dangerous constructs)
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+
+    # Block dangerous patterns
+    dangerous_patterns = [
+        r"@import\b",  # @import rules
+        r"expression\s*\(",  # IE expression()
+        r"javascript\s*:",  # javascript: URLs
+        r"behavior\s*:",  # IE behavior
+        r"-moz-binding\s*:",  # Firefox XBL
+        r"url\s*\(\s*[\"']?data:",  # data: URLs in url()
+    ]
+
+    for pattern in dangerous_patterns:
+        if re.search(pattern, css, re.IGNORECASE):
+            logger.warning(f"Blocked dangerous CSS pattern: {pattern}")
+            raise HTTPException(
+                status_code=400,
+                detail="Custom CSS contains disallowed patterns. Only CSS variables are allowed.",
+            )
+
+    # Parse and extract only valid CSS variable declarations
+    # Match :root { --var: value; } or body { --var: value; } patterns
+    safe_vars = []
+
+    # Extract variable declarations from :root or body blocks
+    block_pattern = r"(?::root|body)\s*\{([^}]+)\}"
+    blocks = re.findall(block_pattern, css, re.IGNORECASE | re.DOTALL)
+
+    # Also handle bare variable declarations (without selector)
+    all_content = css
+    for block in blocks:
+        all_content += " " + block
+
+    # Extract individual variable declarations: --name: value;
+    var_pattern = r"(--[\w-]+)\s*:\s*([^;]+);"
+    for match in re.finditer(var_pattern, all_content):
+        var_name = match.group(1).strip()
+        var_value = match.group(2).strip()
+
+        # Validate variable name starts with --vlog- prefix (optional but recommended)
+        # For now, allow any --variable but block url() values
+        if re.search(r"url\s*\(", var_value, re.IGNORECASE):
+            logger.warning(f"Blocked url() in CSS variable: {var_name}")
+            continue
+
+        # Block expression/javascript in values
+        if re.search(r"expression\s*\(|javascript:", var_value, re.IGNORECASE):
+            logger.warning(f"Blocked dangerous value in CSS variable: {var_name}")
+            continue
+
+        safe_vars.append(f"  {var_name}: {var_value};")
+
+    if not safe_vars:
+        return ""
+
+    # Return sanitized CSS wrapped in :root
+    return ":root {\n" + "\n".join(safe_vars) + "\n}"
+
+
+def validate_footer_links(links: Any) -> list:
+    """
+    Validate and sanitize footer links to prevent XSS via javascript: URLs.
+
+    Args:
+        links: The footer links data (should be a list of {label, url} objects)
+
+    Returns:
+        Validated list of footer links
+
+    Raises:
+        HTTPException: If links contain invalid or dangerous URLs
+    """
+    if links is None:
+        return []
+
+    if not isinstance(links, list):
+        raise HTTPException(status_code=400, detail="Footer links must be a list")
+
+    validated = []
+    dangerous_protocols = ["javascript:", "data:", "vbscript:", "file:"]
+
+    for i, link in enumerate(links):
+        if not isinstance(link, dict):
+            raise HTTPException(status_code=400, detail=f"Footer link {i} must be an object")
+
+        label = link.get("label", "").strip()
+        url = link.get("url", "").strip()
+
+        if not label:
+            raise HTTPException(status_code=400, detail=f"Footer link {i} must have a label")
+
+        if not url:
+            raise HTTPException(status_code=400, detail=f"Footer link {i} must have a URL")
+
+        # Check for dangerous protocols
+        url_lower = url.lower().strip()
+        for protocol in dangerous_protocols:
+            if url_lower.startswith(protocol):
+                logger.warning(f"Blocked dangerous URL protocol in footer link: {url}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Footer link URLs cannot use {protocol} protocol",
+                )
+
+        # Allow http, https, mailto, tel, and relative URLs
+        if not (
+            url_lower.startswith("http://")
+            or url_lower.startswith("https://")
+            or url_lower.startswith("mailto:")
+            or url_lower.startswith("tel:")
+            or url_lower.startswith("/")
+            or url_lower.startswith("#")
+        ):
+            # If it doesn't start with a known safe protocol, assume it's a relative URL
+            # but still block anything that looks like a protocol
+            if ":" in url.split("/")[0]:
+                logger.warning(f"Blocked unknown protocol in footer link: {url}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Footer link URLs must use http, https, mailto, tel, or be relative paths",
+                )
+
+        validated.append({"label": label, "url": url})
+
+    return validated
+
+
+async def get_branding_settings() -> Dict[str, Any]:
+    """Get branding settings from database with caching and proper locking."""
+    import time
+
+    global _cached_branding_settings, _cached_branding_settings_time
+
+    now = time.time()
+
+    # Fast path: check cache without lock
+    if _cached_branding_settings and (now - _cached_branding_settings_time) < _BRANDING_SETTINGS_CACHE_TTL:
+        return _cached_branding_settings
+
+    # Slow path: acquire lock and refresh cache
+    async with _branding_cache_lock:
+        # Double-check after acquiring lock
+        now = time.time()
+        if _cached_branding_settings and (now - _cached_branding_settings_time) < _BRANDING_SETTINGS_CACHE_TTL:
+            return _cached_branding_settings
+
+        try:
+            from api.settings_service import get_settings_service
+
+            service = get_settings_service()
+
+            settings = {
+                "site_name": await service.get("branding.site_name", "VLog"),
+                "logo_path": await service.get("branding.logo_path", None),
+                "favicon_path": await service.get("branding.favicon_path", None),
+                "footer_text": await service.get("branding.footer_text", None),
+                "footer_links": await service.get("branding.footer_links", []),
+            }
+
+            _cached_branding_settings = settings
+            _cached_branding_settings_time = now
+
+        except Exception as e:
+            logger.debug(f"Failed to get branding settings from DB, using defaults: {e}")
+            _cached_branding_settings = {
+                "site_name": "VLog",
+                "logo_path": None,
+                "favicon_path": None,
+                "footer_text": None,
+                "footer_links": [],
+            }
+            _cached_branding_settings_time = now
+
+    return _cached_branding_settings
+
+
+@v1_router.get("/settings/branding")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_branding_settings(request: Request):
+    """
+    Get current branding configuration.
+
+    Returns the current branding settings from database.
+    """
+    settings = await get_branding_settings()
+
+    logo_exists = False
+    if settings["logo_path"]:
+        logo_file = NAS_STORAGE / settings["logo_path"]
+        logo_exists = logo_file.exists()
+
+    favicon_exists = False
+    if settings["favicon_path"]:
+        favicon_file = NAS_STORAGE / settings["favicon_path"]
+        favicon_exists = favicon_file.exists()
+
+    return {
+        "site_name": settings["site_name"],
+        "logo_path": settings["logo_path"],
+        "logo_exists": logo_exists,
+        "logo_url": "/api/v1/settings/branding/logo" if logo_exists else None,
+        "favicon_path": settings["favicon_path"],
+        "favicon_exists": favicon_exists,
+        "favicon_url": "/api/v1/settings/branding/favicon" if favicon_exists else None,
+        "footer_text": settings["footer_text"],
+        "footer_links": settings["footer_links"],
+    }
+
+
+@v1_router.get("/settings/branding/logo")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_logo_image(request: Request):
+    """Serve the logo image for admin preview."""
+    settings = await get_branding_settings()
+
+    if not settings["logo_path"]:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    # Validate path is within storage directory (prevent path traversal)
+    logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    ext = logo_path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        logo_path,
+        media_type=content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@v1_router.post("/settings/branding/logo/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_logo_image(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a new logo image.
+
+    Accepts: PNG, JPEG, WebP, SVG, GIF (max 10MB)
+    For best results, use a PNG or SVG with transparency.
+    SVG files are automatically sanitized to remove scripts.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"}
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported image format. Allowed: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_THUMBNAIL_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+        )
+
+    settings = await get_branding_settings()
+
+    # Always use correct extension for new uploads (fixes MIME type mismatch)
+    target_path = NAS_STORAGE / f"branding/logo{ext}"
+    old_logo_path = None
+    if settings["logo_path"]:
+        try:
+            old_logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
+        except HTTPException:
+            old_logo_path = None  # Invalid old path, ignore
+
+    # Ensure branding directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Validate target path is within storage
+    target_path = validate_safe_path(NAS_STORAGE, f"branding/logo{ext}")
+
+    temp_path = NAS_STORAGE / f"logo_temp_{uuid.uuid4()}{ext}"
+    try:
+        total_size = 0
+        chunks = []
+        while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+            total_size += len(chunk)
+            if total_size > MAX_THUMBNAIL_UPLOAD_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+                )
+            chunks.append(chunk)
+
+        content = b"".join(chunks)
+
+        # Sanitize SVG files to prevent XSS
+        if ext == ".svg":
+            content = sanitize_svg(content)
+
+        with open(temp_path, "wb") as f:
+            f.write(content)
+
+        shutil.move(str(temp_path), str(target_path))
+
+        # Delete old logo if it exists and is different
+        if old_logo_path and old_logo_path.exists() and old_logo_path != target_path:
+            try:
+                old_logo_path.unlink()
+            except OSError:
+                logger.warning(f"Failed to delete old logo: {old_logo_path}")
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=str(target_path.name),
+            details={"action": "logo_upload", "original_filename": file.filename, "size": total_size},
+        )
+
+        relative_path = str(target_path.relative_to(NAS_STORAGE))
+
+        # Update the setting in database
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.logo_path", relative_path, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {
+            "status": "ok",
+            "message": "Logo uploaded successfully",
+            "path": relative_path,
+            "size": total_size,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except (NameError, OSError):
+            pass  # temp_path not defined or cleanup failed
+        logger.error(f"Failed to upload logo: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save logo image")
+
+
+@v1_router.delete("/settings/branding/logo")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_logo_image(request: Request):
+    """Delete the current logo image."""
+    settings = await get_branding_settings()
+
+    if not settings["logo_path"]:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    # Validate path to prevent traversal attacks
+    logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    try:
+        logo_path.unlink()
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=settings["logo_path"],
+            details={"action": "logo_delete"},
+        )
+
+        # Clear the setting
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.logo_path", None, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {"status": "ok", "message": "Logo deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete logo: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete logo image")
+
+
+@v1_router.get("/settings/branding/favicon")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_favicon(request: Request):
+    """Serve the favicon for admin preview."""
+    settings = await get_branding_settings()
+
+    if not settings["favicon_path"]:
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    # Validate path to prevent traversal attacks
+    favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    ext = favicon_path.suffix.lower()
+    content_types = {
+        ".ico": "image/x-icon",
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        favicon_path,
+        media_type=content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@v1_router.post("/settings/branding/favicon/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_favicon(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a new favicon.
+
+    Accepts: ICO, PNG, SVG (max 1MB)
+    For best results, use a square image (32x32 or 64x64 for ICO, any size for SVG).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".ico", ".png", ".svg"}
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported favicon format. Allowed: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    max_favicon_size = 1 * 1024 * 1024  # 1MB
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > max_favicon_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {max_favicon_size // (1024 * 1024)}MB",
+        )
+
+    settings = await get_branding_settings()
+
+    # Delete old favicon if exists (with path validation)
+    if settings["favicon_path"]:
+        try:
+            old_favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
+            if old_favicon_path.exists():
+                old_favicon_path.unlink()
+        except HTTPException:
+            pass  # Old file doesn't exist or invalid path, continue with upload
+
+    # Validate and set target path
+    target_path = validate_safe_path(NAS_STORAGE, f"branding/favicon{ext}")
+
+    # Ensure branding directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_path = NAS_STORAGE / f"favicon_temp_{uuid.uuid4()}{ext}"
+    try:
+        total_size = 0
+        with open(temp_path, "wb") as f:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > max_favicon_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {max_favicon_size // (1024 * 1024)}MB",
+                    )
+                f.write(chunk)
+
+        # Sanitize SVG files to prevent XSS
+        if ext == ".svg":
+            content = temp_path.read_bytes()
+            content = sanitize_svg(content)
+            temp_path.write_bytes(content)
+
+        shutil.move(str(temp_path), str(target_path))
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=str(target_path.name),
+            details={"action": "favicon_upload", "original_filename": file.filename, "size": total_size},
+        )
+
+        relative_path = str(target_path.relative_to(NAS_STORAGE))
+
+        # Update the setting in database
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.favicon_path", relative_path, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {
+            "status": "ok",
+            "message": "Favicon uploaded successfully",
+            "path": relative_path,
+            "size": total_size,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except (NameError, OSError):
+            pass  # temp_path not defined or cleanup failed
+        logger.error(f"Failed to upload favicon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save favicon")
+
+
+@v1_router.delete("/settings/branding/favicon")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_favicon(request: Request):
+    """Delete the current favicon."""
+    settings = await get_branding_settings()
+
+    if not settings["favicon_path"]:
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    # Validate path to prevent traversal attacks
+    favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    try:
+        favicon_path.unlink()
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=settings["favicon_path"],
+            details={"action": "favicon_delete"},
+        )
+
+        # Clear the setting
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.favicon_path", None, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {"status": "ok", "message": "Favicon deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete favicon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete favicon")
+
+
 # =============================================================================
 # Runtime Settings API (Database-backed configuration)
 # See: https://github.com/filthyrake/vlog/issues/400
@@ -6008,6 +6735,15 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
     """
     from api.settings_service import KNOWN_SETTINGS
 
+    # Sanitize custom CSS to only allow CSS variable declarations (security)
+    if key == "theme.custom_css" and data.value:
+        if isinstance(data.value, str):
+            data.value = sanitize_custom_css(data.value)
+
+    # Validate footer links to prevent javascript: URLs (XSS prevention)
+    if key == "branding.footer_links":
+        data.value = validate_footer_links(data.value)
+
     service = get_settings_service()
 
     # Verify setting exists
@@ -6056,6 +6792,10 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+    # Invalidate caches for branding/theme settings
+    if key.startswith("branding.") or key.startswith("theme.") or key.startswith("layout."):
+        reset_theme_settings_cache()
 
     # Audit log
     log_audit(

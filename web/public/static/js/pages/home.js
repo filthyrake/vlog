@@ -40,9 +40,15 @@
         showViewCounts: true,
         showTagline: true,
         tagline: '',
+        // Theme/branding settings from API (Issue #214)
+        siteName: 'VLog',
+        logoUrl: null,
+        footerText: null,
+        footerLinks: [],
         // Precomputed current year for footer (Alpine CSP)
         _currentYear: new Date().getFullYear(),
         _showFooterTagline: false, // Precomputed for Alpine CSP
+        _showCustomFooterText: false, // Precomputed for Alpine CSP
         _emptyStateTitle: 'No videos found',
         _emptyStateMessage: 'Check back soon for new content!',
         // Precomputed arrays for skeleton loaders (Alpine CSP)
@@ -396,6 +402,36 @@
             } catch (e) {
                 // Use defaults on error
                 console.debug('Failed to load display config, using defaults');
+            }
+
+            // Load theme/branding config (Issue #214)
+            await this.loadThemeConfig();
+        },
+
+        async loadThemeConfig() {
+            try {
+                // Use VLogTheme if available (loaded before Alpine)
+                if (window.VLogTheme) {
+                    const config = await window.VLogTheme.init();
+                    this.siteName = config.site_name || 'VLog';
+                    this.logoUrl = config.logo_path ? '/api/v1/branding/logo' : null;
+                    this.footerText = config.footer_text;
+                    this.footerLinks = config.footer_links || [];
+                    this._showCustomFooterText = !!config.footer_text;
+                } else {
+                    // Fallback: fetch directly if VLogTheme not loaded
+                    const res = await VLogUtils.fetchWithTimeout('/api/v1/config/theme', {}, 5000);
+                    if (res.ok) {
+                        const config = await res.json();
+                        this.siteName = config.site_name || 'VLog';
+                        this.logoUrl = config.logo_path ? '/api/v1/branding/logo' : null;
+                        this.footerText = config.footer_text;
+                        this.footerLinks = config.footer_links || [];
+                        this._showCustomFooterText = !!config.footer_text;
+                    }
+                }
+            } catch (e) {
+                console.debug('Failed to load theme config, using defaults');
             }
         },
 

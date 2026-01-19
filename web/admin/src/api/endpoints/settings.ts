@@ -184,4 +184,116 @@ export const settingsApi = {
       }
     },
   },
+
+  // ===========================================================================
+  // Branding Settings (Issue #214)
+  // ===========================================================================
+
+  branding: {
+    /**
+     * Get branding settings
+     */
+    async get(): Promise<BrandingSettings> {
+      return apiClient.fetch<BrandingSettings>('/api/settings/branding');
+    },
+
+    /**
+     * Upload logo with progress tracking
+     */
+    upload(
+      file: File,
+      onProgress?: (percent: number) => void,
+      onComplete?: (path: string) => void,
+      onError?: (error: Error) => void
+    ): XMLHttpRequest {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      return apiClient.uploadWithProgress(
+        '/api/settings/branding/logo/upload',
+        formData,
+        onProgress,
+        async (response) => {
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            onError?.(new Error(data.detail || `Upload failed: ${response.status}`));
+            return;
+          }
+          const result = await response.json();
+          onComplete?.(result.path);
+        },
+        onError
+      );
+    },
+
+    /**
+     * Delete logo
+     */
+    async deleteLogo(): Promise<void> {
+      const response = await apiClient.fetchResponse('/api/settings/branding/logo', {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Delete logo failed: ${response.status}`);
+      }
+    },
+
+    /**
+     * Upload favicon with progress tracking
+     */
+    uploadFavicon(
+      file: File,
+      onProgress?: (percent: number) => void,
+      onComplete?: (path: string) => void,
+      onError?: (error: Error) => void
+    ): XMLHttpRequest {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      return apiClient.uploadWithProgress(
+        '/api/settings/branding/favicon/upload',
+        formData,
+        onProgress,
+        async (response) => {
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            onError?.(new Error(data.detail || `Upload failed: ${response.status}`));
+            return;
+          }
+          const result = await response.json();
+          onComplete?.(result.path);
+        },
+        onError
+      );
+    },
+
+    /**
+     * Delete favicon
+     */
+    async deleteFavicon(): Promise<void> {
+      const response = await apiClient.fetchResponse('/api/settings/branding/favicon', {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Delete favicon failed: ${response.status}`);
+      }
+    },
+  },
 };
+
+// Branding settings response type
+export interface BrandingSettings {
+  site_name: string;
+  logo_path: string | null;
+  logo_exists: boolean;
+  logo_url: string | null;
+  favicon_path: string | null;
+  favicon_exists: boolean;
+  favicon_url: string | null;
+  footer_text: string | null;
+  footer_links: Array<{ label: string; url: string }>;
+}
