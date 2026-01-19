@@ -10,7 +10,7 @@ Covers:
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -420,12 +420,11 @@ class TestSessionManagement:
         """create_user_session should create valid session tokens."""
         # Patch the database module to use test database
         import api.auth.sessions as sessions_module
+
         monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import create_user_session
-
         session_token, refresh_token, expires_at, refresh_expires_at = (
-            await create_user_session(
+            await sessions_module.create_user_session(
                 sample_user["id"],
                 ip_address="127.0.0.1",
                 user_agent="Test Agent",
@@ -443,12 +442,11 @@ class TestSessionManagement:
     async def test_validate_session_valid(self, test_database, sample_user, monkeypatch):
         """validate_session_token should return user for valid session."""
         import api.auth.sessions as sessions_module
+
         monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import create_user_session, validate_session_token
-
-        session_token, _, _, _ = await create_user_session(sample_user["id"])
-        user = await validate_session_token(session_token)
+        session_token, _, _, _ = await sessions_module.create_user_session(sample_user["id"])
+        user = await sessions_module.validate_session_token(session_token)
 
         assert user is not None
         assert user["id"] == sample_user["id"]
@@ -458,40 +456,35 @@ class TestSessionManagement:
     async def test_validate_session_invalid_token(self, test_database, monkeypatch):
         """validate_session_token should return None for invalid token."""
         import api.auth.sessions as sessions_module
+
         monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import validate_session_token
-
-        user = await validate_session_token("invalid_token_12345678")
+        user = await sessions_module.validate_session_token("invalid_token_12345678")
         assert user is None
 
     @pytest.mark.asyncio
     async def test_validate_session_short_token(self, test_database, monkeypatch):
         """validate_session_token should reject short tokens."""
         import api.auth.sessions as sessions_module
+
         monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import validate_session_token
-
-        user = await validate_session_token("short")
+        user = await sessions_module.validate_session_token("short")
         assert user is None
 
     @pytest.mark.asyncio
     async def test_invalidate_session(self, test_database, sample_user, monkeypatch):
         """invalidate_session should revoke a session."""
         import api.auth.sessions as sessions_module
-        monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import (
-            create_user_session,
-            validate_session_token,
-        )
         from api.database import user_sessions
 
-        session_token, _, _, _ = await create_user_session(sample_user["id"])
+        monkeypatch.setattr(sessions_module, "database", test_database)
+
+        session_token, _, _, _ = await sessions_module.create_user_session(sample_user["id"])
 
         # Verify session is valid
-        user = await validate_session_token(session_token)
+        user = await sessions_module.validate_session_token(session_token)
         assert user is not None
         session_id = user["session_id"]
 
@@ -504,27 +497,24 @@ class TestSessionManagement:
         )
 
         # Verify session is no longer valid
-        user = await validate_session_token(session_token)
+        user = await sessions_module.validate_session_token(session_token)
         assert user is None
 
     @pytest.mark.asyncio
     async def test_refresh_session(self, test_database, sample_user, monkeypatch):
         """refresh_user_session should rotate tokens."""
         import api.auth.sessions as sessions_module
+
         monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import (
-            create_user_session,
-            refresh_user_session,
-            validate_session_token,
-        )
-
         # Create initial session
-        session_token, refresh_token, _, _ = await create_user_session(sample_user["id"])
+        session_token, refresh_token, _, _ = await sessions_module.create_user_session(
+            sample_user["id"]
+        )
 
         # Refresh the session
         new_session, new_refresh, new_expires, new_refresh_expires = (
-            await refresh_user_session(refresh_token)
+            await sessions_module.refresh_user_session(refresh_token)
         )
 
         # New tokens should be different
@@ -532,58 +522,59 @@ class TestSessionManagement:
         assert new_refresh != refresh_token
 
         # New session should be valid
-        user = await validate_session_token(new_session)
+        user = await sessions_module.validate_session_token(new_session)
         assert user is not None
         assert user["id"] == sample_user["id"]
 
         # Old session should be revoked
-        user = await validate_session_token(session_token)
+        user = await sessions_module.validate_session_token(session_token)
         assert user is None
 
     @pytest.mark.asyncio
     async def test_refresh_token_reuse_detection(self, test_database, sample_user, monkeypatch):
         """Reusing a rotated refresh token should fail and revoke sessions."""
         import api.auth.sessions as sessions_module
+
         monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import (
-            RefreshTokenReusedError,
-            SessionError,
-            SessionRevokedError,
-            create_user_session,
-            refresh_user_session,
-            validate_session_token,
+        # Create initial session
+        session_token, refresh_token, _, _ = await sessions_module.create_user_session(
+            sample_user["id"]
         )
 
-        # Create initial session
-        session_token, refresh_token, _, _ = await create_user_session(sample_user["id"])
-
         # First refresh (legitimate)
-        new_session, new_refresh, _, _ = await refresh_user_session(refresh_token)
+        new_session, new_refresh, _, _ = await sessions_module.refresh_user_session(
+            refresh_token
+        )
 
         # Try to reuse the old refresh token (attacker scenario)
         # Should fail with either RefreshTokenReusedError or SessionRevokedError
         # (depending on whether the old session was already revoked)
-        with pytest.raises((RefreshTokenReusedError, SessionRevokedError, SessionError)):
-            await refresh_user_session(refresh_token)
+        with pytest.raises(
+            (
+                sessions_module.RefreshTokenReusedError,
+                sessions_module.SessionRevokedError,
+                sessions_module.SessionError,
+            )
+        ):
+            await sessions_module.refresh_user_session(refresh_token)
 
         # Original session should be revoked (was rotated)
-        assert await validate_session_token(session_token) is None
+        assert await sessions_module.validate_session_token(session_token) is None
 
     @pytest.mark.asyncio
     async def test_get_user_sessions(self, test_database, sample_user, monkeypatch):
         """get_user_sessions should return all active sessions."""
         import api.auth.sessions as sessions_module
+
         monkeypatch.setattr(sessions_module, "database", test_database)
 
-        from api.auth.sessions import create_user_session, get_user_sessions
-
         # Create multiple sessions
-        await create_user_session(sample_user["id"], ip_address="192.168.1.1")
-        await create_user_session(sample_user["id"], ip_address="192.168.1.2")
-        await create_user_session(sample_user["id"], ip_address="192.168.1.3")
+        await sessions_module.create_user_session(sample_user["id"], ip_address="192.168.1.1")
+        await sessions_module.create_user_session(sample_user["id"], ip_address="192.168.1.2")
+        await sessions_module.create_user_session(sample_user["id"], ip_address="192.168.1.3")
 
-        sessions = await get_user_sessions(sample_user["id"])
+        sessions = await sessions_module.get_user_sessions(sample_user["id"])
 
         assert len(sessions) == 3
         ips = [s["ip_address"] for s in sessions]

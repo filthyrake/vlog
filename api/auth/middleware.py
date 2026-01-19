@@ -12,11 +12,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from fastapi import Cookie, Depends, HTTPException, Request, Security
+from fastapi import Cookie, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
 from api.auth.password import get_token_prefix, is_sha256_hash, verify_token, verify_token_fast
-from api.auth.permissions import Permission, Role, check_ownership_permission, has_permission
+from api.auth.permissions import Permission, Role, has_permission
 from api.auth.sessions import validate_session_token
 from api.database import database, user_api_keys, users
 from config import TRUSTED_PROXIES

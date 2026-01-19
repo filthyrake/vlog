@@ -17,7 +17,6 @@ from pydantic import BaseModel, EmailStr, Field
 from api.auth.middleware import require_permission
 from api.auth.password import (
     generate_token,
-    get_token_prefix,
     hash_password,
     hash_token,
     validate_password_strength,

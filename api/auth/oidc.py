@@ -27,8 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from api.auth.middleware import REFRESH_COOKIE_NAME, SESSION_COOKIE_NAME, require_auth
-from api.auth.password import generate_token, hash_password, hash_token, verify_token
-from api.auth.sessions import create_user_session, invalidate_user_sessions
+from api.auth.sessions import create_user_session
 from api.database import database, oidc_connections, oidc_states, users
 from config import (
     OIDC_AUTO_CREATE_USERS,
@@ -42,8 +41,6 @@ from config import (
     OIDC_STATE_EXPIRY_MINUTES,
     OIDC_TIMEOUT_SECONDS,
     SECURE_COOKIES,
-    USER_REFRESH_TOKEN_EXPIRY_DAYS,
-    USER_SESSION_EXPIRY_HOURS,
 )
 
 logger = logging.getLogger(__name__)

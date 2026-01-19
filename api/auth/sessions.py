@@ -15,7 +15,6 @@ from typing import Optional, Tuple
 from api.auth.password import (
     generate_token,
     get_token_prefix,
-    hash_token,
     hash_token_fast,
     is_sha256_hash,
     verify_token,

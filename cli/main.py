@@ -1037,7 +1037,7 @@ def cmd_auth(args):
                     # Assign orphan videos
                     from api.database import videos
 
-                    result = await database.execute(
+                    await database.execute(
                         videos.update()
                         .where(videos.c.owner_id.is_(None))
                         .values(owner_id=user_id)

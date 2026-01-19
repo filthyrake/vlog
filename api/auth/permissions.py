@@ -10,7 +10,7 @@ Roles:
 from __future__ import annotations
 
 from enum import Enum
-from typing import FrozenSet, Set
+from typing import FrozenSet
 
 
 class Role(str, Enum):

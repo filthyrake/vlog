@@ -48,8 +48,6 @@ from config import (
     PASSWORD_RESET_EXPIRY_HOURS,
     SECURE_COOKIES,
     SESSION_SECRET_KEY,
-    USER_REFRESH_TOKEN_EXPIRY_DAYS,
-    USER_SESSION_EXPIRY_HOURS,
 )
 
 logger = logging.getLogger(__name__)
