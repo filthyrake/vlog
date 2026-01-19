@@ -134,7 +134,7 @@
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
         <!-- Hero Section: Featured Video -->
         <template x-if="featuredVideo">
-            <section class="mb-8" x-show="!searchQuery" x-cloak>
+            <section class="mb-8" x-show="_showFeaturedSection" x-cloak>
                 <a
                     :href="featuredVideo._href"
                     class="block relative rounded-xl overflow-hidden group"
@@ -476,7 +476,7 @@
                         <div class="site-footer__nav-title">Browse</div>
                         <a href="/" class="site-footer__nav-link">All Videos</a>
                     </div>
-                    <template x-if="footerLinks && footerLinks.length > 0">
+                    <template x-if="_hasFooterLinks">
                         <div class="site-footer__nav-group">
                             <div class="site-footer__nav-title">Links</div>
                             <template x-for="link in footerLinks" :key="link.url">
@@ -488,7 +488,7 @@
             </div>
             <div class="site-footer__bottom">
                 <p class="site-footer__copyright" x-show="_showCustomFooterText" x-text="footerText"></p>
-                <p class="site-footer__copyright" x-show="!_showCustomFooterText">&copy; <span x-text="_currentYear"></span> <span x-text="siteName">VLog</span>. All rights reserved.</p>
+                <p class="site-footer__copyright" x-show="_showDefaultFooterText">&copy; <span x-text="_currentYear"></span> <span x-text="siteName">VLog</span>. All rights reserved.</p>
             </div>
         </div>
     </footer>

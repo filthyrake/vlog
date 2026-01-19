@@ -49,6 +49,8 @@
         _currentYear: new Date().getFullYear(),
         _showFooterTagline: false, // Precomputed for Alpine CSP
         _showCustomFooterText: false, // Precomputed for Alpine CSP
+        _showDefaultFooterText: true, // Precomputed for Alpine CSP (inverse of above)
+        _hasFooterLinks: false, // Precomputed for Alpine CSP
         _emptyStateTitle: 'No videos found',
         _emptyStateMessage: 'Check back soon for new content!',
         // Precomputed arrays for skeleton loaders (Alpine CSP)
@@ -71,6 +73,7 @@
         _mobileNavClass: '',
         _showContinueWatchingLoading: false,
         _showContinueWatchingError: false,
+        _showFeaturedSection: true, // Precomputed for Alpine CSP (!searchQuery)
 
         async init() {
             // Load display config
@@ -284,6 +287,7 @@
             this._showSearchCount = this.searchQuery && !this.loading;
             this._searchCountClass = this.searchQuery ? 'site-header__search-count--has-clear' : '';
             this._searchClearClass = this.searchQuery ? 'site-header__search-clear--visible' : '';
+            this._showFeaturedSection = !this.searchQuery;
         },
 
         updateContinueWatchingState() {
@@ -418,6 +422,8 @@
                     this.footerText = config.footer_text;
                     this.footerLinks = config.footer_links || [];
                     this._showCustomFooterText = !!config.footer_text;
+                    this._showDefaultFooterText = !config.footer_text;
+                    this._hasFooterLinks = this.footerLinks.length > 0;
                 } else {
                     // Fallback: fetch directly if VLogTheme not loaded
                     const res = await VLogUtils.fetchWithTimeout('/api/v1/config/theme', {}, 5000);
@@ -428,6 +434,8 @@
                         this.footerText = config.footer_text;
                         this.footerLinks = config.footer_links || [];
                         this._showCustomFooterText = !!config.footer_text;
+                        this._showDefaultFooterText = !config.footer_text;
+                        this._hasFooterLinks = this.footerLinks.length > 0;
                     }
                 }
             } catch (e) {

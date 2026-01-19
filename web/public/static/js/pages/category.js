@@ -42,6 +42,9 @@
         _categoryDescription: '',
         _videoCountText: '',
         _showVideoGrid: false, // Precomputed for Alpine CSP
+        _showError: false, // Precomputed for Alpine CSP (!loading && error)
+        _showContent: false, // Precomputed for Alpine CSP (!loading && category)
+        _showEmptyState: false, // Precomputed for Alpine CSP
         _emptyStateTitle: 'No videos in this category yet',
         _emptyStateMessage: 'Check back soon for new content!',
         // Precomputed arrays for skeleton loaders (Alpine CSP)
@@ -77,6 +80,7 @@
             if (!slug || !SLUG_PATTERN.test(slug)) {
                 this.error = 'Invalid category';
                 this.loading = false;
+                this.updateContentUIState();
                 return;
             }
 
@@ -89,6 +93,7 @@
                 if (!catRes.ok) {
                     this.error = catRes.status === 404 ? 'Category not found' : 'Failed to load category';
                     this.loading = false;
+                    this.updateContentUIState();
                     return;
                 }
 
@@ -114,6 +119,7 @@
                 this.announcement = 'Failed to load category';
             } finally {
                 this.loading = false;
+                this.updateContentUIState();
             }
         },
 
@@ -167,6 +173,13 @@
             this.updateVideoCountText();
             this._showVideoGrid = !this.loading && this._filteredVideos.length > 0;
             this.updateEmptyStateText();
+            this.updateContentUIState();
+        },
+
+        updateContentUIState() {
+            this._showError = !this.loading && !!this.error;
+            this._showContent = !this.loading && !!this.category;
+            this._showEmptyState = !this.loading && !this.error && this.resultCount === 0;
         },
 
         updateSearchUIState() {
