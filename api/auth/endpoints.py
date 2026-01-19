@@ -10,6 +10,7 @@ Provides endpoints for:
 
 import hmac
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -64,7 +65,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 class LoginRequest(BaseModel):
     """Login request body."""
 
-    email: EmailStr
+    username_or_email: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
     remember: bool = False  # Extended session
 
@@ -80,16 +81,27 @@ class LoginResponse(BaseModel):
     expires_at: datetime
 
 
+class AuthCheckUser(BaseModel):
+    """User info for auth check response."""
+
+    id: str
+    username: str
+    email: str
+    display_name: Optional[str] = None
+    role: str
+    avatar_url: Optional[str] = None
+    permissions: list[str] = []
+
+
 class AuthCheckResponse(BaseModel):
     """Auth check response."""
 
     authenticated: bool
-    user_id: Optional[str] = None
-    username: Optional[str] = None
-    email: Optional[str] = None
-    display_name: Optional[str] = None
-    role: Optional[str] = None
-    avatar_url: Optional[str] = None
+    auth_required: bool = True
+    auth_mode: str = "user"
+    oidc_enabled: bool = False
+    oidc_provider_name: str = "SSO"
+    user: Optional[AuthCheckUser] = None
 
 
 class PasswordChangeRequest(BaseModel):
@@ -345,6 +357,7 @@ async def create_initial_admin(
             role="admin",
             status="active",
             email_verified=True,
+            failed_login_attempts=0,
             created_at=now,
         )
     )
@@ -390,16 +403,23 @@ async def login(
     body: LoginRequest,
 ) -> LoginResponse:
     """
-    Authenticate with email and password.
+    Authenticate with username/email and password.
 
     Sets HTTP-only session cookies on success.
     """
     ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
+    identifier = body.username_or_email.lower()
 
-    # Find user by email
+    # Find user by email or username
+    from sqlalchemy import or_
     user = await database.fetch_one(
-        users.select().where(users.c.email == body.email.lower())
+        users.select().where(
+            or_(
+                users.c.email == identifier,
+                users.c.username == identifier,
+            )
+        )
     )
 
     if not user:
@@ -410,11 +430,11 @@ async def login(
             extra={
                 "event": "login_failed",
                 "reason": "user_not_found",
-                "email": body.email,
+                "identifier": identifier,
                 "ip_address": ip_address,
             },
         )
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Check account status
     if user["status"] == "disabled":
@@ -594,24 +614,46 @@ async def check_auth(
 
     Returns user info if authenticated, or authenticated=false if not.
     """
+    # Get OIDC settings
+    oidc_enabled = os.getenv("VLOG_OIDC_ENABLED", "false").lower() == "true"
+    oidc_provider_name = os.getenv("VLOG_OIDC_PROVIDER_NAME", "SSO")
+
     if not session_token:
-        return AuthCheckResponse(authenticated=False)
+        return AuthCheckResponse(
+            authenticated=False,
+            oidc_enabled=oidc_enabled,
+            oidc_provider_name=oidc_provider_name,
+        )
 
     from api.auth.sessions import validate_session_token
+    from api.auth.permissions import get_role_permissions
 
     user = await validate_session_token(session_token, allow_grace_period=True)
 
     if not user:
-        return AuthCheckResponse(authenticated=False)
+        return AuthCheckResponse(
+            authenticated=False,
+            oidc_enabled=oidc_enabled,
+            oidc_provider_name=oidc_provider_name,
+        )
+
+    # Get permissions for user's role
+    role_permissions = get_role_permissions(user["role"])
+    permissions = [p.value for p in role_permissions]
 
     return AuthCheckResponse(
         authenticated=True,
-        user_id=user["id"],
-        username=user["username"],
-        email=user["email"],
-        display_name=user["display_name"],
-        role=user["role"],
-        avatar_url=user["avatar_url"],
+        oidc_enabled=oidc_enabled,
+        oidc_provider_name=oidc_provider_name,
+        user=AuthCheckUser(
+            id=user["id"],
+            username=user["username"],
+            email=user["email"],
+            display_name=user["display_name"],
+            role=user["role"],
+            avatar_url=user["avatar_url"],
+            permissions=permissions,
+        ),
     )
 
 

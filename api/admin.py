@@ -1198,75 +1198,16 @@ async def metrics_endpoint(request: Request):
 
 
 # ============ Authentication ============
-# Server-side session management for secure browser authentication.
-# Fixes XSS vulnerability where admin secret was stored in sessionStorage.
-# See: https://github.com/filthyrake/vlog/issues/324
+# NOTE: Auth endpoints (/auth/login, /auth/logout, /auth/check) are now in api/auth/endpoints.py
+# The legacy admin secret auth has been replaced by user-based authentication.
+# See: https://github.com/filthyrake/vlog/issues/200
 
 
-@v1_router.post("/auth/login")
-@limiter.limit("10/minute")
-async def auth_login(request: Request, response: Response):
+# Legacy logout kept for backward compatibility with old sessions
+@v1_router.post("/auth/legacy-logout")
+async def auth_legacy_logout(request: Request, response: Response):
     """
-    Authenticate with admin secret and create a session.
-
-    Validates the admin secret and creates a server-side session.
-    Sets an HTTP-only, Secure cookie for subsequent requests.
-
-    Request body: {"secret": "your-admin-secret"}
-    """
-    # If auth is not configured, sessions aren't needed
-    if not ADMIN_API_SECRET:
-        return {"authenticated": True, "message": "Authentication not required"}
-
-    try:
-        body = await request.json()
-        secret = body.get("secret", "")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid request body")
-
-    if not secret:
-        raise HTTPException(status_code=400, detail="Secret is required")
-
-    # Validate the secret
-    if not hmac.compare_digest(secret, ADMIN_API_SECRET):
-        client_ip = get_real_ip(request)
-        security_logger.warning(
-            "Admin login failed: invalid secret",
-            extra={"event": "login_failure", "client_ip": client_ip},
-        )
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
-
-    # Create session
-    client_ip = get_real_ip(request)
-    user_agent = request.headers.get("user-agent", "")
-    session_token = await create_admin_session(ip_address=client_ip, user_agent=user_agent)
-
-    # Set HTTP-only cookie
-    # SameSite=Lax allows the cookie to be sent with top-level navigations
-    response.set_cookie(
-        key=ADMIN_SESSION_COOKIE,
-        value=session_token,
-        httponly=True,
-        secure=SECURE_COOKIES,
-        samesite="lax",
-        max_age=ADMIN_SESSION_EXPIRY_HOURS * 3600,
-        path="/",
-    )
-
-    security_logger.info(
-        "Admin login successful",
-        extra={"event": "login_success", "client_ip": client_ip},
-    )
-
-    return {"authenticated": True, "message": "Login successful"}
-
-
-@v1_router.post("/auth/logout")
-async def auth_logout(request: Request, response: Response):
-    """
-    Log out and destroy the current session.
-
-    Deletes the server-side session and clears the cookie.
+    Log out legacy admin sessions (for backward compatibility).
     """
     # Get session token from cookie
     session_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
@@ -1291,31 +1232,7 @@ async def auth_logout(request: Request, response: Response):
     return {"authenticated": False, "message": "Logged out"}
 
 
-@v1_router.get("/auth/check")
-async def auth_check(request: Request):
-    """
-    Check if the current session is authenticated.
-
-    Returns authentication status without requiring credentials.
-    Used by the UI to determine if login is needed.
-    """
-    # If auth is not configured, always authenticated
-    if not ADMIN_API_SECRET:
-        return {"authenticated": True, "auth_required": False}
-
-    # Check for X-Admin-Secret header (for API clients)
-    admin_secret = request.headers.get("x-admin-secret", "")
-    if admin_secret and hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
-        return {"authenticated": True, "auth_required": True}
-
-    # Check session cookie
-    session_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
-    if session_token:
-        is_valid = await validate_session_token(session_token)
-        if is_valid:
-            return {"authenticated": True, "auth_required": True}
-
-    return {"authenticated": False, "auth_required": True}
+# NOTE: /auth/check endpoint is now in api/auth/endpoints.py
 
 
 @v1_router.get("/auth/csrf-token")

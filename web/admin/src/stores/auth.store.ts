@@ -267,9 +267,10 @@ export function createAuthStore(): AuthStore {
           id: result.user_id!,
           username: result.username!,
           email: result.email!,
-          display_name: this.setupDisplayName || null,
+          display_name: this.setupDisplayName || undefined,
           role: 'admin',
-          avatar_url: null,
+          avatar_url: undefined,
+          permissions: [],
         };
 
         // Clear form
