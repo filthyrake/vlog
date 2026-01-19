@@ -297,6 +297,41 @@ def reset_cdn_settings_cache() -> None:
     _cached_cdn_settings_time = 0
 
 
+def validate_safe_path(base: Path, user_path: str) -> Path:
+    """
+    Validate that a path stays within the base directory to prevent path traversal.
+
+    Args:
+        base: The base directory that paths must be contained within
+        user_path: The user-provided path to validate
+
+    Returns:
+        The resolved full path if valid
+
+    Raises:
+        HTTPException: If the path is invalid or traverses outside base
+    """
+    if not user_path:
+        raise HTTPException(status_code=400, detail="Path cannot be empty")
+
+    # Block obvious traversal attempts
+    if ".." in user_path:
+        logger.warning(f"Path traversal attempt blocked: {user_path}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    try:
+        # Resolve both paths to catch symlink attacks
+        full_path = (base / user_path).resolve()
+        base_resolved = base.resolve()
+
+        # Ensure the path is within the base directory
+        full_path.relative_to(base_resolved)
+        return full_path
+    except (ValueError, OSError) as e:
+        logger.warning(f"Path validation failed for {user_path}: {e}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
 # Initialize rate limiter
 # Uses in-memory storage by default, can be configured to use Redis
 limiter = Limiter(
@@ -2537,7 +2572,8 @@ async def get_public_logo(request: Request):
     if not settings.get("logo_path"):
         raise HTTPException(status_code=404, detail="No logo configured")
 
-    logo_path = NAS_STORAGE / settings["logo_path"]
+    # Validate path to prevent traversal attacks
+    logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
     if not logo_path.exists():
         raise HTTPException(status_code=404, detail="Logo image not found")
 
@@ -2555,7 +2591,10 @@ async def get_public_logo(request: Request):
     return FileResponse(
         logo_path,
         media_type=content_type,
-        headers={"Cache-Control": "public, max-age=86400"},  # Cache for 1 day
+        headers={
+            "Cache-Control": "public, max-age=86400",  # Cache for 1 day
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -2568,7 +2607,8 @@ async def get_public_favicon(request: Request):
     if not settings.get("favicon_path"):
         raise HTTPException(status_code=404, detail="No favicon configured")
 
-    favicon_path = NAS_STORAGE / settings["favicon_path"]
+    # Validate path to prevent traversal attacks
+    favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
     if not favicon_path.exists():
         raise HTTPException(status_code=404, detail="Favicon not found")
 
@@ -2583,7 +2623,10 @@ async def get_public_favicon(request: Request):
     return FileResponse(
         favicon_path,
         media_type=content_type,
-        headers={"Cache-Control": "public, max-age=86400"},  # Cache for 1 day
+        headers={
+            "Cache-Control": "public, max-age=86400",  # Cache for 1 day
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

@@ -33,12 +33,26 @@ window.VLogTheme = {
     },
 
     /**
+     * Fetch timeout in milliseconds
+     */
+    fetchTimeout: 5000,
+
+    /**
      * Fetch theme configuration from API
      * @returns {Promise<Object>} Theme configuration
      */
     async fetchConfig() {
         try {
-            const response = await fetch('/api/v1/config/theme');
+            // Use AbortController for fetch timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), this.fetchTimeout);
+
+            const response = await fetch('/api/v1/config/theme', {
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
             if (!response.ok) {
                 console.warn('Failed to fetch theme config, using defaults');
                 return this.defaults;
@@ -47,7 +61,11 @@ window.VLogTheme = {
             this.config = { ...this.defaults, ...config };
             return this.config;
         } catch (e) {
-            console.warn('Error fetching theme config:', e);
+            if (e.name === 'AbortError') {
+                console.warn('Theme config fetch timed out, using defaults');
+            } else {
+                console.warn('Error fetching theme config:', e);
+            }
             this.config = this.defaults;
             return this.defaults;
         }
