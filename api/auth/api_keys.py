@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.auth.middleware import require_auth
-from api.auth.password import generate_token, get_token_prefix, hash_token
+from api.auth.password import generate_token, get_token_prefix, hash_token_fast
 from api.database import database, user_api_keys
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ async def create_api_key(
 
     # Generate key
     api_key = generate_token(32)  # ~44 character URL-safe token
-    key_hash = hash_token(api_key)
+    key_hash = hash_token_fast(api_key)  # SHA-256 for fast verification
     key_prefix = get_token_prefix(api_key)
 
     # Calculate expiry

@@ -88,7 +88,9 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+        sa.Column("token_prefix", sa.String(8), nullable=True),  # For indexed lookup
         sa.Column("refresh_token_hash", sa.String(255), unique=True, nullable=True),
+        sa.Column("refresh_token_prefix", sa.String(8), nullable=True),  # For indexed lookup
         sa.Column("refresh_family_id", sa.String(36), nullable=True),  # UUID
         sa.Column("refresh_generation", sa.Integer, default=0, nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
@@ -97,10 +99,13 @@ def upgrade() -> None:
         sa.Column("user_agent", sa.String(512), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),  # Track session usage
     )
     op.create_index("ix_user_sessions_user_id", "user_sessions", ["user_id"])
     op.create_index("ix_user_sessions_token_hash", "user_sessions", ["token_hash"])
+    op.create_index("ix_user_sessions_token_prefix", "user_sessions", ["token_prefix"])
     op.create_index("ix_user_sessions_refresh_token_hash", "user_sessions", ["refresh_token_hash"])
+    op.create_index("ix_user_sessions_refresh_token_prefix", "user_sessions", ["refresh_token_prefix"])
     op.create_index("ix_user_sessions_expires_at", "user_sessions", ["expires_at"])
     op.create_index("ix_user_sessions_refresh_family_id", "user_sessions", ["refresh_family_id"])
 

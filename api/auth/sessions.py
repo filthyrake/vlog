@@ -12,7 +12,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
-from api.auth.password import generate_token, get_token_prefix, hash_token, verify_token
+from api.auth.password import (
+    generate_token,
+    get_token_prefix,
+    hash_token,
+    hash_token_fast,
+    is_sha256_hash,
+    verify_token,
+    verify_token_fast,
+)
 from api.database import database, user_sessions, users
 from config import (
     USER_MAX_SESSIONS,
@@ -74,9 +82,13 @@ async def create_user_session(
     refresh_token = generate_token(48)
     refresh_family_id = str(uuid.uuid4())
 
-    # Hash tokens for storage
-    session_token_hash = hash_token(session_token)
-    refresh_token_hash = hash_token(refresh_token)
+    # Hash tokens for storage using SHA-256 (fast, tokens are high-entropy)
+    session_token_hash = hash_token_fast(session_token)
+    refresh_token_hash = hash_token_fast(refresh_token)
+
+    # Store prefixes for indexed lookup
+    session_token_prefix = get_token_prefix(session_token)
+    refresh_token_prefix = get_token_prefix(refresh_token)
 
     session_id = str(uuid.uuid4())
 
@@ -89,7 +101,9 @@ async def create_user_session(
             id=session_id,
             user_id=user_id,
             token_hash=session_token_hash,
+            token_prefix=session_token_prefix,
             refresh_token_hash=refresh_token_hash,
+            refresh_token_prefix=refresh_token_prefix,
             refresh_family_id=refresh_family_id,
             refresh_generation=0,
             expires_at=expires_at,
@@ -133,18 +147,27 @@ async def validate_session_token(
 
     now = datetime.now(timezone.utc)
 
-    # Get all sessions for lookup (we'll verify the hash)
-    # In practice, we'd want a prefix-based lookup, but session tokens
-    # are already unique and indexed
+    # Use prefix for efficient indexed lookup
+    token_prefix = get_token_prefix(session_token)
+
+    # Query sessions with matching prefix (typically 1 match)
     sessions = await database.fetch_all(
         user_sessions.select().where(
+            user_sessions.c.token_prefix == token_prefix,
             user_sessions.c.revoked_at.is_(None),
         )
     )
 
     for session in sessions:
-        if not verify_token(session_token, session["token_hash"]):
-            continue
+        token_hash = session["token_hash"]
+        # Support both SHA-256 (new) and argon2id (legacy) hashes
+        if is_sha256_hash(token_hash):
+            if not verify_token_fast(session_token, token_hash):
+                continue
+        else:
+            # Legacy argon2id hash - verify with slow method
+            if not verify_token(session_token, token_hash):
+                continue
 
         # Found matching session
         expires_at = session["expires_at"]
@@ -223,16 +246,30 @@ async def refresh_user_session(
 
     now = datetime.now(timezone.utc)
 
-    # Find session by refresh token
+    # Use prefix for efficient indexed lookup
+    refresh_prefix = get_token_prefix(refresh_token)
+
+    # Find session by refresh token prefix
     sessions = await database.fetch_all(
-        user_sessions.select().where(user_sessions.c.refresh_token_hash.isnot(None))
+        user_sessions.select().where(
+            user_sessions.c.refresh_token_prefix == refresh_prefix,
+            user_sessions.c.refresh_token_hash.isnot(None),
+        )
     )
 
     session = None
     for s in sessions:
-        if verify_token(refresh_token, s["refresh_token_hash"]):
-            session = s
-            break
+        token_hash = s["refresh_token_hash"]
+        # Support both SHA-256 (new) and argon2id (legacy) hashes
+        if is_sha256_hash(token_hash):
+            if verify_token_fast(refresh_token, token_hash):
+                session = s
+                break
+        else:
+            # Legacy argon2id hash
+            if verify_token(refresh_token, token_hash):
+                session = s
+                break
 
     if not session:
         raise SessionError("Invalid refresh token")
@@ -290,35 +327,44 @@ async def refresh_user_session(
     new_expires_at = now + timedelta(hours=USER_SESSION_EXPIRY_HOURS)
     new_refresh_expires_at = now + timedelta(days=USER_REFRESH_TOKEN_EXPIRY_DAYS)
 
-    # Hash new tokens
-    new_session_token_hash = hash_token(new_session_token)
-    new_refresh_token_hash = hash_token(new_refresh_token)
+    # Hash new tokens using SHA-256 (fast, tokens are high-entropy)
+    new_session_token_hash = hash_token_fast(new_session_token)
+    new_refresh_token_hash = hash_token_fast(new_refresh_token)
+
+    # Store prefixes for indexed lookup
+    new_session_token_prefix = get_token_prefix(new_session_token)
+    new_refresh_token_prefix = get_token_prefix(new_refresh_token)
 
     new_session_id = str(uuid.uuid4())
 
-    # Revoke old session
-    await database.execute(
-        user_sessions.update()
-        .where(user_sessions.c.id == session["id"])
-        .values(revoked_at=now)
-    )
-
-    # Create new session with incremented generation
-    await database.execute(
-        user_sessions.insert().values(
-            id=new_session_id,
-            user_id=session["user_id"],
-            token_hash=new_session_token_hash,
-            refresh_token_hash=new_refresh_token_hash,
-            refresh_family_id=session["refresh_family_id"],
-            refresh_generation=session["refresh_generation"] + 1,
-            expires_at=new_expires_at,
-            refresh_expires_at=new_refresh_expires_at,
-            ip_address=ip_address,
-            user_agent=user_agent[:512] if user_agent else None,
-            created_at=now,
+    # Use transaction to ensure atomicity:
+    # If new session creation fails, old session remains valid
+    async with database.transaction():
+        # Revoke old session
+        await database.execute(
+            user_sessions.update()
+            .where(user_sessions.c.id == session["id"])
+            .values(revoked_at=now)
         )
-    )
+
+        # Create new session with incremented generation
+        await database.execute(
+            user_sessions.insert().values(
+                id=new_session_id,
+                user_id=session["user_id"],
+                token_hash=new_session_token_hash,
+                token_prefix=new_session_token_prefix,
+                refresh_token_hash=new_refresh_token_hash,
+                refresh_token_prefix=new_refresh_token_prefix,
+                refresh_family_id=session["refresh_family_id"],
+                refresh_generation=session["refresh_generation"] + 1,
+                expires_at=new_expires_at,
+                refresh_expires_at=new_refresh_expires_at,
+                ip_address=ip_address,
+                user_agent=user_agent[:512] if user_agent else None,
+                created_at=now,
+            )
+        )
 
     security_logger.info(
         "Session refreshed",

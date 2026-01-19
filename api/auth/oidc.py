@@ -14,6 +14,7 @@ Implements proper security measures:
 - Circuit breaker for provider failures
 """
 
+import asyncio
 import logging
 import secrets
 import uuid
@@ -22,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from api.auth.middleware import REFRESH_COOKIE_NAME, SESSION_COOKIE_NAME, require_auth
@@ -67,49 +68,53 @@ class CircuitBreakerState:
 
 # Circuit breaker for OIDC provider
 _circuit_breaker = CircuitBreakerState()
+_circuit_breaker_lock = asyncio.Lock()
 CIRCUIT_BREAKER_THRESHOLD = 5
 CIRCUIT_BREAKER_RECOVERY_SECONDS = 60
 
 
-def _check_circuit_breaker() -> None:
-    """Check if circuit breaker is open."""
-    if not _circuit_breaker.is_open:
-        return
-
-    # Check if recovery period has passed
-    if _circuit_breaker.last_failure_time:
-        recovery_time = _circuit_breaker.last_failure_time + timedelta(
-            seconds=CIRCUIT_BREAKER_RECOVERY_SECONDS
-        )
-        if datetime.now(timezone.utc) > recovery_time:
-            # Reset circuit breaker (half-open state)
-            _circuit_breaker.is_open = False
-            _circuit_breaker.failure_count = 0
-            logger.info("OIDC circuit breaker reset (recovery period passed)")
+async def _check_circuit_breaker() -> None:
+    """Check if circuit breaker is open (thread-safe)."""
+    async with _circuit_breaker_lock:
+        if not _circuit_breaker.is_open:
             return
 
-    raise HTTPException(
-        status_code=503,
-        detail=f"OIDC provider temporarily unavailable. Please try again in {CIRCUIT_BREAKER_RECOVERY_SECONDS} seconds.",
-    )
+        # Check if recovery period has passed
+        if _circuit_breaker.last_failure_time:
+            recovery_time = _circuit_breaker.last_failure_time + timedelta(
+                seconds=CIRCUIT_BREAKER_RECOVERY_SECONDS
+            )
+            if datetime.now(timezone.utc) > recovery_time:
+                # Reset circuit breaker (half-open state)
+                _circuit_breaker.is_open = False
+                _circuit_breaker.failure_count = 0
+                logger.info("OIDC circuit breaker reset (recovery period passed)")
+                return
 
-
-def _record_failure() -> None:
-    """Record a failure and potentially open circuit breaker."""
-    _circuit_breaker.failure_count += 1
-    _circuit_breaker.last_failure_time = datetime.now(timezone.utc)
-
-    if _circuit_breaker.failure_count >= CIRCUIT_BREAKER_THRESHOLD:
-        _circuit_breaker.is_open = True
-        logger.warning(
-            f"OIDC circuit breaker opened after {_circuit_breaker.failure_count} failures"
+        raise HTTPException(
+            status_code=503,
+            detail=f"OIDC provider temporarily unavailable. Please try again in {CIRCUIT_BREAKER_RECOVERY_SECONDS} seconds.",
         )
 
 
-def _record_success() -> None:
-    """Record a success and reset failure count."""
-    _circuit_breaker.failure_count = 0
-    _circuit_breaker.is_open = False
+async def _record_failure() -> None:
+    """Record a failure and potentially open circuit breaker (thread-safe)."""
+    async with _circuit_breaker_lock:
+        _circuit_breaker.failure_count += 1
+        _circuit_breaker.last_failure_time = datetime.now(timezone.utc)
+
+        if _circuit_breaker.failure_count >= CIRCUIT_BREAKER_THRESHOLD:
+            _circuit_breaker.is_open = True
+            logger.warning(
+                f"OIDC circuit breaker opened after {_circuit_breaker.failure_count} failures"
+            )
+
+
+async def _record_success() -> None:
+    """Record a success and reset failure count (thread-safe)."""
+    async with _circuit_breaker_lock:
+        _circuit_breaker.failure_count = 0
+        _circuit_breaker.is_open = False
 
 
 # =============================================================================
@@ -144,7 +149,7 @@ async def _get_oidc_config() -> OIDCConfig:
     if not OIDC_DISCOVERY_URL:
         raise HTTPException(status_code=500, detail="OIDC not configured")
 
-    _check_circuit_breaker()
+    await _check_circuit_breaker()
 
     try:
         async with httpx.AsyncClient(timeout=OIDC_TIMEOUT_SECONDS) as client:
@@ -152,17 +157,17 @@ async def _get_oidc_config() -> OIDCConfig:
             response.raise_for_status()
             config = response.json()
     except httpx.TimeoutException:
-        _record_failure()
+        await _record_failure()
         raise HTTPException(status_code=503, detail="OIDC provider timeout")
     except httpx.ConnectError:
-        _record_failure()
+        await _record_failure()
         raise HTTPException(status_code=503, detail="Cannot connect to OIDC provider")
     except Exception as e:
-        _record_failure()
+        await _record_failure()
         logger.error(f"OIDC discovery failed: {e}")
         raise HTTPException(status_code=503, detail="OIDC provider error")
 
-    _record_success()
+    await _record_success()
 
     _oidc_config_cache = OIDCConfig(
         authorization_endpoint=config["authorization_endpoint"],
@@ -347,7 +352,7 @@ async def oidc_callback(
     )
 
     config = await _get_oidc_config()
-    _check_circuit_breaker()
+    await _check_circuit_breaker()
 
     # Exchange code for tokens
     try:
@@ -365,18 +370,57 @@ async def oidc_callback(
             token_response.raise_for_status()
             tokens = token_response.json()
     except httpx.TimeoutException:
-        _record_failure()
+        await _record_failure()
         raise HTTPException(status_code=503, detail="OIDC provider timeout")
     except httpx.HTTPStatusError as e:
-        _record_failure()
+        await _record_failure()
         logger.error(f"OIDC token exchange failed: {e.response.text}")
         raise HTTPException(status_code=400, detail="OIDC token exchange failed")
     except Exception as e:
-        _record_failure()
+        await _record_failure()
         logger.error(f"OIDC token exchange error: {e}")
         raise HTTPException(status_code=503, detail="OIDC provider error")
 
-    _record_success()
+    await _record_success()
+
+    # Validate nonce in ID token for replay protection
+    id_token = tokens.get("id_token")
+    if id_token and stored_state.get("nonce"):
+        try:
+            # Decode ID token (JWT) without verification - we trust the HTTPS connection
+            # The ID token is base64url encoded with 3 parts: header.payload.signature
+            import base64
+            import json
+
+            parts = id_token.split(".")
+            if len(parts) >= 2:
+                # Decode the payload (middle part)
+                payload = parts[1]
+                # Add padding if needed
+                padding = 4 - len(payload) % 4
+                if padding != 4:
+                    payload += "=" * padding
+                decoded = base64.urlsafe_b64decode(payload)
+                claims = json.loads(decoded)
+
+                token_nonce = claims.get("nonce")
+                if token_nonce and token_nonce != stored_state["nonce"]:
+                    security_logger.warning(
+                        "OIDC nonce mismatch - possible replay attack",
+                        extra={
+                            "event": "oidc_nonce_mismatch",
+                        },
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid authentication response (nonce mismatch)",
+                    )
+        except HTTPException:
+            raise
+        except Exception as e:
+            # If we can't decode the ID token, log but continue
+            # The userinfo endpoint is still a valid verification
+            logger.debug(f"Could not decode ID token for nonce validation: {e}")
 
     # Get user info
     try:
@@ -398,9 +442,6 @@ async def oidc_callback(
 
     if not provider_user_id:
         raise HTTPException(status_code=400, detail="No user ID from provider")
-
-    # Validate nonce in ID token (if present)
-    # For simplicity, we trust the provider's userinfo endpoint
 
     # Find existing connection
     connection = await database.fetch_one(
@@ -536,7 +577,7 @@ async def link_oidc(
     request: Request,
     code: str = Query(..., description="Authorization code from provider"),
     state: str = Query(..., description="State parameter"),
-    user: dict = require_auth,
+    user: dict = Depends(require_auth),
 ) -> dict:
     """
     Link OIDC provider to existing account.
@@ -640,7 +681,7 @@ async def link_oidc(
 
 @router.delete("")
 async def unlink_oidc(
-    user: dict = require_auth,
+    user: dict = Depends(require_auth),
 ) -> dict:
     """
     Unlink OIDC provider from account.

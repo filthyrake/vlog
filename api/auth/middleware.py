@@ -15,7 +15,7 @@ from typing import Callable, Optional
 from fastapi import Cookie, Depends, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
-from api.auth.password import get_token_prefix, verify_token
+from api.auth.password import get_token_prefix, is_sha256_hash, verify_token, verify_token_fast
 from api.auth.permissions import Permission, Role, check_ownership_permission, has_permission
 from api.auth.sessions import validate_session_token
 from api.database import database, user_api_keys, users
@@ -265,8 +265,15 @@ async def _authenticate_api_key(api_key: str, request: Request) -> Optional[dict
     )
 
     for key_record in key_records:
-        if not verify_token(api_key, key_record["key_hash"]):
-            continue
+        key_hash = key_record["key_hash"]
+        # Support both SHA-256 (new) and argon2id (legacy) hashes
+        if is_sha256_hash(key_hash):
+            if not verify_token_fast(api_key, key_hash):
+                continue
+        else:
+            # Legacy argon2id hash
+            if not verify_token(api_key, key_hash):
+                continue
 
         # Found matching key - check expiry
         if key_record["expires_at"]:

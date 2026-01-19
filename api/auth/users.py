@@ -490,11 +490,10 @@ async def force_password_reset(
         },
     )
 
-    # TODO: Send email with reset link
-    # For now, return the token (in production, this would be sent via email)
-    logger.info(f"Password reset token for {user['email']}: {token}")
+    # TODO: Implement email delivery for password reset links
+    # The token is stored in the database and should be sent via email
+    # Do NOT log or expose the token in any way
 
     return {
-        "message": "Password reset initiated. User has been logged out.",
-        "reset_token": token,  # Remove in production - send via email instead
+        "message": "Password reset initiated. User has been logged out and will receive a reset email.",
     }

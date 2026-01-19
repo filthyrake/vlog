@@ -379,29 +379,32 @@ async def accept_invite(
     user_id = str(uuid.uuid4())
     password_hash = hash_password(body.password)
 
-    await database.execute(
-        users.insert().values(
-            id=user_id,
-            username=body.username.lower(),
-            email=invite["email"],
-            password_hash=password_hash,
-            display_name=body.display_name,
-            role=invite["role"],
-            status="active",
-            email_verified=True,  # Invite-based users are verified
-            created_at=now,
+    # Use transaction to ensure atomicity:
+    # If invite marking fails, user creation is rolled back
+    async with database.transaction():
+        await database.execute(
+            users.insert().values(
+                id=user_id,
+                username=body.username.lower(),
+                email=invite["email"],
+                password_hash=password_hash,
+                display_name=body.display_name,
+                role=invite["role"],
+                status="active",
+                email_verified=True,  # Invite-based users are verified
+                created_at=now,
+            )
         )
-    )
 
-    # Mark invite as used
-    await database.execute(
-        user_invites.update()
-        .where(user_invites.c.id == invite["id"])
-        .values(
-            used_at=now,
-            used_by=user_id,
+        # Mark invite as used
+        await database.execute(
+            user_invites.update()
+            .where(user_invites.c.id == invite["id"])
+            .values(
+                used_at=now,
+                used_by=user_id,
+            )
         )
-    )
 
     security_logger.info(
         "Invite accepted",

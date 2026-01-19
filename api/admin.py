@@ -57,6 +57,8 @@ from api.database import (
     database,
     live_stream_segments,
     live_streams,
+    oidc_states,
+    password_reset_tokens,
     playback_sessions,
     playlist_items,
     playlists,
@@ -238,6 +240,7 @@ from config import (
     ADMIN_PORT,
     ADMIN_SESSION_EXPIRY_HOURS,
     ANALYTICS_CACHE_ENABLED,
+    SESSION_SECRET_KEY,
     ANALYTICS_CACHE_STORAGE_URL,
     ANALYTICS_CACHE_TTL,
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
@@ -421,15 +424,18 @@ async def delete_admin_session(session_token: str) -> None:
 
 async def cleanup_expired_sessions() -> int:
     """
-    Delete expired sessions. Returns the number of sessions deleted.
-    Called periodically to clean up stale sessions.
+    Delete expired sessions and related auth tokens. Returns the total number of records deleted.
+    Called periodically to clean up stale authentication data.
 
     Cleans up:
     - Legacy admin_sessions (expired)
     - User sessions (refresh token expired or revoked > 7 days ago)
+    - OIDC states (expired, unused)
+    - Password reset tokens (expired or used > 7 days ago)
     """
     now = datetime.now(timezone.utc)
     total_deleted = 0
+    cutoff = now - timedelta(days=7)
 
     # Clean up legacy admin sessions
     query = admin_sessions.delete().where(admin_sessions.c.expires_at < now)
@@ -442,7 +448,6 @@ async def cleanup_expired_sessions() -> int:
     # 1. Refresh token has expired (user can't renew session)
     # 2. Session was revoked more than 7 days ago (audit trail retention)
     try:
-        cutoff = now - timedelta(days=7)
         user_session_query = user_sessions.delete().where(
             (user_sessions.c.refresh_expires_at < now)
             | (
@@ -457,6 +462,38 @@ async def cleanup_expired_sessions() -> int:
     except Exception as e:
         # Don't fail if user_sessions table doesn't exist yet (pre-migration)
         logger.debug(f"User session cleanup skipped: {e}")
+
+    # Clean up expired OIDC states (Issue #200)
+    # These are single-use and should be deleted after expiry (10 minutes)
+    try:
+        oidc_states_query = oidc_states.delete().where(
+            oidc_states.c.expires_at < now
+        )
+        oidc_result = await database.execute(oidc_states_query)
+        if oidc_result:
+            total_deleted += oidc_result
+            logger.debug(f"Cleaned up {oidc_result} expired OIDC states")
+    except Exception as e:
+        logger.debug(f"OIDC states cleanup skipped: {e}")
+
+    # Clean up password reset tokens (Issue #200)
+    # Delete tokens where:
+    # 1. Token has expired
+    # 2. Token was used more than 7 days ago (audit trail retention)
+    try:
+        reset_tokens_query = password_reset_tokens.delete().where(
+            (password_reset_tokens.c.expires_at < now)
+            | (
+                (password_reset_tokens.c.used_at.isnot(None))
+                & (password_reset_tokens.c.used_at < cutoff)
+            )
+        )
+        reset_result = await database.execute(reset_tokens_query)
+        if reset_result:
+            total_deleted += reset_result
+            logger.debug(f"Cleaned up {reset_result} expired password reset tokens")
+    except Exception as e:
+        logger.debug(f"Password reset tokens cleanup skipped: {e}")
 
     return total_deleted
 
@@ -922,6 +959,14 @@ async def lifespan(app: FastAPI):
 
     # Check for deprecated environment variables and warn about migration
     check_deprecated_env_vars()
+
+    # Validate SESSION_SECRET_KEY is set (required for user authentication)
+    # This is a critical security requirement - without it, session tokens cannot be signed
+    if not SESSION_SECRET_KEY or len(SESSION_SECRET_KEY) < 32:
+        raise RuntimeError(
+            "VLOG_SESSION_SECRET_KEY is required and must be at least 32 characters. "
+            "Generate with: openssl rand -base64 32"
+        )
 
     # Warn about in-memory rate limiting limitations (security issue #446)
     if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":

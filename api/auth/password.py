@@ -3,8 +3,14 @@ Password hashing and validation utilities.
 
 Uses argon2id for password hashing (same as worker API keys).
 OWASP recommended parameters for memory-hard, GPU-resistant hashing.
+
+For session/API tokens, uses SHA-256 for faster verification.
+Tokens are already cryptographically random (256+ bits entropy),
+so expensive memory-hard hashing provides no additional security.
 """
 
+import hashlib
+import hmac
 import secrets
 from typing import Tuple
 
@@ -168,3 +174,67 @@ def get_token_prefix(token: str, length: int = 8) -> str:
         The first N characters of the token
     """
     return token[:length] if len(token) >= length else token
+
+
+# =============================================================================
+# Fast Token Hashing (SHA-256)
+# =============================================================================
+# For session tokens, refresh tokens, API keys, and other high-entropy tokens.
+# These tokens are cryptographically random (256+ bits entropy), so expensive
+# memory-hard hashing provides no additional security benefit.
+# SHA-256 is ~50,000x faster than argon2id, making it suitable for the hot path.
+
+
+def hash_token_fast(token: str) -> str:
+    """
+    Hash a token using SHA-256 (for session/API tokens only).
+
+    This is much faster than argon2id (~0.001ms vs ~50ms) and is appropriate
+    for high-entropy random tokens that cannot be brute-forced.
+
+    Args:
+        token: The plaintext token to hash
+
+    Returns:
+        The SHA-256 hash as a hex string
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def verify_token_fast(token: str, token_hash: str) -> bool:
+    """
+    Verify a token against a SHA-256 hash using constant-time comparison.
+
+    Args:
+        token: The plaintext token to verify
+        token_hash: The stored SHA-256 hash
+
+    Returns:
+        True if the token matches, False otherwise
+    """
+    if not token or not token_hash:
+        return False
+
+    try:
+        expected = hash_token_fast(token)
+        return hmac.compare_digest(expected, token_hash)
+    except Exception:
+        return False
+
+
+def is_sha256_hash(hash_value: str) -> bool:
+    """
+    Check if a hash is a SHA-256 hash (64 hex characters).
+
+    Used to determine whether to use fast or slow verification during migration.
+
+    Args:
+        hash_value: The hash to check
+
+    Returns:
+        True if it looks like a SHA-256 hash
+    """
+    if not hash_value:
+        return False
+    # SHA-256 produces 64 hex characters, argon2 hashes start with $argon2
+    return len(hash_value) == 64 and not hash_value.startswith("$")

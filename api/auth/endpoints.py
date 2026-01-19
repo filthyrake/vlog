@@ -645,9 +645,9 @@ async def forgot_password(
         },
     )
 
-    # TODO: Send email with reset link
-    # For now, log the token (remove in production)
-    logger.info(f"Password reset token for {user['email']}: {token}")
+    # TODO: Implement email delivery for password reset links
+    # The token is stored in the database and should be sent via email
+    # Do NOT log or expose the token in any way
 
     return success_response
 

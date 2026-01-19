@@ -1142,7 +1142,9 @@ user_sessions = sa.Table(
     sa.Column("id", sa.String(36), primary_key=True),  # UUID
     sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("token_prefix", sa.String(8), nullable=True),  # For indexed lookup
     sa.Column("refresh_token_hash", sa.String(255), unique=True, nullable=True),
+    sa.Column("refresh_token_prefix", sa.String(8), nullable=True),  # For indexed lookup
     sa.Column("refresh_family_id", sa.String(36), nullable=True),  # UUID for token family
     sa.Column("refresh_generation", sa.Integer, default=0, nullable=False),
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
@@ -1151,9 +1153,12 @@ user_sessions = sa.Table(
     sa.Column("user_agent", sa.String(512), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),  # Track session usage
     sa.Index("ix_user_sessions_user_id", "user_id"),
     sa.Index("ix_user_sessions_token_hash", "token_hash"),
+    sa.Index("ix_user_sessions_token_prefix", "token_prefix"),
     sa.Index("ix_user_sessions_refresh_token_hash", "refresh_token_hash"),
+    sa.Index("ix_user_sessions_refresh_token_prefix", "refresh_token_prefix"),
     sa.Index("ix_user_sessions_expires_at", "expires_at"),
     sa.Index("ix_user_sessions_refresh_family_id", "refresh_family_id"),
 )
