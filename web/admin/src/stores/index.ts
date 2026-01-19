@@ -39,6 +39,14 @@ export type AdminStore = AuthStore &
     getApplicableCustomFields(): CustomField[];
     editModalTab: 'details' | 'chapters';
     openEditModalWithChapters(video: import('@/api/types').Video): void;
+    // CSP-compatible navigation methods
+    // Alpine.js CSP mode doesn't support semicolons in @click expressions
+    // These methods combine tab switching with data loading
+    openWorkersTab(): void;
+    openAnalyticsTab(): void;
+    openSettingsTab(): void;
+    openBrandingSettings(): void;
+    openCustomFieldsSettings(): void;
   };
 
 /**
@@ -88,6 +96,64 @@ export function createAdminStore(): AdminStore {
       this.editModalTab = 'details';
       // Load chapters asynchronously
       this.loadChapters(video.id);
+    },
+
+    // =========================================================================
+    // CSP-Compatible Navigation Methods
+    // =========================================================================
+    // Alpine.js CSP mode doesn't support semicolons in @click expressions.
+    // Instead of: @click="tab = 'workers'; loadWorkers(); loadDeploymentHistory()"
+    // We use:     @click="openWorkersTab()"
+    //
+    // These methods combine tab switching with the necessary data loading,
+    // making the intent clear: "open" indicates navigation + setup.
+    // =========================================================================
+
+    /**
+     * Navigate to Workers tab and load worker data
+     * Replaces: tab = 'workers'; loadWorkers(); loadDeploymentHistory()
+     */
+    openWorkersTab(): void {
+      this.tab = 'workers';
+      this.loadWorkers();
+      this.loadDeploymentHistory();
+    },
+
+    /**
+     * Navigate to Analytics tab and load analytics data
+     * Replaces: tab = 'analytics'; loadAnalytics()
+     */
+    openAnalyticsTab(): void {
+      this.tab = 'analytics';
+      this.loadAnalytics();
+    },
+
+    /**
+     * Navigate to Settings tab and load settings data
+     * Replaces: tab = 'settings'; loadWatermarkSettings(); loadAllSettings()
+     */
+    openSettingsTab(): void {
+      this.tab = 'settings';
+      this.loadWatermarkSettings();
+      this.loadAllSettings();
+    },
+
+    /**
+     * Navigate to Branding settings sub-tab and load branding data
+     * Replaces: settingsTab = 'branding'; loadBrandingSettings()
+     */
+    openBrandingSettings(): void {
+      this.settingsTab = 'branding';
+      this.loadBrandingSettings();
+    },
+
+    /**
+     * Navigate to Custom Fields settings sub-tab and load custom fields data
+     * Replaces: settingsTab = 'custom_fields'; loadCustomFields()
+     */
+    openCustomFieldsSettings(): void {
+      this.settingsTab = 'custom_fields';
+      this.loadCustomFields();
     },
 
     /**

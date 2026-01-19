@@ -96,6 +96,27 @@ export interface SettingsActions {
   saveCustomField(): Promise<void>;
   deleteCustomField(field: CustomField): Promise<void>;
 
+  // CSP-safe helpers (Alpine.js CSP build doesn't support arrow functions or ?.)
+  hasGlobalCustomFields(): boolean;
+  getGlobalCustomFields(): CustomField[];
+  hasCategoryCustomFields(categoryId: number): boolean;
+  getCategoryCustomFields(categoryId: number): CustomField[];
+  hasNullCategoryCustomFields(): boolean;
+  getNullCategoryCustomFields(): CustomField[];
+
+  // Constraint helpers
+  getConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): unknown;
+  hasConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): boolean;
+  getEnumValues(obj: { constraints?: CustomFieldConstraint & { enum_values?: string[] } }): string[];
+
+  // CSP-safe setting modification check
+  isSettingModified(category: string, key: string): boolean;
+
+  // CSP-safe formatting helpers (regex not supported in CSP mode)
+  formatCategoryName(category: string): string;
+  formatCategoryTitle(category: string): string;
+  formatSettingLabel(key: string): string;
+
   // Branding operations (Issue #214)
   loadBrandingSettings(): Promise<void>;
   saveBrandingSiteName(): Promise<void>;
@@ -104,6 +125,15 @@ export interface SettingsActions {
   deleteLogo(): Promise<void>;
   uploadFavicon(): XMLHttpRequest | null;
   deleteFavicon(): Promise<void>;
+
+  // Branding CSP-safe helpers (Alpine.js CSP build doesn't support ?.)
+  hasBrandingSettings(): boolean;
+  getBrandingLogoExists(): boolean;
+  getBrandingLogoUrl(): string;
+  getBrandingLogoPath(): string;
+  getBrandingFaviconExists(): boolean;
+  getBrandingFaviconUrl(): string;
+  getBrandingFaviconPath(): string;
 }
 
 export type SettingsStore = SettingsState & SettingsActions;
@@ -573,6 +603,111 @@ export function createSettingsStore(): SettingsStore {
     },
 
     // ===========================================================================
+    // CSP-safe Custom Field Helpers
+    // ===========================================================================
+
+    /**
+     * Check if there are any global custom fields (fields without category restrictions)
+     */
+    hasGlobalCustomFields(): boolean {
+      return this.customFields.some((f) => !f.applies_to_categories || f.applies_to_categories.length === 0);
+    },
+
+    /**
+     * Get all global custom fields (fields without category restrictions)
+     */
+    getGlobalCustomFields(): CustomField[] {
+      return this.customFields.filter((f) => !f.applies_to_categories || f.applies_to_categories.length === 0);
+    },
+
+    /**
+     * Check if there are any custom fields specific to a category
+     */
+    hasCategoryCustomFields(categoryId: number): boolean {
+      return this.customFields.some((f) => f.applies_to_categories && f.applies_to_categories.includes(categoryId));
+    },
+
+    /**
+     * Get custom fields specific to a category
+     */
+    getCategoryCustomFields(categoryId: number): CustomField[] {
+      return this.customFields.filter((f) => f.applies_to_categories && f.applies_to_categories.includes(categoryId));
+    },
+
+    /**
+     * Check if there are any global custom fields (alias for hasGlobalCustomFields for bulk modal)
+     */
+    hasNullCategoryCustomFields(): boolean {
+      return this.hasGlobalCustomFields();
+    },
+
+    /**
+     * Get global custom fields (alias for getGlobalCustomFields for bulk modal)
+     */
+    getNullCategoryCustomFields(): CustomField[] {
+      return this.getGlobalCustomFields();
+    },
+
+    /**
+     * Safely get a constraint property from an object with constraints
+     */
+    getConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): unknown {
+      if (!obj || !obj.constraints) return undefined;
+      return (obj.constraints as Record<string, unknown>)[prop];
+    },
+
+    /**
+     * Check if a constraint property exists and is not undefined
+     */
+    hasConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): boolean {
+      if (!obj || !obj.constraints) return false;
+      return (obj.constraints as Record<string, unknown>)[prop] !== undefined;
+    },
+
+    /**
+     * Get enum values from constraints, or empty array if not present
+     */
+    getEnumValues(obj: { constraints?: CustomFieldConstraint & { enum_values?: string[] } }): string[] {
+      if (!obj || !obj.constraints || !obj.constraints.enum_values) return [];
+      return obj.constraints.enum_values;
+    },
+
+    /**
+     * Check if a setting is modified (CSP-safe)
+     * Replaces: settingsModified[category]?.[key] !== undefined
+     */
+    isSettingModified(category: string, key: string): boolean {
+      const catModified = this.settingsModified[category];
+      return !!(catModified && catModified[key] !== undefined);
+    },
+
+    /**
+     * Format a category name by replacing underscores with spaces
+     * CSP-safe replacement for: category.replace(/_/g, ' ')
+     */
+    formatCategoryName(category: string): string {
+      return category.split('_').join(' ');
+    },
+
+    /**
+     * Format a category title by replacing underscores with spaces and appending ' Settings'
+     * CSP-safe replacement for: category.replace(/_/g, ' ') + ' Settings'
+     */
+    formatCategoryTitle(category: string): string {
+      return category.split('_').join(' ') + ' Settings';
+    },
+
+    /**
+     * Format a setting key as a label by extracting the last part and replacing underscores
+     * CSP-safe replacement for: setting.key.split('.').pop().replace(/_/g, ' ')
+     */
+    formatSettingLabel(key: string): string {
+      const parts = key.split('.');
+      const lastPart = parts[parts.length - 1] || key;
+      return lastPart.split('_').join(' ');
+    },
+
+    // ===========================================================================
     // Branding Operations (Issue #214)
     // ===========================================================================
 
@@ -721,6 +856,38 @@ export function createSettingsStore(): SettingsStore {
       } finally {
         this.brandingLoading = false;
       }
+    },
+
+    // ===========================================================================
+    // Branding CSP-safe Helpers
+    // ===========================================================================
+
+    hasBrandingSettings(): boolean {
+      return this.brandingSettings !== null;
+    },
+
+    getBrandingLogoExists(): boolean {
+      return !!(this.brandingSettings && this.brandingSettings.logo_exists);
+    },
+
+    getBrandingLogoUrl(): string {
+      return (this.brandingSettings && this.brandingSettings.logo_url) || '';
+    },
+
+    getBrandingLogoPath(): string {
+      return (this.brandingSettings && this.brandingSettings.logo_path) || '';
+    },
+
+    getBrandingFaviconExists(): boolean {
+      return !!(this.brandingSettings && this.brandingSettings.favicon_exists);
+    },
+
+    getBrandingFaviconUrl(): string {
+      return (this.brandingSettings && this.brandingSettings.favicon_url) || '';
+    },
+
+    getBrandingFaviconPath(): string {
+      return (this.brandingSettings && this.brandingSettings.favicon_path) || '';
     },
   };
 }

@@ -19,37 +19,37 @@
                 <div class="flex gap-4 items-center">
                     <button
                         @click="tab = 'videos'"
-                        :class="tab === 'videos' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('videos')"
                         class="font-medium"
                     >Videos</button>
                     <button
                         @click="tab = 'categories'"
-                        :class="tab === 'categories' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('categories')"
                         class="font-medium"
                     >Categories</button>
                     <button
                         @click="tab = 'playlists'"
-                        :class="tab === 'playlists' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('playlists')"
                         class="font-medium"
                     >Playlists</button>
                     <button
                         @click="tab = 'upload'"
-                        :class="tab === 'upload' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('upload')"
                         class="font-medium"
                     >Upload</button>
                     <button
-                        @click="tab = 'workers'; loadWorkers(); loadDeploymentHistory()"
-                        :class="tab === 'workers' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        @click="openWorkersTab()"
+                        :class="tabClass('workers')"
                         class="font-medium"
                     >Workers</button>
                     <button
-                        @click="tab = 'analytics'; loadAnalytics()"
-                        :class="tab === 'analytics' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        @click="openAnalyticsTab()"
+                        :class="tabClass('analytics')"
                         class="font-medium"
                     >Analytics</button>
                     <button
-                        @click="tab = 'settings'; loadWatermarkSettings(); loadAllSettings()"
-                        :class="tab === 'settings' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        @click="openSettingsTab()"
+                        :class="tabClass('settings')"
                         class="font-medium"
                     >Settings</button>
                     <!-- Logout button - only shown when auth is enabled and user is logged in -->
@@ -77,7 +77,7 @@
                         <vlog-dropzone
                             accept="video/*"
                             max-size="53687091200"
-                            @files-selected="if ($event.detail.files[0]?.file) setFile($event.detail.files[0].file)"
+                            @files-selected="handleFilesSelected($event)"
                             @file-removed="uploadFile = null"
                             :disabled="uploading"
                         >
@@ -207,7 +207,7 @@
                     <vlog-button variant="primary" size="sm" @click="openBulkUpdateModal">Update</vlog-button>
                     <vlog-button variant="info" size="sm" @click="openBulkRetranscodeModal">Re-transcode</vlog-button>
                     <vlog-button variant="warning" size="sm" @click="openBulkCustomFieldsModal" x-show="customFields.length > 0">Custom Fields</vlog-button>
-                    <vlog-button variant="success" size="sm" @click="bulkRestoreVideos" x-show="selectedVideos.some(id => videos.find(v => v.id === id)?.deleted_at)">Restore</vlog-button>
+                    <vlog-button variant="success" size="sm" @click="bulkRestoreVideos" x-show="hasDeletedSelectedVideos(videos)">Restore</vlog-button>
                     <vlog-button variant="danger" size="sm" @click="openBulkDeleteModal">Delete</vlog-button>
                     <vlog-button variant="secondary" size="sm" @click="clearSelection">Clear</vlog-button>
                 </div>
@@ -251,7 +251,7 @@
                                             :src="video.thumbnail_url"
                                             :alt="'Thumbnail for ' + video.title"
                                             class="w-full h-full object-cover"
-                                            @error="$el.style.display='none'"
+                                            @error="$el.classList.add('vlog-img-error')"
                                         >
                                     </div>
                                 </td>
@@ -285,15 +285,15 @@
                                                     <div class="flex-1 bg-dark-700 rounded-full h-1.5">
                                                         <div
                                                             class="bg-yellow-500 h-1.5 rounded-full transition-all"
-                                                            :style="'width: ' + (progressData[video.id]?.progress_percent || 0) + '%'"
+                                                            :class="getWidthClass(getProgressPercent(video.id))"
                                                         ></div>
                                                     </div>
-                                                    <span class="text-dark-400 w-8" x-text="(progressData[video.id]?.progress_percent || 0) + '%'"></span>
+                                                    <span class="text-dark-400 w-8" x-text="getProgressPercent(video.id) + '%'"></span>
                                                 </div>
-                                                <div class="text-dark-300" x-text="progressData[video.id]?.current_step || ''"></div>
-                                                <template x-if="progressData[video.id]?.qualities?.length">
+                                                <div class="text-dark-300" x-text="getProgressStep(video.id)"></div>
+                                                <template x-if="hasProgressQualities(video.id)">
                                                     <div class="flex flex-wrap gap-1 mt-1">
-                                                        <template x-for="q in progressData[video.id].qualities" :key="q.name">
+                                                        <template x-for="q in getProgressQualities(video.id)" :key="q.name">
                                                             <span
                                                                 :class="{
                                                                     'bg-green-500/20 text-green-400': q.status === 'completed' || q.status === 'uploaded',
@@ -315,8 +315,8 @@
                                             <div class="text-xs text-dark-300 mt-1">Waiting for worker...</div>
                                         </template>
                                         <!-- Error message for failed -->
-                                        <template x-if="video.status === 'failed' && progressData[video.id]?.last_error">
-                                            <div class="text-xs text-red-400 mt-1 max-w-xs truncate" x-text="progressData[video.id].last_error"></div>
+                                        <template x-if="video.status === 'failed' && hasProgressError(video.id)">
+                                            <div class="text-xs text-red-400 mt-1 max-w-xs truncate" x-text="getProgressError(video.id)"></div>
                                         </template>
                                     </div>
                                 </td>
@@ -334,11 +334,11 @@
                                                 class="absolute left-0 mt-1 w-36 bg-dark-800 border border-dark-700 rounded-lg shadow-lg z-10"
                                             >
                                                 <button
-                                                    @click="retranscodeAll(video); open = false"
+                                                    @click="retranscodeAll(video)"
                                                     class="w-full text-left px-3 py-2 text-sm hover:bg-dark-700 rounded-t-lg"
                                                 >All Qualities</button>
                                                 <button
-                                                    @click="openRetranscodeModal(video); open = false"
+                                                    @click="openRetranscodeModal(video)"
                                                     class="w-full text-left px-3 py-2 text-sm hover:bg-dark-700 rounded-b-lg"
                                                 >Select Qualities...</button>
                                             </div>
@@ -362,8 +362,8 @@
                     <div class="flex items-center gap-4 p-4">
                         <vlog-skeleton variant="thumbnail"></vlog-skeleton>
                         <div class="flex-1 space-y-2">
-                            <vlog-skeleton variant="text" style="width: 60%"></vlog-skeleton>
-                            <vlog-skeleton variant="text" style="width: 40%"></vlog-skeleton>
+                            <vlog-skeleton variant="text" class="w-pct-60"></vlog-skeleton>
+                            <vlog-skeleton variant="text" class="w-pct-40"></vlog-skeleton>
                         </div>
                         <vlog-skeleton variant="button"></vlog-skeleton>
                     </div>
@@ -375,8 +375,8 @@
                 <template x-for="i in 3" :key="i">
                     <div class="bg-dark-900 rounded-xl p-4 space-y-3">
                         <vlog-skeleton variant="thumbnail" class="w-full aspect-video"></vlog-skeleton>
-                        <vlog-skeleton variant="text" style="width: 70%"></vlog-skeleton>
-                        <vlog-skeleton variant="text" style="width: 40%"></vlog-skeleton>
+                        <vlog-skeleton variant="text" class="w-pct-70"></vlog-skeleton>
+                        <vlog-skeleton variant="text" class="w-pct-40"></vlog-skeleton>
                     </div>
                 </template>
             </div>
@@ -610,7 +610,7 @@
                         <vlog-button variant="ghost" size="sm" @click="cancelPlaylistEdit">
                             <span>← Back</span>
                         </vlog-button>
-                        <h2 class="text-xl font-semibold" x-text="'Edit: ' + editingPlaylist?.title"></h2>
+                        <h2 class="text-xl font-semibold" x-text="'Edit: ' + getEditingPlaylistTitle()"></h2>
                     </div>
                     <vlog-button variant="primary" size="sm" @click="savePlaylistEdits" :disabled="playlistsLoading">
                         Save Changes
@@ -682,7 +682,7 @@
                         <vlog-card>
                             <span slot="header">
                                 <div class="flex justify-between items-center">
-                                    <span x-text="'Videos (' + (editingPlaylist?.videos?.length || 0) + ')'"></span>
+                                    <span x-text="'Videos (' + getEditingPlaylistVideoCount() + ')'"></span>
                                     <vlog-button variant="ghost" size="sm" @click="showAddVideoModal = true">
                                         + Add Video
                                     </vlog-button>
@@ -690,7 +690,7 @@
                             </span>
 
                             <div class="space-y-2">
-                                <template x-for="(video, index) in editingPlaylist?.videos" :key="video.id">
+                                <template x-for="(video, index) in getEditingPlaylistVideos()" :key="video.id">
                                     <div
                                         draggable="true"
                                         @dragstart="startDragVideo(video.id)"
@@ -706,7 +706,7 @@
                                                 :src="video.thumbnail_url"
                                                 :alt="'Thumbnail for ' + video.title"
                                                 class="w-full h-full object-cover"
-                                                @error="$el.style.display='none'"
+                                                @error="$el.classList.add('vlog-img-error')"
                                             >
                                         </div>
                                         <div class="flex-1 min-w-0">
@@ -724,7 +724,7 @@
                                     </div>
                                 </template>
                                 <vlog-empty-state
-                                    x-show="!editingPlaylist?.videos || editingPlaylist.videos.length === 0"
+                                    x-show="!hasEditingPlaylistVideos()"
                                     icon="video"
                                     title="No videos in this playlist"
                                     description="Add videos to get started."
@@ -772,7 +772,7 @@
                                                 :src="video.thumbnail_url"
                                                 :alt="'Thumbnail for ' + video.title"
                                                 class="w-full h-full object-cover"
-                                                @error="$el.style.display='none'"
+                                                @error="$el.classList.add('vlog-img-error')"
                                             >
                                         </div>
                                         <div class="flex-1 min-w-0">
@@ -809,7 +809,7 @@
             <div class="grid grid-cols-3 gap-4 mb-8">
                 <div class="bg-dark-900 rounded-xl p-6">
                     <div class="text-dark-400 text-sm mb-1">Total Views</div>
-                    <div class="text-2xl font-bold" x-text="analyticsOverview.total_views?.toLocaleString() || '0'"></div>
+                    <div class="text-2xl font-bold" x-text="getTotalViewsFormatted()"></div>
                 </div>
                 <div class="bg-dark-900 rounded-xl p-6">
                     <div class="text-dark-400 text-sm mb-1">Watch Time</div>
@@ -864,7 +864,7 @@
                                 <td class="px-4 py-3">
                                     <div class="flex items-center gap-3">
                                         <div class="w-16 aspect-video bg-dark-800 rounded overflow-hidden flex-shrink-0">
-                                            <img :src="video.thumbnail_url" :alt="'Thumbnail for ' + video.title" class="w-full h-full object-cover" @error="$el.style.display='none'">
+                                            <img :src="video.thumbnail_url" :alt="'Thumbnail for ' + video.title" class="w-full h-full object-cover" @error="$el.classList.add('vlog-img-error')">
                                         </div>
                                         <div class="font-medium truncate max-w-xs" x-text="video.title"></div>
                                     </div>
@@ -922,7 +922,7 @@
                             variant="ghost"
                             size="sm"
                             @click="restartAllWorkers"
-                            x-show="workersList.filter(w => w.status !== 'offline' && w.status !== 'disabled').length > 0"
+                            x-show="hasActiveWorkers()"
                             title="Restart all online workers (useful for deploying updates)"
                         >Restart All</vlog-button>
                         <vlog-button variant="ghost" size="sm" @click="loadWorkers">Refresh</vlog-button>
@@ -1076,7 +1076,7 @@
                                         <div class="flex-1 max-w-xs bg-dark-700 rounded-full h-1.5">
                                             <div
                                                 class="bg-green-500 h-1.5 rounded-full transition-all"
-                                                :style="'width: ' + (worker.current_progress || 0) + '%'"
+                                                :class="getWidthClass(worker.current_progress)"
                                             ></div>
                                         </div>
                                         <span class="text-dark-400 text-xs" x-text="(worker.current_progress || 0) + '%'"></span>
@@ -1137,12 +1137,11 @@
                                     </div>
                                     <div class="w-full bg-dark-700 rounded-full h-2">
                                         <div
-                                            :class="{
-                                                'bg-yellow-500': job.status === 'processing',
-                                                'bg-blue-500': job.status === 'pending'
-                                            }"
+                                            :class="[
+                                                getWidthClass(job.progress_percent),
+                                                job.status === 'processing' ? 'bg-yellow-500' : 'bg-blue-500'
+                                            ]"
                                             class="h-2 rounded-full transition-all"
-                                            :style="'width: ' + job.progress_percent + '%'"
                                         ></div>
                                     </div>
                                     <!-- Quality badges -->
@@ -1274,18 +1273,18 @@
                 <!-- Settings sub-tabs -->
                 <div class="flex gap-2 mb-6 flex-wrap">
                     <button
-                        @click="settingsTab = 'branding'; loadBrandingSettings()"
-                        :class="settingsTab === 'branding' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        @click="openBrandingSettings()"
+                        :class="settingsTabClass('branding')"
                         class="px-4 py-2 rounded-lg font-medium transition text-sm"
                     >Branding</button>
                     <button
                         @click="settingsTab = 'watermark'"
-                        :class="settingsTab === 'watermark' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        :class="settingsTabClass('watermark')"
                         class="px-4 py-2 rounded-lg font-medium transition text-sm"
                     >Watermark</button>
                     <button
-                        @click="settingsTab = 'custom_fields'; loadCustomFields()"
-                        :class="settingsTab === 'custom_fields' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        @click="openCustomFieldsSettings()"
+                        :class="settingsTabClass('custom_fields')"
                         class="px-4 py-2 rounded-lg font-medium transition text-sm"
                     >Custom Fields</button>
                     <template x-for="category in settingsCategories" :key="category">
@@ -1293,7 +1292,7 @@
                             @click="settingsTab = category"
                             :class="settingsTab === category ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
                             class="px-4 py-2 rounded-lg font-medium transition text-sm capitalize"
-                            x-text="category.replace(/_/g, ' ')"
+                            x-text="formatCategoryName(category)"
                         ></button>
                     </template>
                 </div>
@@ -1321,7 +1320,7 @@
                     </div>
 
                     <!-- Settings content -->
-                    <div x-show="!brandingLoading && brandingSettings" class="space-y-6">
+                    <div x-show="!brandingLoading && hasBrandingSettings()" class="space-y-6">
                         <!-- Site Name -->
                         <div class="border-b border-dark-800 pb-6">
                             <label for="site-name" class="font-medium mb-4 block">Site Name</label>
@@ -1349,14 +1348,14 @@
                             <h4 class="font-medium mb-4">Logo</h4>
 
                             <!-- Current logo preview -->
-                            <div x-show="brandingSettings.logo_exists" class="mb-4">
+                            <div x-show="getBrandingLogoExists()" class="mb-4">
                                 <div class="text-sm text-dark-400 mb-2">Current logo:</div>
                                 <div class="flex items-start gap-4">
                                     <div class="bg-dark-800 p-4 rounded-lg inline-block">
-                                        <img :src="brandingSettings.logo_url" class="max-h-16 max-w-48" alt="Current logo">
+                                        <img :src="getBrandingLogoUrl()" class="max-h-16 max-w-48" alt="Current logo">
                                     </div>
                                     <div class="text-sm text-dark-400">
-                                        <div x-text="brandingSettings.logo_path"></div>
+                                        <div x-text="getBrandingLogoPath()"></div>
                                         <button
                                             @click="deleteLogo()"
                                             class="text-red-400 hover:text-red-300 mt-2"
@@ -1388,7 +1387,7 @@
                                     </button>
                                 </div>
                                 <div x-show="logoUploading" class="w-full bg-dark-800 rounded-full h-2">
-                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + logoUploadProgress + '%'"></div>
+                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(logoUploadProgress)"></div>
                                 </div>
                             </div>
                         </div>
@@ -1398,14 +1397,14 @@
                             <h4 class="font-medium mb-4">Favicon</h4>
 
                             <!-- Current favicon preview -->
-                            <div x-show="brandingSettings.favicon_exists" class="mb-4">
+                            <div x-show="getBrandingFaviconExists()" class="mb-4">
                                 <div class="text-sm text-dark-400 mb-2">Current favicon:</div>
                                 <div class="flex items-start gap-4">
                                     <div class="bg-dark-800 p-4 rounded-lg inline-block">
-                                        <img :src="brandingSettings.favicon_url" class="w-8 h-8" alt="Current favicon">
+                                        <img :src="getBrandingFaviconUrl()" class="w-8 h-8" alt="Current favicon">
                                     </div>
                                     <div class="text-sm text-dark-400">
-                                        <div x-text="brandingSettings.favicon_path"></div>
+                                        <div x-text="getBrandingFaviconPath()"></div>
                                         <button
                                             @click="deleteFavicon()"
                                             class="text-red-400 hover:text-red-300 mt-2"
@@ -1437,7 +1436,7 @@
                                     </button>
                                 </div>
                                 <div x-show="faviconUploading" class="w-full bg-dark-800 rounded-full h-2">
-                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + faviconUploadProgress + '%'"></div>
+                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(faviconUploadProgress)"></div>
                                 </div>
                             </div>
                         </div>
@@ -1475,7 +1474,7 @@
                     </div>
 
                     <!-- Not loaded state -->
-                    <div x-show="!brandingLoading && !brandingSettings" class="text-center py-8 text-dark-400">
+                    <div x-show="!brandingLoading && !hasBrandingSettings()" class="text-center py-8 text-dark-400">
                         Failed to load branding settings. <button @click="loadBrandingSettings()" class="text-blue-400 hover:underline">Retry</button>
                     </div>
                 </div>
@@ -1554,7 +1553,7 @@
                                 </div>
                                 <!-- Upload progress -->
                                 <div x-show="watermarkUploading" class="w-full bg-dark-800 rounded-full h-2">
-                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + watermarkUploadProgress + '%'"></div>
+                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(watermarkUploadProgress)"></div>
                                 </div>
                             </div>
                         </div>
@@ -1635,10 +1634,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <!-- Fields List -->
                     <div x-show="!customFieldsLoading && customFields.length > 0" class="space-y-6">
                         <!-- Global Fields -->
-                        <div x-show="customFields.filter(f => !f.category_id).length > 0">
+                        <div x-show="hasGlobalCustomFields()">
                             <h4 class="text-sm font-medium text-dark-400 mb-3 uppercase tracking-wider">Global Fields</h4>
                             <div class="space-y-2">
-                                <template x-for="field in customFields.filter(f => !f.category_id)" :key="field.id">
+                                <template x-for="field in getGlobalCustomFields()" :key="field.id">
                                     <div class="flex items-center justify-between p-4 bg-dark-800 rounded-lg">
                                         <div class="flex-1">
                                             <div class="flex items-center gap-2">
@@ -1663,10 +1662,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
 
                         <!-- Category-specific Fields -->
                         <template x-for="cat in categories" :key="cat.id">
-                            <div x-show="customFields.filter(f => f.category_id === cat.id).length > 0">
+                            <div x-show="hasCategoryCustomFields(cat.id)">
                                 <h4 class="text-sm font-medium text-dark-400 mb-3 uppercase tracking-wider" x-text="cat.name + ' Fields'"></h4>
                                 <div class="space-y-2">
-                                    <template x-for="field in customFields.filter(f => f.category_id === cat.id)" :key="field.id">
+                                    <template x-for="field in getCategoryCustomFields(cat.id)" :key="field.id">
                                         <div class="flex items-center justify-between p-4 bg-dark-800 rounded-lg">
                                             <div class="flex-1">
                                                 <div class="flex items-center gap-2">
@@ -1789,7 +1788,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 <template x-for="category in settingsCategories" :key="category">
                     <div x-show="settingsTab === category" class="bg-dark-900 rounded-xl p-6">
                         <div class="flex items-center justify-between mb-6">
-                            <h3 class="text-lg font-semibold capitalize" x-text="category.replace(/_/g, ' ') + ' Settings'"></h3>
+                            <h3 class="text-lg font-semibold capitalize" x-text="formatCategoryTitle(category)"></h3>
                             <div class="flex gap-2">
                                 <vlog-button
                                     variant="secondary"
@@ -1823,7 +1822,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 <div class="p-4 bg-dark-800 rounded-lg">
                                     <div class="flex items-start justify-between gap-4">
                                         <div class="flex-1 min-w-0">
-                                            <label class="block font-medium mb-1" x-text="setting.key.split('.').pop().replace(/_/g, ' ')"></label>
+                                            <label class="block font-medium mb-1" x-text="formatSettingLabel(setting.key)"></label>
                                             <div class="text-sm text-dark-400 mb-3" x-text="setting.description || 'No description'"></div>
 
                                             <!-- Boolean toggle -->
@@ -1846,8 +1845,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     type="number"
                                                     :value="setting.value"
                                                     @input="setting.value = parseInt($event.target.value, 10); markSettingModified(category, setting.key, setting.value)"
-                                                    :min="setting.constraints?.min"
-                                                    :max="setting.constraints?.max"
+                                                    :min="getConstraint(setting, 'min')"
+                                                    :max="getConstraint(setting, 'max')"
                                                     class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
@@ -1859,8 +1858,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     step="0.01"
                                                     :value="setting.value"
                                                     @input="setting.value = parseFloat($event.target.value); markSettingModified(category, setting.key, setting.value)"
-                                                    :min="setting.constraints?.min"
-                                                    :max="setting.constraints?.max"
+                                                    :min="getConstraint(setting, 'min')"
+                                                    :max="getConstraint(setting, 'max')"
                                                     class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
@@ -1872,7 +1871,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     @change="setting.value = $event.target.value; markSettingModified(category, setting.key, setting.value)"
                                                     class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
-                                                    <template x-for="opt in setting.constraints?.enum_values || []" :key="opt">
+                                                    <template x-for="opt in getEnumValues(setting)" :key="opt">
                                                         <option :value="opt" :selected="setting.value === opt" x-text="opt"></option>
                                                     </template>
                                                 </select>
@@ -1884,9 +1883,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     type="text"
                                                     :value="setting.value"
                                                     @input="setting.value = $event.target.value; markSettingModified(category, setting.key, setting.value)"
-                                                    :minlength="setting.constraints?.min_length"
-                                                    :maxlength="setting.constraints?.max_length"
-                                                    :pattern="setting.constraints?.pattern"
+                                                    :minlength="getConstraint(setting, 'min_length')"
+                                                    :maxlength="getConstraint(setting, 'max_length')"
+                                                    :pattern="getConstraint(setting, 'pattern')"
                                                     class="w-full max-w-md px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
@@ -1903,13 +1902,13 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
 
                                             <!-- Constraints info -->
                                             <div x-show="setting.constraints" class="mt-2 text-xs text-dark-300">
-                                                <span x-show="setting.constraints?.min !== undefined" x-text="'Min: ' + setting.constraints?.min + ' '"></span>
-                                                <span x-show="setting.constraints?.max !== undefined" x-text="'Max: ' + setting.constraints?.max"></span>
+                                                <span x-show="hasConstraint(setting, 'min')" x-text="'Min: ' + getConstraint(setting, 'min') + ' '"></span>
+                                                <span x-show="hasConstraint(setting, 'max')" x-text="'Max: ' + getConstraint(setting, 'max')"></span>
                                             </div>
                                         </div>
 
                                         <!-- Modified indicator -->
-                                        <div x-show="settingsModified[category]?.[setting.key] !== undefined" class="text-yellow-500" title="Modified">
+                                        <div x-show="isSettingModified(category, setting.key)" class="text-yellow-500" title="Modified">
                                             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                                                 <circle cx="10" cy="10" r="5"></circle>
                                             </svg>
@@ -2029,9 +2028,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :value="editCustomFieldValues[field.id] || ''"
                                             @input="editCustomFieldValues[field.id] = $event.target.value"
                                             :required="field.required"
-                                            :minlength="field.constraints?.min_length"
-                                            :maxlength="field.constraints?.max_length"
-                                            :pattern="field.constraints?.pattern"
+                                            :minlength="getConstraint(field, 'min_length')"
+                                            :maxlength="getConstraint(field, 'max_length')"
+                                            :pattern="getConstraint(field, 'pattern')"
                                             class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
@@ -2040,12 +2039,12 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                     <template x-if="field.field_type === 'number'">
                                         <input
                                             type="number"
-                                            :value="editCustomFieldValues[field.id] ?? ''"
+                                            :value="editCustomFieldValues[field.id] || ''"
                                             @input="editCustomFieldValues[field.id] = $event.target.value ? parseFloat($event.target.value) : null"
                                             :required="field.required"
-                                            :min="field.constraints?.min"
-                                            :max="field.constraints?.max"
-                                            :step="field.constraints?.step || 'any'"
+                                            :min="getConstraint(field, 'min')"
+                                            :max="getConstraint(field, 'max')"
+                                            :step="getConstraint(field, 'step') || 'any'"
                                             class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
@@ -2057,8 +2056,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :value="editCustomFieldValues[field.id] || ''"
                                             @input="editCustomFieldValues[field.id] = $event.target.value"
                                             :required="field.required"
-                                            :min="field.constraints?.min_date"
-                                            :max="field.constraints?.max_date"
+                                            :min="getConstraint(field, 'min_date')"
+                                            :max="getConstraint(field, 'max_date')"
                                             class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
@@ -2468,7 +2467,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                              :src="thumbnailVideoSlug ? '/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + thumbnailCacheBust : ''"
                              :alt="'Current thumbnail for ' + thumbnailVideoTitle"
                              class="w-full h-full object-cover"
-                             @error="$el.style.display='none'">
+                             @error="$el.classList.add('vlog-img-error')">
                     </div>
                     <div class="text-sm text-dark-400">
                         <span>Source:</span>
@@ -2489,16 +2488,15 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         :loading="thumbnailLoading"
                     >Generate Frames</vlog-button>
                 </div>
-                <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
+                <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2 grid-cols-5-minmax">
                     <template x-for="frame in thumbnailFrames" :key="frame.index">
                         <button
                             @click="selectThumbnailFrame(frame.timestamp)"
                             :disabled="thumbnailLoading"
-                            class="bg-dark-800 rounded overflow-hidden hover:ring-2 hover:ring-cyan-500 transition"
-                            style="min-width: 0;"
+                            class="bg-dark-800 rounded overflow-hidden hover:ring-2 hover:ring-cyan-500 transition min-w-0"
                         >
-                            <div style="position: relative; padding-bottom: 56.25%; overflow: hidden;">
-                                <img :src="frame.url + '?t=' + Date.now()" :alt="'Video frame at ' + formatDuration(frame.timestamp)" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;">
+                            <div class="aspect-16-9">
+                                <img :src="frame.url + '?t=' + Date.now()" :alt="'Video frame at ' + formatDuration(frame.timestamp)" class="aspect-content">
                             </div>
                             <div class="bg-black/70 text-xs text-center py-1" x-text="formatDuration(frame.timestamp)"></div>
                         </button>
@@ -2715,7 +2713,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 Only global fields are available for bulk updates.
             </p>
             <div class="space-y-4">
-                <template x-for="field in customFields.filter(f => f.category_id === null)" :key="field.id">
+                <template x-for="field in getNullCategoryCustomFields()" :key="field.id">
                     <div>
                         <label class="block text-sm font-medium mb-1">
                             <span x-text="field.name"></span>
@@ -2728,9 +2726,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 type="text"
                                 :value="bulkCustomFieldValues[field.id] || ''"
                                 @input="bulkCustomFieldValues[field.id] = $event.target.value"
-                                :minlength="field.constraints?.min_length"
-                                :maxlength="field.constraints?.max_length"
-                                :pattern="field.constraints?.pattern"
+                                :minlength="getConstraint(field, 'min_length')"
+                                :maxlength="getConstraint(field, 'max_length')"
+                                :pattern="getConstraint(field, 'pattern')"
                                 placeholder="Leave empty to skip"
                                 class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
                             >
@@ -2740,11 +2738,11 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         <template x-if="field.field_type === 'number'">
                             <input
                                 type="number"
-                                :value="bulkCustomFieldValues[field.id] ?? ''"
+                                :value="bulkCustomFieldValues[field.id] || ''"
                                 @input="bulkCustomFieldValues[field.id] = $event.target.value ? parseFloat($event.target.value) : null"
-                                :min="field.constraints?.min"
-                                :max="field.constraints?.max"
-                                :step="field.constraints?.step || 'any'"
+                                :min="getConstraint(field, 'min')"
+                                :max="getConstraint(field, 'max')"
+                                :step="getConstraint(field, 'step') || 'any'"
                                 placeholder="Leave empty to skip"
                                 class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
                             >
@@ -2756,8 +2754,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 type="date"
                                 :value="bulkCustomFieldValues[field.id] || ''"
                                 @input="bulkCustomFieldValues[field.id] = $event.target.value"
-                                :min="field.constraints?.min_date"
-                                :max="field.constraints?.max_date"
+                                :min="getConstraint(field, 'min_date')"
+                                :max="getConstraint(field, 'max_date')"
                                 class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
                             >
                         </template>
@@ -2807,7 +2805,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 </template>
 
                 <vlog-empty-state
-                    x-show="customFields.filter(f => f.category_id === null).length === 0"
+                    x-show="!hasNullCategoryCustomFields()"
                     icon="settings"
                     title="No Custom Fields"
                     description="No global custom fields defined. Create custom fields in Settings first."
@@ -2825,7 +2823,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     variant="primary"
                     full-width
                     @click="executeBulkCustomFields"
-                    :disabled="bulkOpLoading || customFields.filter(f => f.category_id === null).length === 0"
+                    :disabled="bulkOpLoading || !hasNullCategoryCustomFields()"
                     :loading="bulkOpLoading"
                 >Apply</vlog-button>
             </div>
@@ -2891,25 +2889,25 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         <span class="ml-3 text-dark-400">Fetching metrics from worker...</span>
                     </div>
                 </template>
-                <template x-if="!metricsLoading && metricsData?.error">
+                <template x-if="!metricsLoading && hasMetricsError()">
                     <div class="text-red-400 text-center py-4" x-text="metricsData.error"></div>
                 </template>
-                <template x-if="!metricsLoading && metricsData && !metricsData?.error">
+                <template x-if="!metricsLoading && hasMetricsData() && !hasMetricsError()">
                     <div class="space-y-6">
                         <!-- Process Metrics -->
                         <div>
                             <h4 class="text-sm font-medium text-dark-400 mb-3">Process</h4>
                             <div class="grid grid-cols-3 gap-4">
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
-                                    <div class="text-2xl font-bold text-blue-400" x-text="(metricsData?.process?.cpu_percent || 0).toFixed(1) + '%'"></div>
+                                    <div class="text-2xl font-bold text-blue-400" x-text="getMetricsProcess('cpu_percent').toFixed(1) + '%'"></div>
                                     <div class="text-xs text-dark-300">CPU</div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
-                                    <div class="text-2xl font-bold text-purple-400" x-text="(metricsData?.process?.memory_rss_mb || 0).toFixed(0) + ' MB'"></div>
+                                    <div class="text-2xl font-bold text-purple-400" x-text="getMetricsProcess('memory_rss_mb').toFixed(0) + ' MB'"></div>
                                     <div class="text-xs text-dark-300">Memory</div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
-                                    <div class="text-2xl font-bold text-green-400" x-text="metricsData?.process?.threads || 0"></div>
+                                    <div class="text-2xl font-bold text-green-400" x-text="getMetricsProcess('threads')"></div>
                                     <div class="text-xs text-dark-300">Threads</div>
                                 </div>
                             </div>
@@ -2921,19 +2919,19 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 <div class="bg-dark-800 rounded-lg p-3">
                                     <div class="flex justify-between items-center mb-2">
                                         <span class="text-dark-400">CPU</span>
-                                        <span class="text-white" x-text="(metricsData?.system?.cpu_percent || 0).toFixed(1) + '%'"></span>
+                                        <span class="text-white" x-text="getMetricsSystem('cpu_percent').toFixed(1) + '%'"></span>
                                     </div>
                                     <div class="bg-dark-700 rounded-full h-2">
-                                        <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.system?.cpu_percent || 0) + '%'"></div>
+                                        <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsSystem('cpu_percent'))"></div>
                                     </div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3">
                                     <div class="flex justify-between items-center mb-2">
                                         <span class="text-dark-400">Memory</span>
-                                        <span class="text-white" x-text="(metricsData?.system?.memory_percent || 0).toFixed(1) + '%'"></span>
+                                        <span class="text-white" x-text="getMetricsSystem('memory_percent').toFixed(1) + '%'"></span>
                                     </div>
                                     <div class="bg-dark-700 rounded-full h-2">
-                                        <div class="bg-purple-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.system?.memory_percent || 0) + '%'"></div>
+                                        <div class="bg-purple-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsSystem('memory_percent'))"></div>
                                     </div>
                                 </div>
                             </div>
@@ -2944,38 +2942,38 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             <div class="bg-dark-800 rounded-lg p-3">
                                 <div class="flex justify-between items-center mb-2">
                                     <span class="text-dark-400">Used</span>
-                                    <span class="text-white" x-text="(metricsData?.disk?.used_gb || 0).toFixed(1) + ' / ' + (metricsData?.disk?.total_gb || 0).toFixed(1) + ' GB'"></span>
+                                    <span class="text-white" x-text="getMetricsDisk('used_gb').toFixed(1) + ' / ' + getMetricsDisk('total_gb').toFixed(1) + ' GB'"></span>
                                 </div>
                                 <div class="bg-dark-700 rounded-full h-2">
-                                    <div class="bg-yellow-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.disk?.percent || 0) + '%'"></div>
+                                    <div class="bg-yellow-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsDisk('percent'))"></div>
                                 </div>
                             </div>
                         </div>
                         <!-- GPU Metrics (if available) -->
-                        <template x-if="metricsData?.gpu">
+                        <template x-if="hasMetricsGpu()">
                             <div>
                                 <h4 class="text-sm font-medium text-dark-400 mb-3">GPU</h4>
                                 <div class="grid grid-cols-2 gap-4">
                                     <div class="bg-dark-800 rounded-lg p-3">
                                         <div class="flex justify-between items-center mb-2">
                                             <span class="text-dark-400">GPU Utilization</span>
-                                            <span class="text-white" x-text="(metricsData?.gpu?.utilization_percent || 0).toFixed(0) + '%'"></span>
+                                            <span class="text-white" x-text="getMetricsGpu('utilization_percent').toFixed(0) + '%'"></span>
                                         </div>
                                         <div class="bg-dark-700 rounded-full h-2">
-                                            <div class="bg-green-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.gpu?.utilization_percent || 0) + '%'"></div>
+                                            <div class="bg-green-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsGpu('utilization_percent'))"></div>
                                         </div>
                                     </div>
                                     <div class="bg-dark-800 rounded-lg p-3">
                                         <div class="flex justify-between items-center mb-2">
                                             <span class="text-dark-400">VRAM</span>
-                                            <span class="text-white" x-text="(metricsData?.gpu?.memory_used_mb || 0).toFixed(0) + ' / ' + (metricsData?.gpu?.memory_total_mb || 0).toFixed(0) + ' MB'"></span>
+                                            <span class="text-white" x-text="getMetricsGpu('memory_used_mb').toFixed(0) + ' / ' + getMetricsGpu('memory_total_mb').toFixed(0) + ' MB'"></span>
                                         </div>
                                         <div class="bg-dark-700 rounded-full h-2">
-                                            <div class="bg-cyan-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.gpu?.memory_utilization_percent || 0) + '%'"></div>
+                                            <div class="bg-cyan-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsGpu('memory_utilization_percent'))"></div>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="mt-2 text-sm text-dark-300 text-center" x-text="'Temperature: ' + (metricsData?.gpu?.temperature_c || 0) + '\u00B0C'"></div>
+                                <div class="mt-2 text-sm text-dark-300 text-center" x-text="'Temperature: ' + getMetricsGpu('temperature_c') + '\u00B0C'"></div>
                             </div>
                         </template>
                     </div>

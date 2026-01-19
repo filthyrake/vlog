@@ -2,7 +2,7 @@
  * VLog Modal Web Component
  *
  * An accessible modal dialog with focus trapping, backdrop, and keyboard support.
- * Follows WAI-ARIA dialog pattern.
+ * Follows WAI-ARIA dialog pattern. Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-modal id="edit-modal" size="md">
@@ -18,162 +18,173 @@
  * // Close: document.getElementById('edit-modal').open = false;
  */
 
+// CSS extracted for constructable stylesheets (CSP-compliant)
+// Inline <style> tags in Shadow DOM templates violate strict CSP policies
+const styles = `
+  :host {
+    display: contents;
+  }
+
+  .hidden {
+    display: none !important;
+  }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--vlog-z-modal, 50);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--vlog-space-4, 1rem);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--vlog-transition-base, 200ms ease),
+                visibility var(--vlog-transition-base, 200ms ease);
+  }
+
+  .modal-overlay.open {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .backdrop {
+    position: absolute;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+  }
+
+  .modal {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - var(--vlog-space-8, 2rem));
+    background-color: var(--vlog-bg-secondary, #0f172a);
+    border: 1px solid var(--vlog-border-primary, #334155);
+    border-radius: var(--vlog-radius-xl, 0.75rem);
+    box-shadow: var(--vlog-shadow-xl, 0 20px 25px -5px rgb(0 0 0 / 0.1));
+    transform: scale(0.95) translateY(10px);
+    transition: transform var(--vlog-transition-base, 200ms ease);
+  }
+
+  .modal-overlay.open .modal {
+    transform: scale(1) translateY(0);
+  }
+
+  /* Size variants */
+  .modal.size-sm {
+    width: var(--vlog-modal-width-sm, 24rem);
+  }
+
+  .modal.size-md {
+    width: var(--vlog-modal-width-md, 32rem);
+  }
+
+  .modal.size-lg {
+    width: var(--vlog-modal-width-lg, 42rem);
+  }
+
+  .modal.size-xl {
+    width: var(--vlog-modal-width-xl, 56rem);
+  }
+
+  .modal.size-full {
+    width: var(--vlog-modal-width-full, calc(100vw - 2rem));
+    max-width: 80rem;
+  }
+
+  /* Header */
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--vlog-space-4, 1rem);
+    padding: var(--vlog-modal-padding, 1.5rem);
+    border-bottom: 1px solid var(--vlog-border-primary, #334155);
+    flex-shrink: 0;
+  }
+
+  .modal-title {
+    margin: 0;
+    font-family: var(--vlog-font-sans, system-ui, sans-serif);
+    font-size: var(--vlog-text-lg, 1.125rem);
+    font-weight: var(--vlog-font-semibold, 600);
+    color: var(--vlog-text-primary, #f1f5f9);
+  }
+
+  .close-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: var(--vlog-radius-md, 0.375rem);
+    background-color: transparent;
+    color: var(--vlog-text-tertiary, #94a3b8);
+    cursor: pointer;
+    transition: var(--vlog-transition-colors, color 200ms ease, background-color 200ms ease);
+  }
+
+  .close-button:hover {
+    background-color: var(--vlog-bg-tertiary, #1e293b);
+    color: var(--vlog-text-primary, #f1f5f9);
+  }
+
+  .close-button:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 var(--vlog-focus-ring-offset, 2px) var(--vlog-bg-secondary, #0f172a),
+      0 0 0 calc(var(--vlog-focus-ring-offset, 2px) + var(--vlog-focus-ring-width, 2px)) var(--vlog-focus-ring-color, #3b82f6);
+  }
+
+  .close-button svg {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  /* Body */
+  .modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--vlog-modal-padding, 1.5rem);
+  }
+
+  /* Footer */
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--vlog-space-3, 0.75rem);
+    padding: var(--vlog-modal-padding, 1.5rem);
+    border-top: 1px solid var(--vlog-border-primary, #334155);
+    flex-shrink: 0;
+  }
+
+  /* Hide slots when empty */
+  .modal-header:not(:has(slot[name="header"]::slotted(*))) {
+    display: none;
+  }
+
+  .modal-footer:not(:has(slot[name="footer"]::slotted(*))) {
+    display: none;
+  }
+
+  /* Ensure header shows with no-close attribute */
+  :host([no-close]) .close-button {
+    display: none;
+  }
+`;
+
+// Create constructable stylesheet (CSP-compliant)
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(styles);
+
+// HTML template without styles (styles applied via adoptedStyleSheets)
 const template = document.createElement('template');
 template.innerHTML = `
-  <style>
-    :host {
-      display: contents;
-    }
-
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: var(--vlog-z-modal, 50);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: var(--vlog-space-4, 1rem);
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity var(--vlog-transition-base, 200ms ease),
-                  visibility var(--vlog-transition-base, 200ms ease);
-    }
-
-    .modal-overlay.open {
-      opacity: 1;
-      visibility: visible;
-    }
-
-    .backdrop {
-      position: absolute;
-      inset: 0;
-      background-color: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(4px);
-    }
-
-    .modal {
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      max-height: calc(100vh - var(--vlog-space-8, 2rem));
-      background-color: var(--vlog-bg-secondary, #0f172a);
-      border: 1px solid var(--vlog-border-primary, #334155);
-      border-radius: var(--vlog-radius-xl, 0.75rem);
-      box-shadow: var(--vlog-shadow-xl, 0 20px 25px -5px rgb(0 0 0 / 0.1));
-      transform: scale(0.95) translateY(10px);
-      transition: transform var(--vlog-transition-base, 200ms ease);
-    }
-
-    .modal-overlay.open .modal {
-      transform: scale(1) translateY(0);
-    }
-
-    /* Size variants */
-    .modal.size-sm {
-      width: var(--vlog-modal-width-sm, 24rem);
-    }
-
-    .modal.size-md {
-      width: var(--vlog-modal-width-md, 32rem);
-    }
-
-    .modal.size-lg {
-      width: var(--vlog-modal-width-lg, 42rem);
-    }
-
-    .modal.size-xl {
-      width: var(--vlog-modal-width-xl, 56rem);
-    }
-
-    .modal.size-full {
-      width: var(--vlog-modal-width-full, calc(100vw - 2rem));
-      max-width: 80rem;
-    }
-
-    /* Header */
-    .modal-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--vlog-space-4, 1rem);
-      padding: var(--vlog-modal-padding, 1.5rem);
-      border-bottom: 1px solid var(--vlog-border-primary, #334155);
-      flex-shrink: 0;
-    }
-
-    .modal-title {
-      margin: 0;
-      font-family: var(--vlog-font-sans, system-ui, sans-serif);
-      font-size: var(--vlog-text-lg, 1.125rem);
-      font-weight: var(--vlog-font-semibold, 600);
-      color: var(--vlog-text-primary, #f1f5f9);
-    }
-
-    .close-button {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 2rem;
-      height: 2rem;
-      padding: 0;
-      border: none;
-      border-radius: var(--vlog-radius-md, 0.375rem);
-      background-color: transparent;
-      color: var(--vlog-text-tertiary, #94a3b8);
-      cursor: pointer;
-      transition: var(--vlog-transition-colors, color 200ms ease, background-color 200ms ease);
-    }
-
-    .close-button:hover {
-      background-color: var(--vlog-bg-tertiary, #1e293b);
-      color: var(--vlog-text-primary, #f1f5f9);
-    }
-
-    .close-button:focus-visible {
-      outline: none;
-      box-shadow:
-        0 0 0 var(--vlog-focus-ring-offset, 2px) var(--vlog-bg-secondary, #0f172a),
-        0 0 0 calc(var(--vlog-focus-ring-offset, 2px) + var(--vlog-focus-ring-width, 2px)) var(--vlog-focus-ring-color, #3b82f6);
-    }
-
-    .close-button svg {
-      width: 1.25rem;
-      height: 1.25rem;
-    }
-
-    /* Body */
-    .modal-body {
-      flex: 1;
-      overflow-y: auto;
-      padding: var(--vlog-modal-padding, 1.5rem);
-    }
-
-    /* Footer */
-    .modal-footer {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: var(--vlog-space-3, 0.75rem);
-      padding: var(--vlog-modal-padding, 1.5rem);
-      border-top: 1px solid var(--vlog-border-primary, #334155);
-      flex-shrink: 0;
-    }
-
-    /* Hide slots when empty */
-    .modal-header:not(:has(slot[name="header"]::slotted(*))) {
-      display: none;
-    }
-
-    .modal-footer:not(:has(slot[name="footer"]::slotted(*))) {
-      display: none;
-    }
-
-    /* Ensure header shows with no-close attribute */
-    :host([no-close]) .close-button {
-      display: none;
-    }
-  </style>
-
   <div class="modal-overlay" aria-hidden="true">
     <div class="backdrop" aria-hidden="true"></div>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -213,6 +224,8 @@ export class VlogModal extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    // Use constructable stylesheet for CSP compliance
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.overlay = this.shadowRoot!.querySelector('.modal-overlay')!;
@@ -237,8 +250,8 @@ export class VlogModal extends HTMLElement {
     this.backdrop.removeEventListener('click', this.handleBackdropClick);
     document.removeEventListener('keydown', this.handleKeyDown);
 
-    // Restore body scroll
-    document.body.style.overflow = '';
+    // Restore body scroll (use class for CSP compliance)
+    document.body.classList.remove('modal-open');
   }
 
   attributeChangedCallback(name: string, _oldValue: string | null, _newValue: string | null) {
@@ -267,8 +280,8 @@ export class VlogModal extends HTMLElement {
     this.overlay.classList.add('open');
     this.overlay.setAttribute('aria-hidden', 'false');
 
-    // Prevent body scroll
-    document.body.style.overflow = 'hidden';
+    // Prevent body scroll (use class for CSP compliance)
+    document.body.classList.add('modal-open');
 
     // Add keyboard listener
     document.addEventListener('keydown', this.handleKeyDown);
@@ -288,8 +301,8 @@ export class VlogModal extends HTMLElement {
     this.overlay.classList.remove('open');
     this.overlay.setAttribute('aria-hidden', 'true');
 
-    // Restore body scroll
-    document.body.style.overflow = '';
+    // Restore body scroll (use class for CSP compliance)
+    document.body.classList.remove('modal-open');
 
     // Remove keyboard listener
     document.removeEventListener('keydown', this.handleKeyDown);
