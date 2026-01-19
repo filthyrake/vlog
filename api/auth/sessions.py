@@ -64,6 +64,9 @@ async def create_user_session(
     """
     Create a new session for a user.
 
+    Uses a transaction to ensure session limit enforcement and creation
+    are atomic, preventing race conditions from concurrent logins.
+
     Args:
         user_id: The user's ID
         ip_address: Client IP address for audit
@@ -91,27 +94,32 @@ async def create_user_session(
 
     session_id = str(uuid.uuid4())
 
-    # Check session limit and cleanup old sessions
-    await _enforce_session_limit(user_id)
+    # Use transaction to ensure atomicity:
+    # - Session limit check uses FOR UPDATE to lock rows
+    # - Insert happens within same transaction
+    # - Prevents concurrent logins from exceeding limit
+    async with database.transaction():
+        # Check session limit and cleanup old sessions (with row locking)
+        await _enforce_session_limit(user_id)
 
-    # Create session record
-    await database.execute(
-        user_sessions.insert().values(
-            id=session_id,
-            user_id=user_id,
-            token_hash=session_token_hash,
-            token_prefix=session_token_prefix,
-            refresh_token_hash=refresh_token_hash,
-            refresh_token_prefix=refresh_token_prefix,
-            refresh_family_id=refresh_family_id,
-            refresh_generation=0,
-            expires_at=expires_at,
-            refresh_expires_at=refresh_expires_at,
-            ip_address=ip_address,
-            user_agent=user_agent[:512] if user_agent else None,
-            created_at=now,
+        # Create session record
+        await database.execute(
+            user_sessions.insert().values(
+                id=session_id,
+                user_id=user_id,
+                token_hash=session_token_hash,
+                token_prefix=session_token_prefix,
+                refresh_token_hash=refresh_token_hash,
+                refresh_token_prefix=refresh_token_prefix,
+                refresh_family_id=refresh_family_id,
+                refresh_generation=0,
+                expires_at=expires_at,
+                refresh_expires_at=refresh_expires_at,
+                ip_address=ip_address,
+                user_agent=user_agent[:512] if user_agent else None,
+                created_at=now,
+            )
         )
-    )
 
     security_logger.info(
         "User session created",
@@ -202,15 +210,21 @@ async def validate_session_token(
             if locked_until > now:
                 return None
 
-        # Update last used (non-blocking)
+        # Update last used (non-blocking, but log failures for monitoring)
         try:
             await database.execute(
                 user_sessions.update()
                 .where(user_sessions.c.id == session["id"])
                 .values(last_used_at=now)
             )
-        except Exception:
-            pass  # Non-critical
+        except Exception as e:
+            # Log but don't fail the request - this is non-critical
+            # Repeated failures may indicate database issues
+            logger.warning(
+                "Failed to update session last_used_at: %s",
+                str(e),
+                extra={"session_id": session["id"]},
+            )
 
         return dict(user) | {"session_id": session["id"]}
 
@@ -477,20 +491,29 @@ async def cleanup_expired_sessions() -> int:
 async def _enforce_session_limit(user_id: str) -> None:
     """
     Enforce maximum sessions per user by revoking oldest sessions.
+
+    Uses row-level locking (FOR UPDATE) to prevent race conditions
+    when multiple concurrent logins occur for the same user.
     """
     now = datetime.now(timezone.utc)
 
-    # Count active sessions
+    # Use FOR UPDATE to lock rows and prevent concurrent session creation
+    # from exceeding the limit. The lock is held until transaction commits.
+    # Note: This query uses raw SQL for FOR UPDATE support
     active_sessions = await database.fetch_all(
-        user_sessions.select()
-        .where(user_sessions.c.user_id == user_id)
-        .where(user_sessions.c.revoked_at.is_(None))
-        .where(user_sessions.c.expires_at > now)
-        .order_by(user_sessions.c.created_at.desc())
+        """
+        SELECT id, created_at FROM user_sessions
+        WHERE user_id = :user_id
+          AND revoked_at IS NULL
+          AND expires_at > :now
+        ORDER BY created_at DESC
+        FOR UPDATE
+        """,
+        {"user_id": user_id, "now": now},
     )
 
     if len(active_sessions) >= USER_MAX_SESSIONS:
-        # Revoke oldest sessions to make room
+        # Revoke oldest sessions to make room (keep newest USER_MAX_SESSIONS - 1)
         sessions_to_revoke = active_sessions[USER_MAX_SESSIONS - 1 :]
         for session in sessions_to_revoke:
             await database.execute(

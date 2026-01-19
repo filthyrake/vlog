@@ -8,6 +8,7 @@ Provides endpoints for:
 - Profile management
 """
 
+import hashlib
 import hmac
 import logging
 import os
@@ -17,6 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func, or_
 
 from api.auth.middleware import (
     REFRESH_COOKIE_NAME,
@@ -31,6 +33,7 @@ from api.auth.password import (
     validate_password_strength,
     verify_password,
 )
+from api.auth.permissions import get_role_permissions
 from api.auth.sessions import (
     RefreshTokenReusedError,
     SessionError,
@@ -41,6 +44,7 @@ from api.auth.sessions import (
     invalidate_session,
     invalidate_user_sessions,
     refresh_user_session,
+    validate_session_token,
 )
 from api.database import database, password_reset_tokens, users
 from config import (
@@ -53,6 +57,10 @@ from config import (
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger("security.auth")
+
+# Module-level OIDC configuration (cached to avoid repeated env lookups)
+OIDC_ENABLED = os.getenv("VLOG_OIDC_ENABLED", "false").lower() == "true"
+OIDC_PROVIDER_NAME = os.getenv("VLOG_OIDC_PROVIDER_NAME", "SSO")
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -291,9 +299,16 @@ async def get_setup_status() -> SetupStatusResponse:
     Returns needs_setup=True if no users exist in the system.
     This endpoint is always public.
     """
-    user_count = await database.fetch_val(
-        "SELECT COUNT(*) FROM users"
-    )
+    try:
+        user_count = await database.fetch_val(
+            "SELECT COUNT(*) FROM users"
+        )
+    except Exception:
+        logger.exception("Database error checking setup status")
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again.",
+        )
 
     if user_count == 0:
         return SetupStatusResponse(
@@ -319,50 +334,68 @@ async def create_initial_admin(
     This endpoint only works when no users exist in the system.
     Once an admin is created, this endpoint returns 403.
     """
-    # Check if any users exist
-    user_count = await database.fetch_val(
-        "SELECT COUNT(*) FROM users"
-    )
-
-    if user_count > 0:
-        raise HTTPException(
-            status_code=403,
-            detail="Setup already complete. Use the admin panel to create additional users.",
-        )
-
-    # Validate password strength
+    # Validate password strength first (before any DB operations)
     is_valid, error = validate_password_strength(body.password)
     if not is_valid:
         raise HTTPException(status_code=400, detail=error)
 
-    # Check username uniqueness (probably not needed for first user, but good practice)
-    existing = await database.fetch_one(
-        users.select().where(users.c.username == body.username.lower())
-    )
-    if existing:
-        raise HTTPException(status_code=400, detail="Username already exists")
-
-    # Create admin user
     now = datetime.now(timezone.utc)
     user_id = str(uuid.uuid4())
     password_hash = hash_password(body.password)
-
-    await database.execute(
-        users.insert().values(
-            id=user_id,
-            username=body.username.lower(),
-            email=body.email.lower(),
-            password_hash=password_hash,
-            display_name=body.display_name,
-            role="admin",
-            status="active",
-            email_verified=True,
-            failed_login_attempts=0,
-            created_at=now,
-        )
-    )
-
     ip_address = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent")
+
+    # Use transaction to prevent TOCTOU race condition:
+    # - Check user count and insert atomically
+    # - Unique constraints on username/email handle concurrent requests
+    try:
+        async with database.transaction():
+            # Check if any users exist (within transaction)
+            user_count = await database.fetch_val(
+                "SELECT COUNT(*) FROM users"
+            )
+
+            if user_count > 0:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Setup already complete. Use the admin panel to create additional users.",
+                )
+
+            # Create admin user
+            await database.execute(
+                users.insert().values(
+                    id=user_id,
+                    username=body.username.lower(),
+                    email=body.email.lower(),
+                    password_hash=password_hash,
+                    display_name=body.display_name,
+                    role="admin",
+                    status="active",
+                    email_verified=True,
+                    failed_login_attempts=0,
+                    created_at=now,
+                )
+            )
+
+            # Create session within same transaction
+            session_token, refresh_token, expires_at, refresh_expires_at = (
+                await create_user_session(user_id, ip_address, user_agent)
+            )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (like the 403 above)
+        raise
+    except Exception as e:
+        # Handle unique constraint violations (concurrent setup attempts)
+        error_str = str(e).lower()
+        if "unique" in error_str or "duplicate" in error_str:
+            raise HTTPException(
+                status_code=403,
+                detail="Setup already complete. Use the admin panel to create additional users.",
+            )
+        logger.exception("Setup wizard failed")
+        raise HTTPException(status_code=500, detail="Failed to create admin account")
+
     security_logger.info(
         "Initial admin created via setup wizard",
         extra={
@@ -372,12 +405,6 @@ async def create_initial_admin(
             "email": body.email,
             "ip_address": ip_address,
         },
-    )
-
-    # Automatically log in the new admin
-    user_agent = request.headers.get("user-agent")
-    session_token, refresh_token, expires_at, refresh_expires_at = (
-        await create_user_session(user_id, ip_address, user_agent)
     )
 
     _set_session_cookies(
@@ -409,28 +436,37 @@ async def login(
     """
     ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
-    identifier = body.username_or_email.lower()
+    login_input = body.username_or_email.lower()
+    # Hash identifier for logging (avoid PII in logs)
+    identifier_hash = hashlib.sha256(login_input.encode()).hexdigest()[:16]
 
-    # Find user by email or username
-    from sqlalchemy import or_
-    user = await database.fetch_one(
-        users.select().where(
-            or_(
-                users.c.email == identifier,
-                users.c.username == identifier,
+    # Find user by email or username (case-insensitive)
+    try:
+        user = await database.fetch_one(
+            users.select().where(
+                or_(
+                    func.lower(users.c.email) == login_input,
+                    func.lower(users.c.username) == login_input,
+                )
             )
         )
-    )
+    except Exception as e:
+        logger.exception("Database error during login user lookup")
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again.",
+        )
 
     if not user:
         # Constant-time comparison even when user doesn't exist
+        # (prevents timing attacks for user enumeration)
         verify_password(body.password, hash_password("dummy-password-for-timing"))
         security_logger.warning(
             "Login failed: user not found",
             extra={
                 "event": "login_failed",
                 "reason": "user_not_found",
-                "identifier": identifier,
+                "identifier_hash": identifier_hash,
                 "ip_address": ip_address,
             },
         )
@@ -464,6 +500,17 @@ async def login(
                 status_code=429,
                 detail=f"Account locked. Try again in {remaining} minutes.",
             )
+        else:
+            # Lockout expired - clear it (non-blocking)
+            try:
+                await database.execute(
+                    users.update()
+                    .where(users.c.id == user["id"])
+                    .values(locked_until=None, failed_login_attempts=0)
+                )
+            except Exception as e:
+                # Log but continue - cleanup is non-critical
+                logger.warning("Failed to clear expired lockout: %s", str(e))
 
     # Verify password
     if not user["password_hash"]:
@@ -486,15 +533,16 @@ async def login(
         )
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Successful login
-    await _reset_failed_login(user["id"])
-
-    # Create session
+    # Successful login - create session first, then reset failed attempts
+    # (ensures atomic state: if session creation fails, login count stays)
     session_token, refresh_token, expires_at, refresh_expires_at = await create_user_session(
         user_id=user["id"],
         ip_address=ip_address,
         user_agent=user_agent,
     )
+
+    # Only reset failed login after session creation succeeds
+    await _reset_failed_login(user["id"])
 
     # Set cookies
     _set_session_cookies(response, session_token, refresh_token, expires_at, refresh_expires_at)
@@ -614,27 +662,20 @@ async def check_auth(
 
     Returns user info if authenticated, or authenticated=false if not.
     """
-    # Get OIDC settings
-    oidc_enabled = os.getenv("VLOG_OIDC_ENABLED", "false").lower() == "true"
-    oidc_provider_name = os.getenv("VLOG_OIDC_PROVIDER_NAME", "SSO")
-
     if not session_token:
         return AuthCheckResponse(
             authenticated=False,
-            oidc_enabled=oidc_enabled,
-            oidc_provider_name=oidc_provider_name,
+            oidc_enabled=OIDC_ENABLED,
+            oidc_provider_name=OIDC_PROVIDER_NAME,
         )
-
-    from api.auth.sessions import validate_session_token
-    from api.auth.permissions import get_role_permissions
 
     user = await validate_session_token(session_token, allow_grace_period=True)
 
     if not user:
         return AuthCheckResponse(
             authenticated=False,
-            oidc_enabled=oidc_enabled,
-            oidc_provider_name=oidc_provider_name,
+            oidc_enabled=OIDC_ENABLED,
+            oidc_provider_name=OIDC_PROVIDER_NAME,
         )
 
     # Get permissions for user's role
@@ -643,8 +684,8 @@ async def check_auth(
 
     return AuthCheckResponse(
         authenticated=True,
-        oidc_enabled=oidc_enabled,
-        oidc_provider_name=oidc_provider_name,
+        oidc_enabled=OIDC_ENABLED,
+        oidc_provider_name=OIDC_PROVIDER_NAME,
         user=AuthCheckUser(
             id=user["id"],
             username=user["username"],
