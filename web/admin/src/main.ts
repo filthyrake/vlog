@@ -31,6 +31,7 @@ import { analyticsApi } from '@/api/endpoints/analytics';
 import { settingsApi } from '@/api/endpoints/settings';
 import { customFieldsApi } from '@/api/endpoints/custom-fields';
 import { sseApi } from '@/api/endpoints/sse';
+import { usersApi } from '@/api/endpoints/users';
 
 // Import formatters for template use
 import * as formatters from '@/utils/formatters';
@@ -56,6 +57,7 @@ declare global {
       settings: typeof settingsApi;
       customFields: typeof customFieldsApi;
       sse: typeof sseApi;
+      users: typeof usersApi;
     };
 
     // Formatters
@@ -84,6 +86,7 @@ window.VLogApi = {
   settings: settingsApi,
   customFields: customFieldsApi,
   sse: sseApi,
+  users: usersApi,
 };
 
 // Export formatters

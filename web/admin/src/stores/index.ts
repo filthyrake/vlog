@@ -15,6 +15,7 @@ import { createSettingsStore, type SettingsStore } from './settings.store';
 import { createBulkStore, type BulkStore } from './bulk.store';
 import { createSSEStore, type SSEStore, getActiveVideoIds } from './sse.store';
 import { createChaptersStore, type ChaptersStore } from './chapters.store';
+import { createUsersStore, type UsersStore } from './users.store';
 import { getKeyboardManager, destroyKeyboardManager } from '@/utils/keyboard';
 import type { ProgressSSEEvent, WorkerSSEEvent, CustomField } from '@/api/types';
 
@@ -33,7 +34,8 @@ export type AdminStore = AuthStore &
   SettingsStore &
   BulkStore &
   SSEStore &
-  ChaptersStore & {
+  ChaptersStore &
+  UsersStore & {
     init(): Promise<void>;
     destroy(): void;
     getApplicableCustomFields(): CustomField[];
@@ -47,6 +49,8 @@ export type AdminStore = AuthStore &
     openSettingsTab(): void;
     openBrandingSettings(): void;
     openCustomFieldsSettings(): void;
+    openProfileTab(): void;
+    openUsersTab(): void;
   };
 
 /**
@@ -67,6 +71,7 @@ export function createAdminStore(): AdminStore {
   const bulkStore = createBulkStore();
   const sseStore = createSSEStore();
   const chaptersStore = createChaptersStore();
+  const usersStore = createUsersStore();
 
   // Create the combined store
   const store: AdminStore = {
@@ -83,6 +88,7 @@ export function createAdminStore(): AdminStore {
     ...bulkStore,
     ...sseStore,
     ...chaptersStore,
+    ...usersStore,
 
     // Edit modal tab state
     editModalTab: 'details' as 'details' | 'chapters',
@@ -154,6 +160,24 @@ export function createAdminStore(): AdminStore {
     openCustomFieldsSettings(): void {
       this.settingsTab = 'custom_fields';
       this.loadCustomFields();
+    },
+
+    /**
+     * Navigate to Profile tab and load user data
+     */
+    openProfileTab(): void {
+      this.tab = 'profile';
+      this.loadSessions();
+      this.loadApiKeys();
+    },
+
+    /**
+     * Navigate to Users tab and load user management data (admin only)
+     */
+    openUsersTab(): void {
+      this.tab = 'users';
+      this.loadUsers();
+      this.loadInvites();
     },
 
     /**
@@ -318,4 +342,5 @@ export { createSettingsStore, type SettingsStore } from './settings.store';
 export { createBulkStore, type BulkStore } from './bulk.store';
 export { createSSEStore, type SSEStore } from './sse.store';
 export { createChaptersStore, type ChaptersStore } from './chapters.store';
+export { createUsersStore, type UsersStore } from './users.store';
 export type { AlpineContext, AdminTab, SettingsTab } from './types';

@@ -94,6 +94,14 @@ videos = sa.Table(
     sa.Column("sprite_sheet_tile_size", sa.Integer, nullable=True),  # Grid size (e.g., 10 for 10x10)
     sa.Column("sprite_sheet_frame_width", sa.Integer, nullable=True),  # Width of each frame
     sa.Column("sprite_sheet_frame_height", sa.Integer, nullable=True),  # Height of each frame
+    # Video ownership for multi-user auth (Issue #200)
+    # Nullable for backward compatibility - existing videos assigned to first admin during migration
+    sa.Column(
+        "owner_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
@@ -101,6 +109,7 @@ videos = sa.Table(
     sa.Index("ix_videos_deleted_at", "deleted_at"),
     sa.Index("ix_videos_streaming_format", "streaming_format"),
     sa.Index("ix_videos_sprite_sheet_status", "sprite_sheet_status"),
+    sa.Index("ix_videos_owner_id", "owner_id"),
 )
 
 # Available quality variants for each video
@@ -1041,6 +1050,255 @@ live_stream_segments = sa.Table(
     sa.Index("ix_live_segments_stream_quality_seq", "stream_id", "quality", "sequence_number"),
     sa.Index("ix_live_segments_received_at", "received_at"),
     sa.Index("ix_live_segments_cleanup", "stream_id", "received_at"),
+)
+
+
+# =============================================================================
+# User Authentication Tables (Issue #200)
+# Multi-user authentication with session-based browser auth, API keys, and RBAC
+# =============================================================================
+
+# User accounts for multi-user authentication
+#
+# ROLES:
+# ------
+# - admin: Full system access + user management
+# - editor: Upload, edit/delete own videos, view own analytics
+# - viewer: Browse and watch videos (for private instances)
+#
+# STATUS:
+# -------
+# - active: Normal user access
+# - disabled: Account disabled by admin (cannot login)
+# - pending: Awaiting email verification or admin approval
+#
+# SECURITY:
+# ---------
+# - Passwords hashed with argon2id (same as worker API keys)
+# - Failed login tracking with lockout support
+# - Email verification support for self-registration
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+users = sa.Table(
+    "users",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("username", sa.String(100), unique=True, nullable=False),
+    sa.Column("email", sa.String(255), unique=True, nullable=False),
+    sa.Column("password_hash", sa.String(255), nullable=True),  # NULL for OIDC-only users
+    sa.Column("display_name", sa.String(100), nullable=True),
+    sa.Column("avatar_url", sa.String(500), nullable=True),
+    sa.Column(
+        "role",
+        sa.String(20),
+        sa.CheckConstraint("role IN ('admin', 'editor', 'viewer')", name="ck_users_role"),
+        default="viewer",
+        nullable=False,
+    ),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint("status IN ('active', 'disabled', 'pending')", name="ck_users_status"),
+        default="active",
+        nullable=False,
+    ),
+    sa.Column("email_verified", sa.Boolean, default=False, nullable=False),
+    sa.Column("failed_login_attempts", sa.Integer, default=0, nullable=False),
+    sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_by", sa.String(36), nullable=True),  # FK to users.id (nullable for first admin)
+    sa.Index("ix_users_username", "username"),
+    sa.Index("ix_users_email", "email"),
+    sa.Index("ix_users_role", "role"),
+    sa.Index("ix_users_status", "status"),
+    sa.Index("ix_users_created_at", "created_at"),
+)
+
+# User sessions for browser authentication (HTTP-only cookies)
+#
+# SESSION TOKENS:
+# ---------------
+# - session_token: Short-lived access token (default 24 hours)
+# - refresh_token: Long-lived token for session rotation (default 7 days)
+#
+# REFRESH TOKEN ROTATION:
+# -----------------------
+# - refresh_family_id: Groups related refresh tokens together
+# - refresh_generation: Incremented on each rotation
+# - Detects token theft: if a rotated token is reused, entire family is revoked
+#
+# SECURITY:
+# ---------
+# - All tokens stored as argon2id hashes
+# - IP and user-agent logged for audit
+# - Revocation support via revoked_at timestamp
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_sessions = sa.Table(
+    "user_sessions",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("refresh_token_hash", sa.String(255), unique=True, nullable=True),
+    sa.Column("refresh_family_id", sa.String(36), nullable=True),  # UUID for token family
+    sa.Column("refresh_generation", sa.Integer, default=0, nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("refresh_expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ip_address", sa.String(45), nullable=True),  # IPv6 max length
+    sa.Column("user_agent", sa.String(512), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_user_sessions_user_id", "user_id"),
+    sa.Index("ix_user_sessions_token_hash", "token_hash"),
+    sa.Index("ix_user_sessions_refresh_token_hash", "refresh_token_hash"),
+    sa.Index("ix_user_sessions_expires_at", "expires_at"),
+    sa.Index("ix_user_sessions_refresh_family_id", "refresh_family_id"),
+)
+
+# User API keys for programmatic access
+#
+# KEY LIFECYCLE:
+# -------------
+# 1. Generation: POST /api/v1/api-keys → generates 256-bit API key
+#    → Key shown once at creation, never retrievable again
+#    → Stored as argon2id hash
+# 2. Usage: Client includes key in X-API-Key header
+#    → Fast lookup via key_prefix (first 8 chars)
+# 3. Permissions: Inherited from user's role (no per-key overrides)
+# 4. Expiration: Optional expires_at timestamp
+# 5. Revocation: DELETE /api/v1/api-keys/{id} sets revoked_at
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_api_keys = sa.Table(
+    "user_api_keys",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("name", sa.String(100), nullable=False),
+    sa.Column("key_prefix", sa.String(8), nullable=False),  # First 8 chars for lookup
+    sa.Column("key_hash", sa.String(255), nullable=False),  # argon2id hash
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_user_api_keys_user_id", "user_id"),
+    sa.Index("ix_user_api_keys_key_prefix", "key_prefix"),
+)
+
+# OIDC connections for linking users to external identity providers
+#
+# Supports any OIDC-compliant provider:
+# - Keycloak, Authentik, Authelia, Zitadel
+# - Google, GitHub, Microsoft (if configured as OIDC)
+#
+# Users can have multiple OIDC connections (different providers)
+# OIDC-only users have NULL password_hash in users table
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+oidc_connections = sa.Table(
+    "oidc_connections",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("provider_user_id", sa.String(255), nullable=False),  # Subject claim from OIDC
+    sa.Column("provider_email", sa.String(255), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_oidc_connections_user_id", "user_id"),
+    sa.Index("ix_oidc_connections_provider_user_id", "provider_user_id"),
+    sa.UniqueConstraint("provider_user_id", name="uq_oidc_connections_provider_user_id"),
+)
+
+# OIDC state tokens for CSRF and replay protection
+#
+# SECURITY:
+# ---------
+# - state: Random value sent to OIDC provider, returned in callback
+#   → CSRF protection: validates callback originated from our flow
+# - nonce: Random value included in ID token request
+#   → Replay protection: validates token is for this specific flow
+#
+# States are single-use and expire after 10 minutes
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+oidc_states = sa.Table(
+    "oidc_states",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("state", sa.String(64), unique=True, nullable=False),
+    sa.Column("nonce", sa.String(64), nullable=False),
+    sa.Column("redirect_uri", sa.String(500), nullable=True),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("ix_oidc_states_state", "state"),
+    sa.Index("ix_oidc_states_expires_at", "expires_at"),
+)
+
+# Password reset tokens
+#
+# SECURITY:
+# ---------
+# - Tokens are single-use (used_at set on use)
+# - Short expiry (default 1 hour)
+# - IP address logged for abuse detection
+# - Reset endpoint returns constant-time response to prevent user enumeration
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+password_reset_tokens = sa.Table(
+    "password_reset_tokens",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("ip_address", sa.String(45), nullable=True),  # For abuse detection
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("ix_password_reset_tokens_user_id", "user_id"),
+    sa.Index("ix_password_reset_tokens_token_hash", "token_hash"),
+    sa.Index("ix_password_reset_tokens_expires_at", "expires_at"),
+)
+
+# User invites for invite-only registration
+#
+# FLOW:
+# -----
+# 1. Admin creates invite: POST /api/v1/invites
+# 2. Email sent with invite link containing token
+# 3. User clicks link, creates account: POST /api/v1/invites/{token}/accept
+# 4. Invite marked as used, user created with specified role
+#
+# SECURITY:
+# ---------
+# - Tokens are single-use (used_at set on acceptance)
+# - Configurable expiry (default 7 days)
+# - Role pre-assigned by admin
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_invites = sa.Table(
+    "user_invites",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("email", sa.String(255), nullable=False),
+    sa.Column(
+        "role",
+        sa.String(20),
+        sa.CheckConstraint("role IN ('admin', 'editor', 'viewer')", name="ck_user_invites_role"),
+        default="viewer",
+        nullable=False,
+    ),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("used_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Index("ix_user_invites_email", "email"),
+    sa.Index("ix_user_invites_token_hash", "token_hash"),
+    sa.Index("ix_user_invites_expires_at", "expires_at"),
 )
 
 
