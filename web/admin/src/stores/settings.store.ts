@@ -96,6 +96,19 @@ export interface SettingsActions {
   saveCustomField(): Promise<void>;
   deleteCustomField(field: CustomField): Promise<void>;
 
+  // CSP-safe helpers (Alpine.js CSP build doesn't support arrow functions or ?.)
+  hasGlobalCustomFields(): boolean;
+  getGlobalCustomFields(): CustomField[];
+  hasCategoryCustomFields(categoryId: number): boolean;
+  getCategoryCustomFields(categoryId: number): CustomField[];
+  hasNullCategoryCustomFields(): boolean;
+  getNullCategoryCustomFields(): CustomField[];
+
+  // Constraint helpers
+  getConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): unknown;
+  hasConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): boolean;
+  getEnumValues(obj: { constraints?: CustomFieldConstraint & { enum_values?: string[] } }): string[];
+
   // Branding operations (Issue #214)
   loadBrandingSettings(): Promise<void>;
   saveBrandingSiteName(): Promise<void>;
@@ -570,6 +583,76 @@ export function createSettingsStore(): SettingsStore {
       } catch (e) {
         this.customFieldError = e instanceof Error ? e.message : 'Failed to delete custom field';
       }
+    },
+
+    // ===========================================================================
+    // CSP-safe Custom Field Helpers
+    // ===========================================================================
+
+    /**
+     * Check if there are any global custom fields (fields without category restrictions)
+     */
+    hasGlobalCustomFields(): boolean {
+      return this.customFields.some((f) => !f.applies_to_categories || f.applies_to_categories.length === 0);
+    },
+
+    /**
+     * Get all global custom fields (fields without category restrictions)
+     */
+    getGlobalCustomFields(): CustomField[] {
+      return this.customFields.filter((f) => !f.applies_to_categories || f.applies_to_categories.length === 0);
+    },
+
+    /**
+     * Check if there are any custom fields specific to a category
+     */
+    hasCategoryCustomFields(categoryId: number): boolean {
+      return this.customFields.some((f) => f.applies_to_categories && f.applies_to_categories.includes(categoryId));
+    },
+
+    /**
+     * Get custom fields specific to a category
+     */
+    getCategoryCustomFields(categoryId: number): CustomField[] {
+      return this.customFields.filter((f) => f.applies_to_categories && f.applies_to_categories.includes(categoryId));
+    },
+
+    /**
+     * Check if there are any global custom fields (alias for hasGlobalCustomFields for bulk modal)
+     */
+    hasNullCategoryCustomFields(): boolean {
+      return this.hasGlobalCustomFields();
+    },
+
+    /**
+     * Get global custom fields (alias for getGlobalCustomFields for bulk modal)
+     */
+    getNullCategoryCustomFields(): CustomField[] {
+      return this.getGlobalCustomFields();
+    },
+
+    /**
+     * Safely get a constraint property from an object with constraints
+     */
+    getConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): unknown {
+      if (!obj || !obj.constraints) return undefined;
+      return (obj.constraints as Record<string, unknown>)[prop];
+    },
+
+    /**
+     * Check if a constraint property exists and is not undefined
+     */
+    hasConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): boolean {
+      if (!obj || !obj.constraints) return false;
+      return (obj.constraints as Record<string, unknown>)[prop] !== undefined;
+    },
+
+    /**
+     * Get enum values from constraints, or empty array if not present
+     */
+    getEnumValues(obj: { constraints?: CustomFieldConstraint & { enum_values?: string[] } }): string[] {
+      if (!obj || !obj.constraints || !obj.constraints.enum_values) return [];
+      return obj.constraints.enum_values;
     },
 
     // ===========================================================================

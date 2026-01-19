@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Note: IntegrityError handling is done via exception message inspection
 # to support both SQLite and PostgreSQL backends
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile

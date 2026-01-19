@@ -46,6 +46,9 @@ export interface UIActions {
   // Sorting
   setSort(column: string, direction?: 'asc' | 'desc'): void;
   toggleSort(column: string): void;
+
+  // CSP-compliant helpers
+  getWidthClass(percent: number | undefined | null): string;
 }
 
 export type UIStore = UIState & UIActions;
@@ -163,6 +166,15 @@ export function createUIStore(): UIStore {
         this.sortColumn = column;
         this.sortDirection = 'asc';
       }
+    },
+
+    /**
+     * Get CSS class for percentage width (CSP-compliant alternative to inline styles)
+     * Returns class like 'w-pct-50' for 50%
+     */
+    getWidthClass(percent: number | undefined | null): string {
+      const value = Math.max(0, Math.min(100, Math.round(percent || 0)));
+      return `w-pct-${value}`;
     },
   };
 }

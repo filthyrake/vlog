@@ -48,5 +48,6 @@ export type AdminTab = 'videos' | 'categories' | 'playlists' | 'upload' | 'worke
 
 /**
  * Settings sub-tabs
+ * Note: Dynamic category tabs (from settingsCategories) are also valid values
  */
-export type SettingsTab = 'watermark' | 'custom-fields' | 'database';
+export type SettingsTab = 'branding' | 'watermark' | 'custom_fields' | string;
