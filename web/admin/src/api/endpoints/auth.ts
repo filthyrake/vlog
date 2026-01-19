@@ -13,7 +13,63 @@ import type {
   SessionListResponse,
 } from '../types';
 
+export interface SetupStatusResponse {
+  needs_setup: boolean;
+  message: string;
+}
+
+export interface SetupRequest {
+  username: string;
+  email: string;
+  password: string;
+  display_name?: string;
+}
+
+export interface SetupResponse {
+  success: boolean;
+  user_id?: string;
+  username?: string;
+  email?: string;
+  message: string;
+}
+
 export const authApi = {
+  /**
+   * Check if initial setup is required (no users exist)
+   */
+  async checkSetup(): Promise<SetupStatusResponse> {
+    const response = await apiClient.fetchRaw('/api/v1/auth/setup');
+    if (!response.ok) {
+      throw new Error(`Setup check failed: ${response.status}`);
+    }
+    return response.json();
+  },
+
+  /**
+   * Create initial admin account (only works when no users exist)
+   */
+  async setup(data: SetupRequest): Promise<SetupResponse> {
+    const response = await apiClient.fetchRaw('/api/v1/auth/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      return { success: false, message: result.detail || `Setup failed: ${response.status}` };
+    }
+
+    return {
+      success: true,
+      user_id: result.user_id,
+      username: result.username,
+      email: result.email,
+      message: result.message,
+    };
+  },
+
   /**
    * Check if authentication is required and current auth status
    */

@@ -130,6 +130,31 @@ class SessionInfo(BaseModel):
     is_current: bool
 
 
+class SetupStatusResponse(BaseModel):
+    """Setup status response."""
+
+    needs_setup: bool
+    message: str
+
+
+class SetupRequest(BaseModel):
+    """Initial admin setup request."""
+
+    username: str = Field(..., min_length=3, max_length=50)
+    email: EmailStr
+    password: str = Field(..., min_length=12)
+    display_name: Optional[str] = Field(None, max_length=100)
+
+
+class SetupResponse(BaseModel):
+    """Setup response."""
+
+    user_id: str
+    username: str
+    email: str
+    message: str
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -244,6 +269,118 @@ async def _reset_failed_login(user_id: str) -> None:
 # =============================================================================
 # Endpoints
 # =============================================================================
+
+
+@router.get("/setup", response_model=SetupStatusResponse)
+async def get_setup_status() -> SetupStatusResponse:
+    """
+    Check if initial setup is required.
+
+    Returns needs_setup=True if no users exist in the system.
+    This endpoint is always public.
+    """
+    user_count = await database.fetch_val(
+        "SELECT COUNT(*) FROM users"
+    )
+
+    if user_count == 0:
+        return SetupStatusResponse(
+            needs_setup=True,
+            message="No users exist. Please create an admin account to get started.",
+        )
+
+    return SetupStatusResponse(
+        needs_setup=False,
+        message="Setup complete. Please log in.",
+    )
+
+
+@router.post("/setup", response_model=SetupResponse)
+async def create_initial_admin(
+    request: Request,
+    response: Response,
+    body: SetupRequest,
+) -> SetupResponse:
+    """
+    Create the initial admin account.
+
+    This endpoint only works when no users exist in the system.
+    Once an admin is created, this endpoint returns 403.
+    """
+    # Check if any users exist
+    user_count = await database.fetch_val(
+        "SELECT COUNT(*) FROM users"
+    )
+
+    if user_count > 0:
+        raise HTTPException(
+            status_code=403,
+            detail="Setup already complete. Use the admin panel to create additional users.",
+        )
+
+    # Validate password strength
+    is_valid, error = validate_password_strength(body.password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error)
+
+    # Check username uniqueness (probably not needed for first user, but good practice)
+    existing = await database.fetch_one(
+        users.select().where(users.c.username == body.username.lower())
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+
+    # Create admin user
+    now = datetime.now(timezone.utc)
+    user_id = str(uuid.uuid4())
+    password_hash = hash_password(body.password)
+
+    await database.execute(
+        users.insert().values(
+            id=user_id,
+            username=body.username.lower(),
+            email=body.email.lower(),
+            password_hash=password_hash,
+            display_name=body.display_name,
+            role="admin",
+            status="active",
+            email_verified=True,
+            created_at=now,
+        )
+    )
+
+    ip_address = _get_client_ip(request)
+    security_logger.info(
+        "Initial admin created via setup wizard",
+        extra={
+            "event": "setup_admin_created",
+            "user_id": user_id,
+            "username": body.username,
+            "email": body.email,
+            "ip_address": ip_address,
+        },
+    )
+
+    # Automatically log in the new admin
+    user_agent = request.headers.get("user-agent")
+    session_token, refresh_token, expires_at, refresh_expires_at = (
+        await create_user_session(user_id, ip_address, user_agent)
+    )
+
+    _set_session_cookies(
+        response,
+        session_token,
+        refresh_token,
+        expires_at,
+        refresh_expires_at,
+    )
+
+    return SetupResponse(
+        user_id=user_id,
+        username=body.username.lower(),
+        email=body.email.lower(),
+        message="Admin account created successfully. You are now logged in.",
+    )
 
 
 @router.post("/login", response_model=LoginResponse)

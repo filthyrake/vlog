@@ -3192,8 +3192,95 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
         </div>
     </vlog-modal>
 
+    <!-- Setup Wizard Modal (First-time setup) -->
+    <vlog-modal :open="showSetupWizard && needsSetup" no-close size="md">
+        <span slot="header">Welcome to VLog</span>
+        <div class="space-y-4">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <p class="text-dark-300">Create your admin account to get started.</p>
+            </div>
+            <form @submit.prevent="submitSetup" class="space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Username <span class="text-red-400">*</span></label>
+                        <input
+                            type="text"
+                            x-model="setupUsername"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="admin"
+                            required
+                            minlength="3"
+                            autocomplete="username"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Display Name</label>
+                        <input
+                            type="text"
+                            x-model="setupDisplayName"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="Admin User"
+                            autocomplete="name"
+                        >
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Email <span class="text-red-400">*</span></label>
+                    <input
+                        type="email"
+                        x-model="setupEmail"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        placeholder="admin@example.com"
+                        required
+                        autocomplete="email"
+                    >
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Password <span class="text-red-400">*</span></label>
+                        <input
+                            type="password"
+                            x-model="setupPassword"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="Min 12 characters"
+                            required
+                            minlength="12"
+                            autocomplete="new-password"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Confirm Password <span class="text-red-400">*</span></label>
+                        <input
+                            type="password"
+                            x-model="setupConfirmPassword"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="Confirm password"
+                            required
+                            minlength="12"
+                            autocomplete="new-password"
+                        >
+                    </div>
+                </div>
+                <div x-show="setupError" class="text-red-400 text-sm" x-text="setupError"></div>
+                <vlog-button
+                    variant="primary"
+                    type="submit"
+                    full-width
+                    :disabled="setupLoading"
+                    :loading="setupLoading"
+                >Create Admin Account</vlog-button>
+            </form>
+            <p class="text-dark-400 text-xs text-center">This account will have full administrative access to VLog.</p>
+        </div>
+    </vlog-modal>
+
     <!-- Auth Modal (User-based authentication) -->
-    <vlog-modal :open="showAuthModal && authMode === 'user'" no-close size="sm">
+    <vlog-modal :open="showAuthModal && authMode === 'user' && !needsSetup" no-close size="sm">
         <span slot="header">Sign In</span>
         <div class="space-y-4">
             <p class="text-dark-400">Sign in to access the admin panel.</p>

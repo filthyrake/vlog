@@ -16,6 +16,17 @@ export interface AuthState {
   showAuthModal: boolean;
   showForgotPasswordModal: boolean;
 
+  // Setup wizard state
+  needsSetup: boolean;
+  showSetupWizard: boolean;
+  setupUsername: string;
+  setupEmail: string;
+  setupPassword: string;
+  setupConfirmPassword: string;
+  setupDisplayName: string;
+  setupError: string;
+  setupLoading: boolean;
+
   // Current user (user-based auth)
   currentUser: CurrentUser | null;
 
@@ -58,6 +69,7 @@ export interface AuthActions {
   checkAuth(): Promise<boolean>;
   submitAuth(): Promise<void>;
   submitUserAuth(): Promise<void>;
+  submitSetup(): Promise<void>;
   logout(): Promise<void>;
   fetchCsrfToken(): Promise<void>;
 
@@ -94,6 +106,17 @@ export function createAuthStore(): AuthStore {
     showAuthModal: false,
     showForgotPasswordModal: false,
 
+    // Setup wizard state
+    needsSetup: false,
+    showSetupWizard: false,
+    setupUsername: '',
+    setupEmail: '',
+    setupPassword: '',
+    setupConfirmPassword: '',
+    setupDisplayName: '',
+    setupError: '',
+    setupLoading: false,
+
     currentUser: null,
 
     loginUsername: '',
@@ -127,6 +150,19 @@ export function createAuthStore(): AuthStore {
      */
     async checkAuth(): Promise<boolean> {
       try {
+        // First check if initial setup is needed
+        try {
+          const setupStatus = await authApi.checkSetup();
+          this.needsSetup = setupStatus.needs_setup;
+          if (setupStatus.needs_setup) {
+            this.showSetupWizard = true;
+            return false;
+          }
+        } catch (e) {
+          // Setup check failed, continue with normal auth flow
+          console.warn('Setup check failed:', e);
+        }
+
         const data = await authApi.check();
         this.authRequired = data.auth_required;
         this.isAuthenticated = data.authenticated;
@@ -187,6 +223,68 @@ export function createAuthStore(): AuthStore {
         this.authError = 'Failed to authenticate: ' + (e instanceof Error ? e.message : String(e));
       } finally {
         this.authLoading = false;
+      }
+    },
+
+    /**
+     * Submit initial admin setup
+     */
+    async submitSetup(): Promise<void> {
+      this.setupError = '';
+
+      // Validate passwords match
+      if (this.setupPassword !== this.setupConfirmPassword) {
+        this.setupError = 'Passwords do not match';
+        return;
+      }
+
+      // Validate password length
+      if (this.setupPassword.length < 12) {
+        this.setupError = 'Password must be at least 12 characters';
+        return;
+      }
+
+      this.setupLoading = true;
+
+      try {
+        const result = await authApi.setup({
+          username: this.setupUsername,
+          email: this.setupEmail,
+          password: this.setupPassword,
+          display_name: this.setupDisplayName || undefined,
+        });
+
+        if (!result.success) {
+          this.setupError = result.message || 'Setup failed';
+          return;
+        }
+
+        // Success - server has set the session cookie and logged us in
+        this.isAuthenticated = true;
+        this.needsSetup = false;
+        this.showSetupWizard = false;
+        this.currentUser = {
+          id: result.user_id!,
+          username: result.username!,
+          email: result.email!,
+          display_name: this.setupDisplayName || null,
+          role: 'admin',
+          avatar_url: null,
+        };
+
+        // Clear form
+        this.setupUsername = '';
+        this.setupEmail = '';
+        this.setupPassword = '';
+        this.setupConfirmPassword = '';
+        this.setupDisplayName = '';
+
+        // Fetch CSRF token
+        await this.fetchCsrfToken();
+      } catch (e) {
+        this.setupError = 'Setup failed: ' + (e instanceof Error ? e.message : String(e));
+      } finally {
+        this.setupLoading = false;
       }
     },
 
