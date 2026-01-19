@@ -8,6 +8,7 @@ Provides endpoints for:
 - Profile management
 """
 
+import hashlib
 import hmac
 import logging
 import os
@@ -17,6 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func, or_
 
 from api.auth.middleware import (
     REFRESH_COOKIE_NAME,
@@ -31,6 +33,7 @@ from api.auth.password import (
     validate_password_strength,
     verify_password,
 )
+from api.auth.permissions import get_role_permissions
 from api.auth.sessions import (
     RefreshTokenReusedError,
     SessionError,
@@ -41,6 +44,7 @@ from api.auth.sessions import (
     invalidate_session,
     invalidate_user_sessions,
     refresh_user_session,
+    validate_session_token,
 )
 from api.database import database, password_reset_tokens, users
 from config import (
@@ -53,6 +57,10 @@ from config import (
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger("security.auth")
+
+# Module-level OIDC configuration (cached to avoid repeated env lookups)
+OIDC_ENABLED = os.getenv("VLOG_OIDC_ENABLED", "false").lower() == "true"
+OIDC_PROVIDER_NAME = os.getenv("VLOG_OIDC_PROVIDER_NAME", "SSO")
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -409,28 +417,30 @@ async def login(
     """
     ip_address = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
-    identifier = body.username_or_email.lower()
+    login_input = body.username_or_email.lower()
+    # Hash identifier for logging (avoid PII in logs)
+    identifier_hash = hashlib.sha256(login_input.encode()).hexdigest()[:16]
 
-    # Find user by email or username
-    from sqlalchemy import or_
+    # Find user by email or username (case-insensitive)
     user = await database.fetch_one(
         users.select().where(
             or_(
-                users.c.email == identifier,
-                users.c.username == identifier,
+                func.lower(users.c.email) == login_input,
+                func.lower(users.c.username) == login_input,
             )
         )
     )
 
     if not user:
         # Constant-time comparison even when user doesn't exist
+        # (prevents timing attacks for user enumeration)
         verify_password(body.password, hash_password("dummy-password-for-timing"))
         security_logger.warning(
             "Login failed: user not found",
             extra={
                 "event": "login_failed",
                 "reason": "user_not_found",
-                "identifier": identifier,
+                "identifier_hash": identifier_hash,
                 "ip_address": ip_address,
             },
         )
@@ -614,27 +624,20 @@ async def check_auth(
 
     Returns user info if authenticated, or authenticated=false if not.
     """
-    # Get OIDC settings
-    oidc_enabled = os.getenv("VLOG_OIDC_ENABLED", "false").lower() == "true"
-    oidc_provider_name = os.getenv("VLOG_OIDC_PROVIDER_NAME", "SSO")
-
     if not session_token:
         return AuthCheckResponse(
             authenticated=False,
-            oidc_enabled=oidc_enabled,
-            oidc_provider_name=oidc_provider_name,
+            oidc_enabled=OIDC_ENABLED,
+            oidc_provider_name=OIDC_PROVIDER_NAME,
         )
-
-    from api.auth.sessions import validate_session_token
-    from api.auth.permissions import get_role_permissions
 
     user = await validate_session_token(session_token, allow_grace_period=True)
 
     if not user:
         return AuthCheckResponse(
             authenticated=False,
-            oidc_enabled=oidc_enabled,
-            oidc_provider_name=oidc_provider_name,
+            oidc_enabled=OIDC_ENABLED,
+            oidc_provider_name=OIDC_PROVIDER_NAME,
         )
 
     # Get permissions for user's role
@@ -643,8 +646,8 @@ async def check_auth(
 
     return AuthCheckResponse(
         authenticated=True,
-        oidc_enabled=oidc_enabled,
-        oidc_provider_name=oidc_provider_name,
+        oidc_enabled=OIDC_ENABLED,
+        oidc_provider_name=OIDC_PROVIDER_NAME,
         user=AuthCheckUser(
             id=user["id"],
             username=user["username"],

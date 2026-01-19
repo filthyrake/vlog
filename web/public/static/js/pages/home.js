@@ -84,6 +84,8 @@
             if (searchParam) {
                 // Limit search length for safety
                 this.searchQuery = searchParam.slice(0, MAX_SEARCH_LENGTH);
+                // Update UI state immediately (before $watch is set up)
+                this._showFeaturedSection = false;
                 // Clean URL without reloading
                 window.history.replaceState({}, '', '/');
             }
