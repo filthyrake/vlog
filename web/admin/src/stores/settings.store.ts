@@ -109,6 +109,14 @@ export interface SettingsActions {
   hasConstraint(obj: { constraints?: CustomFieldConstraint }, prop: string): boolean;
   getEnumValues(obj: { constraints?: CustomFieldConstraint & { enum_values?: string[] } }): string[];
 
+  // CSP-safe setting modification check
+  isSettingModified(category: string, key: string): boolean;
+
+  // CSP-safe formatting helpers (regex not supported in CSP mode)
+  formatCategoryName(category: string): string;
+  formatCategoryTitle(category: string): string;
+  formatSettingLabel(key: string): string;
+
   // Branding operations (Issue #214)
   loadBrandingSettings(): Promise<void>;
   saveBrandingSiteName(): Promise<void>;
@@ -117,6 +125,15 @@ export interface SettingsActions {
   deleteLogo(): Promise<void>;
   uploadFavicon(): XMLHttpRequest | null;
   deleteFavicon(): Promise<void>;
+
+  // Branding CSP-safe helpers (Alpine.js CSP build doesn't support ?.)
+  hasBrandingSettings(): boolean;
+  getBrandingLogoExists(): boolean;
+  getBrandingLogoUrl(): string;
+  getBrandingLogoPath(): string;
+  getBrandingFaviconExists(): boolean;
+  getBrandingFaviconUrl(): string;
+  getBrandingFaviconPath(): string;
 }
 
 export type SettingsStore = SettingsState & SettingsActions;
@@ -655,6 +672,41 @@ export function createSettingsStore(): SettingsStore {
       return obj.constraints.enum_values;
     },
 
+    /**
+     * Check if a setting is modified (CSP-safe)
+     * Replaces: settingsModified[category]?.[key] !== undefined
+     */
+    isSettingModified(category: string, key: string): boolean {
+      const catModified = this.settingsModified[category];
+      return !!(catModified && catModified[key] !== undefined);
+    },
+
+    /**
+     * Format a category name by replacing underscores with spaces
+     * CSP-safe replacement for: category.replace(/_/g, ' ')
+     */
+    formatCategoryName(category: string): string {
+      return category.split('_').join(' ');
+    },
+
+    /**
+     * Format a category title by replacing underscores with spaces and appending ' Settings'
+     * CSP-safe replacement for: category.replace(/_/g, ' ') + ' Settings'
+     */
+    formatCategoryTitle(category: string): string {
+      return category.split('_').join(' ') + ' Settings';
+    },
+
+    /**
+     * Format a setting key as a label by extracting the last part and replacing underscores
+     * CSP-safe replacement for: setting.key.split('.').pop().replace(/_/g, ' ')
+     */
+    formatSettingLabel(key: string): string {
+      const parts = key.split('.');
+      const lastPart = parts[parts.length - 1] || key;
+      return lastPart.split('_').join(' ');
+    },
+
     // ===========================================================================
     // Branding Operations (Issue #214)
     // ===========================================================================
@@ -804,6 +856,38 @@ export function createSettingsStore(): SettingsStore {
       } finally {
         this.brandingLoading = false;
       }
+    },
+
+    // ===========================================================================
+    // Branding CSP-safe Helpers
+    // ===========================================================================
+
+    hasBrandingSettings(): boolean {
+      return this.brandingSettings !== null;
+    },
+
+    getBrandingLogoExists(): boolean {
+      return !!(this.brandingSettings && this.brandingSettings.logo_exists);
+    },
+
+    getBrandingLogoUrl(): string {
+      return (this.brandingSettings && this.brandingSettings.logo_url) || '';
+    },
+
+    getBrandingLogoPath(): string {
+      return (this.brandingSettings && this.brandingSettings.logo_path) || '';
+    },
+
+    getBrandingFaviconExists(): boolean {
+      return !!(this.brandingSettings && this.brandingSettings.favicon_exists);
+    },
+
+    getBrandingFaviconUrl(): string {
+      return (this.brandingSettings && this.brandingSettings.favicon_url) || '';
+    },
+
+    getBrandingFaviconPath(): string {
+      return (this.brandingSettings && this.brandingSettings.favicon_path) || '';
     },
   };
 }

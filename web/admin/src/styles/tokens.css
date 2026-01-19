@@ -292,3 +292,149 @@
 body.modal-open {
   overflow: hidden;
 }
+
+/* CSP-compliant image error handling */
+/* This class is added via @error="$el.classList.add('hidden')" instead of inline style */
+.vlog-img-error {
+  display: none !important;
+}
+
+/* ============================================
+   CSP-COMPLIANT PERCENTAGE WIDTH CLASSES
+   These replace inline :style="'width: X%'" bindings
+   ============================================ */
+
+/* Generate width classes for every 1% (0-100) */
+.w-pct-0 { width: 0%; }
+.w-pct-1 { width: 1%; }
+.w-pct-2 { width: 2%; }
+.w-pct-3 { width: 3%; }
+.w-pct-4 { width: 4%; }
+.w-pct-5 { width: 5%; }
+.w-pct-6 { width: 6%; }
+.w-pct-7 { width: 7%; }
+.w-pct-8 { width: 8%; }
+.w-pct-9 { width: 9%; }
+.w-pct-10 { width: 10%; }
+.w-pct-11 { width: 11%; }
+.w-pct-12 { width: 12%; }
+.w-pct-13 { width: 13%; }
+.w-pct-14 { width: 14%; }
+.w-pct-15 { width: 15%; }
+.w-pct-16 { width: 16%; }
+.w-pct-17 { width: 17%; }
+.w-pct-18 { width: 18%; }
+.w-pct-19 { width: 19%; }
+.w-pct-20 { width: 20%; }
+.w-pct-21 { width: 21%; }
+.w-pct-22 { width: 22%; }
+.w-pct-23 { width: 23%; }
+.w-pct-24 { width: 24%; }
+.w-pct-25 { width: 25%; }
+.w-pct-26 { width: 26%; }
+.w-pct-27 { width: 27%; }
+.w-pct-28 { width: 28%; }
+.w-pct-29 { width: 29%; }
+.w-pct-30 { width: 30%; }
+.w-pct-31 { width: 31%; }
+.w-pct-32 { width: 32%; }
+.w-pct-33 { width: 33%; }
+.w-pct-34 { width: 34%; }
+.w-pct-35 { width: 35%; }
+.w-pct-36 { width: 36%; }
+.w-pct-37 { width: 37%; }
+.w-pct-38 { width: 38%; }
+.w-pct-39 { width: 39%; }
+.w-pct-40 { width: 40%; }
+.w-pct-41 { width: 41%; }
+.w-pct-42 { width: 42%; }
+.w-pct-43 { width: 43%; }
+.w-pct-44 { width: 44%; }
+.w-pct-45 { width: 45%; }
+.w-pct-46 { width: 46%; }
+.w-pct-47 { width: 47%; }
+.w-pct-48 { width: 48%; }
+.w-pct-49 { width: 49%; }
+.w-pct-50 { width: 50%; }
+.w-pct-51 { width: 51%; }
+.w-pct-52 { width: 52%; }
+.w-pct-53 { width: 53%; }
+.w-pct-54 { width: 54%; }
+.w-pct-55 { width: 55%; }
+.w-pct-56 { width: 56%; }
+.w-pct-57 { width: 57%; }
+.w-pct-58 { width: 58%; }
+.w-pct-59 { width: 59%; }
+.w-pct-60 { width: 60%; }
+.w-pct-61 { width: 61%; }
+.w-pct-62 { width: 62%; }
+.w-pct-63 { width: 63%; }
+.w-pct-64 { width: 64%; }
+.w-pct-65 { width: 65%; }
+.w-pct-66 { width: 66%; }
+.w-pct-67 { width: 67%; }
+.w-pct-68 { width: 68%; }
+.w-pct-69 { width: 69%; }
+.w-pct-70 { width: 70%; }
+.w-pct-71 { width: 71%; }
+.w-pct-72 { width: 72%; }
+.w-pct-73 { width: 73%; }
+.w-pct-74 { width: 74%; }
+.w-pct-75 { width: 75%; }
+.w-pct-76 { width: 76%; }
+.w-pct-77 { width: 77%; }
+.w-pct-78 { width: 78%; }
+.w-pct-79 { width: 79%; }
+.w-pct-80 { width: 80%; }
+.w-pct-81 { width: 81%; }
+.w-pct-82 { width: 82%; }
+.w-pct-83 { width: 83%; }
+.w-pct-84 { width: 84%; }
+.w-pct-85 { width: 85%; }
+.w-pct-86 { width: 86%; }
+.w-pct-87 { width: 87%; }
+.w-pct-88 { width: 88%; }
+.w-pct-89 { width: 89%; }
+.w-pct-90 { width: 90%; }
+.w-pct-91 { width: 91%; }
+.w-pct-92 { width: 92%; }
+.w-pct-93 { width: 93%; }
+.w-pct-94 { width: 94%; }
+.w-pct-95 { width: 95%; }
+.w-pct-96 { width: 96%; }
+.w-pct-97 { width: 97%; }
+.w-pct-98 { width: 98%; }
+.w-pct-99 { width: 99%; }
+.w-pct-100 { width: 100%; }
+
+/* ============================================
+   CSP-COMPLIANT LAYOUT UTILITIES
+   These replace inline style attributes
+   ============================================ */
+
+/* Grid with minmax for equal-width columns */
+.grid-cols-5-minmax {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+/* Flexbox min-width fix */
+.min-w-0 {
+  min-width: 0;
+}
+
+/* 16:9 aspect ratio container (for video thumbnails) */
+.aspect-16-9 {
+  position: relative;
+  padding-bottom: 56.25%;
+  overflow: hidden;
+}
+
+/* Content that fills aspect ratio container */
+.aspect-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
