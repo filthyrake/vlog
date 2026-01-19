@@ -95,7 +95,7 @@ from api.metrics import (
 )
 from api.pagination import encode_cursor, validate_cursor
 from api.partition_manager import ensure_partitions_exist, is_table_partitioned
-from api.public import get_video_url_prefix, get_watermark_settings
+from api.public import get_video_url_prefix, get_watermark_settings, reset_theme_settings_cache
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
 from api.schemas import (
@@ -5889,9 +5889,6 @@ async def delete_watermark_image(request: Request):
 # Branding Settings Endpoints (Issue #214)
 # ============================================================================
 
-import asyncio
-import re
-
 # Cached branding settings with lock for thread safety
 _cached_branding_settings: Optional[Dict[str, Any]] = None
 _cached_branding_settings_time: float = 0
@@ -6034,7 +6031,7 @@ def sanitize_custom_css(css: str) -> str:
     safe_vars = []
 
     # Extract variable declarations from :root or body blocks
-    block_pattern = r"(?::|body)\s*\{([^}]+)\}"
+    block_pattern = r"(?::root|body)\s*\{([^}]+)\}"
     blocks = re.findall(block_pattern, css, re.IGNORECASE | re.DOTALL)
 
     # Also handle bare variable declarations (without selector)
@@ -6177,10 +6174,10 @@ async def get_branding_settings() -> Dict[str, Any]:
                 "site_name": "VLog",
                 "logo_path": None,
                 "favicon_path": None,
-            "footer_text": None,
-            "footer_links": [],
-        }
-        _cached_branding_settings_time = now
+                "footer_text": None,
+                "footer_links": [],
+            }
+            _cached_branding_settings_time = now
 
     return _cached_branding_settings
 
@@ -6354,6 +6351,7 @@ async def upload_logo_image(
         async with _branding_cache_lock:
             global _cached_branding_settings
             _cached_branding_settings = None
+        reset_theme_settings_cache()
 
         return {
             "status": "ok",
@@ -6365,8 +6363,12 @@ async def upload_logo_image(
     except HTTPException:
         raise
     except Exception as e:
-        if temp_path.exists():
-            temp_path.unlink()
+        # Clean up temp file if it exists
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except (NameError, OSError):
+            pass  # temp_path not defined or cleanup failed
         logger.error(f"Failed to upload logo: {e}")
         raise HTTPException(status_code=500, detail="Failed to save logo image")
 
@@ -6408,6 +6410,7 @@ async def delete_logo_image(request: Request):
         async with _branding_cache_lock:
             global _cached_branding_settings
             _cached_branding_settings = None
+        reset_theme_settings_cache()
 
         return {"status": "ok", "message": "Logo deleted successfully"}
     except HTTPException:
@@ -6540,6 +6543,7 @@ async def upload_favicon(
         async with _branding_cache_lock:
             global _cached_branding_settings
             _cached_branding_settings = None
+        reset_theme_settings_cache()
 
         return {
             "status": "ok",
@@ -6551,8 +6555,12 @@ async def upload_favicon(
     except HTTPException:
         raise
     except Exception as e:
-        if temp_path.exists():
-            temp_path.unlink()
+        # Clean up temp file if it exists
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except (NameError, OSError):
+            pass  # temp_path not defined or cleanup failed
         logger.error(f"Failed to upload favicon: {e}")
         raise HTTPException(status_code=500, detail="Failed to save favicon")
 
@@ -6594,6 +6602,7 @@ async def delete_favicon(request: Request):
         async with _branding_cache_lock:
             global _cached_branding_settings
             _cached_branding_settings = None
+        reset_theme_settings_cache()
 
         return {"status": "ok", "message": "Favicon deleted successfully"}
     except HTTPException:
@@ -6783,6 +6792,10 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+    # Invalidate caches for branding/theme settings
+    if key.startswith("branding.") or key.startswith("theme.") or key.startswith("layout."):
+        reset_theme_settings_cache()
 
     # Audit log
     log_audit(

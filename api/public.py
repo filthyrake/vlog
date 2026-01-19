@@ -2550,6 +2550,18 @@ async def get_theme_settings() -> Dict[str, Any]:
     return _cached_theme_settings
 
 
+def reset_theme_settings_cache() -> None:
+    """
+    Reset the cached theme settings.
+
+    Should be called when branding/theme settings are updated via admin API
+    to ensure the public API reflects changes immediately.
+    """
+    global _cached_theme_settings, _cached_theme_settings_time
+    _cached_theme_settings = {}
+    _cached_theme_settings_time = 0
+
+
 @v1_router.get("/config/theme", summary="Get theme config", description="Get theme and branding configuration.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_theme_config(request: Request):
