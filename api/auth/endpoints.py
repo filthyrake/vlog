@@ -299,9 +299,16 @@ async def get_setup_status() -> SetupStatusResponse:
     Returns needs_setup=True if no users exist in the system.
     This endpoint is always public.
     """
-    user_count = await database.fetch_val(
-        "SELECT COUNT(*) FROM users"
-    )
+    try:
+        user_count = await database.fetch_val(
+            "SELECT COUNT(*) FROM users"
+        )
+    except Exception:
+        logger.exception("Database error checking setup status")
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again.",
+        )
 
     if user_count == 0:
         return SetupStatusResponse(
@@ -327,50 +334,68 @@ async def create_initial_admin(
     This endpoint only works when no users exist in the system.
     Once an admin is created, this endpoint returns 403.
     """
-    # Check if any users exist
-    user_count = await database.fetch_val(
-        "SELECT COUNT(*) FROM users"
-    )
-
-    if user_count > 0:
-        raise HTTPException(
-            status_code=403,
-            detail="Setup already complete. Use the admin panel to create additional users.",
-        )
-
-    # Validate password strength
+    # Validate password strength first (before any DB operations)
     is_valid, error = validate_password_strength(body.password)
     if not is_valid:
         raise HTTPException(status_code=400, detail=error)
 
-    # Check username uniqueness (probably not needed for first user, but good practice)
-    existing = await database.fetch_one(
-        users.select().where(users.c.username == body.username.lower())
-    )
-    if existing:
-        raise HTTPException(status_code=400, detail="Username already exists")
-
-    # Create admin user
     now = datetime.now(timezone.utc)
     user_id = str(uuid.uuid4())
     password_hash = hash_password(body.password)
-
-    await database.execute(
-        users.insert().values(
-            id=user_id,
-            username=body.username.lower(),
-            email=body.email.lower(),
-            password_hash=password_hash,
-            display_name=body.display_name,
-            role="admin",
-            status="active",
-            email_verified=True,
-            failed_login_attempts=0,
-            created_at=now,
-        )
-    )
-
     ip_address = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent")
+
+    # Use transaction to prevent TOCTOU race condition:
+    # - Check user count and insert atomically
+    # - Unique constraints on username/email handle concurrent requests
+    try:
+        async with database.transaction():
+            # Check if any users exist (within transaction)
+            user_count = await database.fetch_val(
+                "SELECT COUNT(*) FROM users"
+            )
+
+            if user_count > 0:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Setup already complete. Use the admin panel to create additional users.",
+                )
+
+            # Create admin user
+            await database.execute(
+                users.insert().values(
+                    id=user_id,
+                    username=body.username.lower(),
+                    email=body.email.lower(),
+                    password_hash=password_hash,
+                    display_name=body.display_name,
+                    role="admin",
+                    status="active",
+                    email_verified=True,
+                    failed_login_attempts=0,
+                    created_at=now,
+                )
+            )
+
+            # Create session within same transaction
+            session_token, refresh_token, expires_at, refresh_expires_at = (
+                await create_user_session(user_id, ip_address, user_agent)
+            )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (like the 403 above)
+        raise
+    except Exception as e:
+        # Handle unique constraint violations (concurrent setup attempts)
+        error_str = str(e).lower()
+        if "unique" in error_str or "duplicate" in error_str:
+            raise HTTPException(
+                status_code=403,
+                detail="Setup already complete. Use the admin panel to create additional users.",
+            )
+        logger.exception("Setup wizard failed")
+        raise HTTPException(status_code=500, detail="Failed to create admin account")
+
     security_logger.info(
         "Initial admin created via setup wizard",
         extra={
@@ -380,12 +405,6 @@ async def create_initial_admin(
             "email": body.email,
             "ip_address": ip_address,
         },
-    )
-
-    # Automatically log in the new admin
-    user_agent = request.headers.get("user-agent")
-    session_token, refresh_token, expires_at, refresh_expires_at = (
-        await create_user_session(user_id, ip_address, user_agent)
     )
 
     _set_session_cookies(
@@ -422,14 +441,21 @@ async def login(
     identifier_hash = hashlib.sha256(login_input.encode()).hexdigest()[:16]
 
     # Find user by email or username (case-insensitive)
-    user = await database.fetch_one(
-        users.select().where(
-            or_(
-                func.lower(users.c.email) == login_input,
-                func.lower(users.c.username) == login_input,
+    try:
+        user = await database.fetch_one(
+            users.select().where(
+                or_(
+                    func.lower(users.c.email) == login_input,
+                    func.lower(users.c.username) == login_input,
+                )
             )
         )
-    )
+    except Exception as e:
+        logger.exception("Database error during login user lookup")
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again.",
+        )
 
     if not user:
         # Constant-time comparison even when user doesn't exist
@@ -474,6 +500,17 @@ async def login(
                 status_code=429,
                 detail=f"Account locked. Try again in {remaining} minutes.",
             )
+        else:
+            # Lockout expired - clear it (non-blocking)
+            try:
+                await database.execute(
+                    users.update()
+                    .where(users.c.id == user["id"])
+                    .values(locked_until=None, failed_login_attempts=0)
+                )
+            except Exception as e:
+                # Log but continue - cleanup is non-critical
+                logger.warning("Failed to clear expired lockout: %s", str(e))
 
     # Verify password
     if not user["password_hash"]:
@@ -496,15 +533,16 @@ async def login(
         )
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Successful login
-    await _reset_failed_login(user["id"])
-
-    # Create session
+    # Successful login - create session first, then reset failed attempts
+    # (ensures atomic state: if session creation fails, login count stays)
     session_token, refresh_token, expires_at, refresh_expires_at = await create_user_session(
         user_id=user["id"],
         ip_address=ip_address,
         user_agent=user_agent,
     )
+
+    # Only reset failed login after session creation succeeds
+    await _reset_failed_login(user["id"])
 
     # Set cookies
     _set_session_cookies(response, session_token, refresh_token, expires_at, refresh_expires_at)
