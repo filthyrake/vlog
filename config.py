@@ -343,14 +343,88 @@ WORKER_API_KEY = os.getenv("VLOG_WORKER_API_KEY", "")
 # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
 WORKER_ADMIN_SECRET = os.getenv("VLOG_WORKER_ADMIN_SECRET", "")
 
-# Admin API secret for authentication (#234)
-# When set, all /api/ endpoints on the Admin API require X-Admin-Secret header
-# If empty/unset, Admin API endpoints are unauthenticated (for backwards compatibility)
+# Admin API secret for authentication (#234) - DEPRECATED
+# This is the legacy single-admin secret. Use user authentication (Issue #200) instead.
+# When set AND no users exist, enables legacy admin mode for backward compatibility.
 # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
 ADMIN_API_SECRET = os.getenv("VLOG_ADMIN_API_SECRET", "")
 # Session expiry for admin UI (hours). Sessions are stored server-side with HTTP-only cookies.
 # See: https://github.com/filthyrake/vlog/issues/324
 ADMIN_SESSION_EXPIRY_HOURS = get_int_env("VLOG_ADMIN_SESSION_EXPIRY_HOURS", 24, min_val=1)
+
+# =============================================================================
+# User Authentication Configuration (Issue #200)
+# Multi-user authentication with session-based browser auth, API keys, and RBAC
+# =============================================================================
+
+# Session Secret Key (REQUIRED in production)
+# Used for signing session tokens and CSRF tokens.
+# MUST be set in production - startup fails if not configured.
+# Generate with: openssl rand -base64 32
+SESSION_SECRET_KEY = os.getenv("VLOG_SESSION_SECRET_KEY", "")
+
+# Session expiry settings
+USER_SESSION_EXPIRY_HOURS = get_int_env("VLOG_SESSION_EXPIRY_HOURS", 24, min_val=1)
+USER_REFRESH_TOKEN_EXPIRY_DAYS = get_int_env("VLOG_REFRESH_EXPIRY_DAYS", 7, min_val=1)
+
+# Session grace period (seconds) - allow expired sessions briefly during refresh
+USER_SESSION_GRACE_SECONDS = get_int_env("VLOG_SESSION_GRACE_SECONDS", 30, min_val=0, max_val=300)
+
+# Maximum concurrent sessions per user
+USER_MAX_SESSIONS = get_int_env("VLOG_MAX_SESSIONS_PER_USER", 10, min_val=1, max_val=100)
+
+# Registration mode: "invite" (default), "open", or "disabled"
+# - invite: Users can only register via admin-generated invite links
+# - open: Anyone can register (use with caution)
+# - disabled: No new registrations allowed
+REGISTRATION_MODE = os.getenv("VLOG_REGISTRATION_MODE", "invite")
+
+# Invite expiry (days)
+INVITE_EXPIRY_DAYS = get_int_env("VLOG_INVITE_EXPIRY_DAYS", 7, min_val=1, max_val=90)
+
+# Password policy
+PASSWORD_MIN_LENGTH = get_int_env("VLOG_PASSWORD_MIN_LENGTH", 12, min_val=8, max_val=128)
+
+# Brute force protection
+LOGIN_LOCKOUT_THRESHOLD = get_int_env("VLOG_LOCKOUT_THRESHOLD", 5, min_val=1, max_val=20)
+LOGIN_LOCKOUT_DURATION_MINUTES = get_int_env("VLOG_LOCKOUT_DURATION_MINUTES", 30, min_val=1, max_val=1440)
+
+# Password reset token expiry (hours)
+PASSWORD_RESET_EXPIRY_HOURS = get_int_env("VLOG_PASSWORD_RESET_EXPIRY_HOURS", 1, min_val=1, max_val=24)
+
+# =============================================================================
+# OIDC Configuration (Issue #200)
+# Generic OpenID Connect for self-hosted identity providers
+# =============================================================================
+
+# Enable/disable OIDC authentication
+OIDC_ENABLED = os.getenv("VLOG_OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Display name for OIDC provider (shown on login button)
+OIDC_PROVIDER_NAME = os.getenv("VLOG_OIDC_PROVIDER_NAME", "SSO")
+
+# OIDC Discovery URL (e.g., https://keycloak.example.com/realms/vlog/.well-known/openid-configuration)
+OIDC_DISCOVERY_URL = os.getenv("VLOG_OIDC_DISCOVERY_URL", "")
+
+# OIDC Client credentials
+OIDC_CLIENT_ID = os.getenv("VLOG_OIDC_CLIENT_ID", "")
+OIDC_CLIENT_SECRET = os.getenv("VLOG_OIDC_CLIENT_SECRET", "")
+
+# OIDC Scopes (comma-separated)
+OIDC_SCOPES = os.getenv("VLOG_OIDC_SCOPES", "openid,profile,email")
+
+# Auto-create users on first OIDC login
+OIDC_AUTO_CREATE_USERS = os.getenv("VLOG_OIDC_AUTO_CREATE_USERS", "false").lower() in ("true", "1", "yes")
+
+# Default role for auto-created OIDC users
+OIDC_DEFAULT_ROLE = os.getenv("VLOG_OIDC_DEFAULT_ROLE", "viewer")
+
+# OIDC request timeout (seconds)
+OIDC_TIMEOUT_SECONDS = get_int_env("VLOG_OIDC_TIMEOUT_SECONDS", 10, min_val=1, max_val=60)
+
+# OIDC state expiry (minutes)
+OIDC_STATE_EXPIRY_MINUTES = get_int_env("VLOG_OIDC_STATE_EXPIRY_MINUTES", 10, min_val=1, max_val=30)
+
 WORKER_HEARTBEAT_INTERVAL = get_int_env("VLOG_WORKER_HEARTBEAT_INTERVAL", 30, min_val=1)
 WORKER_CLAIM_DURATION_MINUTES = get_int_env("VLOG_WORKER_CLAIM_DURATION", 30, min_val=1)
 WORKER_POLL_INTERVAL = get_int_env("VLOG_WORKER_POLL_INTERVAL", 10, min_val=1)

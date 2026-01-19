@@ -57,6 +57,8 @@ from api.database import (
     database,
     live_stream_segments,
     live_streams,
+    oidc_states,
+    password_reset_tokens,
     playback_sessions,
     playlist_items,
     playlists,
@@ -66,6 +68,10 @@ from api.database import (
     tags,
     transcoding_jobs,
     transcriptions,
+    user_api_keys,
+    user_invites,
+    user_sessions,
+    users,
     video_custom_fields,
     video_qualities,
     video_tags,
@@ -75,6 +81,13 @@ from api.database import (
     worker_api_keys,
     workers,
 )
+
+# User authentication module (Issue #200)
+from api.auth import endpoints as auth_endpoints
+from api.auth import users as auth_users
+from api.auth import api_keys as auth_api_keys
+from api.auth import invite as auth_invite
+from api.auth import oidc as auth_oidc
 from api.db_retry import (
     DatabaseLockedError,
     db_execute_with_retry,
@@ -227,6 +240,7 @@ from config import (
     ADMIN_PORT,
     ADMIN_SESSION_EXPIRY_HOURS,
     ANALYTICS_CACHE_ENABLED,
+    SESSION_SECRET_KEY,
     ANALYTICS_CACHE_STORAGE_URL,
     ANALYTICS_CACHE_TTL,
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
@@ -410,12 +424,78 @@ async def delete_admin_session(session_token: str) -> None:
 
 async def cleanup_expired_sessions() -> int:
     """
-    Delete expired sessions. Returns the number of sessions deleted.
-    Called periodically to clean up stale sessions.
+    Delete expired sessions and related auth tokens. Returns the total number of records deleted.
+    Called periodically to clean up stale authentication data.
+
+    Cleans up:
+    - Legacy admin_sessions (expired)
+    - User sessions (refresh token expired or revoked > 7 days ago)
+    - OIDC states (expired, unused)
+    - Password reset tokens (expired or used > 7 days ago)
     """
     now = datetime.now(timezone.utc)
+    total_deleted = 0
+    cutoff = now - timedelta(days=7)
+
+    # Clean up legacy admin sessions
     query = admin_sessions.delete().where(admin_sessions.c.expires_at < now)
-    return await database.execute(query)
+    result = await database.execute(query)
+    if result:
+        total_deleted += result
+
+    # Clean up user sessions (Issue #200)
+    # Delete sessions where:
+    # 1. Refresh token has expired (user can't renew session)
+    # 2. Session was revoked more than 7 days ago (audit trail retention)
+    try:
+        user_session_query = user_sessions.delete().where(
+            (user_sessions.c.refresh_expires_at < now)
+            | (
+                (user_sessions.c.revoked_at.isnot(None))
+                & (user_sessions.c.revoked_at < cutoff)
+            )
+        )
+        user_result = await database.execute(user_session_query)
+        if user_result:
+            total_deleted += user_result
+            logger.debug(f"Cleaned up {user_result} expired user sessions")
+    except Exception as e:
+        # Don't fail if user_sessions table doesn't exist yet (pre-migration)
+        logger.debug(f"User session cleanup skipped: {e}")
+
+    # Clean up expired OIDC states (Issue #200)
+    # These are single-use and should be deleted after expiry (10 minutes)
+    try:
+        oidc_states_query = oidc_states.delete().where(
+            oidc_states.c.expires_at < now
+        )
+        oidc_result = await database.execute(oidc_states_query)
+        if oidc_result:
+            total_deleted += oidc_result
+            logger.debug(f"Cleaned up {oidc_result} expired OIDC states")
+    except Exception as e:
+        logger.debug(f"OIDC states cleanup skipped: {e}")
+
+    # Clean up password reset tokens (Issue #200)
+    # Delete tokens where:
+    # 1. Token has expired
+    # 2. Token was used more than 7 days ago (audit trail retention)
+    try:
+        reset_tokens_query = password_reset_tokens.delete().where(
+            (password_reset_tokens.c.expires_at < now)
+            | (
+                (password_reset_tokens.c.used_at.isnot(None))
+                & (password_reset_tokens.c.used_at < cutoff)
+            )
+        )
+        reset_result = await database.execute(reset_tokens_query)
+        if reset_result:
+            total_deleted += reset_result
+            logger.debug(f"Cleaned up {reset_result} expired password reset tokens")
+    except Exception as e:
+        logger.debug(f"Password reset tokens cleanup skipped: {e}")
+
+    return total_deleted
 
 
 class AdminAuthMiddleware:
@@ -858,14 +938,14 @@ _session_cleanup_task: Optional[asyncio.Task] = None
 
 
 async def _periodic_session_cleanup():
-    """Background task to periodically clean up expired sessions."""
+    """Background task to periodically clean up expired sessions (admin and user)."""
     while True:
         try:
             # Run cleanup every hour
             await asyncio.sleep(3600)
             deleted = await cleanup_expired_sessions()
             if deleted:
-                logger.info(f"Cleaned up {deleted} expired admin sessions")
+                logger.info(f"Cleaned up {deleted} expired sessions")
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -879,6 +959,14 @@ async def lifespan(app: FastAPI):
 
     # Check for deprecated environment variables and warn about migration
     check_deprecated_env_vars()
+
+    # Validate SESSION_SECRET_KEY is set (required for user authentication)
+    # This is a critical security requirement - without it, session tokens cannot be signed
+    if not SESSION_SECRET_KEY or len(SESSION_SECRET_KEY) < 32:
+        raise RuntimeError(
+            "VLOG_SESSION_SECRET_KEY is required and must be at least 32 characters. "
+            "Generate with: openssl rand -base64 32"
+        )
 
     # Warn about in-memory rate limiting limitations (security issue #446)
     if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
@@ -925,7 +1013,7 @@ async def lifespan(app: FastAPI):
     # Clean up expired sessions on startup
     expired_count = await cleanup_expired_sessions()
     if expired_count:
-        logger.info(f"Cleaned up {expired_count} expired admin sessions on startup")
+        logger.info(f"Cleaned up {expired_count} expired sessions on startup")
 
     # Start background task for periodic session cleanup
     _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
@@ -10844,6 +10932,20 @@ async def delete_live_stream(request: Request, slug: str):
     )
 
     return {"status": "ok", "message": f"Stream '{slug}' deleted"}
+
+
+# =============================================================================
+# User Authentication Routers (Issue #200)
+# Mount auth routers before main v1_router mounting
+# =============================================================================
+
+# Include auth module routers in v1_router
+v1_router.include_router(auth_endpoints.router)
+v1_router.include_router(auth_users.router)
+v1_router.include_router(auth_api_keys.router)
+v1_router.include_router(auth_invite.router)
+v1_router.include_router(auth_oidc.router)
+logger.info("Mounted user authentication routers")
 
 
 # =============================================================================

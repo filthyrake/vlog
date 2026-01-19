@@ -881,6 +881,505 @@ def cmd_manifests(args):
             sys.exit(1)
 
 
+def cmd_auth(args):
+    """Authentication management commands."""
+    import asyncio
+    import getpass
+    import re
+
+    from api.database import configure_database, database
+
+    async def run_auth_command():
+        """Run the auth command with database connection."""
+        from api.database import users, user_sessions, user_api_keys
+        from api.auth.password import (
+            hash_password,
+            validate_password_strength,
+            generate_token,
+            hash_token,
+        )
+        from api.auth.permissions import Role
+        from datetime import datetime, timezone
+        import uuid
+
+        await configure_database()
+        await database.connect()
+
+        try:
+            if args.auth_command == "migrate":
+                # Check for existing migration
+                from api.database import settings as settings_table
+
+                existing = await database.fetch_one(
+                    settings_table.select().where(
+                        settings_table.c.key == "auth.migration_completed"
+                    )
+                )
+
+                if existing and existing["value"] == "true":
+                    if not args.force:
+                        print("Migration has already been completed.")
+                        print("Use --force to re-run migration (will create a new admin user).")
+                        return
+                    print("Force flag set - proceeding with migration...")
+
+                if args.check:
+                    print("DRY RUN - Checking migration status")
+                    print("=" * 50)
+
+                    # Check current state
+                    user_count = await database.fetch_val(
+                        "SELECT COUNT(*) FROM users"
+                    )
+                    print(f"Current users: {user_count}")
+
+                    video_count = await database.fetch_val(
+                        "SELECT COUNT(*) FROM videos WHERE owner_id IS NULL"
+                    )
+                    print(f"Videos without owner: {video_count}")
+
+                    session_count = await database.fetch_val(
+                        "SELECT COUNT(*) FROM admin_sessions"
+                    )
+                    print(f"Legacy admin sessions: {session_count}")
+
+                    print()
+                    print("Migration will:")
+                    print("  1. Create an admin user (you'll be prompted for credentials)")
+                    print("  2. Assign orphan videos to the new admin")
+                    print("  3. Invalidate all existing admin_sessions")
+                    print("  4. Mark migration as complete")
+                    return
+
+                # Prompt for admin credentials
+                print("User Authentication Migration")
+                print("=" * 50)
+                print()
+                print("Create the initial admin account:")
+                print()
+
+                # Get username
+                while True:
+                    username = input("Username: ").strip().lower()
+                    if len(username) < 3:
+                        print("Username must be at least 3 characters")
+                        continue
+                    if len(username) > 100:
+                        print("Username must be at most 100 characters")
+                        continue
+                    if not re.match(r'^[a-z0-9_-]+$', username):
+                        print("Username can only contain lowercase letters, numbers, underscores, and hyphens")
+                        continue
+                    # Check if exists
+                    existing_user = await database.fetch_one(
+                        users.select().where(users.c.username == username)
+                    )
+                    if existing_user:
+                        print("Username already exists")
+                        continue
+                    break
+
+                # Get email
+                while True:
+                    email = input("Email: ").strip().lower()
+                    if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', email):
+                        print("Invalid email format")
+                        continue
+                    existing_user = await database.fetch_one(
+                        users.select().where(users.c.email == email)
+                    )
+                    if existing_user:
+                        print("Email already exists")
+                        continue
+                    break
+
+                # Get password
+                while True:
+                    password = getpass.getpass("Password: ")
+                    is_valid, error = validate_password_strength(password)
+                    if not is_valid:
+                        print(f"Password error: {error}")
+                        continue
+                    password_confirm = getpass.getpass("Confirm password: ")
+                    if password != password_confirm:
+                        print("Passwords do not match")
+                        continue
+                    break
+
+                # Get display name (optional)
+                display_name = input("Display name (optional): ").strip() or None
+
+                print()
+                print("Creating admin user...")
+
+                # Start transaction
+                async with database.transaction():
+                    # Create admin user
+                    now = datetime.now(timezone.utc)
+                    user_id = str(uuid.uuid4())
+                    password_hash = hash_password(password)
+
+                    await database.execute(
+                        users.insert().values(
+                            id=user_id,
+                            username=username,
+                            email=email,
+                            password_hash=password_hash,
+                            display_name=display_name,
+                            role="admin",
+                            status="active",
+                            email_verified=True,
+                            created_at=now,
+                        )
+                    )
+                    print(f"  Created admin user: {username}")
+
+                    # Assign orphan videos
+                    from api.database import videos
+
+                    await database.execute(
+                        videos.update()
+                        .where(videos.c.owner_id.is_(None))
+                        .values(owner_id=user_id)
+                    )
+                    print(f"  Assigned orphan videos to admin")
+
+                    # Invalidate legacy sessions
+                    from api.database import admin_sessions
+
+                    await database.execute(admin_sessions.delete())
+                    print("  Invalidated legacy admin sessions")
+
+                    # Mark migration complete
+                    await database.execute(
+                        settings_table.insert().values(
+                            key="auth.migration_completed",
+                            value="true",
+                            updated_at=now,
+                        )
+                    )
+                    await database.execute(
+                        settings_table.insert().values(
+                            key="auth.migration_timestamp",
+                            value=now.isoformat(),
+                            updated_at=now,
+                        )
+                    )
+                    await database.execute(
+                        settings_table.insert().values(
+                            key="auth.migrated_by",
+                            value=user_id,
+                            updated_at=now,
+                        )
+                    )
+
+                print()
+                print("Migration completed successfully!")
+                print()
+                print("IMPORTANT: You can now remove VLOG_ADMIN_API_SECRET from your environment.")
+                print("New authentication uses user accounts instead.")
+
+            elif args.auth_command == "create-admin":
+                # Create additional admin user
+                print("Create Admin User")
+                print("=" * 50)
+                print()
+
+                # Get username
+                while True:
+                    username = input("Username: ").strip().lower()
+                    if len(username) < 3:
+                        print("Username must be at least 3 characters")
+                        continue
+                    existing = await database.fetch_one(
+                        users.select().where(users.c.username == username)
+                    )
+                    if existing:
+                        print("Username already exists")
+                        continue
+                    break
+
+                # Get email
+                while True:
+                    email = input("Email: ").strip().lower()
+                    if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', email):
+                        print("Invalid email format")
+                        continue
+                    existing = await database.fetch_one(
+                        users.select().where(users.c.email == email)
+                    )
+                    if existing:
+                        print("Email already exists")
+                        continue
+                    break
+
+                # Get password
+                while True:
+                    password = getpass.getpass("Password: ")
+                    is_valid, error = validate_password_strength(password)
+                    if not is_valid:
+                        print(f"Password error: {error}")
+                        continue
+                    password_confirm = getpass.getpass("Confirm password: ")
+                    if password != password_confirm:
+                        print("Passwords do not match")
+                        continue
+                    break
+
+                display_name = input("Display name (optional): ").strip() or None
+
+                now = datetime.now(timezone.utc)
+                user_id = str(uuid.uuid4())
+                password_hash = hash_password(password)
+
+                await database.execute(
+                    users.insert().values(
+                        id=user_id,
+                        username=username,
+                        email=email,
+                        password_hash=password_hash,
+                        display_name=display_name,
+                        role="admin",
+                        status="active",
+                        email_verified=True,
+                        created_at=now,
+                    )
+                )
+
+                print()
+                print(f"Admin user '{username}' created successfully!")
+
+            elif args.auth_command == "create-user":
+                # Create user with specified role
+                print("Create User")
+                print("=" * 50)
+                print()
+
+                # Validate role
+                role = args.role.lower()
+                valid_roles = [r.value for r in Role]
+                if role not in valid_roles:
+                    print(f"Invalid role. Must be one of: {', '.join(valid_roles)}")
+                    return
+
+                # Get username
+                while True:
+                    username = input("Username: ").strip().lower()
+                    if len(username) < 3:
+                        print("Username must be at least 3 characters")
+                        continue
+                    existing = await database.fetch_one(
+                        users.select().where(users.c.username == username)
+                    )
+                    if existing:
+                        print("Username already exists")
+                        continue
+                    break
+
+                # Get email
+                while True:
+                    email = input("Email: ").strip().lower()
+                    if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', email):
+                        print("Invalid email format")
+                        continue
+                    existing = await database.fetch_one(
+                        users.select().where(users.c.email == email)
+                    )
+                    if existing:
+                        print("Email already exists")
+                        continue
+                    break
+
+                # Get password
+                while True:
+                    password = getpass.getpass("Password: ")
+                    is_valid, error = validate_password_strength(password)
+                    if not is_valid:
+                        print(f"Password error: {error}")
+                        continue
+                    password_confirm = getpass.getpass("Confirm password: ")
+                    if password != password_confirm:
+                        print("Passwords do not match")
+                        continue
+                    break
+
+                display_name = input("Display name (optional): ").strip() or None
+
+                now = datetime.now(timezone.utc)
+                user_id = str(uuid.uuid4())
+                password_hash = hash_password(password)
+
+                await database.execute(
+                    users.insert().values(
+                        id=user_id,
+                        username=username,
+                        email=email,
+                        password_hash=password_hash,
+                        display_name=display_name,
+                        role=role,
+                        status="active",
+                        email_verified=True,
+                        created_at=now,
+                    )
+                )
+
+                print()
+                print(f"User '{username}' created successfully with role '{role}'!")
+
+            elif args.auth_command == "list-users":
+                # List all users
+                results = await database.fetch_all(
+                    users.select().order_by(users.c.created_at.desc())
+                )
+
+                if not results:
+                    print("No users found.")
+                    return
+
+                print(f"{'Username':<20} {'Email':<30} {'Role':<10} {'Status':<10} {'Created':<20}")
+                print("-" * 95)
+
+                for u in results:
+                    username = u["username"][:18]
+                    email = u["email"][:28]
+                    role = u["role"]
+                    status = u["status"]
+                    created = u["created_at"].strftime("%Y-%m-%d %H:%M")
+
+                    print(f"{username:<20} {email:<30} {role:<10} {status:<10} {created:<20}")
+
+                print()
+                print(f"Total: {len(results)} users")
+
+            elif args.auth_command == "reset-password":
+                # Force password reset
+                user = await database.fetch_one(
+                    users.select().where(
+                        (users.c.username == args.user)
+                        | (users.c.email == args.user)
+                    )
+                )
+
+                if not user:
+                    print(f"User '{args.user}' not found.")
+                    return
+
+                # Generate reset token
+                token = generate_token(32)
+                token_hash = hash_token(token)
+                now = datetime.now(timezone.utc)
+
+                from datetime import timedelta
+                from config import PASSWORD_RESET_EXPIRY_HOURS
+                from api.database import password_reset_tokens
+
+                expires_at = now + timedelta(hours=PASSWORD_RESET_EXPIRY_HOURS)
+                token_id = str(uuid.uuid4())
+
+                await database.execute(
+                    password_reset_tokens.insert().values(
+                        id=token_id,
+                        user_id=user["id"],
+                        token_hash=token_hash,
+                        expires_at=expires_at,
+                        created_at=now,
+                    )
+                )
+
+                # Invalidate all sessions
+                await database.execute(
+                    user_sessions.delete().where(user_sessions.c.user_id == user["id"])
+                )
+
+                print(f"Password reset initiated for {user['username']}.")
+                print(f"User has been logged out of all sessions.")
+                print()
+                print(f"Reset token (send to user): {token}")
+                print(f"Expires: {expires_at.isoformat()}")
+
+            elif args.auth_command == "disable-user":
+                # Disable user account
+                user = await database.fetch_one(
+                    users.select().where(
+                        (users.c.username == args.user)
+                        | (users.c.email == args.user)
+                    )
+                )
+
+                if not user:
+                    print(f"User '{args.user}' not found.")
+                    return
+
+                if user["status"] == "disabled":
+                    print(f"User '{user['username']}' is already disabled.")
+                    return
+
+                now = datetime.now(timezone.utc)
+
+                await database.execute(
+                    users.update()
+                    .where(users.c.id == user["id"])
+                    .values(status="disabled", updated_at=now)
+                )
+
+                # Invalidate all sessions
+                await database.execute(
+                    user_sessions.delete().where(user_sessions.c.user_id == user["id"])
+                )
+
+                # Revoke all API keys
+                await database.execute(
+                    user_api_keys.update()
+                    .where(user_api_keys.c.user_id == user["id"])
+                    .where(user_api_keys.c.revoked_at.is_(None))
+                    .values(revoked_at=now)
+                )
+
+                print(f"User '{user['username']}' has been disabled.")
+                print("All sessions and API keys have been revoked.")
+
+            elif args.auth_command == "enable-user":
+                # Enable disabled user account
+                user = await database.fetch_one(
+                    users.select().where(
+                        (users.c.username == args.user)
+                        | (users.c.email == args.user)
+                    )
+                )
+
+                if not user:
+                    print(f"User '{args.user}' not found.")
+                    return
+
+                if user["status"] == "active":
+                    print(f"User '{user['username']}' is already active.")
+                    return
+
+                now = datetime.now(timezone.utc)
+
+                await database.execute(
+                    users.update()
+                    .where(users.c.id == user["id"])
+                    .values(status="active", updated_at=now)
+                )
+
+                print(f"User '{user['username']}' has been enabled.")
+
+        finally:
+            await database.disconnect()
+
+    try:
+        asyncio.run(run_auth_command())
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
 def cmd_settings(args):
     """Settings management commands."""
     import asyncio
@@ -1113,6 +1612,61 @@ def main():
     worker_revoke.add_argument("worker_id", help="Worker ID (UUID) to revoke")
 
     worker_parser.set_defaults(func=cmd_worker)
+
+    # Auth management command
+    auth_parser = subparsers.add_parser("auth", help="Manage user authentication")
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
+
+    # auth migrate
+    auth_migrate = auth_subparsers.add_parser(
+        "migrate",
+        help="Migrate from admin secret to user authentication",
+    )
+    auth_migrate.add_argument(
+        "--check", action="store_true",
+        help="Dry-run: show what would happen without making changes"
+    )
+    auth_migrate.add_argument(
+        "--force", action="store_true",
+        help="Force re-migration (creates new admin user)"
+    )
+
+    # auth create-admin
+    auth_subparsers.add_parser("create-admin", help="Create an admin user")
+
+    # auth create-user
+    auth_create_user = auth_subparsers.add_parser("create-user", help="Create a user with specified role")
+    auth_create_user.add_argument(
+        "-r", "--role", required=True,
+        choices=["admin", "editor", "viewer"],
+        help="User role"
+    )
+
+    # auth list-users
+    auth_subparsers.add_parser("list-users", help="List all users")
+
+    # auth reset-password
+    auth_reset_password = auth_subparsers.add_parser(
+        "reset-password",
+        help="Force password reset for a user"
+    )
+    auth_reset_password.add_argument("user", help="Username or email")
+
+    # auth disable-user
+    auth_disable_user = auth_subparsers.add_parser(
+        "disable-user",
+        help="Disable a user account"
+    )
+    auth_disable_user.add_argument("user", help="Username or email")
+
+    # auth enable-user
+    auth_enable_user = auth_subparsers.add_parser(
+        "enable-user",
+        help="Enable a disabled user account"
+    )
+    auth_enable_user.add_argument("user", help="Username or email")
+
+    auth_parser.set_defaults(func=cmd_auth)
 
     # Settings management command
     settings_parser = subparsers.add_parser("settings", help="Manage database-backed settings")
