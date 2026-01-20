@@ -292,92 +292,193 @@ Response:
 
 ### Authentication
 
-The Admin API supports optional authentication via `VLOG_ADMIN_API_SECRET`:
+VLog uses multi-user authentication with role-based access control (RBAC). All admin API endpoints require authentication via one of the following methods:
 
-**API Key Authentication (for CLI/scripts):**
+**Session Authentication (Browser):**
+- HTTP-only cookies set via `/api/v1/auth/login`
+- Session expiry configurable via `VLOG_SESSION_EXPIRY_HOURS` (default: 24)
+- Secure cookies when `VLOG_SECURE_COOKIES=true` (requires HTTPS)
+- **CSRF Protection:** POST/PUT/DELETE/PATCH requests require `X-CSRF-Token` header
+
+**API Key Authentication (Programmatic):**
 ```
-X-Admin-Secret: your-secret-here
+Authorization: Bearer vlog_ak_xxxxxxxxxxxxx
 ```
 
-When `VLOG_ADMIN_API_SECRET` is set, all `/api/*` endpoints require this header.
+API keys are created per-user and inherit the user's role permissions.
 
-**Browser Session Authentication:**
+**Legacy Single-Admin Mode (Deprecated):**
 
-The Admin API also supports HTTP-only cookie sessions for browser-based access:
-- Sessions are created via the login endpoint below
-- Session expiry configurable via `VLOG_ADMIN_SESSION_EXPIRY_HOURS` (default: 24)
-- Sessions use secure cookies when `VLOG_SECURE_COOKIES=true` (requires HTTPS)
-- **CSRF Protection:** POST/PUT/DELETE/PATCH requests require `X-CSRF-Token` header when using session auth
+The `VLOG_ADMIN_API_SECRET` header authentication is deprecated. Migrate to multi-user auth.
 
 **Error Responses:**
-- `401 Unauthorized` - No authentication provided
-- `403 Forbidden` - Invalid secret, expired session, or missing/invalid CSRF token
+- `401 Unauthorized` - No authentication provided or invalid credentials
+- `403 Forbidden` - Insufficient permissions for the requested operation
 
-#### Login
+---
+
+### Setup Wizard
+
+The setup wizard creates the initial admin account. These endpoints are only available when no users exist.
+
+#### Check Setup Status
 ```
-POST /api/auth/login
+GET /api/v1/auth/setup
+```
+
+Response (needs setup):
+```json
+{
+  "needs_setup": true,
+  "message": "No users exist. Please create an admin account to get started."
+}
+```
+
+Response (setup complete):
+```json
+{
+  "needs_setup": false,
+  "message": "Setup complete. Please log in."
+}
+```
+
+#### Create Initial Admin
+```
+POST /api/v1/auth/setup
 ```
 
 Request body:
 ```json
 {
-  "password": "admin-password"
+  "username": "admin",
+  "email": "admin@example.com",
+  "password": "secure-password-12chars",
+  "display_name": "Administrator"
 }
 ```
-
-Response (success):
-```json
-{
-  "status": "ok",
-  "message": "Logged in successfully"
-}
-```
-
-Sets HTTP-only session cookie. The password is validated against `VLOG_ADMIN_PASSWORD`.
-
-#### Logout
-```
-POST /api/auth/logout
-```
-
-Clears the session cookie.
 
 Response:
 ```json
 {
-  "status": "ok",
+  "user_id": "uuid",
+  "username": "admin",
+  "email": "admin@example.com",
+  "message": "Admin account created successfully. You are now logged in."
+}
+```
+
+Sets session cookies automatically. Returns `403` if any users already exist.
+
+---
+
+### User Authentication
+
+#### Login
+```
+POST /api/v1/auth/login
+```
+
+Request body:
+```json
+{
+  "username_or_email": "user@example.com",
+  "password": "your-password",
+  "remember": false
+}
+```
+
+Response:
+```json
+{
+  "user_id": "uuid",
+  "username": "johndoe",
+  "email": "user@example.com",
+  "display_name": "John Doe",
+  "role": "editor",
+  "expires_at": "2024-01-16T10:30:00Z"
+}
+```
+
+Sets HTTP-only session cookies.
+
+**Error Responses:**
+- `401` - Invalid credentials
+- `429` - Account locked (too many failed attempts)
+
+#### Logout
+```
+POST /api/v1/auth/logout
+```
+
+Requires authentication.
+
+Response:
+```json
+{
   "message": "Logged out successfully"
 }
 ```
 
-#### Check Session
+#### Check Auth Status
 ```
-GET /api/auth/check
+GET /api/v1/auth/check
 ```
-
-Verify if current session is valid.
 
 Response (authenticated):
 ```json
 {
   "authenticated": true,
-  "session_expires_at": "2024-01-16T10:30:00Z"
+  "auth_required": true,
+  "auth_mode": "user",
+  "oidc_enabled": false,
+  "oidc_provider_name": "SSO",
+  "user": {
+    "id": "uuid",
+    "username": "johndoe",
+    "email": "user@example.com",
+    "display_name": "John Doe",
+    "role": "editor",
+    "avatar_url": null,
+    "permissions": ["video:create", "video:read", "video:update", "video:delete"]
+  }
 }
 ```
 
 Response (not authenticated):
 ```json
 {
-  "authenticated": false
+  "authenticated": false,
+  "auth_required": true,
+  "auth_mode": "user",
+  "oidc_enabled": false,
+  "oidc_provider_name": "SSO",
+  "user": null
+}
+```
+
+#### Refresh Session
+```
+POST /api/v1/auth/refresh
+```
+
+Rotates session tokens. The refresh token cookie is automatically sent.
+
+Response:
+```json
+{
+  "user_id": "uuid",
+  "username": "johndoe",
+  "email": "user@example.com",
+  "display_name": "John Doe",
+  "role": "editor",
+  "expires_at": "2024-01-16T10:30:00Z"
 }
 ```
 
 #### Get CSRF Token
 ```
-GET /api/auth/csrf-token
+GET /api/v1/auth/csrf-token
 ```
-
-Get a CSRF token for session-based authentication. Required for POST/PUT/DELETE/PATCH requests.
 
 Response:
 ```json
@@ -387,6 +488,448 @@ Response:
 ```
 
 Use this token in the `X-CSRF-Token` header for mutation requests.
+
+---
+
+### Profile Management
+
+#### Get Current User
+```
+GET /api/v1/auth/me
+```
+
+Response:
+```json
+{
+  "id": "uuid",
+  "username": "johndoe",
+  "email": "user@example.com",
+  "display_name": "John Doe",
+  "avatar_url": null,
+  "role": "editor",
+  "email_verified": true,
+  "created_at": "2024-01-15T10:30:00Z",
+  "last_login_at": "2024-01-15T12:00:00Z"
+}
+```
+
+#### Update Profile
+```
+PUT /api/v1/auth/me
+```
+
+Request body:
+```json
+{
+  "display_name": "New Name",
+  "avatar_url": "https://example.com/avatar.jpg"
+}
+```
+
+#### Change Password
+```
+POST /api/v1/auth/password
+```
+
+Request body:
+```json
+{
+  "current_password": "old-password",
+  "new_password": "new-secure-password"
+}
+```
+
+Response:
+```json
+{
+  "message": "Password updated successfully"
+}
+```
+
+---
+
+### Password Reset
+
+#### Request Password Reset
+```
+POST /api/v1/auth/forgot
+```
+
+Request body:
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Response:
+```json
+{
+  "message": "If an account exists with this email, a reset link has been sent"
+}
+```
+
+Always returns success to prevent email enumeration.
+
+#### Complete Password Reset
+```
+POST /api/v1/auth/reset
+```
+
+Request body:
+```json
+{
+  "token": "reset-token-from-email",
+  "new_password": "new-secure-password"
+}
+```
+
+Response:
+```json
+{
+  "message": "Password reset successfully. Please log in with your new password."
+}
+```
+
+---
+
+### Session Management
+
+#### List Active Sessions
+```
+GET /api/v1/auth/sessions
+```
+
+Response:
+```json
+[
+  {
+    "id": "session-uuid",
+    "ip_address": "192.168.1.1",
+    "user_agent": "Mozilla/5.0...",
+    "created_at": "2024-01-15T10:30:00Z",
+    "expires_at": "2024-01-16T10:30:00Z",
+    "is_current": true
+  }
+]
+```
+
+#### Revoke Session
+```
+DELETE /api/v1/auth/sessions/{session_id}
+```
+
+Response:
+```json
+{
+  "message": "Session revoked"
+}
+```
+
+---
+
+### User Management (Admin Only)
+
+Requires `user:read`, `user:create`, `user:update`, or `user:delete` permissions.
+
+#### List Users
+```
+GET /api/v1/users
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| limit | int | 50 | Max items (1-100) |
+| offset | int | 0 | Pagination offset |
+| role | string | null | Filter by role: admin, editor, viewer |
+| status | string | null | Filter by status: active, disabled, pending |
+| search | string | null | Search username/email/display_name |
+
+Response:
+```json
+{
+  "users": [
+    {
+      "id": "uuid",
+      "username": "johndoe",
+      "email": "john@example.com",
+      "display_name": "John Doe",
+      "avatar_url": null,
+      "role": "editor",
+      "status": "active",
+      "email_verified": true,
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": null,
+      "last_login_at": "2024-01-15T12:00:00Z"
+    }
+  ],
+  "total": 10,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+#### Create User
+```
+POST /api/v1/users
+```
+
+Request body:
+```json
+{
+  "username": "newuser",
+  "email": "newuser@example.com",
+  "password": "secure-password-12chars",
+  "display_name": "New User",
+  "role": "editor"
+}
+```
+
+**Roles:**
+- `admin` - Full system access including user management
+- `editor` - Upload and manage own videos, view own analytics
+- `viewer` - Browse and watch videos (for private instances)
+
+#### Get User
+```
+GET /api/v1/users/{user_id}
+```
+
+#### Update User
+```
+PUT /api/v1/users/{user_id}
+```
+
+Request body:
+```json
+{
+  "username": "newusername",
+  "email": "newemail@example.com",
+  "display_name": "Updated Name",
+  "avatar_url": "https://example.com/avatar.jpg",
+  "role": "admin",
+  "status": "active"
+}
+```
+
+All fields are optional. Cannot change your own role or disable yourself.
+
+#### Delete User
+```
+DELETE /api/v1/users/{user_id}
+```
+
+Soft-deletes (disables) the user and invalidates all sessions.
+
+Response:
+```json
+{
+  "message": "User disabled"
+}
+```
+
+#### Force Password Reset
+```
+POST /api/v1/users/{user_id}/reset-password
+```
+
+Generates a password reset token and invalidates all user sessions.
+
+Response:
+```json
+{
+  "message": "Password reset initiated. User has been logged out and will receive a reset email."
+}
+```
+
+---
+
+### API Key Management
+
+Users can create API keys for programmatic access. Keys inherit the user's role permissions.
+
+#### List API Keys
+```
+GET /api/v1/api-keys
+```
+
+Response:
+```json
+{
+  "keys": [
+    {
+      "id": "key-uuid",
+      "name": "CI/CD Pipeline",
+      "key_prefix": "vlog_ak_abc...",
+      "expires_at": "2024-04-15T10:30:00Z",
+      "last_used_at": "2024-01-15T12:00:00Z",
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+#### Create API Key
+```
+POST /api/v1/api-keys
+```
+
+Request body:
+```json
+{
+  "name": "CI/CD Pipeline",
+  "expires_in_days": 90
+}
+```
+
+Response (key shown only once):
+```json
+{
+  "id": "key-uuid",
+  "name": "CI/CD Pipeline",
+  "key": "vlog_ak_xxxxxxxxxxxxx",
+  "key_prefix": "vlog_ak_xxx...",
+  "expires_at": "2024-04-15T10:30:00Z",
+  "created_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**Important:** Store the `key` value securely - it cannot be retrieved again.
+
+#### Get API Key
+```
+GET /api/v1/api-keys/{key_id}
+```
+
+#### Revoke API Key
+```
+DELETE /api/v1/api-keys/{key_id}
+```
+
+Response:
+```json
+{
+  "message": "API key revoked"
+}
+```
+
+---
+
+### Invite Management (Admin Only)
+
+For invite-only registration mode. Requires `invite:read`, `invite:create`, or `invite:delete` permissions.
+
+#### List Invites
+```
+GET /api/v1/invites
+```
+
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| pending_only | bool | true | Only show unused, non-expired invites |
+
+Response:
+```json
+{
+  "invites": [
+    {
+      "id": "invite-uuid",
+      "email": "newuser@example.com",
+      "role": "editor",
+      "expires_at": "2024-01-22T10:30:00Z",
+      "created_at": "2024-01-15T10:30:00Z",
+      "used_at": null
+    }
+  ],
+  "total": 1
+}
+```
+
+#### Create Invite
+```
+POST /api/v1/invites
+```
+
+Request body:
+```json
+{
+  "email": "newuser@example.com",
+  "role": "editor",
+  "expires_in_days": 7
+}
+```
+
+Response:
+```json
+{
+  "id": "invite-uuid",
+  "email": "newuser@example.com",
+  "role": "editor",
+  "token": "invite-token",
+  "invite_url": "/accept-invite?token=...",
+  "expires_at": "2024-01-22T10:30:00Z",
+  "created_at": "2024-01-15T10:30:00Z"
+}
+```
+
+Send the `invite_url` to the user.
+
+#### Revoke Invite
+```
+DELETE /api/v1/invites/{invite_id}
+```
+
+Response:
+```json
+{
+  "message": "Invite revoked"
+}
+```
+
+#### Validate Invite (Public)
+```
+GET /api/v1/invites/validate/{token}
+```
+
+Response:
+```json
+{
+  "valid": true,
+  "email": "newuser@example.com",
+  "role": "editor",
+  "expires_at": "2024-01-22T10:30:00Z"
+}
+```
+
+#### Accept Invite (Public)
+```
+POST /api/v1/invites/accept/{token}
+```
+
+Request body:
+```json
+{
+  "username": "newuser",
+  "password": "secure-password-12chars",
+  "display_name": "New User"
+}
+```
+
+Response:
+```json
+{
+  "user_id": "uuid",
+  "username": "newuser",
+  "email": "newuser@example.com",
+  "role": "editor",
+  "message": "Account created successfully. You can now log in."
+}
+```
+
+---
 
 ### Health Check
 

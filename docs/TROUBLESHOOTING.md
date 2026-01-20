@@ -449,21 +449,132 @@ vlog worker status
 
 ## Admin UI Issues
 
+### Setup Wizard Not Appearing
+
+**Symptom:** Expected setup wizard but see login page instead
+
+**Causes and Solutions:**
+
+1. **Users already exist**
+   ```bash
+   # Check if users exist
+   psql -U vlog -d vlog -c "SELECT COUNT(*) FROM users"
+   ```
+   If users exist, the setup wizard is skipped. Log in with an existing account.
+
+2. **Database migration issue**
+   ```bash
+   # Check users table exists
+   psql -U vlog -d vlog -c "\\dt users"
+   # Run migrations if needed
+   python api/database.py
+   ```
+
 ### Login Not Working
 
 **Symptom:** Can't log into Admin UI
 
 **Causes and Solutions:**
 
-1. **Wrong secret**
+1. **Incorrect credentials**
+   - Verify username/email is correct
+   - Password is case-sensitive
+
+2. **Account locked (too many failed attempts)**
    ```bash
-   # Verify secret is set
-   grep ADMIN_API_SECRET /etc/systemd/system/vlog-admin.service
+   # Check account status
+   psql -U vlog -d vlog -c "SELECT username, status, failed_login_count, locked_until FROM users WHERE username = 'your_user'"
+
+   # Unlock account (if needed)
+   psql -U vlog -d vlog -c "UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE username = 'your_user'"
    ```
 
-2. **Cookie issues**
+3. **Session secret not set**
+   ```bash
+   # Verify VLOG_SESSION_SECRET_KEY is set
+   grep SESSION_SECRET_KEY /etc/systemd/system/vlog-admin.service
+   ```
+
+4. **Cookie issues**
    - Clear browser cookies
-   - Check secure cookie setting matches HTTPS usage
+   - Check `VLOG_SECURE_COOKIES` matches your HTTPS setup:
+     - Set `VLOG_SECURE_COOKIES=false` for HTTP (development only)
+     - Set `VLOG_SECURE_COOKIES=true` for HTTPS (production)
+
+5. **OIDC login failing**
+   - Verify OIDC discovery URL is accessible
+   - Check client ID and secret are correct
+   - Ensure callback URL matches: `https://your-domain/api/v1/auth/oidc/callback`
+
+### Account Disabled
+
+**Symptom:** Login fails with "Account disabled" error
+
+**Solution:**
+```bash
+# Re-enable the account
+psql -U vlog -d vlog -c "UPDATE users SET status = 'active' WHERE username = 'your_user'"
+```
+
+### Password Reset Not Working
+
+**Symptom:** Password reset email not received
+
+**Causes and Solutions:**
+
+1. **Email not configured**
+   - VLog doesn't send emails directly
+   - Configure external email or share reset link manually
+
+2. **Reset token expired**
+   - Tokens expire after 24 hours (configurable via `VLOG_PASSWORD_RESET_EXPIRY_HOURS`)
+   - Request a new reset
+
+3. **Admin force reset**
+   ```bash
+   # Generate new password hash
+   python -c "from api.auth.password import hash_password; print(hash_password('new-password-here'))"
+
+   # Update in database
+   psql -U vlog -d vlog -c "UPDATE users SET password_hash = 'HASH_FROM_ABOVE' WHERE username = 'your_user'"
+   ```
+
+### API Key Authentication Not Working
+
+**Symptom:** API calls with `Authorization: Bearer` header fail
+
+**Causes and Solutions:**
+
+1. **Key revoked or expired**
+   ```bash
+   # Check key status
+   psql -U vlog -d vlog -c "SELECT key_prefix, expires_at, revoked_at FROM user_api_keys WHERE key_prefix LIKE 'vlog_ak_%'"
+   ```
+
+2. **Wrong header format**
+   - Must be: `Authorization: Bearer vlog_ak_xxxxx`
+   - Not: `X-API-Key: vlog_ak_xxxxx`
+
+3. **Key has insufficient permissions**
+   - API keys inherit the creating user's role
+   - Check user's role has required permission
+
+### Session Expired
+
+**Symptom:** Logged out unexpectedly
+
+**Causes and Solutions:**
+
+1. **Session timeout**
+   - Default session expires after 24 hours
+   - Configure `VLOG_SESSION_EXPIRY_HOURS` for longer sessions
+
+2. **Maximum sessions reached**
+   - Users limited to 10 concurrent sessions by default
+   - Revoke old sessions via profile menu
+
+3. **Admin revoked your session**
+   - Contact administrator
 
 ### Settings Not Saving
 

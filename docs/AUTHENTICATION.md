@@ -402,55 +402,63 @@ API keys inherit permissions from the user's role. A key created by an editor ha
 
 ---
 
+## Initial Setup
+
+When VLog starts with no users in the database, it enters setup mode. The setup wizard allows you to create the first admin account.
+
+### Setup Wizard Flow
+
+1. **Check Setup Status**
+   - Navigate to the admin UI or call `GET /api/v1/auth/setup`
+   - If no users exist, you'll see the setup wizard
+
+2. **Create Admin Account**
+   - Provide username, email, password (min 12 characters), and display name
+   - The first user is automatically assigned the `admin` role
+   - You'll be logged in automatically after creation
+
+3. **Configure Registration Mode**
+   - Set `VLOG_REGISTRATION_MODE` to control how new users join:
+     - `invite` (default) - Users must be invited by admin
+     - `open` - Anyone can register (not recommended for private instances)
+     - `disabled` - No new registrations
+
+### Setup via API
+
+```bash
+# Check if setup is needed
+curl http://localhost:9001/api/v1/auth/setup
+
+# Create initial admin
+curl -X POST http://localhost:9001/api/v1/auth/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "email": "admin@example.com",
+    "password": "secure-password-12chars",
+    "display_name": "Administrator"
+  }'
+```
+
+---
+
 ## Migration from Admin Secret
 
 If you're upgrading from an older VLog version that used `VLOG_ADMIN_API_SECRET`:
 
-### 1. Run Migration Command
-
-```bash
-vlog auth migrate
-```
-
-This will:
-- Prompt you to create the initial admin user
-- Assign existing videos to the new admin
-- Invalidate old admin sessions
-
-### 2. Remove Old Configuration
-
-After migration, remove `VLOG_ADMIN_API_SECRET` from your environment.
-
-### 3. Set Session Secret
+### 1. Set Session Secret
 
 ```bash
 export VLOG_SESSION_SECRET_KEY=$(openssl rand -base64 32)
 ```
 
-### Migration Commands
+### 2. Create Admin via Setup Wizard
 
-```bash
-# Dry-run (see what would happen)
-vlog auth migrate --check
+On first access to the admin UI (or via API), you'll be prompted to create an admin account. This replaces the legacy single-admin authentication.
 
-# Force re-migration (if previous attempt failed)
-vlog auth migrate --force
+### 3. Remove Old Configuration
 
-# Create additional admin
-vlog auth create-admin
-
-# Create user with specific role
-vlog auth create-user --username editor1 --role editor
-
-# List users
-vlog auth list-users
-
-# Force password reset
-vlog auth reset-password --username johndoe
-
-# Disable user
-vlog auth disable-user --username badactor
-```
+After creating your admin account, remove `VLOG_ADMIN_API_SECRET` from your environment. The legacy authentication will continue to work for backwards compatibility but is deprecated.
 
 ---
 
