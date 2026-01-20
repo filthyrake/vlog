@@ -40,22 +40,45 @@ All settings support environment variable configuration. Set these in your shell
 | `VLOG_WORKER_API_PORT` | `9002` | Worker API port (remote worker coordination) |
 | `VLOG_WORKER_HEALTH_PORT` | `8080` | HTTP health server port for K8s liveness/readiness probes |
 
-### Admin Authentication
+### User Authentication
+
+VLog supports multi-user authentication with role-based access control (RBAC).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_ADMIN_API_SECRET` | (none) | Secret for API key authentication (X-Admin-Secret header) |
-| `VLOG_ADMIN_SESSION_EXPIRY_HOURS` | `24` | Browser session expiry in hours |
+| `VLOG_SESSION_SECRET_KEY` | (none) | **Required.** Secret for signing session tokens |
+| `VLOG_SESSION_EXPIRY_HOURS` | `24` | Session expiry in hours |
+| `VLOG_REFRESH_EXPIRY_DAYS` | `7` | Refresh token expiry in days |
+| `VLOG_REGISTRATION_MODE` | `invite` | Registration mode: invite, open, disabled |
+| `VLOG_SECURE_COOKIES` | `true` | Use secure cookies (HTTPS only) |
+| `VLOG_INVITE_EXPIRY_DAYS` | `7` | Default invite expiration in days |
 
-**Admin Authentication:**
-- When `VLOG_ADMIN_API_SECRET` is set, all admin API endpoints require authentication
-- CLI commands automatically use this secret when set
-- Browser sessions use HTTP-only cookies for security
+**Registration Modes:**
+- `invite` - Users must be invited by an admin (recommended)
+- `open` - Anyone can register (not recommended for private instances)
+- `disabled` - No new registrations allowed
 
-Generate a secret:
+**Security Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_LOCKOUT_THRESHOLD` | `5` | Failed login attempts before lockout |
+| `VLOG_LOCKOUT_DURATION_MINUTES` | `30` | Account lockout duration |
+| `VLOG_PASSWORD_RESET_EXPIRY_HOURS` | `1` | Password reset token expiry |
+
+Generate a session secret:
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+openssl rand -base64 32
 ```
+
+**Legacy Authentication (Deprecated):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_ADMIN_API_SECRET` | (none) | Deprecated. Use multi-user auth instead |
+| `VLOG_ADMIN_SESSION_EXPIRY_HOURS` | `24` | Deprecated. Use VLOG_SESSION_EXPIRY_HOURS |
+
+The legacy single-admin authentication via `VLOG_ADMIN_API_SECRET` is deprecated. Migrate to multi-user auth by running the setup wizard.
 
 ### Soft-Delete Settings
 
