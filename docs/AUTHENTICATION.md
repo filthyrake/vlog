@@ -78,16 +78,16 @@ VLOG_OIDC_DEFAULT_ROLE=viewer            # Role for auto-created users
 VLOG_OIDC_TIMEOUT_SECONDS=10             # Request timeout
 ```
 
-### Database Settings
+### Additional Security Settings
 
-Additional settings stored in the database:
+These settings are configured via environment variables:
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `auth.password_min_length` | 12 | Minimum password length |
-| `auth.lockout_threshold` | 5 | Failed login attempts before lockout |
-| `auth.lockout_duration_minutes` | 30 | Account lockout duration |
-| `auth.max_sessions_per_user` | 10 | Maximum concurrent sessions |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLOG_PASSWORD_MIN_LENGTH` | 12 | Minimum password length |
+| `VLOG_LOCKOUT_THRESHOLD` | 5 | Failed login attempts before lockout |
+| `VLOG_LOCKOUT_DURATION_MINUTES` | 30 | Account lockout duration |
+| `VLOG_MAX_SESSIONS_PER_USER` | 10 | Maximum concurrent sessions |
 
 ---
 
@@ -110,14 +110,12 @@ Content-Type: application/json
 Response (success):
 ```json
 {
-  "user": {
-    "id": "uuid",
-    "username": "johndoe",
-    "email": "user@example.com",
-    "display_name": "John Doe",
-    "role": "editor",
-    "permissions": ["video:create", "video:read", ...]
-  }
+  "user_id": "uuid",
+  "username": "johndoe",
+  "email": "user@example.com",
+  "display_name": "John Doe",
+  "role": "editor",
+  "expires_at": "2024-01-16T10:30:00Z"
 }
 ```
 
@@ -177,9 +175,11 @@ Content-Type: application/json
 
 {
   "display_name": "New Name",
-  "email": "new@example.com"
+  "avatar_url": "https://example.com/avatar.jpg"
 }
 ```
+
+Note: Email cannot be changed via this endpoint. Contact an admin to update your email.
 
 #### Change Password
 
@@ -372,10 +372,13 @@ Response:
   "id": "invite-uuid",
   "email": "newuser@example.com",
   "role": "editor",
-  "invite_url": "https://your-vlog.com/invite/abc123...",
+  "token": "abc123...",
+  "invite_url": "/accept-invite?token=abc123...",
   "expires_at": "2024-01-22T10:30:00Z"
 }
 ```
+
+Note: The `invite_url` is a relative path. Prepend your server's base URL when sharing with users.
 
 #### Revoke Invite
 

@@ -48,7 +48,7 @@ VLog supports multi-user authentication with role-based access control (RBAC).
 |----------|---------|-------------|
 | `VLOG_SESSION_SECRET_KEY` | (none) | **Required.** Secret for signing session tokens |
 | `VLOG_SESSION_EXPIRY_HOURS` | `24` | Session expiry in hours |
-| `VLOG_REFRESH_TOKEN_EXPIRY_DAYS` | `7` | Refresh token expiry in days |
+| `VLOG_REFRESH_EXPIRY_DAYS` | `7` | Refresh token expiry in days |
 | `VLOG_REGISTRATION_MODE` | `invite` | Registration mode: invite, open, disabled |
 | `VLOG_SECURE_COOKIES` | `true` | Use secure cookies (HTTPS only) |
 | `VLOG_INVITE_EXPIRY_DAYS` | `7` | Default invite expiration in days |
@@ -62,9 +62,9 @@ VLog supports multi-user authentication with role-based access control (RBAC).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_LOGIN_LOCKOUT_THRESHOLD` | `5` | Failed login attempts before lockout |
-| `VLOG_LOGIN_LOCKOUT_DURATION_MINUTES` | `30` | Account lockout duration |
-| `VLOG_PASSWORD_RESET_EXPIRY_HOURS` | `24` | Password reset token expiry |
+| `VLOG_LOCKOUT_THRESHOLD` | `5` | Failed login attempts before lockout |
+| `VLOG_LOCKOUT_DURATION_MINUTES` | `30` | Account lockout duration |
+| `VLOG_PASSWORD_RESET_EXPIRY_HOURS` | `1` | Password reset token expiry |
 
 Generate a session secret:
 ```bash

@@ -875,7 +875,7 @@ Response:
 }
 ```
 
-Send the `invite_url` to the user.
+Send the `invite_url` to the user. Note: The URL is relative; prepend your server's base URL.
 
 #### Revoke Invite
 ```

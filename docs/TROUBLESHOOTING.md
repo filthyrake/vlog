@@ -483,10 +483,10 @@ vlog worker status
 2. **Account locked (too many failed attempts)**
    ```bash
    # Check account status
-   psql -U vlog -d vlog -c "SELECT username, status, failed_login_count, locked_until FROM users WHERE username = 'your_user'"
+   psql -U vlog -d vlog -c "SELECT username, status, failed_login_attempts, locked_until FROM users WHERE username = 'your_user'"
 
    # Unlock account (if needed)
-   psql -U vlog -d vlog -c "UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE username = 'your_user'"
+   psql -U vlog -d vlog -c "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE username = 'your_user'"
    ```
 
 3. **Session secret not set**
