@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Tuple
 
 from api.enums import PlaylistValidation
 from api.job_queue import JobDispatch, JobQueue
+from api.logging_config import setup_logging
 
 # Import code version for compatibility checking
 from code_version import CODE_VERSION
@@ -89,8 +90,6 @@ if WORKER_STREAMING_UPLOAD:
     )
 
 # Initialize structured logging (Issue #208) - must be before any getLogger() calls
-from api.logging_config import setup_logging
-
 setup_logging()
 
 logger = logging.getLogger(__name__)

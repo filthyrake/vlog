@@ -31,10 +31,9 @@ import asyncpg
 import psutil
 
 import config
-
-# Initialize structured logging (Issue #208) - must be before any getLogger() calls
 from api.logging_config import setup_logging
 
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
 setup_logging()
 
 # Stale job threshold - jobs processing for longer than this are considered stale

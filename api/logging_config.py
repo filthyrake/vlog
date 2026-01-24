@@ -34,6 +34,9 @@ from typing import Any, Dict, Optional
 
 from pythonjsonlogger import jsonlogger
 
+# Flag to prevent duplicate logging setup
+_logging_configured = False
+
 # Context variables for request-scoped logging
 # These are automatically included in log records when set
 request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
@@ -147,13 +150,14 @@ class VLogJsonFormatter(jsonlogger.JsonFormatter):
             return super().format(record)
         except Exception as e:
             # Fallback to simple format if JSON formatting fails
+            # Use getMessage() to get the fully formatted message with args
             return json.dumps(
                 {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "level": "ERROR",
                     "logger": "logging_config",
                     "message": f"Failed to format log record: {e}",
-                    "original_message": str(record.msg),
+                    "original_message": record.getMessage(),
                 },
                 cls=SafeJSONEncoder,
             )
@@ -171,6 +175,34 @@ class VLogTextFormatter(logging.Formatter):
             fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
+
+
+class SecureRotatingFileHandler(RotatingFileHandler):
+    """
+    RotatingFileHandler that ensures log files have restrictive permissions.
+
+    Per Bruce's security review: Log files should be created with 0o600 permissions
+    (owner read/write only) to prevent unauthorized access to potentially sensitive
+    log data. This handler overrides _open() to ensure permissions are set correctly
+    on both the initial file and rotated files.
+    """
+
+    def _open(self):
+        """Open the log file with secure permissions."""
+        # Open the file normally first
+        stream = super()._open()
+
+        # Ensure file has restrictive permissions (0o600 = owner read/write only)
+        # This handles both new files and rotated files
+        try:
+            import os
+
+            os.chmod(self.baseFilename, 0o600)
+        except OSError:
+            # If we can't set permissions (e.g., not owner), log continues to work
+            pass
+
+        return stream
 
 
 def set_request_context(
@@ -265,6 +297,7 @@ def setup_logging(
     Initialize logging configuration.
 
     Should be called once at application startup, before creating the FastAPI app.
+    This function is idempotent - multiple calls will be ignored after the first.
     Reads configuration from parameters or falls back to config module.
 
     Args:
@@ -278,6 +311,12 @@ def setup_logging(
     Raises:
         ValueError: If log_format is not "json" or "text"
     """
+    global _logging_configured
+
+    # Idempotency check - avoid reconfiguring logging multiple times
+    if _logging_configured:
+        return
+
     # Import config lazily to avoid circular imports
     import config as cfg
 
@@ -305,8 +344,13 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(_get_numeric_level(log_level))
 
-    # Remove existing handlers to avoid duplicate logs
-    root_logger.handlers.clear()
+    # Close and remove existing handlers to avoid duplicate logs and file descriptor leaks
+    for handler in root_logger.handlers[:]:
+        try:
+            handler.close()
+        except Exception:
+            pass  # Ignore errors during cleanup
+        root_logger.removeHandler(handler)
 
     # Console handler (stdout)
     console_handler = logging.StreamHandler(sys.stdout)
@@ -320,12 +364,9 @@ def setup_logging(
         # Create parent directories if needed
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create file with restrictive permissions (Bruce's security review)
-        # 0o600 = owner read/write only
-        if not log_path.exists():
-            log_path.touch(mode=0o600)
-
-        file_handler = RotatingFileHandler(
+        # Use SecureRotatingFileHandler to ensure 0o600 permissions on all log files
+        # including rotated files (per Bruce's security review)
+        file_handler = SecureRotatingFileHandler(
             filename=log_file,
             maxBytes=log_file_max_bytes,
             backupCount=log_file_backup_count,
@@ -343,6 +384,9 @@ def setup_logging(
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # Mark as configured to prevent duplicate setup
+    _logging_configured = True
 
     # Log startup info
     logger = logging.getLogger(__name__)
