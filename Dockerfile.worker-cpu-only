@@ -75,6 +75,12 @@ WORKDIR /app
 # Copy installed Python packages from builder
 COPY --from=builder /install /usr/local
 
+# Ensure security-patched packages are at correct versions
+RUN pip install --no-cache-dir --upgrade \
+    "filelock>=3.20.3" \
+    "jaraco-context>=6.1.0" \
+    "wheel>=0.46.2"
+
 # Copy source code
 COPY --chown=vlog:vlog pyproject.toml ./
 COPY --chown=vlog:vlog config.py ./

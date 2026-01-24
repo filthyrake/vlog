@@ -132,7 +132,11 @@ from api.live_schemas import (
     PublicLiveStreamListResponse,
     PublicLiveStreamResponse,
 )
+from api.logging_config import setup_logging
 from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
+
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+setup_logging()
 
 logger = logging.getLogger(__name__)
 

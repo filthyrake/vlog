@@ -31,17 +31,16 @@ import asyncpg
 import psutil
 
 import config
+from api.logging_config import setup_logging
+
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+setup_logging()
 
 # Stale job threshold - jobs processing for longer than this are considered stale
 STALE_JOB_THRESHOLD_HOURS = 2
 # How often to check for stale jobs (seconds)
 STALE_JOB_CHECK_INTERVAL = 300  # 5 minutes
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger("sprite_generator")
 
 

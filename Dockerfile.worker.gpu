@@ -129,7 +129,8 @@ COPY --from=builder /install /usr/local
 # (dnf-installed Python packages may have brought in older transitive deps)
 RUN pip3 install --no-cache-dir --upgrade \
     "filelock>=3.20.3" \
-    "jaraco-context>=6.1.0"
+    "jaraco-context>=6.1.0" \
+    "wheel>=0.46.2"
 
 # Copy source code
 COPY --chown=vlog:vlog config.py ./

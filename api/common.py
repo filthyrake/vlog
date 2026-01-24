@@ -22,6 +22,11 @@ if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 from api.database import database
+from api.logging_config import (
+    clear_request_context,
+    sanitize_user_agent,
+    set_request_context,
+)
 from config import (
     STORAGE_CHECK_TIMEOUT,
     TRUSTED_PROXIES,
@@ -174,9 +179,13 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     - Correlating logs across multiple services
     - Tracing requests through the entire request lifecycle
     - Debugging production issues by filtering logs by request ID
+    - Automatic inclusion of request context in structured JSON logs (Issue #208)
     """
 
     async def dispatch(self, request: Request, call_next):
+        # Defensive: clear any leaked context from previous request
+        clear_request_context()
+
         # Use existing request ID from header, or generate a new one
         request_id = request.headers.get("X-Request-ID")
         if request_id:
@@ -191,12 +200,24 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         # Store in request state for access by handlers
         request.state.request_id = request_id
 
-        response = await call_next(request)
+        # Set logging context for structured logs (Issue #208)
+        # User-Agent is sanitized to prevent log injection attacks
+        set_request_context(
+            request_id=request_id,
+            client_ip=get_real_ip(request),
+            user_agent=sanitize_user_agent(request.headers.get("user-agent", "")),
+        )
 
-        # Include request ID in response for client correlation
-        response.headers["X-Request-ID"] = request_id
+        try:
+            response = await call_next(request)
 
-        return response
+            # Include request ID in response for client correlation
+            response.headers["X-Request-ID"] = request_id
+
+            return response
+        finally:
+            # Always cleanup context, even on exception (per Margo's review)
+            clear_request_context()
 
 
 def get_request_id(request: Request) -> Optional[str]:

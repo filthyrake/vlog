@@ -102,6 +102,7 @@ from api.database import (
     workers,
 )
 from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
+from api.logging_config import setup_logging
 from api.metrics import (
     STORAGE_VIDEOS_BYTES,
     TRANSCODING_JOBS_TOTAL,
@@ -167,6 +168,9 @@ from config import (
 )
 
 from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
+
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+setup_logging()
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger("security.worker_auth")

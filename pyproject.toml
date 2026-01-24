@@ -35,6 +35,7 @@ dependencies = [
     # Security patches for transitive dependencies
     # Note: filelock>=3.20.3 fix requires Python 3.10+, pinned in Dockerfile only
     "jaraco-context>=6.1.0",  # GHSA-58pv-8j8x-9vj2 path traversal vulnerability
+    "python-json-logger>=2.0.0",  # Structured JSON logging (Issue #208)
 ]
 
 [project.optional-dependencies]
