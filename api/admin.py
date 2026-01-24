@@ -11069,12 +11069,11 @@ async def moderate_comment(
     if comment["deleted_at"]:
         raise HTTPException(status_code=400, detail="Cannot moderate a deleted comment")
 
-    # Update the comment status
-    now = datetime.now(timezone.utc)
+    # Update the comment status (don't set updated_at - that's only for content edits)
     await database.execute(
         comments.update()
         .where(comments.c.id == comment_id)
-        .values(status=body.status.value, updated_at=now)
+        .values(status=body.status.value)
     )
 
     # Get reply count
@@ -11111,7 +11110,7 @@ async def moderate_comment(
         parent_id=comment["parent_id"],
         path=comment["path"],
         created_at=comment["created_at"],
-        updated_at=now,
+        updated_at=comment["updated_at"],
         is_edited=comment["updated_at"] is not None,
         reply_count=reply_count,
     )
