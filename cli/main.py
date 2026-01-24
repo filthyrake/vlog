@@ -686,6 +686,73 @@ def cmd_worker(args):
                     else:
                         print(f"  {name}: idle")
 
+        elif args.worker_command == "rotate":
+            # Rotate a worker's API key (Issue #226)
+            params = {}
+            if args.revoke_old:
+                params["revoke_old"] = "true"
+
+            response = httpx.post(
+                f"{WORKER_API_BASE}/workers/{args.worker_id}/rotate",
+                params=params,
+                headers=admin_headers,
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            result = safe_json_response(response)
+
+            print("API key rotated successfully!")
+            print()
+            print(f"  New API Key: {result['new_api_key']}")
+            if result.get("expires_at"):
+                print(f"  Expires at: {result['expires_at']}")
+            if result.get("old_key_expires_at"):
+                print(f"  Old key valid until: {result['old_key_expires_at']}")
+            print(f"  Overlap period: {result['overlap_hours']} hours")
+            print()
+            print("IMPORTANT: Save the new API key - it will not be shown again!")
+            print()
+            print("To update the worker, set the environment variable:")
+            print(f"  export VLOG_WORKER_API_KEY={result['new_api_key']}")
+
+        elif args.worker_command == "expire-warning":
+            # List expiring API keys (Issue #226)
+            params = {"days": args.days}
+            if args.include_grace:
+                params["include_grace"] = "true"
+
+            response = httpx.get(
+                f"{WORKER_API_BASE}/workers/expiring-keys",
+                params=params,
+                headers=admin_headers,
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            result = safe_json_response(response)
+
+            keys = result.get("keys", [])
+            if not keys:
+                print(f"No API keys expiring within {args.days} days.")
+                return
+
+            print(f"API keys expiring within {args.days} days: {len(keys)}")
+            print()
+            print(f"{'Worker ID':<38} {'Name':<20} {'Expires':<20} {'Status':<15}")
+            print("-" * 95)
+
+            for key in keys:
+                worker_id = key["worker_id"]
+                name = (key["worker_name"] or "-")[:18]
+                expires = key["expires_at"][:19] if key.get("expires_at") else "-"
+                if key.get("in_grace_period"):
+                    status = "IN GRACE PERIOD"
+                else:
+                    days_left = key.get("days_until_expiration", 0)
+                    status = f"{days_left} days left"
+
+                print(f"{worker_id:<38} {name:<20} {expires:<20} {status:<15}")
+
+            print()
+            print("To rotate a key: vlog worker rotate <worker-id>")
+
     except httpx.ConnectError:
         print(f"Error: Could not connect to Worker API at {WORKER_API_BASE}")
         print("Make sure the worker API server is running (port 9002).")
@@ -1610,6 +1677,25 @@ def main():
     # worker revoke
     worker_revoke = worker_subparsers.add_parser("revoke", help="Revoke a worker's API key")
     worker_revoke.add_argument("worker_id", help="Worker ID (UUID) to revoke")
+
+    # worker rotate (Issue #226)
+    worker_rotate = worker_subparsers.add_parser("rotate", help="Rotate a worker's API key")
+    worker_rotate.add_argument("worker_id", help="Worker ID (UUID) to rotate key for")
+    worker_rotate.add_argument(
+        "--revoke-old", action="store_true",
+        help="Immediately revoke old key instead of keeping it valid during overlap period"
+    )
+
+    # worker expire-warning (Issue #226)
+    worker_expire = worker_subparsers.add_parser("expire-warning", help="List API keys expiring soon")
+    worker_expire.add_argument(
+        "-d", "--days", type=positive_int, default=14,
+        help="Show keys expiring within this many days (default: 14)"
+    )
+    worker_expire.add_argument(
+        "--include-grace", action="store_true",
+        help="Also show keys in grace period (already expired but still valid)"
+    )
 
     worker_parser.set_defaults(func=cmd_worker)
 

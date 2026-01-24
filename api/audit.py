@@ -85,6 +85,10 @@ class AuditAction(str, Enum):
     WORKER_DISABLE = "worker_disable"
     WORKER_ENABLE = "worker_enable"
     WORKER_DELETE = "worker_delete"
+    # API key rotation actions (Issue #226)
+    WORKER_KEY_ROTATE = "worker_key_rotate"
+    WORKER_KEY_EXPIRED = "worker_key_expired"
+    WORKER_BULK_REVOKE = "worker_bulk_revoke"
 
     # Settings actions
     SETTINGS_CHANGE = "settings_change"
