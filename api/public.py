@@ -3630,11 +3630,34 @@ def sanitize_comment_content(content: str) -> str:
     return bleach.clean(content, tags=[], strip=True)
 
 
-async def get_social_settings(video_id: int) -> dict:
+async def get_video_by_slug(slug: str) -> dict:
     """
-    Get resolved social feature settings for a video.
+    Get a video by slug with validation.
 
-    Inherits from global settings if per-video settings are NULL.
+    Returns the video row or raises 404.
+    """
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
+    video_query = (
+        videos.select()
+        .where(videos.c.slug == slug)
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    return video
+
+
+async def _build_social_settings(video: dict) -> dict:
+    """
+    Build resolved social settings from a video record.
+
+    Internal helper that inherits from global settings if per-video settings are NULL.
     """
     from api.settings_service import get_settings_service
 
@@ -3647,13 +3670,6 @@ async def get_social_settings(video_id: int) -> dict:
     require_approval = await service.get("social.comments_require_approval", False)
     max_length = await service.get("social.comments_max_length", 5000)
     max_depth = await service.get("social.comments_max_depth", 5)
-
-    # Get video-specific overrides
-    video_query = videos.select().where(videos.c.id == video_id)
-    video = await fetch_one_with_retry(video_query)
-
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
 
     # Per-video settings override global if not NULL
     comments_enabled = video["comments_enabled"] if video["comments_enabled"] is not None else global_comments
@@ -3668,6 +3684,36 @@ async def get_social_settings(video_id: int) -> dict:
         "max_depth": max_depth,
         "video": video,
     }
+
+
+async def get_social_settings(slug: str) -> dict:
+    """
+    Get resolved social feature settings for a video by slug.
+
+    Inherits from global settings if per-video settings are NULL.
+    """
+    video = await get_video_by_slug(slug)
+    return await _build_social_settings(video)
+
+
+async def get_social_settings_by_video_id(video_id: int) -> dict:
+    """
+    Get resolved social feature settings for a video by ID.
+
+    Used internally when we already have the video_id from a comment record.
+    Inherits from global settings if per-video settings are NULL.
+    """
+    video_query = (
+        videos.select()
+        .where(videos.c.id == video_id)
+        .where(videos.c.deleted_at.is_(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    return await _build_social_settings(video)
 
 
 def build_comment_response(comment: dict, user: dict, reply_count: int = 0) -> CommentResponse:
@@ -3695,7 +3741,7 @@ def build_comment_response(comment: dict, user: dict, reply_count: int = 0) -> C
 
 
 @v1_router.get(
-    "/videos/{video_id}/comments",
+    "/videos/{slug}/comments",
     response_model=CommentListResponse,
     summary="Get video comments",
     description="Get paginated comments for a video with threaded replies.",
@@ -3703,7 +3749,7 @@ def build_comment_response(comment: dict, user: dict, reply_count: int = 0) -> C
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video_comments(
     request: Request,
-    video_id: int,
+    slug: str,
     cursor: Optional[str] = Query(None, description="Pagination cursor"),
     limit: int = Query(50, ge=1, le=100, description="Maximum comments to return"),
     include_replies: bool = Query(True, description="Include nested replies"),
@@ -3714,7 +3760,8 @@ async def get_video_comments(
     Comments are returned with nested replies (up to max depth).
     Only approved, non-deleted comments are returned.
     """
-    settings = await get_social_settings(video_id)
+    settings = await get_social_settings(slug)
+    video_id = settings["video"]["id"]
     if not settings["comments_enabled"]:
         raise HTTPException(status_code=403, detail="Comments are disabled for this video")
 
@@ -3840,7 +3887,7 @@ async def get_video_comments(
 
 
 @v1_router.post(
-    "/videos/{video_id}/comments",
+    "/videos/{slug}/comments",
     response_model=CommentResponse,
     summary="Create comment",
     description="Create a new comment on a video. Requires authentication.",
@@ -3848,7 +3895,7 @@ async def get_video_comments(
 @limiter.limit(RATE_LIMIT_COMMENTS)
 async def create_comment(
     request: Request,
-    video_id: int,
+    slug: str,
     data: CommentCreate,
     current_user: dict = Depends(require_auth),
 ):
@@ -3858,7 +3905,8 @@ async def create_comment(
     Content is sanitized to prevent XSS.
     If comments_require_approval is enabled, comment starts in 'pending' status.
     """
-    settings = await get_social_settings(video_id)
+    settings = await get_social_settings(slug)
+    video_id = settings["video"]["id"]
     if not settings["comments_enabled"]:
         raise HTTPException(status_code=403, detail="Comments are disabled for this video")
 
@@ -3981,7 +4029,7 @@ async def update_comment(
     )
 
     # Get settings for content length validation
-    settings = await get_social_settings(comment["video_id"])
+    settings = await get_social_settings_by_video_id(comment["video_id"])
 
     if len(data.content) > settings["max_length"]:
         raise HTTPException(
@@ -4068,7 +4116,7 @@ async def delete_comment(
 # Ratings endpoints
 
 @v1_router.get(
-    "/videos/{video_id}/rating",
+    "/videos/{slug}/rating",
     response_model=VideoRatingAggregates,
     summary="Get video rating",
     description="Get rating aggregates and the current user's rating for a video.",
@@ -4076,7 +4124,7 @@ async def delete_comment(
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video_rating(
     request: Request,
-    video_id: int,
+    slug: str,
     current_user: Optional[dict] = Depends(get_current_user),
 ):
     """
@@ -4084,8 +4132,9 @@ async def get_video_rating(
 
     Returns average rating, distribution, and the current user's rating if authenticated.
     """
-    settings = await get_social_settings(video_id)
+    settings = await get_social_settings(slug)
     video = settings["video"]
+    video_id = video["id"]
 
     user_rating = None
     if current_user:
@@ -4119,7 +4168,7 @@ async def get_video_rating(
 
 
 @v1_router.post(
-    "/videos/{video_id}/rating",
+    "/videos/{slug}/rating",
     response_model=RatingResponse,
     summary="Rate video",
     description="Rate a video (upsert - creates or updates existing rating). Requires authentication.",
@@ -4127,7 +4176,7 @@ async def get_video_rating(
 @limiter.limit(RATE_LIMIT_RATINGS)
 async def rate_video(
     request: Request,
-    video_id: int,
+    slug: str,
     data: RatingCreate,
     current_user: dict = Depends(require_auth),
 ):
@@ -4139,7 +4188,8 @@ async def rate_video(
 
     This is an upsert operation - creates a new rating or updates existing.
     """
-    settings = await get_social_settings(video_id)
+    settings = await get_social_settings(slug)
+    video_id = settings["video"]["id"]
     if not settings["ratings_enabled"]:
         raise HTTPException(status_code=403, detail="Ratings are disabled for this video")
 
@@ -4191,19 +4241,23 @@ async def rate_video(
 
 
 @v1_router.delete(
-    "/videos/{video_id}/rating",
+    "/videos/{slug}/rating",
     summary="Remove rating",
     description="Remove your rating from a video. Requires authentication.",
 )
 @limiter.limit(RATE_LIMIT_RATINGS)
 async def delete_rating(
     request: Request,
-    video_id: int,
+    slug: str,
     current_user: dict = Depends(require_auth),
 ):
     """
     Remove the current user's rating from a video.
     """
+    # Get video by slug to validate it exists and get video_id
+    video = await get_video_by_slug(slug)
+    video_id = video["id"]
+
     # Check if rating exists
     existing = await fetch_one_with_retry(
         ratings.select().where(
@@ -4227,7 +4281,7 @@ async def delete_rating(
 
 
 @v1_router.get(
-    "/videos/{video_id}/social",
+    "/videos/{slug}/social",
     response_model=VideoSocialStatus,
     summary="Get video social status",
     description="Get resolved social feature status and aggregates for a video.",
@@ -4235,14 +4289,14 @@ async def delete_rating(
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video_social_status(
     request: Request,
-    video_id: int,
+    slug: str,
 ):
     """
     Get social feature status for a video.
 
     Returns whether comments/ratings are enabled and current aggregates.
     """
-    settings = await get_social_settings(video_id)
+    settings = await get_social_settings(slug)
     video = settings["video"]
 
     return VideoSocialStatus(

@@ -10919,6 +10919,9 @@ async def get_comments_moderation_queue(
             comments.c.content,
             comments.c.status,
             comments.c.video_timestamp,
+            comments.c.depth,
+            comments.c.path,
+            comments.c.parent_id,
             comments.c.created_at,
             comments.c.updated_at,
             users.c.username,
@@ -10988,9 +10991,14 @@ async def get_comments_moderation_queue(
                 ),
                 content=row["content"],
                 video_timestamp=float(row["video_timestamp"]) if row["video_timestamp"] else None,
-                status=CommentStatus(row["status"]),
+                status=row["status"],
+                depth=row["depth"],
+                parent_id=row["parent_id"],
+                path=row["path"],
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
+                is_edited=row["updated_at"] is not None,
+                reply_count=0,  # Not fetching reply counts in queue for performance
             )
         )
 
@@ -11041,6 +11049,9 @@ async def moderate_comment(
             comments.c.content,
             comments.c.status,
             comments.c.video_timestamp,
+            comments.c.depth,
+            comments.c.path,
+            comments.c.parent_id,
             comments.c.created_at,
             comments.c.updated_at,
             comments.c.deleted_at,
@@ -11066,6 +11077,15 @@ async def moderate_comment(
         .values(status=body.status.value, updated_at=now)
     )
 
+    # Get reply count
+    reply_count_query = (
+        sa.select(sa.func.count())
+        .select_from(comments)
+        .where(comments.c.parent_id == comment_id)
+        .where(comments.c.deleted_at.is_(None))
+    )
+    reply_count = await database.fetch_val(reply_count_query) or 0
+
     # Audit log
     log_audit(
         AuditAction.COMMENT_MODERATE,
@@ -11086,9 +11106,14 @@ async def moderate_comment(
         ),
         content=comment["content"],
         video_timestamp=float(comment["video_timestamp"]) if comment["video_timestamp"] else None,
-        status=body.status,
+        status=body.status.value,
+        depth=comment["depth"],
+        parent_id=comment["parent_id"],
+        path=comment["path"],
         created_at=comment["created_at"],
         updated_at=now,
+        is_edited=comment["updated_at"] is not None,
+        reply_count=reply_count,
     )
 
 
