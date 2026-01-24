@@ -234,8 +234,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        # Prevent clickjacking
-        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        # Prevent clickjacking (skip for embed pages - they use CSP frame-ancestors)
+        if not request.url.path.startswith("/embed/"):
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
         # Prevent MIME-type sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
         # XSS protection for legacy browsers

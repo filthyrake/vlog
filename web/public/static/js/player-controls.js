@@ -444,8 +444,8 @@ class VLogPlayerControls {
 
         // Embed tab references (Issue #210)
         this.shareTabBtns = this.shareModal.querySelectorAll('.share-modal-tab');
-        this.shareLinkTabContent = this.shareModal.querySelector('#share-tab-link');
-        this.shareEmbedTabContent = this.shareModal.querySelector('#share-tab-embed');
+        this.shareTabLink = this.shareModal.querySelector('#share-tab-link');
+        this.shareTabEmbed = this.shareModal.querySelector('#share-tab-embed');
         this.embedStartTimeInput = this.shareModal.querySelector('.embed-start-time');
         this.embedAutoplayCheckbox = this.shareModal.querySelector('.embed-autoplay');
         this.embedCodeTextarea = this.shareModal.querySelector('.embed-code-textarea');
@@ -624,8 +624,11 @@ class VLogPlayerControls {
                 this.switchShareTab(tab);
             });
         });
+        // Debounce start time input to avoid excessive updates during typing
+        let embedCodeDebounceTimer = null;
         this.embedStartTimeInput.addEventListener('input', () => {
-            this.updateEmbedCode();
+            clearTimeout(embedCodeDebounceTimer);
+            embedCodeDebounceTimer = setTimeout(() => this.updateEmbedCode(), 300);
         });
         this.embedAutoplayCheckbox.addEventListener('change', () => {
             this.updateEmbedCode();
@@ -1210,8 +1213,8 @@ class VLogPlayerControls {
             btn.classList.toggle('active', isLink);
             btn.setAttribute('aria-selected', isLink.toString());
         });
-        this.shareLinkTabContent.style.display = 'block';
-        this.shareEmbedTabContent.style.display = 'none';
+        this.shareTabLink.style.display = 'block';
+        this.shareTabEmbed.style.display = 'none';
 
         // Reset embed options
         this.embedStartTimeInput.value = '';
@@ -1291,8 +1294,8 @@ class VLogPlayerControls {
         });
 
         // Show/hide tab content
-        this.shareLinkTabContent.style.display = tab === 'link' ? 'block' : 'none';
-        this.shareEmbedTabContent.style.display = tab === 'embed' ? 'block' : 'none';
+        this.shareTabLink.style.display = tab === 'link' ? 'block' : 'none';
+        this.shareTabEmbed.style.display = tab === 'embed' ? 'block' : 'none';
 
         // Focus appropriate element
         if (tab === 'link') {
@@ -1312,10 +1315,10 @@ class VLogPlayerControls {
         // Build embed URL with parameters
         const embedUrl = new URL(`${window.location.origin}/embed/${slug}`);
 
-        // Parse start time input (format: "1:30" or "90")
+        // Convert start time input to seconds (supports "1:30" or "90" formats)
         const startTimeValue = this.embedStartTimeInput.value.trim();
         if (startTimeValue) {
-            const startSeconds = this.parseTimeInput(startTimeValue);
+            const startSeconds = this.convertTimeFormatToSeconds(startTimeValue);
             if (startSeconds > 0) {
                 embedUrl.searchParams.set('start', startSeconds.toString());
             }
@@ -1326,25 +1329,58 @@ class VLogPlayerControls {
             embedUrl.searchParams.set('autoplay', '1');
         }
 
-        // Generate iframe HTML
-        const iframeHtml = `<iframe src="${embedUrl.toString()}" width="560" height="315" frameborder="0" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
+        // Generate iframe HTML (matches server-side format with picture-in-picture)
+        const iframeHtml = `<iframe src="${embedUrl.toString()}" width="560" height="315" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>`;
 
         this.embedCodeTextarea.value = iframeHtml;
     }
 
-    parseTimeInput(value) {
+    /**
+     * Convert time format string to seconds
+     * Supports: "90" (seconds), "1:30" (MM:SS), "1:30:00" (H:MM:SS)
+     * @param {string} value - Time string to parse
+     * @returns {number} Time in seconds (0 if invalid)
+     */
+    convertTimeFormatToSeconds(value) {
+        if (!value) return 0;
+
+        // Maximum allowed time: 24 hours (prevents unreasonable values)
+        const MAX_SECONDS = 86400;
+
+        let totalSeconds = 0;
+
         // Handle MM:SS or H:MM:SS format
         if (value.includes(':')) {
-            const parts = value.split(':').map(p => parseInt(p, 10) || 0);
+            const parts = value.split(':').map(p => {
+                const num = parseInt(p, 10);
+                return isNaN(num) ? 0 : num;
+            });
+
             if (parts.length === 2) {
-                return parts[0] * 60 + parts[1];
+                // MM:SS - cap seconds at 59 for normalization
+                const minutes = parts[0];
+                const seconds = Math.min(parts[1], 59);
+                totalSeconds = minutes * 60 + seconds;
             } else if (parts.length === 3) {
-                return parts[0] * 3600 + parts[1] * 60 + parts[2];
+                // H:MM:SS - cap each component
+                const hours = parts[0];
+                const minutes = Math.min(parts[1], 59);
+                const seconds = Math.min(parts[2], 59);
+                totalSeconds = hours * 3600 + minutes * 60 + seconds;
             }
+        } else {
+            // Handle plain seconds
+            const seconds = parseInt(value, 10);
+            totalSeconds = isNaN(seconds) || seconds < 0 ? 0 : seconds;
         }
-        // Handle plain seconds
-        const seconds = parseInt(value, 10);
-        return isNaN(seconds) || seconds < 0 ? 0 : seconds;
+
+        // Cap at maximum
+        if (totalSeconds > MAX_SECONDS) {
+            console.warn(`Start time ${totalSeconds}s exceeds maximum ${MAX_SECONDS}s, capping`);
+            return MAX_SECONDS;
+        }
+
+        return totalSeconds;
     }
 
     async copyEmbedCode() {
