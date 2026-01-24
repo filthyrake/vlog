@@ -88,6 +88,11 @@ if WORKER_STREAMING_UPLOAD:
         streaming_transcode_and_upload_quality,
     )
 
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+from api.logging_config import setup_logging
+
+setup_logging()
+
 logger = logging.getLogger(__name__)
 
 # Global shutdown flag
@@ -1699,12 +1704,7 @@ async def worker_loop():
 
 def main():
     """Entry point for the remote transcoder."""
-    # Configure logging to output to stdout
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stdout,
-    )
+    # Logging is already configured at module load via setup_logging() (Issue #208)
     asyncio.run(worker_loop())
 
 

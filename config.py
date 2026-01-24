@@ -801,3 +801,25 @@ if not os.environ.get("VLOG_TEST_MODE"):
         LIVE_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
     except PermissionError:
         pass  # CI environment without NAS access
+
+# =============================================================================
+# Structured Logging Configuration (Issue #208)
+# JSON logging for production, text format for development
+# =============================================================================
+
+# Log format: "json" for production (log aggregation), "text" for development
+LOG_FORMAT = os.getenv("VLOG_LOG_FORMAT", "json")
+
+# Default log level for all loggers
+LOG_LEVEL = os.getenv("VLOG_LOG_LEVEL", "INFO")
+
+# Module-specific log levels (comma-separated, e.g., "api.auth=DEBUG,worker=WARNING")
+LOG_LEVELS = os.getenv("VLOG_LOG_LEVELS", "")
+
+# Optional log file output (in addition to stdout)
+# Leave empty to only log to stdout
+LOG_FILE = os.getenv("VLOG_LOG_FILE", "")
+
+# Log file rotation settings
+LOG_FILE_MAX_BYTES = get_int_env("VLOG_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024, min_val=1024)  # 10 MB default
+LOG_FILE_BACKUP_COUNT = get_int_env("VLOG_LOG_FILE_BACKUP_COUNT", 5, min_val=0)
