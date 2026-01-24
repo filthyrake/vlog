@@ -390,11 +390,17 @@ def _is_valid_csp_domain(domain: str) -> bool:
     return bool(_CSP_DOMAIN_PATTERN.match(domain_to_check))
 
 
-def get_embed_csp_frame_ancestors() -> str:
+def build_embed_csp_frame_ancestors(embed_settings: Dict[str, Any]) -> str:
     """
     Build the frame-ancestors CSP directive value based on embed settings.
 
+    Uses the DB-backed settings so admin changes apply without restart.
     Security: Validates all domains before including in CSP header.
+
+    Args:
+        embed_settings: Dict from get_embed_settings() with keys:
+            - allow_all_domains: bool
+            - allowed_domains: str (comma-separated)
 
     Returns:
         CSP frame-ancestors value:
@@ -403,11 +409,11 @@ def get_embed_csp_frame_ancestors() -> str:
         - "'self' https://domain1.com ..." for domain whitelist
     """
     # Check for allow all domains first
-    if EMBED_ALLOW_ALL_DOMAINS:
+    if embed_settings.get("allow_all_domains", False):
         return "*"
 
     # Parse allowed domains from configuration
-    allowed = EMBED_ALLOWED_DOMAINS.strip()
+    allowed = embed_settings.get("allowed_domains", "'self'").strip()
 
     # If 'self' only or empty, return self
     if not allowed or allowed == "'self'":
@@ -827,8 +833,8 @@ async def embed_page(request: Request, slug: str):
         logger.warning(f"Embed: Database error for {slug}: {e}")
         return _build_embed_error_response("database_error", slug)
 
-    # Build CSP frame-ancestors directive
-    frame_ancestors = get_embed_csp_frame_ancestors()
+    # Build CSP frame-ancestors directive from DB-backed settings
+    frame_ancestors = build_embed_csp_frame_ancestors(embed_settings)
 
     # Return embed page with CSP header
     return FileResponse(

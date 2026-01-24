@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self';">
     <title>Embedded Video</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <link rel="stylesheet" href="/static/css/bundle.css">
@@ -24,7 +24,7 @@
     </div>
 
     <!-- Error State (hidden by default) -->
-    <div id="embed-error" class="embed-error" style="display: none;">
+    <div id="embed-error" class="embed-error embed-hidden">
         <div class="embed-error-content">
             <svg class="embed-error-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"></circle>
@@ -36,7 +36,7 @@
     </div>
 
     <!-- Video Player Container -->
-    <div id="embed-player-container" class="embed-player-container" style="display: none;">
+    <div id="embed-player-container" class="embed-player-container embed-hidden">
         <div id="player-container" class="player-container">
             <video
                 id="player"

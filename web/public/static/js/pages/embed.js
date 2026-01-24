@@ -65,12 +65,12 @@ async function fetchWithTimeout(url, options = {}, timeout = 10000) {
  */
 function generateSecureUUID() {
     // Use native crypto.randomUUID if available (modern browsers)
-    if (crypto && crypto.randomUUID) {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
     }
 
     // Fallback using crypto.getRandomValues
-    if (crypto && crypto.getRandomValues) {
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
         const bytes = new Uint8Array(16);
         crypto.getRandomValues(bytes);
         // Set version (4) and variant (8, 9, A, or B)
@@ -246,9 +246,24 @@ class EmbedAnalytics {
     getCurrentQuality() {
         const qualityLevels = this.player.qualityLevels?.();
         if (qualityLevels && Array.isArray(qualityLevels)) {
+            // Check for Shaka-style active track first
             const activeTrack = qualityLevels.find(t => t.active);
-            if (activeTrack) {
+            if (activeTrack && typeof activeTrack.height === 'number') {
                 return activeTrack.height + 'p';
+            }
+
+            // For HLS.js: use currentLevelIndex to find the active level
+            const currentLevelIndex = this.player.currentLevelIndex?.();
+            if (typeof currentLevelIndex === 'number' && currentLevelIndex >= 0) {
+                const currentLevel = qualityLevels[currentLevelIndex];
+                if (currentLevel && typeof currentLevel.height === 'number') {
+                    return currentLevel.height + 'p';
+                }
+            }
+
+            // Auto mode or unknown - return 'auto' instead of null
+            if (currentLevelIndex === -1) {
+                return 'auto';
             }
         }
         return null;
@@ -340,19 +355,19 @@ class EmbedPlayer {
     }
 
     showError(message = 'Video unavailable') {
-        document.getElementById('embed-loading').style.display = 'none';
-        document.getElementById('embed-player-container').style.display = 'none';
+        document.getElementById('embed-loading').classList.add('embed-hidden');
+        document.getElementById('embed-player-container').classList.add('embed-hidden');
 
         const errorEl = document.getElementById('embed-error');
         const errorMsg = document.getElementById('embed-error-message');
         errorMsg.textContent = message;
-        errorEl.style.display = 'flex';
+        errorEl.classList.remove('embed-hidden');
     }
 
     showPlayer() {
-        document.getElementById('embed-loading').style.display = 'none';
-        document.getElementById('embed-error').style.display = 'none';
-        document.getElementById('embed-player-container').style.display = 'block';
+        document.getElementById('embed-loading').classList.add('embed-hidden');
+        document.getElementById('embed-error').classList.add('embed-hidden');
+        document.getElementById('embed-player-container').classList.remove('embed-hidden');
     }
 
     async init() {
@@ -484,7 +499,7 @@ class EmbedPlayer {
             this.video.controls = false;
         }
 
-        // Initialize analytics
+        // Initialize analytics with player interface
         this.analytics = new EmbedAnalytics(this.videoData.id, {
             currentTime: () => this.video.currentTime,
             paused: () => this.video.paused,
@@ -493,6 +508,10 @@ class EmbedPlayer {
                     return this.shakaPlayer.getVariantTracks();
                 }
                 return this.hls ? this.hls.levels : null;
+            },
+            // For HLS.js: get current level index (-1 = auto)
+            currentLevelIndex: () => {
+                return this.hls ? this.hls.currentLevel : -1;
             }
         });
 
@@ -597,28 +616,30 @@ class EmbedPlayer {
         let levels = [];
 
         if (this.shakaPlayer) {
-            levels = this.shakaPlayer.getVariantTracks().map(track => ({
+            levels = this.shakaPlayer.getVariantTracks().map((track, originalIndex) => ({
                 height: track.height,
                 width: track.width,
-                bitrate: track.bandwidth
+                bitrate: track.bandwidth,
+                originalIndex: originalIndex
             }));
         } else if (this.hls) {
-            levels = this.hls.levels.map(level => ({
+            levels = this.hls.levels.map((level, originalIndex) => ({
                 height: level.height,
                 width: level.width,
-                bitrate: level.bitrate
+                bitrate: level.bitrate,
+                originalIndex: originalIndex
             }));
         }
 
-        // Sort by height descending
+        // Sort by height descending (for display order)
         levels.sort((a, b) => b.height - a.height);
 
-        // Add auto option
+        // Add auto option; use originalIndex so changeQuality() sets the correct level
         const qualityOptions = [
             { label: 'Auto', value: -1 },
-            ...levels.map((level, index) => ({
+            ...levels.map(level => ({
                 label: level.height + 'p',
-                value: index
+                value: level.originalIndex
             }))
         ];
 

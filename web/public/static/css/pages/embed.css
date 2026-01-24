@@ -118,6 +118,11 @@ body {
     display: none !important;
 }
 
+/* Hidden state class (used instead of inline styles for CSP compliance) */
+.embed-hidden {
+    display: none !important;
+}
+
 /* Adjust fullscreen behavior for embedded context */
 .embed-player-container .player-container:fullscreen,
 .embed-player-container .player-container:-webkit-full-screen {
