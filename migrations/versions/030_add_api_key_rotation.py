@@ -43,8 +43,16 @@ def upgrade() -> None:
         ["rotated_from"],
     )
 
+    # Index for efficient expiration queries (get_expiring_keys, bulk_revoke)
+    op.create_index(
+        "ix_worker_api_keys_expires_at",
+        "worker_api_keys",
+        ["expires_at"],
+    )
+
 
 def downgrade() -> None:
-    """Remove rotated_from column from worker_api_keys."""
+    """Remove rotated_from column and indexes from worker_api_keys."""
+    op.drop_index("ix_worker_api_keys_expires_at", table_name="worker_api_keys")
     op.drop_index("ix_worker_api_keys_rotated_from", table_name="worker_api_keys")
     op.drop_column("worker_api_keys", "rotated_from")

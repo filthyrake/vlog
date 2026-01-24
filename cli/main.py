@@ -698,6 +698,21 @@ def cmd_worker(args):
                 headers=admin_headers,
                 timeout=DEFAULT_API_TIMEOUT,
             )
+
+            # Handle 429 rate limit with user-friendly message
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After", "300")
+                try:
+                    seconds = int(retry_after)
+                    if seconds >= 60:
+                        wait_msg = f"{seconds // 60} minute(s)"
+                    else:
+                        wait_msg = f"{seconds} second(s)"
+                except ValueError:
+                    wait_msg = retry_after
+                print(f"Error: Rotation cooldown active. Please wait {wait_msg} before trying again.")
+                sys.exit(1)
+
             result = safe_json_response(response)
 
             print("API key rotated successfully!")

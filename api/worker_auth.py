@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from fastapi import HTTPException, Request, Response, Security
+from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
 from api.common import ensure_utc
@@ -447,11 +447,7 @@ async def verify_worker_key(
         },
     )
 
-    # Return worker dict with expiration info for response header injection
-    worker_dict = dict(worker)
-    worker_dict["_key_expiring"] = key_expiring
-    worker_dict["_key_id"] = key_record["id"]
-    return worker_dict
+    return dict(worker)
 
 
 async def get_worker_by_id(worker_id: str) -> Optional[dict]:
@@ -464,12 +460,14 @@ async def rotate_worker_key(
     worker_db_id: int,
     worker_uuid: str,
     revoke_old: bool = False,
-) -> Tuple[str, datetime, Optional[datetime], int]:
+) -> Tuple[str, Optional[datetime], Optional[datetime], int]:
     """
     Rotate a worker's API key with overlap period (Issue #226).
 
     Creates a new API key for the worker and optionally schedules the old key
     for expiration after the overlap period.
+
+    Uses SELECT FOR UPDATE to prevent concurrent rotation race conditions.
 
     Args:
         worker_db_id: Database ID of the worker (integer PK)
@@ -483,36 +481,16 @@ async def rotate_worker_key(
         HTTPException(429): If rotation was attempted too recently (cooldown)
         HTTPException(404): If no active key found for worker
     """
+    import sqlalchemy as sa
+
     now = datetime.now(timezone.utc)
 
-    # Get settings
+    # Get settings (before transaction to avoid holding lock during I/O)
     expiration_days = await get_setting("workers.api_key_expiration_days", DEFAULT_EXPIRATION_DAYS)
     overlap_hours = await get_setting("workers.api_key_rotation_overlap_hours", DEFAULT_OVERLAP_HOURS)
 
-    # Check cooldown - find the most recent key for this worker
-    latest_key = await database.fetch_one(
-        worker_api_keys.select()
-        .where(worker_api_keys.c.worker_id == worker_db_id)
-        .order_by(worker_api_keys.c.created_at.desc())
-        .limit(1)
-    )
-
-    if not latest_key:
-        raise HTTPException(status_code=404, detail="No API key found for worker")
-
-    # Check cooldown (5 minutes between rotations)
-    key_created_at = ensure_utc(latest_key["created_at"])
-    seconds_since_last = (now - key_created_at).total_seconds()
-    if seconds_since_last < ROTATION_COOLDOWN_SECONDS:
-        remaining = int(ROTATION_COOLDOWN_SECONDS - seconds_since_last)
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rotation cooldown active. Please wait {remaining} seconds.",
-            headers={"Retry-After": str(remaining)},
-        )
-
-    # Generate new key
-    new_api_key = secrets.token_urlsafe(32)  # 256-bit key
+    # Generate new key material before transaction to minimize lock time
+    new_api_key = secrets.token_urlsafe(32)  # 256-bit entropy, 43 base64url chars
     key_hash, hash_version = hash_api_key(new_api_key)
     key_prefix = get_key_prefix(new_api_key)
 
@@ -521,71 +499,144 @@ async def rotate_worker_key(
     if expiration_days > 0:
         new_expires_at = now + timedelta(days=expiration_days)
 
-    # Calculate old key expiration (either immediate revoke or scheduled)
-    old_key_expires_at = None
-    if revoke_old:
-        # Revoke immediately
-        old_key_expires_at = now
-    else:
-        # Schedule expiration after overlap period
-        old_key_expires_at = now + timedelta(hours=overlap_hours)
+    old_key_id = None
+    old_key_current_expires = None
+    actual_old_key_expires_at = None
 
-    # Find the current active key (non-revoked, non-expired)
-    active_key = await database.fetch_one(
-        worker_api_keys.select()
-        .where(worker_api_keys.c.worker_id == worker_db_id)
-        .where(worker_api_keys.c.revoked_at.is_(None))
-        .order_by(worker_api_keys.c.created_at.desc())
-        .limit(1)
-    )
-
-    if not active_key:
-        raise HTTPException(status_code=404, detail="No active API key found for worker")
-
-    old_key_id = active_key["id"]
-
-    # Use transaction for atomicity
-    async with database.transaction():
-        # Create new key with reference to old key (rotated_from)
-        await database.execute(
-            worker_api_keys.insert().values(
-                worker_id=worker_db_id,
-                key_hash=key_hash,
-                hash_version=hash_version,
-                key_prefix=key_prefix,
-                created_at=now,
-                expires_at=new_expires_at,
-                rotated_from=old_key_id,
+    try:
+        # Use transaction with row locking to prevent concurrent rotations
+        async with database.transaction():
+            # Lock the worker row to prevent concurrent rotations (FOR UPDATE)
+            # This ensures only one rotation can proceed at a time for this worker
+            worker_lock = await database.fetch_one(
+                sa.select(workers.c.id)
+                .where(workers.c.id == worker_db_id)
+                .with_for_update()
             )
+
+            if not worker_lock:
+                raise HTTPException(status_code=404, detail="Worker not found")
+
+            # Check cooldown - find the most recent key for this worker
+            # Done inside transaction after acquiring lock to prevent TOCTOU race
+            latest_key = await database.fetch_one(
+                worker_api_keys.select()
+                .where(worker_api_keys.c.worker_id == worker_db_id)
+                .order_by(worker_api_keys.c.created_at.desc())
+                .limit(1)
+            )
+
+            if not latest_key:
+                raise HTTPException(status_code=404, detail="No API key found for worker")
+
+            # Check cooldown (5 minutes between rotations)
+            key_created_at = ensure_utc(latest_key["created_at"])
+            seconds_since_last = (now - key_created_at).total_seconds()
+            if seconds_since_last < ROTATION_COOLDOWN_SECONDS:
+                remaining = int(ROTATION_COOLDOWN_SECONDS - seconds_since_last)
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Rotation cooldown active. Try again later.",
+                    headers={"Retry-After": str(remaining)},
+                )
+
+            # Find the current active key (non-revoked)
+            active_key = await database.fetch_one(
+                worker_api_keys.select()
+                .where(worker_api_keys.c.worker_id == worker_db_id)
+                .where(worker_api_keys.c.revoked_at.is_(None))
+                .order_by(worker_api_keys.c.created_at.desc())
+                .limit(1)
+            )
+
+            if not active_key:
+                raise HTTPException(status_code=404, detail="No active API key found for worker")
+
+            old_key_id = active_key["id"]
+            old_key_current_expires = active_key["expires_at"]
+
+            # Create new key with reference to old key (rotated_from)
+            await database.execute(
+                worker_api_keys.insert().values(
+                    worker_id=worker_db_id,
+                    key_hash=key_hash,
+                    hash_version=hash_version,
+                    key_prefix=key_prefix,
+                    created_at=now,
+                    expires_at=new_expires_at,
+                    rotated_from=old_key_id,
+                )
+            )
+
+            # Update old key - either revoke or set expiration
+            if revoke_old:
+                await database.execute(
+                    worker_api_keys.update()
+                    .where(worker_api_keys.c.id == old_key_id)
+                    .values(revoked_at=now)
+                )
+                actual_old_key_expires_at = now
+            else:
+                # Calculate overlap expiration
+                overlap_expires_at = now + timedelta(hours=overlap_hours)
+
+                # Only shorten expiration, never extend it
+                # If old key already has a sooner expiration, preserve it
+                if old_key_current_expires is not None:
+                    old_key_current_expires = ensure_utc(old_key_current_expires)
+                    if old_key_current_expires < overlap_expires_at:
+                        # Keep existing sooner expiration
+                        actual_old_key_expires_at = old_key_current_expires
+                    else:
+                        # Use overlap expiration (sooner)
+                        actual_old_key_expires_at = overlap_expires_at
+                        await database.execute(
+                            worker_api_keys.update()
+                            .where(worker_api_keys.c.id == old_key_id)
+                            .values(expires_at=overlap_expires_at)
+                        )
+                else:
+                    # No existing expiration, set overlap expiration
+                    actual_old_key_expires_at = overlap_expires_at
+                    await database.execute(
+                        worker_api_keys.update()
+                        .where(worker_api_keys.c.id == old_key_id)
+                        .values(expires_at=overlap_expires_at)
+                    )
+
+        # Transaction committed successfully
+        security_logger.info(
+            "API key rotated",
+            extra={
+                "event": "key_rotate",
+                "worker_id": worker_uuid,
+                "old_key_id": old_key_id,
+                "revoked_immediately": revoke_old,
+                "overlap_hours": overlap_hours,
+            },
         )
 
-        # Update old key - either revoke or set expiration
-        if revoke_old:
-            await database.execute(
-                worker_api_keys.update()
-                .where(worker_api_keys.c.id == old_key_id)
-                .values(revoked_at=now)
-            )
-        else:
-            # Set expires_at if not already set, or update if new expiration is sooner
-            await database.execute(
-                worker_api_keys.update()
-                .where(worker_api_keys.c.id == old_key_id)
-                .values(expires_at=old_key_expires_at)
-            )
+        return new_api_key, new_expires_at, actual_old_key_expires_at, overlap_hours
 
-    security_logger.info(
-        "API key rotated",
-        extra={
-            "event": "key_rotate",
-            "worker_id": worker_uuid,
-            "old_key_id": old_key_id,
-            "revoked_immediately": revoke_old,
-            "overlap_hours": overlap_hours,
-        },
-    )
-
-    return new_api_key, new_expires_at, old_key_expires_at, overlap_hours
+    except HTTPException:
+        # Re-raise HTTP exceptions (cooldown, not found)
+        raise
+    except Exception as e:
+        # Log rotation failure for security monitoring
+        security_logger.error(
+            "API key rotation failed",
+            extra={
+                "event": "key_rotate_failed",
+                "worker_id": worker_uuid,
+                "old_key_id": old_key_id,
+                "error": str(e),
+                "revoke_old": revoke_old,
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Key rotation failed. Please try again.",
+        )
 
 
 async def get_expiring_keys(
@@ -679,6 +730,10 @@ async def bulk_revoke_expired_keys(
     """
     Revoke expired API keys in bulk (Issue #226).
 
+    Uses a transaction to ensure atomicity - either all keys are revoked
+    or none are. The count and affected worker list are consistent with
+    what was actually revoked.
+
     Args:
         dry_run: If True, only return count without actually revoking
         include_grace_period: If False, only revoke keys past grace period
@@ -710,28 +765,32 @@ async def bulk_revoke_expired_keys(
         worker_api_keys.c.expires_at < cutoff,
     ]
 
-    # Get list of affected worker UUIDs before revoking
-    affected_query = (
-        sa.select(workers.c.worker_id)
-        .select_from(worker_api_keys.join(workers, worker_api_keys.c.worker_id == workers.c.id))
-        .where(sa.and_(*conditions))
-        .distinct()
-    )
-    affected_rows = await database.fetch_all(affected_query)
-    affected_worker_ids = [row["worker_id"] for row in affected_rows]
-
-    # Count keys to revoke
-    count_query = sa.select(sa.func.count()).select_from(worker_api_keys).where(sa.and_(*conditions))
-    count = await database.fetch_val(count_query) or 0
-
-    if not dry_run and count > 0:
-        # Actually revoke the keys
-        await database.execute(
-            worker_api_keys.update()
+    # Use transaction to ensure atomicity of count, affected list, and revocation
+    async with database.transaction():
+        # Get list of affected worker UUIDs
+        affected_query = (
+            sa.select(workers.c.worker_id)
+            .select_from(worker_api_keys.join(workers, worker_api_keys.c.worker_id == workers.c.id))
             .where(sa.and_(*conditions))
-            .values(revoked_at=now)
+            .distinct()
         )
+        affected_rows = await database.fetch_all(affected_query)
+        affected_worker_ids = [row["worker_id"] for row in affected_rows]
 
+        # Count keys to revoke
+        count_query = sa.select(sa.func.count()).select_from(worker_api_keys).where(sa.and_(*conditions))
+        count = await database.fetch_val(count_query) or 0
+
+        if not dry_run and count > 0:
+            # Actually revoke the keys within the same transaction
+            await database.execute(
+                worker_api_keys.update()
+                .where(sa.and_(*conditions))
+                .values(revoked_at=now)
+            )
+
+    # Log only after transaction commits successfully
+    if not dry_run and count > 0:
         security_logger.info(
             "Bulk key revocation completed",
             extra={

@@ -3076,7 +3076,7 @@ async def revoke_worker(
 
 
 @v1_router.post("/workers/{worker_id}/rotate", response_model=KeyRotationResponse)
-@limiter.limit("10/hour")  # Rate limit: 10 rotations per worker per hour
+@limiter.limit("10/hour")  # Rate limit: 10 rotations per IP per hour (plus 5-min per-worker cooldown)
 async def rotate_worker_api_key(
     request: Request,
     worker_id: str,
@@ -3159,13 +3159,18 @@ async def list_expiring_keys(
     Returns:
         Paginated list of expiring keys with worker info
     """
-    # Validate pagination
+    # Validate days parameter - return 400 for invalid values
+    if days < 1 or days > 365:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid 'days' parameter: {days}. Must be between 1 and 365.",
+        )
+
+    # Validate pagination (clamp to valid range)
     if page < 1:
         page = 1
     if per_page < 1 or per_page > 100:
         per_page = min(max(per_page, 1), 100)
-    if days < 1 or days > 365:
-        days = min(max(days, 1), 365)
 
     keys, total_count = await get_expiring_keys(
         days=days,
