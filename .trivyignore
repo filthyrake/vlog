@@ -16,3 +16,4 @@ GHSA-58pv-8j8x-9vj2
 # Monitor https://github.com/advisories/GHSA-7gcm-g887-7qv7 for fix release.
 # Last reviewed: 2026-01-24
 GHSA-7gcm-g887-7qv7
+CVE-2026-0994
