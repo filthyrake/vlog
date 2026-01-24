@@ -1687,6 +1687,11 @@ class CommentModerate(BaseModel):
         ...,
         description="New moderation status: approved, rejected, or spam",
     )
+    reason: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Optional reason for moderation action (for audit trail)",
+    )
 
     @field_validator("status")
     @classmethod
