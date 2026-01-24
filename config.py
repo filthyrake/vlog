@@ -747,6 +747,34 @@ UPNEXT_ENABLED = os.getenv("VLOG_UPNEXT_ENABLED", "true").lower() in ("true", "1
 AUTOPLAY_COUNTDOWN_SECONDS = get_int_env("VLOG_AUTOPLAY_COUNTDOWN_SECONDS", 10, min_val=5, max_val=30)
 
 # =============================================================================
+# Video Embed Configuration (Issue #210)
+# Allow embedding videos on external websites with security controls
+# =============================================================================
+
+# Master switch for embed feature
+EMBED_ENABLED = os.getenv("VLOG_EMBED_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Domain whitelist for frame-ancestors CSP directive
+# SECURITY: Defaults to 'self' only - external embeds blocked by default
+# Set to comma-separated domains to allow specific sites: "example.com,blog.example.com"
+# This is the recommended secure configuration for controlled embedding
+EMBED_ALLOWED_DOMAINS = os.getenv("VLOG_EMBED_ALLOWED_DOMAINS", "'self'")
+
+# Allow embedding on ANY domain (sets frame-ancestors to *)
+# SECURITY WARNING: Only enable for truly public video platforms
+# When True, overrides EMBED_ALLOWED_DOMAINS
+EMBED_ALLOW_ALL_DOMAINS = os.getenv("VLOG_EMBED_ALLOW_ALL_DOMAINS", "false").lower() in ("true", "1", "yes")
+
+# Default autoplay behavior for embeds (can be overridden via query param)
+EMBED_DEFAULT_AUTOPLAY = os.getenv("VLOG_EMBED_DEFAULT_AUTOPLAY", "false").lower() in ("true", "1", "yes")
+
+# Minimum seconds of playback before counting as a view (prevents view inflation)
+EMBED_MIN_PLAYBACK_FOR_VIEW = get_int_env("VLOG_EMBED_MIN_PLAYBACK_FOR_VIEW", 5, min_val=1, max_val=60)
+
+# Rate limit for embed page requests (higher than normal to allow pages with multiple embeds)
+RATE_LIMIT_EMBED = os.getenv("VLOG_RATE_LIMIT_EMBED", "500/minute")
+
+# =============================================================================
 # Live Streaming Configuration
 # HTTP segment push for live streaming without RTMP/SRT servers
 # =============================================================================

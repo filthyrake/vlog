@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -70,6 +71,7 @@ from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
     CategoryResponse,
     ChapterInfo,
+    EmbedCodeResponse,
     PaginatedVideoListResponse,
     PlaybackEnd,
     PlaybackHeartbeat,
@@ -98,6 +100,12 @@ from config import (
     DOWNLOADS_ENABLED,
     DOWNLOADS_MAX_CONCURRENT,
     DOWNLOADS_RATE_LIMIT_PER_HOUR,
+    EMBED_ALLOWED_DOMAINS,
+    EMBED_ALLOW_ALL_DOMAINS,
+    EMBED_DEFAULT_AUTOPLAY,
+    EMBED_ENABLED,
+    EMBED_MIN_PLAYBACK_FOR_VIEW,
+    RATE_LIMIT_EMBED,
     AUTOPLAY_ENABLED,
     UPNEXT_ENABLED,
     AUTOPLAY_COUNTDOWN_SECONDS,
@@ -299,6 +307,158 @@ def reset_cdn_settings_cache() -> None:
     global _cached_cdn_settings, _cached_cdn_settings_time
     _cached_cdn_settings = {}
     _cached_cdn_settings_time = 0
+
+
+# Cached embed settings (refreshed every 60 seconds)
+_cached_embed_settings: Dict[str, Any] = {}
+_cached_embed_settings_time: float = 0
+_EMBED_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+
+
+async def get_embed_settings() -> Dict[str, Any]:
+    """
+    Get embed settings from database with caching and env var fallback.
+
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    on every embed page request.
+
+    Returns:
+        Dict with keys:
+        - enabled: Whether embeds are enabled
+        - allowed_domains: Domain whitelist for frame-ancestors CSP
+        - allow_all_domains: Allow embedding on any domain
+        - default_autoplay: Default autoplay behavior
+        - min_playback_for_view: Seconds before counting as view
+    """
+    global _cached_embed_settings, _cached_embed_settings_time
+
+    now = time.time()
+    if _cached_embed_settings and (now - _cached_embed_settings_time) < _EMBED_SETTINGS_CACHE_TTL:
+        return _cached_embed_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "enabled": await service.get("embed.enabled", EMBED_ENABLED),
+            "allowed_domains": await service.get("embed.allowed_domains", EMBED_ALLOWED_DOMAINS),
+            "allow_all_domains": await service.get("embed.allow_all_domains", EMBED_ALLOW_ALL_DOMAINS),
+            "default_autoplay": await service.get("embed.default_autoplay", EMBED_DEFAULT_AUTOPLAY),
+            "min_playback_for_view": await service.get("embed.min_playback_for_view", EMBED_MIN_PLAYBACK_FOR_VIEW),
+        }
+
+        _cached_embed_settings = settings
+        _cached_embed_settings_time = now
+    except Exception as e:
+        logger.debug(f"Failed to get embed settings from DB, using env vars: {e}")
+        _cached_embed_settings = {
+            "enabled": EMBED_ENABLED,
+            "allowed_domains": EMBED_ALLOWED_DOMAINS,
+            "allow_all_domains": EMBED_ALLOW_ALL_DOMAINS,
+            "default_autoplay": EMBED_DEFAULT_AUTOPLAY,
+            "min_playback_for_view": EMBED_MIN_PLAYBACK_FOR_VIEW,
+        }
+        _cached_embed_settings_time = now
+
+    return _cached_embed_settings
+
+
+# Domain validation pattern for CSP frame-ancestors (Issue #210 security fix)
+_CSP_DOMAIN_PATTERN = re.compile(
+    r'^([a-z]+://)?[a-z0-9]+([\-\.][a-z0-9]+)*\.[a-z]{2,}(:[0-9]{1,5})?$',
+    re.IGNORECASE
+)
+
+
+def _is_valid_csp_domain(domain: str) -> bool:
+    """
+    Validate that a domain is safe for CSP frame-ancestors.
+
+    Args:
+        domain: Domain string to validate (with or without protocol)
+
+    Returns:
+        True if domain is valid, False otherwise
+    """
+    # Remove protocol for validation if present
+    domain_to_check = domain
+    if domain.startswith("http://") or domain.startswith("https://"):
+        domain_to_check = domain.split("://", 1)[1]
+
+    return bool(_CSP_DOMAIN_PATTERN.match(domain_to_check))
+
+
+def build_embed_csp_frame_ancestors(embed_settings: Dict[str, Any]) -> str:
+    """
+    Build the frame-ancestors CSP directive value based on embed settings.
+
+    Uses the DB-backed settings so admin changes apply without restart.
+    Security: Validates all domains before including in CSP header.
+
+    Args:
+        embed_settings: Dict from get_embed_settings() with keys:
+            - allow_all_domains: bool
+            - allowed_domains: str (comma-separated)
+
+    Returns:
+        CSP frame-ancestors value:
+        - "*" if all domains allowed (public mode)
+        - "'self'" if only same-origin allowed (default secure mode)
+        - "'self' https://domain1.com ..." for domain whitelist
+    """
+    # Check for allow all domains first
+    if embed_settings.get("allow_all_domains", False):
+        return "*"
+
+    # Parse allowed domains from configuration
+    allowed = embed_settings.get("allowed_domains", "'self'").strip()
+
+    # If 'self' only or empty, return self
+    if not allowed or allowed == "'self'":
+        return "'self'"
+
+    # Parse comma-separated domains and build frame-ancestors value
+    domains = [d.strip() for d in allowed.split(",") if d.strip()]
+    if not domains:
+        return "'self'"
+
+    # Include 'self' and validate/normalize each domain
+    parts = ["'self'"]
+    for domain in domains:
+        # Skip 'self' if explicitly listed (already included)
+        if domain == "'self'":
+            continue
+
+        # Validate domain format to prevent CSP injection
+        if domain.startswith("'"):
+            # CSP keywords like 'none' - skip these in domain list
+            logger.warning(f"Skipping CSP keyword in embed domains: {domain}")
+            continue
+        elif domain.startswith("http://") or domain.startswith("https://"):
+            if _is_valid_csp_domain(domain):
+                parts.append(domain)
+            else:
+                logger.warning(f"Invalid CSP domain format skipped: {domain}")
+        else:
+            if _is_valid_csp_domain(domain):
+                parts.append(f"https://{domain}")
+            else:
+                logger.warning(f"Invalid CSP domain format skipped: {domain}")
+
+    # If all domains were invalid, fall back to self-only
+    if len(parts) == 1:
+        logger.warning("All configured embed domains were invalid, using 'self' only")
+
+    return " ".join(parts)
+
+
+def reset_embed_settings_cache() -> None:
+    """Reset the cached embed settings. Useful for testing."""
+    global _cached_embed_settings, _cached_embed_settings_time
+    _cached_embed_settings = {}
+    _cached_embed_settings_time = 0
 
 
 def validate_safe_path(base: Path, user_path: str) -> Path:
@@ -568,6 +728,189 @@ async def category_page(slug: str):
 async def tag_page(slug: str):
     """Serve the tag page."""
     return FileResponse(WEB_DIR / "tag.html")
+
+
+# =============================================================================
+# Video Embed Routes (Issue #210)
+# =============================================================================
+
+
+def _is_video_embeddable(video: dict) -> bool:
+    """Check if video meets all requirements for embedding."""
+    return (
+        video["status"] == VideoStatus.READY
+        and video["published_at"] is not None
+        and video["deleted_at"] is None
+    )
+
+
+def _build_embed_error_response(
+    reason: str,
+    slug: str,
+) -> FileResponse:
+    """
+    Build appropriate error response for embed requests.
+
+    Args:
+        reason: Error reason ('disabled', 'invalid_slug', 'not_found', 'not_embeddable', 'database_error')
+        slug: Video slug for logging
+
+    Returns:
+        FileResponse with embed-error.html and appropriate headers
+    """
+    status_codes = {
+        "disabled": 404,
+        "invalid_slug": 400,
+        "not_found": 404,
+        "not_embeddable": 404,
+        "database_error": 503,
+    }
+
+    headers = {"Content-Security-Policy": "frame-ancestors 'none'"}
+    if reason == "database_error":
+        headers["Retry-After"] = "30"
+
+    return FileResponse(
+        WEB_DIR / "embed-error.html",
+        status_code=status_codes.get(reason, 500),
+        headers=headers,
+    )
+
+
+@app.get("/embed/{slug}", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_EMBED)
+async def embed_page(request: Request, slug: str):
+    """
+    Serve the embed player page for a video.
+
+    Returns a minimal video player designed for iframe embedding.
+    Sets appropriate CSP frame-ancestors header based on configuration.
+
+    Security:
+    - Validates slug format before database query
+    - Only serves videos with status='ready' and published_at set
+    - CSP frame-ancestors controls which domains can embed
+    - Does NOT set X-Frame-Options (CSP takes precedence)
+
+    Query Parameters:
+    - autoplay: 0 or 1 (default: from settings)
+    - start: Start time in seconds (default: 0)
+    - controls: 0 or 1 (default: 1)
+    """
+    # Validate slug format (security: prevents log injection, ensures valid input)
+    if not validate_slug(slug):
+        return _build_embed_error_response("invalid_slug", slug)
+
+    # Check if embeds are enabled
+    embed_settings = await get_embed_settings()
+    if not embed_settings["enabled"]:
+        return _build_embed_error_response("disabled", slug)
+
+    # Validate video exists and is embeddable
+    try:
+        query = sa.select(
+            videos.c.id,
+            videos.c.slug,
+            videos.c.status,
+            videos.c.published_at,
+            videos.c.deleted_at,
+        ).where(videos.c.slug == slug)
+
+        video = await fetch_one_with_retry(query)
+
+        if not video:
+            logger.debug(f"Embed: Video not found: {slug}")
+            return _build_embed_error_response("not_found", slug)
+
+        if not _is_video_embeddable(video):
+            logger.debug(
+                f"Embed: Video not embeddable: {slug} "
+                f"(status={video['status']}, published={video['published_at'] is not None})"
+            )
+            return _build_embed_error_response("not_embeddable", slug)
+
+    except Exception as e:
+        logger.warning(f"Embed: Database error for {slug}: {e}")
+        return _build_embed_error_response("database_error", slug)
+
+    # Build CSP frame-ancestors directive from DB-backed settings
+    frame_ancestors = build_embed_csp_frame_ancestors(embed_settings)
+
+    # Return embed page with CSP header
+    return FileResponse(
+        WEB_DIR / "embed.html",
+        headers={
+            "Content-Security-Policy": f"frame-ancestors {frame_ancestors}",
+        },
+    )
+
+
+@v1_router.get("/videos/{slug}/embed-code", response_model=EmbedCodeResponse)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_embed_code(request: Request, slug: str):
+    """
+    Get the embed code for a video.
+
+    Returns the iframe HTML and URL for embedding the video on external sites.
+
+    Security:
+    - Validates slug format before database query
+
+    Returns 404 if:
+    - Video doesn't exist
+    - Video is not ready or not published
+    - Embeds are disabled
+    """
+    # Validate slug format (security: prevents log injection, ensures valid input)
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail="Invalid video slug")
+
+    # Check if embeds are enabled
+    embed_settings = await get_embed_settings()
+    if not embed_settings["enabled"]:
+        raise HTTPException(status_code=404, detail="Video embedding is disabled")
+
+    # Validate video exists and is embeddable
+    query = sa.select(
+        videos.c.id,
+        videos.c.slug,
+        videos.c.status,
+        videos.c.published_at,
+        videos.c.deleted_at,
+    ).where(videos.c.slug == slug)
+
+    video = await fetch_one_with_retry(query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if not _is_video_embeddable(video):
+        raise HTTPException(status_code=404, detail="Video not available for embedding")
+
+    # Build embed URL
+    # Use request's base URL for the embed URL
+    base_url = str(request.base_url).rstrip("/")
+    embed_url = f"{base_url}/embed/{slug}"
+
+    # Standard dimensions for 16:9 aspect ratio
+    width = 560
+    height = 315
+
+    # Build iframe HTML with proper attributes
+    iframe_html = (
+        f'<iframe src="{embed_url}" '
+        f'width="{width}" height="{height}" '
+        f'frameborder="0" '
+        f'allow="autoplay; fullscreen; picture-in-picture" '
+        f'allowfullscreen></iframe>'
+    )
+
+    return EmbedCodeResponse(
+        embed_url=embed_url,
+        iframe_html=iframe_html,
+        width=width,
+        height=height,
+    )
 
 
 async def get_video_tags(video_ids: List[int]) -> dict:

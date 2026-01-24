@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self';">
+    <title>Embedded Video</title>
+    <link rel="stylesheet" href="/static/vendor/tailwind.css">
+    <link rel="stylesheet" href="/static/css/bundle.css">
+    <link rel="stylesheet" href="/static/css/pages/player.css">
+    <link rel="stylesheet" href="/static/css/pages/embed.css">
+    <!-- Shaka Player for DASH/HLS playback -->
+    <script src="/static/vendor/shaka-player.compiled.min.js"></script>
+    <!-- hls.js for legacy HLS playback (fallback) -->
+    <script src="/static/vendor/hls.min.js"></script>
+    <script src="/static/js/player-controls.js"></script>
+    <script defer src="/static/js/utils.js"></script>
+    <script defer src="/static/js/pages/embed.js"></script>
+</head>
+<body class="embed-body">
+    <!-- Loading State -->
+    <div id="embed-loading" class="embed-loading">
+        <div class="embed-spinner"></div>
+    </div>
+
+    <!-- Error State (hidden by default) -->
+    <div id="embed-error" class="embed-error embed-hidden">
+        <div class="embed-error-content">
+            <svg class="embed-error-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <p id="embed-error-message">Video unavailable</p>
+        </div>
+    </div>
+
+    <!-- Video Player Container -->
+    <div id="embed-player-container" class="embed-player-container embed-hidden">
+        <div id="player-container" class="player-container">
+            <video
+                id="player"
+                preload="auto"
+                playsinline
+                controls
+            ></video>
+        </div>
+    </div>
+
+    <script>
+        // Pass embed configuration to the embed.js script
+        window.EMBED_CONFIG = {
+            slug: window.location.pathname.split('/').pop(),
+            params: new URLSearchParams(window.location.search)
+        };
+    </script>
+</body>
+</html>

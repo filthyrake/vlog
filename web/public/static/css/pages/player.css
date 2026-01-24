@@ -1034,6 +1034,125 @@
     flex-shrink: 0;
 }
 
+/* Share modal tabs (Issue #210) */
+.share-modal-tabs {
+    display: flex;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 0 16px;
+}
+
+.share-modal-tab {
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--vlog-text-secondary, #a1a1aa);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color var(--vlog-transition-base, 0.2s ease),
+                border-color var(--vlog-transition-base, 0.2s ease);
+}
+
+.share-modal-tab:hover {
+    color: white;
+}
+
+.share-modal-tab.active {
+    color: white;
+    border-bottom-color: var(--vlog-primary, #3b82f6);
+}
+
+.share-modal-tab:focus-visible {
+    outline: 2px solid var(--vlog-primary, #3b82f6);
+    outline-offset: -2px;
+}
+
+.share-tab-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Link tab styling - horizontal layout */
+#share-tab-link {
+    flex-direction: row;
+    gap: 8px;
+}
+
+/* Embed tab styling (Issue #210) */
+.embed-options {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.embed-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--vlog-text-secondary, #a1a1aa);
+    font-size: 13px;
+}
+
+.embed-option-checkbox {
+    cursor: pointer;
+}
+
+.embed-option-checkbox:hover {
+    color: white;
+}
+
+.embed-start-time {
+    width: 70px;
+    background: var(--vlog-bg-secondary, #111827);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--vlog-radius-sm, 4px);
+    padding: 6px 10px;
+    color: white;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+}
+
+.embed-start-time:focus {
+    border-color: var(--vlog-primary, #3b82f6);
+}
+
+.embed-start-time::placeholder {
+    color: var(--vlog-text-tertiary, #71717a);
+}
+
+.embed-option input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--vlog-primary, #3b82f6);
+    cursor: pointer;
+}
+
+.embed-code-textarea {
+    width: 100%;
+    background: var(--vlog-bg-secondary, #111827);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--vlog-radius-sm, 4px);
+    padding: 10px 12px;
+    color: white;
+    font-size: 12px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    resize: none;
+    outline: none;
+    line-height: 1.5;
+}
+
+.embed-code-textarea:focus {
+    border-color: var(--vlog-primary, #3b82f6);
+}
+
+.embed-copy-btn {
+    align-self: flex-end;
+}
+
 /* Mobile responsive */
 @media (max-width: 640px) {
     .player-control-bar {
