@@ -1602,3 +1602,15 @@ class WebhookStatsResponse(BaseModel):
     failed_deliveries: int = 0
     total_deliveries_24h: int = 0
     successful_deliveries_24h: int = 0
+
+
+# ============ Video Embed Models (Issue #210) ============
+
+
+class EmbedCodeResponse(BaseModel):
+    """Response for video embed code API."""
+
+    embed_url: str = Field(..., description="URL for the embed iframe src")
+    iframe_html: str = Field(..., description="Ready-to-use iframe HTML snippet")
+    width: int = Field(default=560, description="Default iframe width in pixels")
+    height: int = Field(default=315, description="Default iframe height in pixels")

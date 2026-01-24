@@ -62,6 +62,9 @@ class VLogPlayerControls {
         this.onQualityChange = options.onQualityChange || (() => {});
         this.onCaptionsToggle = options.onCaptionsToggle || (() => {});
 
+        // Feature flags (Issue #210)
+        this.disableShare = options.disableShare || false;
+
         // Chapters state (Issue #413 Phase 7A)
         this.chapters = [];
         this.currentChapterIndex = -1;
@@ -326,7 +329,7 @@ class VLogPlayerControls {
         `;
         this.container.appendChild(this.shortcutsModal);
 
-        // Share modal (Issue #413 Phase 5)
+        // Share modal (Issue #413 Phase 5, extended for embed in Issue #210)
         this.shareModal = document.createElement('div');
         this.shareModal.className = 'player-share-modal';
         this.shareModal.setAttribute('role', 'dialog');
@@ -344,18 +347,48 @@ class VLogPlayerControls {
                         </svg>
                     </button>
                 </div>
+                <div class="share-modal-tabs" role="tablist" aria-label="Share options">
+                    <button class="share-modal-tab active" role="tab" aria-selected="true" aria-controls="share-tab-link" id="share-tab-btn-link" data-tab="link">Link</button>
+                    <button class="share-modal-tab" role="tab" aria-selected="false" aria-controls="share-tab-embed" id="share-tab-btn-embed" data-tab="embed">Embed</button>
+                </div>
                 <div class="share-modal-body">
-                    <input type="text" class="share-modal-input" readonly aria-label="Video URL">
-                    <button class="share-modal-copy" aria-label="Copy link">
-                        <svg viewBox="0 0 24 24" fill="currentColor" class="share-copy-icon">
-                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                        </svg>
-                        <span class="share-modal-copy-text">Copy</span>
-                    </button>
+                    <!-- Link Tab -->
+                    <div class="share-tab-content" id="share-tab-link" role="tabpanel" aria-labelledby="share-tab-btn-link">
+                        <input type="text" class="share-modal-input" readonly aria-label="Video URL">
+                        <button class="share-modal-copy" aria-label="Copy link">
+                            <svg viewBox="0 0 24 24" fill="currentColor" class="share-copy-icon">
+                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                            </svg>
+                            <span class="share-modal-copy-text">Copy</span>
+                        </button>
+                    </div>
+                    <!-- Embed Tab (Issue #210) -->
+                    <div class="share-tab-content" id="share-tab-embed" role="tabpanel" aria-labelledby="share-tab-btn-embed" style="display: none;">
+                        <div class="embed-options">
+                            <label class="embed-option">
+                                <span>Start at</span>
+                                <input type="text" class="embed-start-time" placeholder="0:00" aria-label="Start time">
+                            </label>
+                            <label class="embed-option embed-option-checkbox">
+                                <input type="checkbox" class="embed-autoplay">
+                                <span>Autoplay</span>
+                            </label>
+                        </div>
+                        <textarea class="embed-code-textarea" readonly aria-label="Embed code" rows="3"></textarea>
+                        <button class="share-modal-copy embed-copy-btn" aria-label="Copy embed code">
+                            <svg viewBox="0 0 24 24" fill="currentColor" class="share-copy-icon">
+                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                            </svg>
+                            <span class="embed-copy-text">Copy</span>
+                        </button>
+                    </div>
                 </div>
             </div>
         `;
         this.container.appendChild(this.shareModal);
+
+        // Share modal current tab state
+        this.shareCurrentTab = 'link';
 
         // Chapters panel (Issue #413 Phase 7)
         this.chaptersPanel = document.createElement('div');
@@ -409,6 +442,15 @@ class VLogPlayerControls {
         this.shareCopyBtn = this.shareModal.querySelector('.share-modal-copy');
         this.shareCloseBtn = this.shareModal.querySelector('.share-close-btn');
 
+        // Embed tab references (Issue #210)
+        this.shareTabBtns = this.shareModal.querySelectorAll('.share-modal-tab');
+        this.shareLinkTabContent = this.shareModal.querySelector('#share-tab-link');
+        this.shareEmbedTabContent = this.shareModal.querySelector('#share-tab-embed');
+        this.embedStartTimeInput = this.shareModal.querySelector('.embed-start-time');
+        this.embedAutoplayCheckbox = this.shareModal.querySelector('.embed-autoplay');
+        this.embedCodeTextarea = this.shareModal.querySelector('.embed-code-textarea');
+        this.embedCopyBtn = this.shareModal.querySelector('.embed-copy-btn');
+
         // Chapters references (Issue #413 Phase 7A)
         this.chaptersBtn = this.controlBar.querySelector('.chapters-btn');
         this.chapterMarkers = this.controlBar.querySelector('.player-chapter-markers');
@@ -421,6 +463,11 @@ class VLogPlayerControls {
 
         // Build speed options after DOM refs are cached
         this.buildSpeedOptions();
+
+        // Hide share button if disabled (Issue #210 - embed mode)
+        if (this.disableShare && this.shareBtn) {
+            this.shareBtn.style.display = 'none';
+        }
     }
 
     bindEvents() {
@@ -568,6 +615,23 @@ class VLogPlayerControls {
         });
         this.shareCopyBtn.addEventListener('click', () => {
             this.copyShareLink();
+        });
+
+        // Embed tab event handlers (Issue #210)
+        this.shareTabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tab = btn.dataset.tab;
+                this.switchShareTab(tab);
+            });
+        });
+        this.embedStartTimeInput.addEventListener('input', () => {
+            this.updateEmbedCode();
+        });
+        this.embedAutoplayCheckbox.addEventListener('change', () => {
+            this.updateEmbedCode();
+        });
+        this.embedCopyBtn.addEventListener('click', () => {
+            this.copyEmbedCode();
         });
 
         // Chapters button and panel (Issue #413 Phase 7)
@@ -1139,6 +1203,20 @@ class VLogPlayerControls {
         const shareUrl = window.location.origin + window.location.pathname;
         this.shareInput.value = shareUrl;
 
+        // Reset to link tab (Issue #210)
+        this.shareCurrentTab = 'link';
+        this.shareTabBtns.forEach(btn => {
+            const isLink = btn.dataset.tab === 'link';
+            btn.classList.toggle('active', isLink);
+            btn.setAttribute('aria-selected', isLink.toString());
+        });
+        this.shareLinkTabContent.style.display = 'block';
+        this.shareEmbedTabContent.style.display = 'none';
+
+        // Reset embed options
+        this.embedStartTimeInput.value = '';
+        this.embedAutoplayCheckbox.checked = false;
+
         this.shareModal.classList.add('visible');
         this.shareModal.setAttribute('aria-hidden', 'false');
         this.shareBtn.setAttribute('aria-expanded', 'true');
@@ -1188,6 +1266,115 @@ class VLogPlayerControls {
             console.error('Copy failed:', err);
 
             // Provide more specific error messages
+            const message = err.name === 'NotAllowedError'
+                ? 'Permission denied'
+                : 'Copy failed';
+            copyText.textContent = message;
+
+            setTimeout(() => {
+                copyText.textContent = 'Copy';
+            }, 2000);
+        }
+    }
+
+    // Embed tab methods (Issue #210)
+    switchShareTab(tab) {
+        if (tab === this.shareCurrentTab) return;
+
+        this.shareCurrentTab = tab;
+
+        // Update tab button states
+        this.shareTabBtns.forEach(btn => {
+            const isActive = btn.dataset.tab === tab;
+            btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-selected', isActive.toString());
+        });
+
+        // Show/hide tab content
+        this.shareLinkTabContent.style.display = tab === 'link' ? 'block' : 'none';
+        this.shareEmbedTabContent.style.display = tab === 'embed' ? 'block' : 'none';
+
+        // Focus appropriate element
+        if (tab === 'link') {
+            this.shareCopyBtn.focus();
+        } else {
+            // Generate embed code when switching to embed tab
+            this.updateEmbedCode();
+            this.embedCopyBtn.focus();
+        }
+    }
+
+    updateEmbedCode() {
+        // Get current video URL slug
+        const pathParts = window.location.pathname.split('/');
+        const slug = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2];
+
+        // Build embed URL with parameters
+        const embedUrl = new URL(`${window.location.origin}/embed/${slug}`);
+
+        // Parse start time input (format: "1:30" or "90")
+        const startTimeValue = this.embedStartTimeInput.value.trim();
+        if (startTimeValue) {
+            const startSeconds = this.parseTimeInput(startTimeValue);
+            if (startSeconds > 0) {
+                embedUrl.searchParams.set('start', startSeconds.toString());
+            }
+        }
+
+        // Add autoplay parameter
+        if (this.embedAutoplayCheckbox.checked) {
+            embedUrl.searchParams.set('autoplay', '1');
+        }
+
+        // Generate iframe HTML
+        const iframeHtml = `<iframe src="${embedUrl.toString()}" width="560" height="315" frameborder="0" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
+
+        this.embedCodeTextarea.value = iframeHtml;
+    }
+
+    parseTimeInput(value) {
+        // Handle MM:SS or H:MM:SS format
+        if (value.includes(':')) {
+            const parts = value.split(':').map(p => parseInt(p, 10) || 0);
+            if (parts.length === 2) {
+                return parts[0] * 60 + parts[1];
+            } else if (parts.length === 3) {
+                return parts[0] * 3600 + parts[1] * 60 + parts[2];
+            }
+        }
+        // Handle plain seconds
+        const seconds = parseInt(value, 10);
+        return isNaN(seconds) || seconds < 0 ? 0 : seconds;
+    }
+
+    async copyEmbedCode() {
+        const code = this.embedCodeTextarea.value;
+        const copyText = this.embedCopyBtn.querySelector('.embed-copy-text');
+
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(code);
+            } else {
+                // Fallback for HTTP or older browsers
+                this.embedCodeTextarea.select();
+                this.embedCodeTextarea.setSelectionRange(0, 99999);
+                const success = document.execCommand('copy');
+                if (!success) {
+                    throw new Error('execCommand copy returned false');
+                }
+            }
+
+            copyText.textContent = 'Copied!';
+            this.embedCopyBtn.classList.add('copied');
+            this._announce('Embed code copied to clipboard');
+
+            setTimeout(() => {
+                copyText.textContent = 'Copy';
+                this.embedCopyBtn.classList.remove('copied');
+            }, 2000);
+        } catch (err) {
+            console.error('Copy failed:', err);
+
             const message = err.name === 'NotAllowedError'
                 ? 'Permission denied'
                 : 'Copy failed';

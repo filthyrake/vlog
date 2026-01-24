@@ -1185,6 +1185,42 @@ KNOWN_SETTINGS = [
         "Countdown duration in seconds before autoplay starts",
         {"min": 5, "max": 30},
     ),
+    # Embed settings (Issue #210)
+    (
+        "embed.enabled",
+        "embed",
+        "boolean",
+        "Enable video embedding feature",
+        None,
+    ),
+    (
+        "embed.allowed_domains",
+        "embed",
+        "string",
+        "Domain whitelist for frame-ancestors CSP ('self' = same-origin only, or comma-separated domains)",
+        None,
+    ),
+    (
+        "embed.allow_all_domains",
+        "embed",
+        "boolean",
+        "Allow embedding on any domain (security warning: only for public platforms)",
+        None,
+    ),
+    (
+        "embed.default_autoplay",
+        "embed",
+        "boolean",
+        "Default autoplay behavior for embedded videos",
+        None,
+    ),
+    (
+        "embed.min_playback_for_view",
+        "embed",
+        "integer",
+        "Minimum seconds of playback before counting as a view",
+        {"min": 1, "max": 60},
+    ),
     # Webhook settings (Issue #203)
     (
         "webhooks.enabled",
@@ -1332,6 +1368,12 @@ SETTING_TO_ENV_MAP = {
     "webhooks.request_timeout": "VLOG_WEBHOOKS_REQUEST_TIMEOUT",
     "webhooks.max_concurrent_deliveries": "VLOG_WEBHOOKS_MAX_CONCURRENT_DELIVERIES",
     "webhooks.delivery_batch_size": "VLOG_WEBHOOKS_DELIVERY_BATCH_SIZE",
+    # Embed settings (Issue #210)
+    "embed.enabled": "VLOG_EMBED_ENABLED",
+    "embed.allowed_domains": "VLOG_EMBED_ALLOWED_DOMAINS",
+    "embed.allow_all_domains": "VLOG_EMBED_ALLOW_ALL_DOMAINS",
+    "embed.default_autoplay": "VLOG_EMBED_DEFAULT_AUTOPLAY",
+    "embed.min_playback_for_view": "VLOG_EMBED_MIN_PLAYBACK_FOR_VIEW",
 }
 
 
