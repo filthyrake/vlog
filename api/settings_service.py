@@ -845,6 +845,35 @@ KNOWN_SETTINGS = [
         "Debounce delay for filesystem events (seconds)",
         {"min": 0.0, "max": 60.0},
     ),
+    # API key expiration and rotation settings (Issue #226)
+    (
+        "workers.api_key_expiration_days",
+        "workers",
+        "integer",
+        "API key expiration in days (0 = never expires)",
+        {"min": 0, "max": 365},
+    ),
+    (
+        "workers.api_key_grace_period_hours",
+        "workers",
+        "integer",
+        "Grace period after expiration where key still works with warning (max 24)",
+        {"min": 0, "max": 24},
+    ),
+    (
+        "workers.api_key_rotation_overlap_hours",
+        "workers",
+        "integer",
+        "Hours old key remains valid after rotation (max 24)",
+        {"min": 0, "max": 24},
+    ),
+    (
+        "workers.api_key_expiration_warning_days",
+        "workers",
+        "integer",
+        "Days before expiration to show warnings",
+        {"min": 1, "max": 90},
+    ),
     # Analytics settings
     ("analytics.cache_enabled", "analytics", "boolean", "Enable analytics caching", None),
     ("analytics.cache_ttl", "analytics", "integer", "Analytics cache TTL in seconds", {"min": 1, "max": 3600}),
@@ -1293,6 +1322,11 @@ SETTING_TO_ENV_MAP = {
     "workers.offline_threshold_minutes": "VLOG_WORKER_OFFLINE_THRESHOLD",
     "workers.fallback_poll_interval": "VLOG_WORKER_FALLBACK_POLL_INTERVAL",
     "workers.debounce_delay": "VLOG_WORKER_DEBOUNCE_DELAY",
+    # API key expiration/rotation settings (Issue #226)
+    "workers.api_key_expiration_days": "VLOG_WORKER_API_KEY_EXPIRATION_DAYS",
+    "workers.api_key_grace_period_hours": "VLOG_WORKER_API_KEY_GRACE_PERIOD_HOURS",
+    "workers.api_key_rotation_overlap_hours": "VLOG_WORKER_API_KEY_ROTATION_OVERLAP_HOURS",
+    "workers.api_key_expiration_warning_days": "VLOG_WORKER_API_KEY_EXPIRATION_WARNING_DAYS",
     # Analytics settings
     "analytics.cache_enabled": "VLOG_ANALYTICS_CACHE_ENABLED",
     "analytics.cache_ttl": "VLOG_ANALYTICS_CACHE_TTL",

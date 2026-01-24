@@ -110,19 +110,31 @@ from api.metrics import (
     get_metrics,
     sanitize_label,
 )
+from api.audit import AuditAction, log_audit
 from api.pubsub import Publisher
 from api.redis_client import get_redis
 from api.settings_service import get_setting as get_db_setting
 from api.webhook_service import trigger_webhook_event
-from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
+from api.worker_auth import (
+    DEFAULT_EXPIRATION_DAYS,
+    bulk_revoke_expired_keys,
+    get_expiring_keys,
+    get_key_prefix,
+    hash_api_key,
+    rotate_worker_key,
+    verify_worker_key,
+)
 from api.worker_schemas import (
+    BulkRevokeResponse,
     ClaimJobResponse,
     CompleteJobRequest,
     CompleteJobResponse,
+    ExpiringKeysResponse,
     FailJobRequest,
     FailJobResponse,
     HeartbeatRequest,
     HeartbeatResponse,
+    KeyRotationResponse,
     ProgressUpdateRequest,
     ProgressUpdateResponse,
     SegmentFinalizeRequest,
@@ -1142,6 +1154,12 @@ async def register_worker(
     key_prefix = get_key_prefix(api_key)
     now = datetime.now(timezone.utc)
 
+    # Calculate API key expiration based on settings (Issue #226)
+    expiration_days = await get_db_setting("workers.api_key_expiration_days", DEFAULT_EXPIRATION_DAYS)
+    key_expires_at = None
+    if expiration_days > 0:
+        key_expires_at = now + timedelta(days=expiration_days)
+
     worker_name = data.worker_name or f"worker-{worker_id[:8]}"
 
     # Validate and serialize capabilities
@@ -1179,6 +1197,7 @@ async def register_worker(
             )
 
             # Create API key record with argon2id hash (Issue #445)
+            # Includes expiration date based on settings (Issue #226)
             await database.execute(
                 worker_api_keys.insert().values(
                     worker_id=result["worker_db_id"],
@@ -1186,6 +1205,7 @@ async def register_worker(
                     hash_version=hash_version,
                     key_prefix=key_prefix,
                     created_at=now,
+                    expires_at=key_expires_at,
                 )
             )
 
@@ -3048,6 +3068,176 @@ async def revoke_worker(
     await database.execute(workers.update().where(workers.c.id == worker["id"]).values(status="disabled"))
 
     return StatusResponse(status="ok", message=f"Worker {worker_id} has been revoked")
+
+
+# =============================================================================
+# API Key Rotation Endpoints (Issue #226)
+# =============================================================================
+
+
+@v1_router.post("/workers/{worker_id}/rotate", response_model=KeyRotationResponse)
+@limiter.limit("10/hour")  # Rate limit: 10 rotations per IP per hour (plus 5-min per-worker cooldown)
+async def rotate_worker_api_key(
+    request: Request,
+    worker_id: str,
+    revoke_old: bool = False,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    Rotate a worker's API key.
+
+    Creates a new API key and optionally revokes the old one immediately.
+    If not revoked immediately, the old key remains valid for the configured
+    overlap period (default: 2 hours).
+
+    Rate limit: 10 rotations per IP per hour, plus 5-minute per-worker cooldown between rotations.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+
+    Args:
+        worker_id: Worker UUID to rotate key for
+        revoke_old: If true, revoke old key immediately instead of after overlap
+
+    Returns:
+        KeyRotationResponse with new key and expiration info
+    """
+    # Find worker by UUID
+    worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    # Rotate the key (handles cooldown check internally)
+    new_api_key, new_expires_at, old_key_expires_at, overlap_hours = await rotate_worker_key(
+        worker_db_id=worker["id"],
+        worker_uuid=worker_id,
+        revoke_old=revoke_old,
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.WORKER_KEY_ROTATE,
+        client_ip=request.client.host if request.client else None,
+        resource_type="worker",
+        resource_id=worker_id,
+        resource_name=worker["worker_name"],
+        details={
+            "revoke_old": revoke_old,
+            "overlap_hours": overlap_hours,
+        },
+    )
+
+    return KeyRotationResponse(
+        status="ok",
+        new_api_key=new_api_key,
+        expires_at=new_expires_at,
+        old_key_expires_at=old_key_expires_at,
+        overlap_hours=overlap_hours,
+    )
+
+
+@v1_router.get("/workers/expiring-keys", response_model=ExpiringKeysResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def list_expiring_keys(
+    request: Request,
+    days: int = 14,
+    include_grace: bool = False,
+    page: int = 1,
+    per_page: int = 50,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    List API keys expiring within the specified number of days.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+
+    Args:
+        days: Number of days to look ahead (default: 14)
+        include_grace: Include keys in grace period (already expired but still valid)
+        page: Page number for pagination
+        per_page: Results per page (max 100)
+
+    Returns:
+        Paginated list of expiring keys with worker info
+    """
+    # Validate days parameter - return 400 for invalid values
+    if days < 1 or days > 365:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid 'days' parameter: {days}. Must be between 1 and 365.",
+        )
+
+    # Validate pagination (clamp to valid range)
+    if page < 1:
+        page = 1
+    if per_page < 1 or per_page > 100:
+        per_page = min(max(per_page, 1), 100)
+
+    keys, total_count = await get_expiring_keys(
+        days=days,
+        include_grace=include_grace,
+        page=page,
+        per_page=per_page,
+    )
+
+    return ExpiringKeysResponse(
+        keys=keys,
+        total_count=total_count,
+        page=page,
+        per_page=per_page,
+    )
+
+
+@v1_router.post("/workers/revoke-expired", response_model=BulkRevokeResponse)
+@limiter.limit("1/minute")  # Rate limit: 1 bulk revoke per minute
+async def revoke_expired_keys(
+    request: Request,
+    dry_run: bool = True,
+    include_grace_period: bool = False,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    Revoke all expired API keys in bulk.
+
+    By default, only revokes keys that are past the grace period.
+    Use include_grace_period=true to also revoke keys still in grace period.
+
+    IMPORTANT: Use dry_run=true first to preview what would be revoked.
+
+    Rate limit: 1 request per minute.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+
+    Args:
+        dry_run: If true (default), only return count without actually revoking
+        include_grace_period: If true, also revoke keys still in grace period
+
+    Returns:
+        Count of revoked keys and list of affected worker IDs
+    """
+    revoked_count, affected_worker_ids = await bulk_revoke_expired_keys(
+        dry_run=dry_run,
+        include_grace_period=include_grace_period,
+    )
+
+    # Audit log (only if not dry run)
+    if not dry_run and revoked_count > 0:
+        log_audit(
+            AuditAction.WORKER_BULK_REVOKE,
+            client_ip=request.client.host if request.client else None,
+            resource_type="worker_api_keys",
+            details={
+                "revoked_count": revoked_count,
+                "include_grace_period": include_grace_period,
+                "affected_workers": len(affected_worker_ids),
+            },
+        )
+
+    return BulkRevokeResponse(
+        status="ok",
+        dry_run=dry_run,
+        revoked_count=revoked_count,
+        affected_worker_ids=affected_worker_ids,
+    )
 
 
 @v1_router.get("/health")

@@ -428,8 +428,18 @@ worker_api_keys = sa.Table(
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    # Rotation tracking (Issue #226): self-referential FK to track key rotation chain
+    # NULL = original key, otherwise points to the previous key that was rotated
+    sa.Column(
+        "rotated_from",
+        sa.Integer,
+        sa.ForeignKey("worker_api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Index("ix_worker_api_keys_key_prefix", "key_prefix"),
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
+    sa.Index("ix_worker_api_keys_rotated_from", "rotated_from"),
+    sa.Index("ix_worker_api_keys_expires_at", "expires_at"),
 )
 
 # Deployment events for worker management (Issue #410)
