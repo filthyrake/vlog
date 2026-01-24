@@ -9,7 +9,7 @@ Integration tests for verify_worker_key are in test_worker_api.py.
 """
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock
 
 import pytest
 

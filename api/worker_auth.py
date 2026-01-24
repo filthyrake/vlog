@@ -353,9 +353,6 @@ async def verify_worker_key(
         key_record["expires_at"]
     )
 
-    # Store whether key is expiring for header injection
-    key_expiring = False
-
     if expiration_status == KeyExpirationStatus.EXPIRED:
         security_logger.warning(
             "Authentication failed: expired API key (past grace period)",
@@ -386,13 +383,11 @@ async def verify_worker_key(
                 **ctx,
             },
         )
-        key_expiring = True
     elif expiration_status == KeyExpirationStatus.EXPIRING_SOON:
         # Log that key is expiring soon
         logger.info(
             f"API key expiring soon for worker {key_record['worker_id']}",
         )
-        key_expiring = True
 
     # Update last_used_at in background (non-blocking)
     async def update_last_used():

@@ -640,7 +640,7 @@ def cmd_worker(args):
 
             for w in workers:
                 worker_id = w["worker_id"][:8] + "..."
-                name = (w["worker_name"] or "-")[:18]
+                name = (w["worker_name"] or "-")[:20]
                 wtype = w["worker_type"]
                 status = w["status"]
                 heartbeat = w["last_heartbeat"][:19] if w["last_heartbeat"] else "-"
@@ -755,7 +755,7 @@ def cmd_worker(args):
 
             for key in keys:
                 worker_id = key["worker_id"]
-                name = (key["worker_name"] or "-")[:18]
+                name = (key["worker_name"] or "-")[:20]
                 expires = key["expires_at"][:19] if key.get("expires_at") else "-"
                 if key.get("in_grace_period"):
                     status = "IN GRACE PERIOD"

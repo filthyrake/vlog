@@ -3090,7 +3090,7 @@ async def rotate_worker_api_key(
     If not revoked immediately, the old key remains valid for the configured
     overlap period (default: 2 hours).
 
-    Rate limit: 10 rotations per worker per hour, 5-minute cooldown between rotations.
+    Rate limit: 10 rotations per IP per hour, plus 5-minute per-worker cooldown between rotations.
 
     Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
 

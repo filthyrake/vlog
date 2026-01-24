@@ -439,6 +439,7 @@ worker_api_keys = sa.Table(
     sa.Index("ix_worker_api_keys_key_prefix", "key_prefix"),
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
     sa.Index("ix_worker_api_keys_rotated_from", "rotated_from"),
+    sa.Index("ix_worker_api_keys_expires_at", "expires_at"),
 )
 
 # Deployment events for worker management (Issue #410)
