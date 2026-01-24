@@ -44,6 +44,8 @@ export interface Video {
   is_featured?: boolean; // Issue #413 Phase 3
   featured_at?: string;  // Issue #413 Phase 3
   sprite_sheet_status?: SpriteSheetStatus; // Issue #413 Phase 7B
+  comments_enabled?: boolean | null;  // Issue #213: null = inherit from global
+  ratings_enabled?: boolean | null;   // Issue #213: null = inherit from global
 }
 
 export interface VideoProgress {

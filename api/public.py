@@ -25,7 +25,11 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
+import bleach
+
 from api.analytics_cache import AnalyticsCache
+from api.auth.middleware import get_current_user, require_auth, require_ownership_or_permission
+from api.auth.permissions import Permission, Role, has_permission
 from api.common import (
     HTTPMetricsMiddleware,
     RequestIDMiddleware,
@@ -40,6 +44,7 @@ from api.common import (
 from api.database import (
     categories,
     chapters,
+    comments,
     configure_database,
     custom_field_definitions,
     database,
@@ -48,9 +53,11 @@ from api.database import (
     playback_sessions,
     playlists,
     quality_progress,
+    ratings,
     tags,
     transcoding_jobs,
     transcriptions,
+    users,
     video_custom_fields,
     video_qualities,
     video_tags,
@@ -71,6 +78,12 @@ from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
     CategoryResponse,
     ChapterInfo,
+    CommentCreate,
+    CommentListResponse,
+    CommentResponse,
+    CommentUpdate,
+    CommentUserInfo,
+    CommentWithReplies,
     EmbedCodeResponse,
     PaginatedVideoListResponse,
     PlaybackEnd,
@@ -82,13 +95,17 @@ from api.schemas import (
     PlaylistResponse,
     PlaylistVideoInfo,
     QualityProgressResponse,
+    RatingCreate,
+    RatingResponse,
     SpriteSheetInfo,
     TagResponse,
     TranscodingProgressResponse,
     TranscriptionResponse,
     VideoListResponse,
     VideoQualityResponse,
+    VideoRatingAggregates,
     VideoResponse,
+    VideoSocialStatus,
     VideoTagInfo,
 )
 from config import (
@@ -3590,6 +3607,654 @@ async def end_analytics_session(request: Request, data: PlaybackEnd):
         VIDEOS_WATCH_TIME_SECONDS_TOTAL.inc(duration_watched)
 
     return {"status": "ok"}
+
+
+# =============================================================================
+# Comments and Ratings API (Issue #213)
+# Social engagement features with threading support
+# =============================================================================
+
+# Rate limiting for comments and ratings
+RATE_LIMIT_COMMENTS = "5/minute"
+RATE_LIMIT_COMMENTS_HOURLY = "20/hour"
+RATE_LIMIT_RATINGS = "10/minute"
+
+
+def sanitize_comment_content(content: str) -> str:
+    """
+    Sanitize comment content to prevent XSS.
+
+    Strips all HTML tags and attributes, returning plain text only.
+    Uses bleach library as recommended by security review.
+    """
+    return bleach.clean(content, tags=[], strip=True)
+
+
+async def get_social_settings(video_id: int) -> dict:
+    """
+    Get resolved social feature settings for a video.
+
+    Inherits from global settings if per-video settings are NULL.
+    """
+    from api.settings_service import get_settings_service
+
+    service = get_settings_service()
+
+    # Get global settings
+    global_comments = await service.get("social.comments_enabled", True)
+    global_ratings = await service.get("social.ratings_enabled", True)
+    ratings_type = await service.get("social.ratings_type", "stars")
+    require_approval = await service.get("social.comments_require_approval", False)
+    max_length = await service.get("social.comments_max_length", 5000)
+    max_depth = await service.get("social.comments_max_depth", 5)
+
+    # Get video-specific overrides
+    video_query = videos.select().where(videos.c.id == video_id)
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Per-video settings override global if not NULL
+    comments_enabled = video["comments_enabled"] if video["comments_enabled"] is not None else global_comments
+    ratings_enabled = video["ratings_enabled"] if video["ratings_enabled"] is not None else global_ratings
+
+    return {
+        "comments_enabled": comments_enabled,
+        "ratings_enabled": ratings_enabled,
+        "ratings_type": ratings_type,
+        "require_approval": require_approval,
+        "max_length": max_length,
+        "max_depth": max_depth,
+        "video": video,
+    }
+
+
+def build_comment_response(comment: dict, user: dict, reply_count: int = 0) -> CommentResponse:
+    """Build a comment response from database records."""
+    return CommentResponse(
+        id=comment["id"],
+        video_id=comment["video_id"],
+        user=CommentUserInfo(
+            id=user["id"],
+            username=user["username"],
+            display_name=user.get("display_name"),
+            avatar_url=user.get("avatar_url"),
+        ),
+        content=comment["content"],
+        video_timestamp=float(comment["video_timestamp"]) if comment["video_timestamp"] else None,
+        status=comment["status"],
+        depth=comment["depth"],
+        parent_id=comment["parent_id"],
+        path=comment["path"],
+        created_at=comment["created_at"],
+        updated_at=comment["updated_at"],
+        is_edited=comment["updated_at"] is not None,
+        reply_count=reply_count,
+    )
+
+
+@v1_router.get(
+    "/videos/{video_id}/comments",
+    response_model=CommentListResponse,
+    summary="Get video comments",
+    description="Get paginated comments for a video with threaded replies.",
+)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video_comments(
+    request: Request,
+    video_id: int,
+    cursor: Optional[str] = Query(None, description="Pagination cursor"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum comments to return"),
+    include_replies: bool = Query(True, description="Include nested replies"),
+):
+    """
+    Get comments for a video with optional threaded replies.
+
+    Comments are returned with nested replies (up to max depth).
+    Only approved, non-deleted comments are returned.
+    """
+    settings = await get_social_settings(video_id)
+    if not settings["comments_enabled"]:
+        raise HTTPException(status_code=403, detail="Comments are disabled for this video")
+
+    # Build base query for root-level comments
+    base_query = (
+        comments.select()
+        .where(comments.c.video_id == video_id)
+        .where(comments.c.status == "approved")
+        .where(comments.c.deleted_at.is_(None))
+        .where(comments.c.depth == 1)  # Root comments only
+        .order_by(comments.c.created_at.desc())
+    )
+
+    # Apply cursor pagination if provided
+    if cursor:
+        try:
+            cursor_data = validate_cursor(cursor)
+            cursor_time = datetime.fromisoformat(cursor_data["created_at"])
+            cursor_id = cursor_data["id"]
+            base_query = base_query.where(
+                sa.or_(
+                    comments.c.created_at < cursor_time,
+                    sa.and_(
+                        comments.c.created_at == cursor_time,
+                        comments.c.id < cursor_id,
+                    ),
+                )
+            )
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid cursor")
+
+    # Fetch one more than requested to check if there are more
+    root_comments = await fetch_all_with_retry(base_query.limit(limit + 1))
+
+    has_more = len(root_comments) > limit
+    root_comments = root_comments[:limit]
+
+    # Get total count
+    count_query = sa.select(sa.func.count()).select_from(comments).where(
+        comments.c.video_id == video_id,
+        comments.c.status == "approved",
+        comments.c.deleted_at.is_(None),
+    )
+    total_count = await fetch_val_with_retry(count_query) or 0
+
+    # Fetch all user IDs we need
+    user_ids = set()
+    for c in root_comments:
+        user_ids.add(c["user_id"])
+
+    # If including replies, fetch all replies for these root comments
+    replies_by_parent: Dict[int, List[dict]] = {}
+    if include_replies and root_comments:
+        root_ids = [c["id"] for c in root_comments]
+        # Fetch all descendants using path prefix
+        # For PostgreSQL ltree, we'd use: path <@ 'root_path'
+        # Since we're using text paths, we use LIKE with pattern
+        reply_conditions = []
+        for root_id in root_ids:
+            reply_conditions.append(comments.c.path.like(f"{root_id}.%"))
+
+        if reply_conditions:
+            replies_query = (
+                comments.select()
+                .where(comments.c.video_id == video_id)
+                .where(comments.c.status == "approved")
+                .where(comments.c.deleted_at.is_(None))
+                .where(sa.or_(*reply_conditions))
+                .order_by(comments.c.path, comments.c.created_at)
+            )
+            replies = await fetch_all_with_retry(replies_query)
+
+            for reply in replies:
+                user_ids.add(reply["user_id"])
+                parent_id = reply["parent_id"]
+                if parent_id not in replies_by_parent:
+                    replies_by_parent[parent_id] = []
+                replies_by_parent[parent_id].append(reply)
+
+    # Fetch all users at once
+    users_dict = {}
+    if user_ids:
+        users_query = users.select().where(users.c.id.in_(user_ids))
+        users_list = await fetch_all_with_retry(users_query)
+        users_dict = {u["id"]: dict(u) for u in users_list}
+
+    # Build nested comment structure
+    def build_nested(comment_row: dict, all_replies: Dict[int, List[dict]]) -> CommentWithReplies:
+        comment_id = comment_row["id"]
+        user = users_dict.get(comment_row["user_id"], {})
+        direct_replies = all_replies.get(comment_id, [])
+        reply_count = len(direct_replies)
+
+        nested_replies = []
+        for reply in direct_replies:
+            nested_replies.append(build_nested(reply, all_replies))
+
+        base_response = build_comment_response(comment_row, user, reply_count)
+        return CommentWithReplies(
+            **base_response.model_dump(),
+            replies=nested_replies,
+        )
+
+    result_comments = []
+    for root in root_comments:
+        result_comments.append(build_nested(root, replies_by_parent))
+
+    # Build next cursor
+    next_cursor = None
+    if has_more and root_comments:
+        last = root_comments[-1]
+        next_cursor = encode_cursor({
+            "created_at": last["created_at"].isoformat(),
+            "id": last["id"],
+        })
+
+    return CommentListResponse(
+        comments=result_comments,
+        total_count=total_count,
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
+
+
+@v1_router.post(
+    "/videos/{video_id}/comments",
+    response_model=CommentResponse,
+    summary="Create comment",
+    description="Create a new comment on a video. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_COMMENTS)
+async def create_comment(
+    request: Request,
+    video_id: int,
+    data: CommentCreate,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Create a new comment on a video.
+
+    Content is sanitized to prevent XSS.
+    If comments_require_approval is enabled, comment starts in 'pending' status.
+    """
+    settings = await get_social_settings(video_id)
+    if not settings["comments_enabled"]:
+        raise HTTPException(status_code=403, detail="Comments are disabled for this video")
+
+    # Check max length
+    if len(data.content) > settings["max_length"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Comment exceeds maximum length of {settings['max_length']} characters",
+        )
+
+    # Sanitize content
+    sanitized_content = sanitize_comment_content(data.content)
+    if not sanitized_content.strip():
+        raise HTTPException(status_code=400, detail="Comment content cannot be empty after sanitization")
+
+    # Handle replies
+    parent_comment = None
+    depth = 1
+    path = ""
+
+    if data.parent_id:
+        # Fetch parent comment
+        parent_query = comments.select().where(
+            comments.c.id == data.parent_id,
+            comments.c.video_id == video_id,  # Must be same video
+            comments.c.deleted_at.is_(None),
+        )
+        parent_comment = await fetch_one_with_retry(parent_query)
+
+        if not parent_comment:
+            raise HTTPException(status_code=400, detail="Parent comment not found or belongs to different video")
+
+        # Check depth limit
+        parent_depth = parent_comment["depth"]
+        if parent_depth >= settings["max_depth"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Maximum reply depth of {settings['max_depth']} reached",
+            )
+
+        depth = parent_depth + 1
+        parent_path = parent_comment["path"]
+
+    # Determine initial status
+    status = "pending" if settings["require_approval"] else "approved"
+
+    # Insert comment
+    now = datetime.now(timezone.utc)
+    insert_query = comments.insert().values(
+        video_id=video_id,
+        user_id=current_user["id"],
+        path="",  # Will be updated after we get the ID
+        depth=depth,
+        parent_id=data.parent_id,
+        content=sanitized_content,
+        video_timestamp=data.video_timestamp,
+        status=status,
+        created_at=now,
+    )
+
+    result = await db_execute_with_retry(insert_query)
+    comment_id = result
+
+    # Update path with actual ID
+    if parent_comment:
+        path = f"{parent_comment['path']}.{comment_id}"
+    else:
+        path = str(comment_id)
+
+    await db_execute_with_retry(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(path=path)
+    )
+
+    # Fetch the created comment
+    new_comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    return build_comment_response(new_comment, current_user, 0)
+
+
+@v1_router.put(
+    "/comments/{comment_id}",
+    response_model=CommentResponse,
+    summary="Update comment",
+    description="Update your own comment. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_COMMENTS)
+async def update_comment(
+    request: Request,
+    comment_id: int,
+    data: CommentUpdate,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Update an existing comment.
+
+    Only the comment author can update their own comment.
+    Admins can update any comment via the admin API.
+    """
+    # Fetch comment
+    comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment["deleted_at"]:
+        raise HTTPException(status_code=404, detail="Comment has been deleted")
+
+    # Check ownership
+    await require_ownership_or_permission(
+        comment["user_id"],
+        Permission.COMMENT_UPDATE,
+        Permission.COMMENT_UPDATE_ANY,
+        current_user,
+    )
+
+    # Get settings for content length validation
+    settings = await get_social_settings(comment["video_id"])
+
+    if len(data.content) > settings["max_length"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Comment exceeds maximum length of {settings['max_length']} characters",
+        )
+
+    # Sanitize content
+    sanitized_content = sanitize_comment_content(data.content)
+    if not sanitized_content.strip():
+        raise HTTPException(status_code=400, detail="Comment content cannot be empty after sanitization")
+
+    # Update comment
+    await db_execute_with_retry(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(
+            content=sanitized_content,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+
+    # Fetch updated comment
+    updated_comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    # Get reply count
+    reply_count_query = sa.select(sa.func.count()).select_from(comments).where(
+        comments.c.parent_id == comment_id,
+        comments.c.deleted_at.is_(None),
+    )
+    reply_count = await fetch_val_with_retry(reply_count_query) or 0
+
+    return build_comment_response(updated_comment, current_user, reply_count)
+
+
+@v1_router.delete(
+    "/comments/{comment_id}",
+    summary="Delete comment",
+    description="Soft-delete your own comment. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_COMMENTS)
+async def delete_comment(
+    request: Request,
+    comment_id: int,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Soft-delete a comment.
+
+    Only the comment author can delete their own comment.
+    Admins can hard-delete via the admin API.
+    """
+    # Fetch comment
+    comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment["deleted_at"]:
+        raise HTTPException(status_code=404, detail="Comment already deleted")
+
+    # Check ownership
+    await require_ownership_or_permission(
+        comment["user_id"],
+        Permission.COMMENT_DELETE,
+        Permission.COMMENT_DELETE_ANY,
+        current_user,
+    )
+
+    # Soft delete
+    await db_execute_with_retry(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(deleted_at=datetime.now(timezone.utc))
+    )
+
+    return {"status": "deleted", "comment_id": comment_id}
+
+
+# Ratings endpoints
+
+@v1_router.get(
+    "/videos/{video_id}/rating",
+    response_model=VideoRatingAggregates,
+    summary="Get video rating",
+    description="Get rating aggregates and the current user's rating for a video.",
+)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video_rating(
+    request: Request,
+    video_id: int,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """
+    Get rating aggregates for a video.
+
+    Returns average rating, distribution, and the current user's rating if authenticated.
+    """
+    settings = await get_social_settings(video_id)
+    video = settings["video"]
+
+    user_rating = None
+    if current_user:
+        user_rating_row = await fetch_one_with_retry(
+            ratings.select().where(
+                ratings.c.video_id == video_id,
+                ratings.c.user_id == current_user["id"],
+            )
+        )
+        if user_rating_row:
+            user_rating = user_rating_row["rating_value"]
+
+    # Parse rating distribution from JSON
+    distribution = None
+    if video["rating_distribution"]:
+        try:
+            distribution = json.loads(video["rating_distribution"])
+        except (json.JSONDecodeError, TypeError):
+            distribution = {}
+
+    return VideoRatingAggregates(
+        video_id=video_id,
+        rating_type=settings["ratings_type"],
+        rating_count=video["rating_count"] or 0,
+        rating_avg=float(video["rating_avg"]) if video["rating_avg"] else None,
+        rating_distribution=distribution,
+        likes_count=video["likes_count"] or 0,
+        dislikes_count=video["dislikes_count"] or 0,
+        user_rating=user_rating,
+    )
+
+
+@v1_router.post(
+    "/videos/{video_id}/rating",
+    response_model=RatingResponse,
+    summary="Rate video",
+    description="Rate a video (upsert - creates or updates existing rating). Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_RATINGS)
+async def rate_video(
+    request: Request,
+    video_id: int,
+    data: RatingCreate,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Rate a video.
+
+    For stars mode: value must be 1-5
+    For thumbs mode: value must be 1 (like) or -1 (dislike)
+
+    This is an upsert operation - creates a new rating or updates existing.
+    """
+    settings = await get_social_settings(video_id)
+    if not settings["ratings_enabled"]:
+        raise HTTPException(status_code=403, detail="Ratings are disabled for this video")
+
+    # Validate rating value based on type
+    if settings["ratings_type"] == "stars":
+        if data.value < 1 or data.value > 5:
+            raise HTTPException(status_code=400, detail="Star rating must be between 1 and 5")
+    else:  # thumbs
+        if data.value not in (1, -1):
+            raise HTTPException(status_code=400, detail="Thumbs rating must be 1 (like) or -1 (dislike)")
+
+    now = datetime.now(timezone.utc)
+
+    # Check if user already rated
+    existing = await fetch_one_with_retry(
+        ratings.select().where(
+            ratings.c.video_id == video_id,
+            ratings.c.user_id == current_user["id"],
+        )
+    )
+
+    if existing:
+        # Update existing rating
+        await db_execute_with_retry(
+            ratings.update()
+            .where(ratings.c.video_id == video_id)
+            .where(ratings.c.user_id == current_user["id"])
+            .values(
+                rating_value=data.value,
+                updated_at=now,
+            )
+        )
+    else:
+        # Create new rating
+        await db_execute_with_retry(
+            ratings.insert().values(
+                video_id=video_id,
+                user_id=current_user["id"],
+                rating_value=data.value,
+                created_at=now,
+            )
+        )
+
+    return RatingResponse(
+        video_id=video_id,
+        user_rating=data.value,
+        rating_type=settings["ratings_type"],
+    )
+
+
+@v1_router.delete(
+    "/videos/{video_id}/rating",
+    summary="Remove rating",
+    description="Remove your rating from a video. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_RATINGS)
+async def delete_rating(
+    request: Request,
+    video_id: int,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Remove the current user's rating from a video.
+    """
+    # Check if rating exists
+    existing = await fetch_one_with_retry(
+        ratings.select().where(
+            ratings.c.video_id == video_id,
+            ratings.c.user_id == current_user["id"],
+        )
+    )
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rating not found")
+
+    # Delete rating
+    await db_execute_with_retry(
+        ratings.delete().where(
+            ratings.c.video_id == video_id,
+            ratings.c.user_id == current_user["id"],
+        )
+    )
+
+    return {"status": "deleted", "video_id": video_id}
+
+
+@v1_router.get(
+    "/videos/{video_id}/social",
+    response_model=VideoSocialStatus,
+    summary="Get video social status",
+    description="Get resolved social feature status and aggregates for a video.",
+)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video_social_status(
+    request: Request,
+    video_id: int,
+):
+    """
+    Get social feature status for a video.
+
+    Returns whether comments/ratings are enabled and current aggregates.
+    """
+    settings = await get_social_settings(video_id)
+    video = settings["video"]
+
+    return VideoSocialStatus(
+        comments_enabled=settings["comments_enabled"],
+        ratings_enabled=settings["ratings_enabled"],
+        ratings_type=settings["ratings_type"],
+        comment_count=video["comment_count"] or 0,
+        rating_count=video["rating_count"] or 0,
+        rating_avg=float(video["rating_avg"]) if video["rating_avg"] else None,
+        likes_count=video["likes_count"] or 0,
+        dislikes_count=video["dislikes_count"] or 0,
+    )
 
 
 # =============================================================================

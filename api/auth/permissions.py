@@ -86,6 +86,20 @@ class Permission(str, Enum):
     INVITE_READ = "invite:read"
     INVITE_DELETE = "invite:delete"
 
+    # Comment permissions (Issue #213)
+    COMMENT_CREATE = "comment:create"
+    COMMENT_READ = "comment:read"
+    COMMENT_UPDATE = "comment:update"
+    COMMENT_UPDATE_ANY = "comment:update:any"
+    COMMENT_DELETE = "comment:delete"
+    COMMENT_DELETE_ANY = "comment:delete:any"
+    COMMENT_MODERATE = "comment:moderate"
+
+    # Rating permissions (Issue #213)
+    RATING_CREATE = "rating:create"
+    RATING_READ = "rating:read"
+    RATING_DELETE = "rating:delete"
+
 
 # Role-to-permission mappings
 # Admin has all permissions, editor has limited permissions, viewer is read-only
@@ -112,6 +126,14 @@ _ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
             # Live streaming (own streams only)
             Permission.LIVE_STREAM_CREATE,
             Permission.LIVE_STREAM_READ,
+            # Comment/rating permissions (Issue #213)
+            Permission.COMMENT_CREATE,
+            Permission.COMMENT_READ,
+            Permission.COMMENT_UPDATE,  # Own comments only
+            Permission.COMMENT_DELETE,  # Own comments only
+            Permission.RATING_CREATE,
+            Permission.RATING_READ,
+            Permission.RATING_DELETE,  # Own rating only
         ]
     ),
     Role.VIEWER: frozenset(
@@ -122,6 +144,14 @@ _ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
             Permission.CATEGORY_READ,
             Permission.TAG_READ,
             Permission.LIVE_STREAM_READ,
+            # Comment/rating permissions (Issue #213)
+            Permission.COMMENT_CREATE,
+            Permission.COMMENT_READ,
+            Permission.COMMENT_UPDATE,  # Own comments only
+            Permission.COMMENT_DELETE,  # Own comments only
+            Permission.RATING_CREATE,
+            Permission.RATING_READ,
+            Permission.RATING_DELETE,  # Own rating only
         ]
     ),
 }

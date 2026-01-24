@@ -51,6 +51,7 @@ from api.database import (
     admin_sessions,
     categories,
     chapters,
+    comments,
     configure_database,
     create_tables,
     custom_field_definitions,
@@ -63,6 +64,7 @@ from api.database import (
     playlist_items,
     playlists,
     quality_progress,
+    ratings,
     reencode_queue,
     sprite_queue,
     tags,
@@ -132,6 +134,12 @@ from api.schemas import (
     BulkUpdateResponse,
     CategoryCreate,
     CategoryResponse,
+    CommentListResponse,
+    CommentModerate,
+    CommentModerationQueueResponse,
+    CommentResponse,
+    CommentStatus,
+    CommentUserInfo,
     ChapterCreate,
     ChapterDetectionSource,
     ChapterListResponse,
@@ -1938,6 +1946,8 @@ async def update_video(
     category_id: Optional[int] = Form(None),
     published_at: Optional[str] = Form(None),
     is_featured: Optional[bool] = Form(None),  # Issue #413 Phase 3
+    comments_enabled: Optional[str] = Form(None),  # Issue #213: "true", "false", or "inherit"
+    ratings_enabled: Optional[str] = Form(None),  # Issue #213: "true", "false", or "inherit"
 ):
     """Update video metadata."""
     update_data = {}
@@ -1984,6 +1994,32 @@ async def update_video(
         else:
             # Clear featured_at when unfeaturing
             update_data["featured_at"] = None
+
+    # Issue #213: Per-video social settings (comments/ratings toggles)
+    # Values: "true" = enabled, "false" = disabled, "inherit" = use global setting (NULL)
+    if comments_enabled is not None:
+        if comments_enabled == "inherit":
+            update_data["comments_enabled"] = None
+        elif comments_enabled == "true":
+            update_data["comments_enabled"] = True
+        elif comments_enabled == "false":
+            update_data["comments_enabled"] = False
+        else:
+            raise HTTPException(
+                status_code=400, detail="comments_enabled must be 'true', 'false', or 'inherit'"
+            )
+
+    if ratings_enabled is not None:
+        if ratings_enabled == "inherit":
+            update_data["ratings_enabled"] = None
+        elif ratings_enabled == "true":
+            update_data["ratings_enabled"] = True
+        elif ratings_enabled == "false":
+            update_data["ratings_enabled"] = False
+        else:
+            raise HTTPException(
+                status_code=400, detail="ratings_enabled must be 'true', 'false', or 'inherit'"
+            )
 
     if update_data:
         await database.execute(videos.update().where(videos.c.id == video_id).values(**update_data))
@@ -10852,6 +10888,278 @@ async def delete_live_stream(request: Request, slug: str):
     )
 
     return {"status": "ok", "message": f"Stream '{slug}' deleted"}
+
+
+# =============================================================================
+# Comment Moderation Endpoints (Issue #213)
+# =============================================================================
+
+
+@v1_router.get("/comments")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_comments_moderation_queue(
+    request: Request,
+    status: Optional[str] = Query(None, description="Filter by status: pending, approved, rejected, spam"),
+    video_id: Optional[int] = Query(None, description="Filter by video ID"),
+    limit: int = Query(50, ge=1, le=100),
+    cursor: Optional[str] = Query(None),
+) -> CommentModerationQueueResponse:
+    """
+    Get comments for moderation (admin only).
+
+    Returns paginated list of comments, optionally filtered by status or video.
+    Default shows all non-deleted comments, ordered by newest first.
+    """
+    # Build base query
+    query = (
+        sa.select(
+            comments.c.id,
+            comments.c.video_id,
+            comments.c.user_id,
+            comments.c.content,
+            comments.c.status,
+            comments.c.video_timestamp,
+            comments.c.created_at,
+            comments.c.updated_at,
+            users.c.username,
+            users.c.display_name,
+            videos.c.title.label("video_title"),
+            videos.c.slug.label("video_slug"),
+        )
+        .select_from(
+            comments.join(users, comments.c.user_id == users.c.id)
+            .join(videos, comments.c.video_id == videos.c.id)
+        )
+        .where(comments.c.deleted_at.is_(None))
+        .order_by(comments.c.created_at.desc())
+    )
+
+    # Apply status filter
+    if status:
+        try:
+            status_enum = CommentStatus(status)
+            query = query.where(comments.c.status == status_enum.value)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Must be one of: pending, approved, rejected, spam"
+            )
+
+    # Apply video filter
+    if video_id:
+        query = query.where(comments.c.video_id == video_id)
+
+    # Apply cursor pagination
+    if cursor:
+        cursor_data = validate_cursor(cursor, ["created_at", "id"])
+        if cursor_data:
+            cursor_time = datetime.fromisoformat(cursor_data["created_at"])
+            cursor_id = int(cursor_data["id"])
+            query = query.where(
+                sa.or_(
+                    comments.c.created_at < cursor_time,
+                    sa.and_(
+                        comments.c.created_at == cursor_time,
+                        comments.c.id < cursor_id,
+                    ),
+                )
+            )
+
+    # Fetch limit + 1 to check if there are more
+    query = query.limit(limit + 1)
+    rows = await database.fetch_all(query)
+
+    # Determine if there's a next page
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+
+    # Build response
+    items = []
+    for row in rows:
+        items.append(
+            CommentResponse(
+                id=row["id"],
+                video_id=row["video_id"],
+                user=CommentUserInfo(
+                    id=row["user_id"],
+                    username=row["username"],
+                    display_name=row["display_name"],
+                ),
+                content=row["content"],
+                video_timestamp=float(row["video_timestamp"]) if row["video_timestamp"] else None,
+                status=CommentStatus(row["status"]),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+        )
+
+    # Generate next cursor
+    next_cursor = None
+    if has_more and rows:
+        last_row = rows[-1]
+        next_cursor = encode_cursor({
+            "created_at": last_row["created_at"].isoformat(),
+            "id": str(last_row["id"]),
+        })
+
+    # Get total pending count for queue summary
+    pending_count_query = (
+        sa.select(sa.func.count())
+        .select_from(comments)
+        .where(comments.c.deleted_at.is_(None))
+        .where(comments.c.status == "pending")
+    )
+    pending_count = await database.fetch_val(pending_count_query)
+
+    return CommentModerationQueueResponse(
+        comments=items,
+        next_cursor=next_cursor,
+        total_pending=pending_count or 0,
+    )
+
+
+@v1_router.put("/comments/{comment_id}/moderate")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def moderate_comment(
+    request: Request,
+    comment_id: int,
+    body: CommentModerate,
+) -> CommentResponse:
+    """
+    Moderate a comment (admin only).
+
+    Changes comment status to approved, rejected, or spam.
+    Only admins with COMMENT_MODERATE permission can use this endpoint.
+    """
+    # Fetch the comment with user info
+    query = (
+        sa.select(
+            comments.c.id,
+            comments.c.video_id,
+            comments.c.user_id,
+            comments.c.content,
+            comments.c.status,
+            comments.c.video_timestamp,
+            comments.c.created_at,
+            comments.c.updated_at,
+            comments.c.deleted_at,
+            users.c.username,
+            users.c.display_name,
+        )
+        .select_from(comments.join(users, comments.c.user_id == users.c.id))
+        .where(comments.c.id == comment_id)
+    )
+    comment = await database.fetch_one(query)
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment["deleted_at"]:
+        raise HTTPException(status_code=400, detail="Cannot moderate a deleted comment")
+
+    # Update the comment status
+    now = datetime.now(timezone.utc)
+    await database.execute(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(status=body.status.value, updated_at=now)
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.COMMENT_MODERATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="comment",
+        resource_id=comment_id,
+        details={"new_status": body.status.value, "reason": body.reason},
+    )
+
+    return CommentResponse(
+        id=comment["id"],
+        video_id=comment["video_id"],
+        user=CommentUserInfo(
+            id=comment["user_id"],
+            username=comment["username"],
+            display_name=comment["display_name"],
+        ),
+        content=comment["content"],
+        video_timestamp=float(comment["video_timestamp"]) if comment["video_timestamp"] else None,
+        status=body.status,
+        created_at=comment["created_at"],
+        updated_at=now,
+    )
+
+
+@v1_router.delete("/comments/{comment_id}/force")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def force_delete_comment(
+    request: Request,
+    comment_id: int,
+) -> dict:
+    """
+    Permanently delete a comment (admin only).
+
+    Unlike the public delete endpoint which soft-deletes, this permanently
+    removes the comment and all its replies from the database.
+    """
+    # Fetch the comment
+    comment = await database.fetch_one(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    # Delete all child comments first (by path prefix)
+    # Then delete the comment itself
+    # The ON DELETE CASCADE should handle this, but let's be explicit for audit purposes
+
+    # Get count of replies that will be deleted
+    if comment["path"]:
+        reply_count_query = (
+            sa.select(sa.func.count())
+            .select_from(comments)
+            .where(comments.c.path.op("<@")(comment["path"]))
+            .where(comments.c.id != comment_id)
+        )
+        reply_count = await database.fetch_val(reply_count_query) or 0
+    else:
+        reply_count = 0
+
+    # Delete the comment (CASCADE will delete replies due to foreign key)
+    await database.execute(
+        comments.delete().where(comments.c.id == comment_id)
+    )
+
+    # Update the video's comment count
+    await database.execute(
+        videos.update()
+        .where(videos.c.id == comment["video_id"])
+        .values(
+            comment_count=sa.func.greatest(
+                0,
+                videos.c.comment_count - 1 - reply_count
+            )
+        )
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.COMMENT_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="comment",
+        resource_id=comment_id,
+        details={"permanent": True, "replies_deleted": reply_count},
+    )
+
+    return {
+        "status": "ok",
+        "message": f"Comment {comment_id} permanently deleted",
+        "replies_deleted": reply_count,
+    }
 
 
 # =============================================================================

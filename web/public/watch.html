@@ -244,7 +244,69 @@
 
             <!-- Video Info -->
             <div class="bg-dark-900 rounded-xl p-6">
-                <h1 class="text-2xl font-bold text-white mb-2" x-text="_videoTitle"></h1>
+                <div class="flex flex-wrap items-start justify-between gap-4 mb-4">
+                    <h1 class="text-2xl font-bold text-white" x-text="_videoTitle"></h1>
+
+                    <!-- Ratings Section (Issue #213) -->
+                    <div x-show="socialStatus.ratings_enabled" class="flex items-center gap-2 flex-shrink-0">
+                        <!-- Star Rating Display -->
+                        <template x-if="socialStatus.ratings_type === 'stars'">
+                            <div class="flex items-center gap-2">
+                                <div class="flex items-center gap-0.5">
+                                    <template x-for="star in 5" :key="star">
+                                        <button
+                                            type="button"
+                                            class="text-xl transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-dark-900 rounded"
+                                            :class="star <= (userRating || 0) ? 'text-yellow-400' : star <= Math.round(ratingAggregates.average || 0) ? 'text-yellow-400/50' : 'text-dark-600'"
+                                            @click="submitRating(star)"
+                                            :disabled="!isLoggedIn"
+                                            :title="isLoggedIn ? `Rate ${star} star${star > 1 ? 's' : ''}` : 'Log in to rate'"
+                                            :aria-label="`Rate ${star} star${star > 1 ? 's' : ''}`"
+                                        >&#9733;</button>
+                                    </template>
+                                </div>
+                                <span class="text-dark-400 text-sm" x-show="ratingAggregates.count > 0">
+                                    <span x-text="ratingAggregates.average?.toFixed(1) || '-'"></span>
+                                    <span class="text-dark-500">(<span x-text="ratingAggregates.count"></span>)</span>
+                                </span>
+                            </div>
+                        </template>
+
+                        <!-- Thumbs Rating Display -->
+                        <template x-if="socialStatus.ratings_type === 'thumbs'">
+                            <div class="flex items-center gap-3">
+                                <button
+                                    type="button"
+                                    class="flex items-center gap-1 px-2 py-1 rounded transition-colors"
+                                    :class="userRating === 1 ? 'bg-green-600/20 text-green-400' : 'text-dark-400 hover:text-green-400 hover:bg-green-600/10'"
+                                    @click="submitRating(1)"
+                                    :disabled="!isLoggedIn"
+                                    :title="isLoggedIn ? 'Like' : 'Log in to like'"
+                                    aria-label="Like this video"
+                                >
+                                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                        <path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 7.933a4 4 0 00-.8 2.4z"/>
+                                    </svg>
+                                    <span x-text="ratingAggregates.likes_count || 0"></span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="flex items-center gap-1 px-2 py-1 rounded transition-colors"
+                                    :class="userRating === -1 ? 'bg-red-600/20 text-red-400' : 'text-dark-400 hover:text-red-400 hover:bg-red-600/10'"
+                                    @click="submitRating(-1)"
+                                    :disabled="!isLoggedIn"
+                                    :title="isLoggedIn ? 'Dislike' : 'Log in to dislike'"
+                                    aria-label="Dislike this video"
+                                >
+                                    <svg class="w-5 h-5 rotate-180" fill="currentColor" viewBox="0 0 20 20">
+                                        <path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 7.933a4 4 0 00-.8 2.4z"/>
+                                    </svg>
+                                    <span x-text="ratingAggregates.dislikes_count || 0"></span>
+                                </button>
+                            </div>
+                        </template>
+                    </div>
+                </div>
 
                 <div class="flex flex-wrap gap-4 text-dark-400 text-sm mb-4">
                     <span x-text="_videoPublishedDate"></span>
@@ -287,6 +349,136 @@
                 <div class="border-t border-dark-800 pt-4 mt-4" x-show="_videoHasDescription">
                     <h2 class="text-lg font-semibold mb-2">Description</h2>
                     <p class="text-dark-300 whitespace-pre-wrap" x-text="_videoDescription"></p>
+                </div>
+            </div>
+
+            <!-- Comments Section (Issue #213) -->
+            <div x-show="socialStatus.comments_enabled" class="bg-dark-900 rounded-xl p-6 mt-6">
+                <h2 class="text-lg font-semibold text-white mb-4">
+                    Comments
+                    <span class="text-dark-400 font-normal text-sm" x-show="comments.length > 0">
+                        (<span x-text="video?.comment_count || comments.length"></span>)
+                    </span>
+                </h2>
+
+                <!-- Comment Form -->
+                <div x-show="isLoggedIn" class="mb-6">
+                    <form @submit.prevent="submitComment()">
+                        <textarea
+                            x-model="newComment"
+                            placeholder="Add a comment..."
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none text-dark-100 placeholder-dark-500"
+                            rows="3"
+                            maxlength="5000"
+                            :disabled="submittingComment"
+                        ></textarea>
+                        <div class="flex justify-between items-center mt-2">
+                            <span class="text-dark-500 text-xs" x-text="`${newComment.length}/5000`"></span>
+                            <button
+                                type="submit"
+                                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                :disabled="!newComment.trim() || submittingComment"
+                            >
+                                <span x-show="!submittingComment">Post Comment</span>
+                                <span x-show="submittingComment">Posting...</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Login prompt -->
+                <div x-show="!isLoggedIn" class="mb-6 text-center py-4 bg-dark-800 rounded-lg">
+                    <p class="text-dark-400">
+                        <a href="/login" class="text-blue-400 hover:underline">Log in</a> to leave a comment
+                    </p>
+                </div>
+
+                <!-- Comments List -->
+                <div class="space-y-4">
+                    <!-- Loading -->
+                    <div x-show="loadingComments" class="flex justify-center py-8">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500"></div>
+                    </div>
+
+                    <!-- Comments -->
+                    <template x-for="comment in comments" :key="comment.id">
+                        <div class="comment" :class="{ 'comment--nested': comment.depth > 1 }" :style="{ marginLeft: Math.min((comment.depth - 1) * 24, 96) + 'px' }">
+                            <div class="flex gap-3">
+                                <!-- Avatar placeholder -->
+                                <div class="w-8 h-8 bg-dark-700 rounded-full flex-shrink-0 flex items-center justify-center text-dark-400 text-sm font-medium">
+                                    <span x-text="(comment.user?.display_name || comment.user?.username || 'U').charAt(0).toUpperCase()"></span>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="font-medium text-white text-sm" x-text="comment.user?.display_name || comment.user?.username || 'Anonymous'"></span>
+                                        <span class="text-dark-500 text-xs" x-text="formatCommentDate(comment.created_at)"></span>
+                                        <span x-show="comment.video_timestamp" class="text-blue-400 text-xs cursor-pointer hover:underline" @click="seekToTimestamp(comment.video_timestamp)" x-text="formatTimestamp(comment.video_timestamp)"></span>
+                                    </div>
+                                    <p class="text-dark-200 text-sm whitespace-pre-wrap break-words" x-text="comment.content"></p>
+
+                                    <!-- Comment Actions -->
+                                    <div class="flex items-center gap-4 mt-2">
+                                        <button
+                                            x-show="isLoggedIn && comment.depth < 5"
+                                            type="button"
+                                            class="text-dark-400 hover:text-blue-400 text-xs transition-colors"
+                                            @click="startReply(comment)"
+                                        >Reply</button>
+                                        <button
+                                            x-show="isLoggedIn && currentUser?.id === comment.user?.id"
+                                            type="button"
+                                            class="text-dark-400 hover:text-red-400 text-xs transition-colors"
+                                            @click="deleteComment(comment.id)"
+                                        >Delete</button>
+                                    </div>
+
+                                    <!-- Reply Form -->
+                                    <div x-show="replyingTo === comment.id" class="mt-3">
+                                        <form @submit.prevent="submitReply(comment)">
+                                            <textarea
+                                                x-model="replyContent"
+                                                placeholder="Write a reply..."
+                                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none text-dark-100 placeholder-dark-500 text-sm"
+                                                rows="2"
+                                                maxlength="5000"
+                                                x-ref="replyInput"
+                                            ></textarea>
+                                            <div class="flex justify-end gap-2 mt-2">
+                                                <button
+                                                    type="button"
+                                                    class="px-3 py-1.5 text-dark-400 hover:text-white text-sm transition-colors"
+                                                    @click="cancelReply()"
+                                                >Cancel</button>
+                                                <button
+                                                    type="submit"
+                                                    class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
+                                                    :disabled="!replyContent.trim() || submittingReply"
+                                                >Reply</button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Empty State -->
+                    <div x-show="!loadingComments && comments.length === 0" class="text-center py-8">
+                        <p class="text-dark-400">No comments yet. Be the first to comment!</p>
+                    </div>
+
+                    <!-- Load More -->
+                    <div x-show="commentsNextCursor" class="text-center pt-4">
+                        <button
+                            type="button"
+                            class="px-4 py-2 text-blue-400 hover:text-blue-300 text-sm transition-colors"
+                            @click="loadMoreComments()"
+                            :disabled="loadingMoreComments"
+                        >
+                            <span x-show="!loadingMoreComments">Load more comments</span>
+                            <span x-show="loadingMoreComments">Loading...</span>
+                        </button>
+                    </div>
                 </div>
             </div>
 

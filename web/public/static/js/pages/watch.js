@@ -212,6 +212,36 @@ function watchPage() {
         _nextVideoHref: '',
         _upNextCountdownText: '',
 
+        // Comments & Ratings state (Issue #213)
+        socialStatus: {
+            comments_enabled: false,
+            ratings_enabled: false,
+            ratings_type: 'stars' // 'stars' or 'thumbs'
+        },
+        // Authentication state
+        isLoggedIn: false,
+        currentUser: null,
+        // Ratings state
+        userRating: null,
+        ratingAggregates: {
+            average: null,
+            count: 0,
+            likes_count: 0,
+            dislikes_count: 0,
+            distribution: {}
+        },
+        submittingRating: false,
+        // Comments state
+        comments: [],
+        loadingComments: false,
+        loadingMoreComments: false,
+        commentsNextCursor: null,
+        newComment: '',
+        submittingComment: false,
+        replyingTo: null,
+        replyContent: '',
+        submittingReply: false,
+
         async loadDisplayConfig() {
             try {
                 const res = await VLogUtils.fetchWithTimeout('/api/config/display', {}, 5000);
@@ -427,9 +457,348 @@ function watchPage() {
 
                 // Load next video for Up Next / autoplay (Issue #211)
                 this.loadNextVideo(slug);
+
+                // Load social features (Issue #213)
+                this.loadAuthState();
+                this.loadSocialStatus(slug);
             } catch (e) {
                 this.error = e.message;
                 this.loading = false;
+            }
+        },
+
+        // Issue #213: Load authentication state
+        async loadAuthState() {
+            try {
+                const res = await VLogUtils.fetchWithTimeout('/api/v1/users/me', {
+                    credentials: 'include'
+                }, 5000);
+                if (res.ok) {
+                    this.currentUser = await res.json();
+                    this.isLoggedIn = true;
+                    debugLog('User authenticated:', this.currentUser.username);
+                }
+            } catch (e) {
+                // Not logged in or error - silent fail
+                debugLog('Not authenticated');
+            }
+        },
+
+        // Issue #213: Load social status for the video
+        async loadSocialStatus(slug) {
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/social`,
+                    { credentials: 'include' },
+                    5000
+                );
+                if (res.ok) {
+                    const data = await res.json();
+                    this.socialStatus = {
+                        comments_enabled: data.comments_enabled,
+                        ratings_enabled: data.ratings_enabled,
+                        ratings_type: data.ratings_type || 'stars'
+                    };
+                    debugLog('Social status:', this.socialStatus);
+
+                    // Load ratings and comments if enabled
+                    if (this.socialStatus.ratings_enabled) {
+                        this.loadRatings(slug);
+                    }
+                    if (this.socialStatus.comments_enabled) {
+                        this.loadComments(slug);
+                    }
+                }
+            } catch (e) {
+                debugLog('Failed to load social status:', e);
+            }
+        },
+
+        // Issue #213: Load ratings for the video
+        async loadRatings(slug) {
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/rating`,
+                    { credentials: 'include' },
+                    5000
+                );
+                if (res.ok) {
+                    const data = await res.json();
+                    this.ratingAggregates = {
+                        average: data.average,
+                        count: data.count || 0,
+                        likes_count: data.likes_count || 0,
+                        dislikes_count: data.dislikes_count || 0,
+                        distribution: data.distribution || {}
+                    };
+                    this.userRating = data.user_rating;
+                    debugLog('Ratings loaded:', this.ratingAggregates, 'User rating:', this.userRating);
+                }
+            } catch (e) {
+                debugLog('Failed to load ratings:', e);
+            }
+        },
+
+        // Issue #213: Submit a rating
+        async submitRating(value) {
+            if (!this.isLoggedIn || this.submittingRating) return;
+
+            const slug = this._videoSlug;
+            if (!slug) return;
+
+            // If clicking the same rating, remove it
+            const isRemoving = this.userRating === value;
+
+            this.submittingRating = true;
+            try {
+                if (isRemoving) {
+                    // Remove rating
+                    const res = await VLogUtils.fetchWithTimeout(
+                        `/api/videos/${encodeURIComponent(slug)}/rating`,
+                        {
+                            method: 'DELETE',
+                            credentials: 'include'
+                        },
+                        5000
+                    );
+                    if (res.ok) {
+                        this.userRating = null;
+                        // Reload ratings to get updated aggregates
+                        await this.loadRatings(slug);
+                    }
+                } else {
+                    // Submit rating
+                    const res = await VLogUtils.fetchWithTimeout(
+                        `/api/videos/${encodeURIComponent(slug)}/rating`,
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({ rating_value: value })
+                        },
+                        5000
+                    );
+                    if (res.ok) {
+                        this.userRating = value;
+                        // Reload ratings to get updated aggregates
+                        await this.loadRatings(slug);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to submit rating:', e);
+            } finally {
+                this.submittingRating = false;
+            }
+        },
+
+        // Issue #213: Load comments for the video
+        async loadComments(slug, cursor = null) {
+            if (!slug) return;
+
+            if (cursor) {
+                this.loadingMoreComments = true;
+            } else {
+                this.loadingComments = true;
+                this.comments = [];
+            }
+
+            try {
+                let url = `/api/videos/${encodeURIComponent(slug)}/comments?limit=20`;
+                if (cursor) {
+                    url += `&cursor=${encodeURIComponent(cursor)}`;
+                }
+
+                const res = await VLogUtils.fetchWithTimeout(url, { credentials: 'include' }, 5000);
+                if (res.ok) {
+                    const data = await res.json();
+                    const newComments = this.flattenComments(data.comments || []);
+
+                    if (cursor) {
+                        this.comments = [...this.comments, ...newComments];
+                    } else {
+                        this.comments = newComments;
+                    }
+                    this.commentsNextCursor = data.next_cursor;
+                    debugLog('Comments loaded:', this.comments.length);
+                }
+            } catch (e) {
+                console.error('Failed to load comments:', e);
+            } finally {
+                this.loadingComments = false;
+                this.loadingMoreComments = false;
+            }
+        },
+
+        // Flatten nested comments into a single array with depth info
+        flattenComments(comments, depth = 1) {
+            const result = [];
+            for (const comment of comments) {
+                result.push({ ...comment, depth });
+                if (comment.replies && comment.replies.length > 0) {
+                    result.push(...this.flattenComments(comment.replies, depth + 1));
+                }
+            }
+            return result;
+        },
+
+        // Load more comments
+        loadMoreComments() {
+            if (this.commentsNextCursor) {
+                this.loadComments(this._videoSlug, this.commentsNextCursor);
+            }
+        },
+
+        // Issue #213: Submit a new comment
+        async submitComment() {
+            if (!this.isLoggedIn || this.submittingComment || !this.newComment.trim()) return;
+
+            const slug = this._videoSlug;
+            if (!slug) return;
+
+            this.submittingComment = true;
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/comments`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ content: this.newComment.trim() })
+                    },
+                    5000
+                );
+                if (res.ok) {
+                    const newComment = await res.json();
+                    // Add to beginning of list
+                    this.comments.unshift({ ...newComment, depth: 1 });
+                    this.newComment = '';
+                    debugLog('Comment posted');
+                } else {
+                    const error = await res.json();
+                    console.error('Failed to post comment:', error.detail);
+                }
+            } catch (e) {
+                console.error('Failed to post comment:', e);
+            } finally {
+                this.submittingComment = false;
+            }
+        },
+
+        // Start replying to a comment
+        startReply(comment) {
+            this.replyingTo = comment.id;
+            this.replyContent = '';
+            this.$nextTick(() => {
+                const input = this.$refs.replyInput;
+                if (input) input.focus();
+            });
+        },
+
+        // Cancel reply
+        cancelReply() {
+            this.replyingTo = null;
+            this.replyContent = '';
+        },
+
+        // Issue #213: Submit a reply
+        async submitReply(parentComment) {
+            if (!this.isLoggedIn || this.submittingReply || !this.replyContent.trim()) return;
+
+            const slug = this._videoSlug;
+            if (!slug) return;
+
+            this.submittingReply = true;
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/comments`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            content: this.replyContent.trim(),
+                            parent_id: parentComment.id
+                        })
+                    },
+                    5000
+                );
+                if (res.ok) {
+                    const newReply = await res.json();
+                    // Insert reply after parent comment
+                    const parentIndex = this.comments.findIndex(c => c.id === parentComment.id);
+                    if (parentIndex !== -1) {
+                        const newDepth = Math.min((parentComment.depth || 1) + 1, 5);
+                        this.comments.splice(parentIndex + 1, 0, { ...newReply, depth: newDepth });
+                    }
+                    this.cancelReply();
+                    debugLog('Reply posted');
+                } else {
+                    const error = await res.json();
+                    console.error('Failed to post reply:', error.detail);
+                }
+            } catch (e) {
+                console.error('Failed to post reply:', e);
+            } finally {
+                this.submittingReply = false;
+            }
+        },
+
+        // Issue #213: Delete a comment
+        async deleteComment(commentId) {
+            if (!this.isLoggedIn) return;
+
+            if (!confirm('Are you sure you want to delete this comment?')) return;
+
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/comments/${commentId}`,
+                    {
+                        method: 'DELETE',
+                        credentials: 'include'
+                    },
+                    5000
+                );
+                if (res.ok) {
+                    // Remove from list
+                    this.comments = this.comments.filter(c => c.id !== commentId);
+                    debugLog('Comment deleted');
+                }
+            } catch (e) {
+                console.error('Failed to delete comment:', e);
+            }
+        },
+
+        // Format comment date
+        formatCommentDate(dateStr) {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffSecs = Math.floor(diffMs / 1000);
+            const diffMins = Math.floor(diffSecs / 60);
+            const diffHours = Math.floor(diffMins / 60);
+            const diffDays = Math.floor(diffHours / 24);
+
+            if (diffSecs < 60) return 'just now';
+            if (diffMins < 60) return `${diffMins}m ago`;
+            if (diffHours < 24) return `${diffHours}h ago`;
+            if (diffDays < 7) return `${diffDays}d ago`;
+            return date.toLocaleDateString();
+        },
+
+        // Format video timestamp (seconds to mm:ss)
+        formatTimestamp(seconds) {
+            if (seconds == null) return '';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        },
+
+        // Seek video to timestamp
+        seekToTimestamp(seconds) {
+            if (this.player && seconds != null) {
+                this.player.currentTime = seconds;
+                this.player.play();
             }
         },
 

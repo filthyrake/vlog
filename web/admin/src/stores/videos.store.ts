@@ -28,6 +28,8 @@ export interface VideosState {
   editPublishedAt: string;
   editCustomFieldValues: Record<string, unknown>; // Custom field values for edit modal
   editFeatured: boolean;
+  editCommentsEnabled: string; // "inherit", "true", or "false" (Issue #213)
+  editRatingsEnabled: string;  // "inherit", "true", or "false" (Issue #213)
   editSaving: boolean;
   editMessage: string;
   editError: string;
@@ -160,6 +162,8 @@ export function createVideosStore(): VideosStore {
     editPublishedAt: '',
     editCustomFieldValues: {},
     editFeatured: false,
+    editCommentsEnabled: 'inherit',
+    editRatingsEnabled: 'inherit',
     editSaving: false,
     editMessage: '',
     editError: '',
@@ -327,6 +331,11 @@ export function createVideosStore(): VideosStore {
       this.editCategory = video.category_id || 0;
       this.editPublishedAt = video.published_at?.slice(0, 16) || '';
       this.editFeatured = video.is_featured || false;
+      // Issue #213: Convert boolean/null to string for 3-state select
+      this.editCommentsEnabled = video.comments_enabled === null ? 'inherit' :
+        video.comments_enabled === true ? 'true' : 'false';
+      this.editRatingsEnabled = video.ratings_enabled === null ? 'inherit' :
+        video.ratings_enabled === true ? 'true' : 'false';
       this.editMessage = '';
       this.editError = '';
       this.editModal = true;
@@ -355,6 +364,9 @@ export function createVideosStore(): VideosStore {
           formData.append('published_at', new Date(this.editPublishedAt).toISOString());
         }
         formData.append('is_featured', this.editFeatured.toString());
+        // Issue #213: Include social settings
+        formData.append('comments_enabled', this.editCommentsEnabled);
+        formData.append('ratings_enabled', this.editRatingsEnabled);
 
         const updated = await videosApi.update(this.editVideoId, formData);
 

@@ -102,6 +102,17 @@ videos = sa.Table(
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Comments and ratings settings (Issue #213)
+    # NULL = inherit from global settings, true/false = per-video override
+    sa.Column("comments_enabled", sa.Boolean, nullable=True),
+    sa.Column("ratings_enabled", sa.Boolean, nullable=True),
+    # Denormalized aggregates for comments/ratings (updated via triggers)
+    sa.Column("comment_count", sa.Integer, default=0),
+    sa.Column("rating_avg", sa.Numeric(3, 2), nullable=True),
+    sa.Column("rating_count", sa.Integer, default=0),
+    sa.Column("rating_distribution", sa.Text, default="{}"),  # JSON: {"1": 5, "2": 3, ...}
+    sa.Column("likes_count", sa.Integer, default=0),  # For thumbs up/down mode
+    sa.Column("dislikes_count", sa.Integer, default=0),  # For thumbs up/down mode
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
@@ -1314,6 +1325,132 @@ user_invites = sa.Table(
     sa.Index("ix_user_invites_email", "email"),
     sa.Index("ix_user_invites_token_hash", "token_hash"),
     sa.Index("ix_user_invites_expires_at", "expires_at"),
+)
+
+
+# =============================================================================
+# Comments and Ratings Tables (Issue #213)
+# Social engagement features with threading support and moderation
+# =============================================================================
+
+# Comments with ltree materialized path for efficient threading
+#
+# THREADING:
+# ----------
+# Uses PostgreSQL ltree extension for hierarchical queries.
+# - path: Materialized path like "1.5.23" (comment 23 is a reply to comment 5, which replies to 1)
+# - depth: 1 for root comments, max 5 for deep nesting
+# - parent_id: Direct parent reference for cascade deletes
+#
+# STATUS:
+# -------
+# - pending: Awaiting moderation (when comments_require_approval is enabled)
+# - approved: Visible to all users
+# - rejected: Hidden by moderator
+# - spam: Flagged as spam
+#
+# SOFT DELETE:
+# ------------
+# - deleted_at: When set, comment is hidden but preserved for audit
+# - Hard delete only via admin force-delete endpoint
+#
+# See: https://github.com/filthyrake/vlog/issues/213
+comments = sa.Table(
+    "comments",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Materialized path for threading (stored as text, handled as ltree in PostgreSQL)
+    # Example paths: "1" (root), "1.5" (reply to 1), "1.5.23" (reply to reply)
+    sa.Column("path", sa.Text, nullable=False),
+    sa.Column(
+        "depth",
+        sa.Integer,
+        sa.CheckConstraint("depth >= 1 AND depth <= 5", name="ck_comments_depth"),
+        nullable=False,
+        default=1,
+    ),
+    sa.Column(
+        "parent_id",
+        sa.Integer,
+        sa.ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    sa.Column("content", sa.Text, nullable=False),
+    # Video timestamp for "comment at X:XX" feature (millisecond precision)
+    sa.Column("video_timestamp", sa.Numeric(10, 3), nullable=True),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'spam')",
+            name="ck_comments_status",
+        ),
+        nullable=False,
+        default="approved",
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    # Note: GiST index on path is created in migration using raw SQL for ltree
+    sa.Index("ix_comments_video_id", "video_id"),
+    sa.Index("ix_comments_user_id", "user_id"),
+    sa.Index("ix_comments_parent_id", "parent_id"),
+    sa.Index("ix_comments_status", "status"),
+    sa.Index("ix_comments_created_at", "created_at"),
+)
+
+# Ratings with composite primary key (one rating per user per video)
+#
+# RATING VALUES:
+# --------------
+# For stars mode (rating_type = "stars"):
+# - rating_value: 1-5 (star count)
+#
+# For thumbs mode (rating_type = "thumbs"):
+# - rating_value: 1 (like) or -1 (dislike)
+#
+# Aggregates are maintained on videos table via triggers:
+# - rating_avg: Average of all rating_values
+# - rating_count: Total number of ratings
+# - rating_distribution: JSON object {"1": count, "2": count, ...}
+# - likes_count: Count of rating_value > 0 (for thumbs mode)
+# - dislikes_count: Count of rating_value < 0 (for thumbs mode)
+#
+# See: https://github.com/filthyrake/vlog/issues/213
+ratings = sa.Table(
+    "ratings",
+    metadata,
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Rating value: 1-5 for stars, 1 or -1 for thumbs
+    sa.Column("rating_value", sa.Integer, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.PrimaryKeyConstraint("video_id", "user_id"),
+    sa.Index("ix_ratings_video_id", "video_id"),
+    sa.Index("ix_ratings_user_id", "user_id"),
 )
 
 

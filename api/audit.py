@@ -106,6 +106,10 @@ class AuditAction(str, Enum):
     WEBHOOK_DELETE = "webhook_delete"
     WEBHOOK_RETRY = "webhook_retry"
 
+    # Comment moderation actions (Issue #213)
+    COMMENT_MODERATE = "comment_moderate"
+    COMMENT_DELETE = "comment_delete"
+
 
 class AuditLogger:
     """

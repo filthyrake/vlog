@@ -1300,6 +1300,70 @@ KNOWN_SETTINGS = [
         "Number of pending deliveries to process per batch",
         {"min": 1, "max": 100},
     ),
+    # Social/Comments settings (Issue #213)
+    (
+        "social.comments_enabled",
+        "social",
+        "boolean",
+        "Enable comments globally (per-video settings inherit from this unless overridden)",
+        None,
+    ),
+    (
+        "social.ratings_enabled",
+        "social",
+        "boolean",
+        "Enable ratings globally (per-video settings inherit from this unless overridden)",
+        None,
+    ),
+    (
+        "social.ratings_type",
+        "social",
+        "enum",
+        "Rating type: 'stars' (1-5) or 'thumbs' (like/dislike)",
+        {"enum_values": ["stars", "thumbs"]},
+    ),
+    (
+        "social.comments_require_approval",
+        "social",
+        "boolean",
+        "Require admin approval before comments are visible",
+        None,
+    ),
+    (
+        "social.comments_max_length",
+        "social",
+        "integer",
+        "Maximum comment length in characters",
+        {"min": 100, "max": 50000},
+    ),
+    (
+        "social.comments_max_depth",
+        "social",
+        "integer",
+        "Maximum reply depth (1 = flat comments, 5 = deeply nested threads)",
+        {"min": 1, "max": 5},
+    ),
+    (
+        "social.comments_rate_limit_per_minute",
+        "social",
+        "integer",
+        "Maximum comments per user per minute",
+        {"min": 1, "max": 60},
+    ),
+    (
+        "social.comments_rate_limit_per_hour",
+        "social",
+        "integer",
+        "Maximum comments per user per hour",
+        {"min": 1, "max": 1000},
+    ),
+    (
+        "social.ratings_rate_limit_per_minute",
+        "social",
+        "integer",
+        "Maximum rating changes per user per minute",
+        {"min": 1, "max": 60},
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1408,6 +1472,16 @@ SETTING_TO_ENV_MAP = {
     "embed.allow_all_domains": "VLOG_EMBED_ALLOW_ALL_DOMAINS",
     "embed.default_autoplay": "VLOG_EMBED_DEFAULT_AUTOPLAY",
     "embed.min_playback_for_view": "VLOG_EMBED_MIN_PLAYBACK_FOR_VIEW",
+    # Social/Comments settings (Issue #213)
+    "social.comments_enabled": "VLOG_COMMENTS_ENABLED",
+    "social.ratings_enabled": "VLOG_RATINGS_ENABLED",
+    "social.ratings_type": "VLOG_RATINGS_TYPE",
+    "social.comments_require_approval": "VLOG_COMMENTS_REQUIRE_APPROVAL",
+    "social.comments_max_length": "VLOG_COMMENTS_MAX_LENGTH",
+    "social.comments_max_depth": "VLOG_COMMENTS_MAX_DEPTH",
+    "social.comments_rate_limit_per_minute": "VLOG_COMMENTS_RATE_LIMIT_PER_MINUTE",
+    "social.comments_rate_limit_per_hour": "VLOG_COMMENTS_RATE_LIMIT_PER_HOUR",
+    "social.ratings_rate_limit_per_minute": "VLOG_RATINGS_RATE_LIMIT_PER_MINUTE",
 }
 
 

@@ -26,6 +26,9 @@ slowapi>=0.1.9
 # System resource monitoring
 psutil>=5.9.0
 
+# HTML sanitization for comments
+bleach>=6.0.0
+
 # Security patches for transitive dependencies
 # Note: filelock>=3.20.3 fix requires Python 3.10+, pinned in Dockerfile only
 jaraco-context>=6.1.0  # GHSA-58pv-8j8x-9vj2 path traversal vulnerability

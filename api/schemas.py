@@ -1614,3 +1614,232 @@ class EmbedCodeResponse(BaseModel):
     iframe_html: str = Field(..., description="Ready-to-use iframe HTML snippet")
     width: int = Field(default=560, description="Default iframe width in pixels")
     height: int = Field(default=315, description="Default iframe height in pixels")
+
+
+# ============ Comments and Ratings Models (Issue #213) ============
+
+
+# Maximum comment length and depth
+COMMENT_MAX_LENGTH_DEFAULT = 5000
+COMMENT_MAX_DEPTH = 5
+
+
+class CommentStatus(str, Enum):
+    """Comment moderation status."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    SPAM = "spam"
+
+
+class CommentCreate(BaseModel):
+    """Request to create a new comment."""
+
+    content: str = Field(
+        ...,
+        min_length=1,
+        max_length=COMMENT_MAX_LENGTH_DEFAULT,
+        description="Comment text content",
+    )
+    parent_id: Optional[int] = Field(
+        default=None,
+        description="Parent comment ID for replies (null for root comments)",
+    )
+    video_timestamp: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Video timestamp in seconds for 'comment at X:XX' feature",
+    )
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v: str) -> str:
+        """Ensure content is not just whitespace."""
+        if not v.strip():
+            raise ValueError("Comment content cannot be empty or just whitespace")
+        return v.strip()
+
+
+class CommentUpdate(BaseModel):
+    """Request to update an existing comment."""
+
+    content: str = Field(
+        ...,
+        min_length=1,
+        max_length=COMMENT_MAX_LENGTH_DEFAULT,
+        description="Updated comment text content",
+    )
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v: str) -> str:
+        """Ensure content is not just whitespace."""
+        if not v.strip():
+            raise ValueError("Comment content cannot be empty or just whitespace")
+        return v.strip()
+
+
+class CommentModerate(BaseModel):
+    """Request to moderate a comment (admin only)."""
+
+    status: CommentStatus = Field(
+        ...,
+        description="New moderation status: approved, rejected, or spam",
+    )
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: CommentStatus) -> CommentStatus:
+        """Prevent setting status to pending via moderation endpoint."""
+        if v == CommentStatus.PENDING:
+            raise ValueError("Cannot set status to 'pending' via moderation")
+        return v
+
+
+class CommentUserInfo(BaseModel):
+    """User info included in comment responses."""
+
+    id: str
+    username: str
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class CommentResponse(BaseModel):
+    """Response for a single comment."""
+
+    id: int
+    video_id: int
+    user: CommentUserInfo
+    content: str
+    video_timestamp: Optional[float] = None
+    status: str
+    depth: int
+    parent_id: Optional[int] = None
+    path: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    is_edited: bool = False
+    reply_count: int = 0  # Number of direct replies
+
+
+class CommentWithReplies(CommentResponse):
+    """Comment response with nested replies."""
+
+    replies: List["CommentWithReplies"] = []
+
+
+# Enable forward reference for nested replies
+CommentWithReplies.model_rebuild()
+
+
+class CommentListResponse(BaseModel):
+    """Response for paginated comment listing."""
+
+    comments: List[CommentWithReplies]
+    total_count: int
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+
+
+class CommentModerationQueueResponse(BaseModel):
+    """Response for the moderation queue."""
+
+    comments: List[CommentResponse]
+    pending_count: int
+    total_count: int
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+
+
+# Rating models
+
+class RatingType(str, Enum):
+    """Type of rating system."""
+
+    STARS = "stars"
+    THUMBS = "thumbs"
+
+
+class RatingCreate(BaseModel):
+    """Request to create or update a rating."""
+
+    value: int = Field(
+        ...,
+        description="Rating value: 1-5 for stars, 1 (like) or -1 (dislike) for thumbs",
+    )
+
+    @field_validator("value")
+    @classmethod
+    def validate_value(cls, v: int) -> int:
+        """Validate rating value range.
+
+        Note: Actual range validation depends on rating type (stars/thumbs)
+        which is checked at the endpoint level using global settings.
+        Here we just ensure it's a reasonable integer.
+        """
+        if v < -1 or v > 5:
+            raise ValueError("Rating value must be between -1 and 5")
+        if v == 0:
+            raise ValueError("Rating value cannot be 0 (use DELETE to remove rating)")
+        return v
+
+
+class RatingResponse(BaseModel):
+    """Response for user's rating on a video."""
+
+    video_id: int
+    user_rating: Optional[int] = Field(
+        default=None,
+        description="Current user's rating (null if not rated)",
+    )
+    rating_type: str = Field(
+        default="stars",
+        description="Rating type: 'stars' or 'thumbs'",
+    )
+
+
+class VideoRatingAggregates(BaseModel):
+    """Aggregated rating data for a video."""
+
+    video_id: int
+    rating_type: str = "stars"
+    rating_count: int = 0
+    # For stars mode
+    rating_avg: Optional[float] = None
+    rating_distribution: Optional[dict] = Field(
+        default=None,
+        description="Distribution of ratings: {'1': 5, '2': 3, '3': 10, ...}",
+    )
+    # For thumbs mode
+    likes_count: int = 0
+    dislikes_count: int = 0
+    # User's own rating (if authenticated)
+    user_rating: Optional[int] = None
+
+
+class VideoSocialSettings(BaseModel):
+    """Per-video social feature settings."""
+
+    comments_enabled: Optional[bool] = Field(
+        default=None,
+        description="Whether comments are enabled (null = inherit from global)",
+    )
+    ratings_enabled: Optional[bool] = Field(
+        default=None,
+        description="Whether ratings are enabled (null = inherit from global)",
+    )
+
+
+class VideoSocialStatus(BaseModel):
+    """Resolved social feature status for a video."""
+
+    comments_enabled: bool = True
+    ratings_enabled: bool = True
+    ratings_type: str = "stars"
+    comment_count: int = 0
+    rating_count: int = 0
+    rating_avg: Optional[float] = None
+    likes_count: int = 0
+    dislikes_count: int = 0
