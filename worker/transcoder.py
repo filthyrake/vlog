@@ -100,8 +100,7 @@ if WORKER_USE_FILESYSTEM_WATCHER:
 
         WATCHDOG_AVAILABLE = True
     except ImportError:
-        logger.warning("watchdog not installed. Falling back to polling mode.")
-        logger.info("Install with: pip install watchdog")
+        logger.warning("watchdog not installed, falling back to polling mode. Install with: pip install watchdog")
         WATCHDOG_AVAILABLE = False
 else:
     WATCHDOG_AVAILABLE = False
@@ -498,7 +497,7 @@ async def run_ffmpeg_with_progress(
         await asyncio.sleep(timeout)
         timed_out = True
         elapsed = asyncio.get_running_loop().time() - start_time
-        logger.warning(f"TIMEOUT: {logging_description} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
+        logger.warning(f"{logging_description} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
         try:
             process.kill()
         except ProcessLookupError:
@@ -2723,7 +2722,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 [f"{q['name']}: {truncate_error(q['error'], ERROR_SUMMARY_MAX_LENGTH)}" for q in failed_qualities]
             )
             error_message = f"All {len(failed_qualities)} quality variant(s) failed. Details: {failed_summary}"
-            logger.error(f"FAILURE: {error_message}")
+            logger.error(error_message)
             raise RuntimeError(error_message)
         elif failed_qualities:
             # Partial success - some qualities failed

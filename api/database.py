@@ -2,11 +2,11 @@ import logging
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
-
-logger = logging.getLogger(__name__)
 from databases import Database
 
 from config import DATABASE_URL
+
+logger = logging.getLogger(__name__)
 
 # Create database instance - works with PostgreSQL or SQLite
 # PostgreSQL is the default and recommended database

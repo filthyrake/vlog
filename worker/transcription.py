@@ -15,8 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-logger = logging.getLogger(__name__)
-
 from api.database import configure_database, database, transcriptions
 from api.enums import TranscriptionStatus
 from api.webhook_service import trigger_webhook_event
@@ -31,6 +29,8 @@ from config import (
     VIDEOS_DIR,
     WHISPER_MODEL,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TranscriptionCancelled(Exception):
