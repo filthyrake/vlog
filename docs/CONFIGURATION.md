@@ -310,20 +310,21 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VLOG_CORS_ORIGINS` | (none) | Comma-separated allowed origins for public API |
-| `VLOG_ADMIN_CORS_ORIGINS` | `*` | Comma-separated allowed origins for admin API |
+| `VLOG_ADMIN_CORS_ORIGINS` | (none) | Comma-separated allowed origins for admin API |
 
 **Examples:**
 ```bash
 # Allow specific origins for public API
 VLOG_CORS_ORIGINS=http://localhost:9000,https://videos.example.com
 
-# Restrict admin API to internal network
-VLOG_ADMIN_CORS_ORIGINS=http://your-server:9001,http://192.168.1.100:9001
+# Allow cross-origin access to admin API (only needed if UI is on a different host)
+VLOG_ADMIN_CORS_ORIGINS=http://192.168.1.100:3000,http://devbox.local:3000
 ```
 
 **Notes:**
-- Empty `VLOG_CORS_ORIGINS` = same-origin only
-- Admin API defaults to `*` since it should only be accessible internally
+- Empty/unset = same-origin only (no cross-origin requests allowed)
+- Same-origin requests (accessing UI and API from the same host) don't require CORS configuration
+- Only configure `VLOG_ADMIN_CORS_ORIGINS` if you serve the admin UI from a different host than the API
 
 ### Rate Limiting
 

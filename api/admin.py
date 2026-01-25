@@ -1092,11 +1092,12 @@ app.add_middleware(VersionHeaderMiddleware)
 # Only active when VLOG_ADMIN_API_SECRET is configured
 app.add_middleware(AdminAuthMiddleware)
 
-# Allow CORS for admin UI (internal-only, not exposed externally)
+# CORS for admin API - defaults to same-origin only (Issue #433)
+# Cross-origin access requires explicit VLOG_ADMIN_CORS_ORIGINS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ADMIN_CORS_ALLOWED_ORIGINS,
-    allow_credentials=True if ADMIN_CORS_ALLOWED_ORIGINS != ["*"] else False,
+    allow_credentials="*" not in ADMIN_CORS_ALLOWED_ORIGINS,  # Credentials require specific origins
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Request-ID"],

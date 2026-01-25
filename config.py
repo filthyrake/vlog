@@ -473,14 +473,13 @@ MAX_HLS_SINGLE_FILE_SIZE = get_int_env("VLOG_MAX_HLS_SINGLE_FILE_SIZE", 500 * 10
 _cors_origins_env = os.getenv("VLOG_CORS_ORIGINS", "")
 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
 
-# For admin API - internal only, not exposed externally
-# Defaults to allow all origins since it's behind firewall/not public
+# For admin API - CORS origins that can make cross-origin requests to the admin API
+# Defaults to empty (same-origin only) for defense-in-depth security (Issue #433)
+# Note: Same-origin requests (accessing admin UI and API from the same host) don't need CORS
+# Only set this if you need cross-origin access (e.g., admin UI served from a different host)
+#   Example: VLOG_ADMIN_CORS_ORIGINS=http://192.168.1.100:3000,http://devbox.local:3000
 _admin_cors_env = os.getenv("VLOG_ADMIN_CORS_ORIGINS", "")
-ADMIN_CORS_ALLOWED_ORIGINS = (
-    [origin.strip() for origin in _admin_cors_env.split(",") if origin.strip()]
-    if _admin_cors_env
-    else ["*"]  # Admin is internal-only, allow all origins by default
-)
+ADMIN_CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _admin_cors_env.split(",") if origin.strip()]
 
 # Rate Limiting Configuration
 # Set to "0" or "false" to disable rate limiting entirely
