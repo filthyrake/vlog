@@ -473,13 +473,44 @@ MAX_HLS_SINGLE_FILE_SIZE = get_int_env("VLOG_MAX_HLS_SINGLE_FILE_SIZE", 500 * 10
 _cors_origins_env = os.getenv("VLOG_CORS_ORIGINS", "")
 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
 
-# For admin API - CORS origins that can make cross-origin requests to the admin API
-# Defaults to empty (same-origin only) for defense-in-depth security (Issue #433)
-# Note: Same-origin requests (accessing admin UI and API from the same host) don't need CORS
-# Only set this if you need cross-origin access (e.g., admin UI served from a different host)
-#   Example: VLOG_ADMIN_CORS_ORIGINS=http://192.168.1.100:3000,http://devbox.local:3000
+# Admin API CORS configuration
+# Default: Empty list (same-origin only) for defense-in-depth security (Issue #433)
+# Only set this if you access admin UI from a different hostname than the API
+# Example: VLOG_ADMIN_CORS_ORIGINS=http://192.168.1.100:3000,http://devbox.local:3000
 _admin_cors_env = os.getenv("VLOG_ADMIN_CORS_ORIGINS", "")
 ADMIN_CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _admin_cors_env.split(",") if origin.strip()]
+
+# Validate CORS origins format (fail fast with clear errors)
+def _validate_cors_origins(origins: list, var_name: str) -> None:
+    """Validate CORS origin format at startup."""
+    has_wildcard = "*" in origins
+    has_specific = any(o != "*" for o in origins)
+
+    # Warn about mixing wildcard with specific origins (breaks credentials/session auth)
+    if has_wildcard and has_specific:
+        logger.warning(
+            f"{var_name} contains '*' mixed with specific origins. "
+            "This disables credentials (session auth won't work). "
+            "Use '*' alone or specific origins only."
+        )
+
+    for origin in origins:
+        if origin == "*":
+            continue
+        # Check for common mistakes
+        if not origin.startswith(("http://", "https://")):
+            raise ValueError(
+                f"Invalid CORS origin in {var_name}: '{origin}' - "
+                "must start with http:// or https:// (e.g., http://192.168.1.100:3000)"
+            )
+        if origin.endswith("/"):
+            raise ValueError(
+                f"Invalid CORS origin in {var_name}: '{origin}' - "
+                "must not have trailing slash"
+            )
+
+_validate_cors_origins(CORS_ALLOWED_ORIGINS, "VLOG_CORS_ORIGINS")
+_validate_cors_origins(ADMIN_CORS_ALLOWED_ORIGINS, "VLOG_ADMIN_CORS_ORIGINS")
 
 # Rate Limiting Configuration
 # Set to "0" or "false" to disable rate limiting entirely
