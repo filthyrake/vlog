@@ -1079,7 +1079,8 @@ async def lifespan(app: FastAPI):
     if not ADMIN_API_SECRET and user_count == 0:
         logger.warning(
             "SECURITY: Admin API requires initial setup. "
-            "Only /api/auth/setup is accessible until an admin account is created."
+            "API endpoints return 503 until an admin account is created via /api/auth/setup. "
+            "Public auth endpoints (login, OIDC, password reset) remain accessible."
         )
     elif not ADMIN_API_SECRET and user_count > 0:
         logger.info(f"Admin API: User-based authentication active ({user_count} users)")
