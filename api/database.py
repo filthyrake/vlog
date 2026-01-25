@@ -1,9 +1,12 @@
+import logging
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from databases import Database
 
 from config import DATABASE_URL
+
+logger = logging.getLogger(__name__)
 
 # Create database instance - works with PostgreSQL or SQLite
 # PostgreSQL is the default and recommended database
@@ -1466,4 +1469,4 @@ def create_tables():
 
 if __name__ == "__main__":
     create_tables()
-    print("Database tables created successfully!")
+    logger.info("Database tables created successfully!")
