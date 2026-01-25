@@ -1013,6 +1013,14 @@ async def lifespan(app: FastAPI):
             "(or set VLOG_REDIS_URL which will be auto-detected)"
         )
 
+    # Issue #432: Warn about missing worker admin secret
+    if not WORKER_ADMIN_SECRET:
+        logger.warning(
+            "SECURITY: VLOG_WORKER_ADMIN_SECRET is not configured. "
+            "Worker management endpoints (register, list, revoke) will return 503. "
+            "Generate a secret: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+
     # Start background tasks
     stale_job_task = asyncio.create_task(check_stale_jobs())
     orphan_cleanup_task = asyncio.create_task(cleanup_orphaned_files())
