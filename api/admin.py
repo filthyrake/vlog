@@ -98,7 +98,7 @@ from api.db_retry import (
     fetch_one_with_retry,
     fetch_val_with_retry,
 )
-from api.enums import TranscriptionStatus, VideoStatus
+from api.enums import ErrorLogging, TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
 from api.metrics import (
@@ -2328,7 +2328,8 @@ async def generate_thumbnail_frames(request: Request, video_id: int) -> Thumbnai
     try:
         await asyncio.gather(*tasks)
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate frames: {str(e)}")
+        logger.exception(f"Failed to generate frames for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"frame_generation:{video_id}"))
 
     return ThumbnailFramesResponse(video_id=video_id, frames=frames)
 
@@ -2412,7 +2413,8 @@ async def upload_custom_thumbnail(
 
         if process.returncode != 0:
             error_msg = stderr.decode("utf-8", errors="ignore")[:200]
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {error_msg}")
+            logger.warning(f"Image conversion failed for video {video_id}: {error_msg}")
+            raise HTTPException(status_code=400, detail="Invalid image file or unsupported format")
 
         # Update database
         await db_execute_with_retry(
@@ -2486,7 +2488,8 @@ async def select_thumbnail_frame(
     try:
         await generate_thumbnail(source_path, thumbnail_path, timestamp=timestamp, timeout=30.0)
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+        logger.exception(f"Failed to generate thumbnail for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"thumbnail_select:{video_id}"))
 
     # Update database
     await db_execute_with_retry(
@@ -2552,7 +2555,8 @@ async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse
     try:
         await generate_thumbnail(source_path, thumbnail_path, timestamp=default_timestamp, timeout=30.0)
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+        logger.exception(f"Failed to revert thumbnail for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"thumbnail_revert:{video_id}"))
 
     # Update database
     await db_execute_with_retry(
@@ -6838,12 +6842,14 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
                 updated_by=existing.get("updated_by"),
             )
         except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.warning(f"Setting create failed for key {key}: {e}")
+            raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"setting_create:{key}"))
 
     try:
         await service.set(key, data.value, updated_by="admin")
     except SettingsValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"Settings validation error for key {key}: {e}")
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"setting_update:{key}"))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
 
@@ -6903,10 +6909,12 @@ async def create_setting(request: Request, data: SettingCreate) -> SettingRespon
             updated_by="admin",
         )
     except SettingsValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"Settings validation error for key {data.key}: {e}")
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"setting_create:{data.key}"))
     except UniqueConstraintError as e:
         # Race condition: another request created the setting between our check and insert
-        raise HTTPException(status_code=409, detail=str(e))
+        logger.warning(f"Unique constraint error creating setting {data.key}: {e}")
+        raise HTTPException(status_code=409, detail="Setting already exists")
 
     # Audit log
     log_audit(
@@ -7654,7 +7662,7 @@ async def create_custom_field(
             try:
                 re.compile(constraints_dict["pattern"])
             except re.error as e:
-                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {sanitize_error_message(str(e), context='regex_validation')}")
 
         constraints_json = json.dumps(constraints_dict)
 
@@ -7850,7 +7858,7 @@ async def update_custom_field(
             try:
                 re.compile(constraints_dict["pattern"])
             except re.error as e:
-                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {sanitize_error_message(str(e), context='regex_validation')}")
 
         update_values["constraints"] = json.dumps(constraints_dict)
 
@@ -8214,7 +8222,7 @@ async def bulk_update_custom_fields(
                 constraints=constraints,
             )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid value for field '{field['name']}': {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid value for field '{field['name']}': {sanitize_error_message(str(e), context='custom_field_validation')}")
 
     # Get videos and validate they exist
     video_query = (
