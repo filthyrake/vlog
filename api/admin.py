@@ -1038,6 +1038,13 @@ async def lifespan(app: FastAPI):
     await start_webhook_delivery_worker()
     logger.info("Webhook delivery worker started (with crash recovery)")
 
+    # Issue #433: Log CORS configuration for troubleshooting
+    if ADMIN_CORS_ALLOWED_ORIGINS:
+        logger.info(f"Admin API CORS: allowing origins {ADMIN_CORS_ALLOWED_ORIGINS}")
+    else:
+        logger.info("Admin API CORS: same-origin only (cross-origin requests blocked)")
+        logger.info("Set VLOG_ADMIN_CORS_ORIGINS if you access admin UI from a different host")
+
     yield
 
     # Cancel background cleanup task
@@ -1092,11 +1099,14 @@ app.add_middleware(VersionHeaderMiddleware)
 # Only active when VLOG_ADMIN_API_SECRET is configured
 app.add_middleware(AdminAuthMiddleware)
 
-# Allow CORS for admin UI (internal-only, not exposed externally)
+# CORS middleware - see VLOG_ADMIN_CORS_ORIGINS configuration
+# Defaults to same-origin only (Issue #433)
+_cors_has_origins = bool(ADMIN_CORS_ALLOWED_ORIGINS)
+_cors_uses_wildcard = "*" in ADMIN_CORS_ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ADMIN_CORS_ALLOWED_ORIGINS,
-    allow_credentials=True if ADMIN_CORS_ALLOWED_ORIGINS != ["*"] else False,
+    allow_credentials=_cors_has_origins and not _cors_uses_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Request-ID"],
