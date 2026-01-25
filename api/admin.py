@@ -2414,7 +2414,7 @@ async def upload_custom_thumbnail(
         if process.returncode != 0:
             error_msg = stderr.decode("utf-8", errors="ignore")[:200]
             logger.warning(f"Image conversion failed for video {video_id}: {error_msg}")
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {sanitize_error_message(error_msg, logging_mode=ErrorLogging.SKIP_LOGGING, context=f'thumbnail_upload:{video_id}')}")
+            raise HTTPException(status_code=400, detail="Invalid image file or unsupported format")
 
         # Update database
         await db_execute_with_retry(
