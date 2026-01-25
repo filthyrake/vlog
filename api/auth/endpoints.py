@@ -47,6 +47,7 @@ from api.auth.sessions import (
     validate_session_token,
 )
 from api.database import database, password_reset_tokens, users
+from api.enums import ErrorLogging
 from api.errors import sanitize_error_message
 from config import (
     LOGIN_LOCKOUT_DURATION_MINUTES,
@@ -631,7 +632,7 @@ async def refresh(
     except SessionError as e:
         _clear_session_cookies(response)
         logger.warning(f"Session refresh error: {e}")
-        raise HTTPException(status_code=401, detail=sanitize_error_message(str(e), context="session_refresh"))
+        raise HTTPException(status_code=401, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context="session_refresh"))
 
     # Get user info
     # We need to validate the new session to get user info

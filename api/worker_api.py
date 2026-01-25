@@ -102,6 +102,7 @@ from api.database import (
     workers,
 )
 from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
+from api.enums import ErrorLogging
 from api.errors import sanitize_error_message
 from api.logging_config import setup_logging
 from api.metrics import (
@@ -2353,7 +2354,7 @@ async def upload_quality(
         )
     except ValueError as e:
         logger.warning(f"HLS quality upload validation error for video {video_id}: {e}")
-        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), context=f"quality_upload:{video_id}"))
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"quality_upload:{video_id}"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -2440,7 +2441,7 @@ async def upload_finalize(
         )
     except ValueError as e:
         logger.warning(f"Finalize upload validation error for video {video_id}: {e}")
-        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), context=f"finalize_upload:{video_id}"))
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"finalize_upload:{video_id}"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -2515,7 +2516,7 @@ async def upload_hls(
         )
     except ValueError as e:
         logger.warning(f"HLS upload validation error for video {video_id}: {e}")
-        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), context=f"hls_upload:{video_id}"))
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"hls_upload:{video_id}"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -3455,7 +3456,7 @@ async def download_reencode_source(
     except Exception as e:
         tmp_path.unlink(missing_ok=True)
         logger.exception(f"Failed to package reencode files for job {job_id}: {e}")
-        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), context=f"reencode_package:{job_id}"))
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"reencode_package:{job_id}"))
 
 
 @v1_router.post("/reencode/{job_id}/upload")
@@ -3513,7 +3514,7 @@ async def upload_reencode_result(
             )
         except ValueError as e:
             logger.warning(f"Reencode upload validation error for job {job_id}: {e}")
-            raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), context=f"reencode_upload:{job_id}"))
+            raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"reencode_upload:{job_id}"))
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -3556,7 +3557,7 @@ async def upload_reencode_result(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
         logger.exception(f"Reencode upload failed for job {job_id}: {e}")
-        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), context=f"reencode_upload:{job_id}"))
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"reencode_upload:{job_id}"))
 
 
 @v1_router.patch("/reencode/{job_id}")
