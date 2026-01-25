@@ -342,6 +342,44 @@ CSRF_TOKEN_HEADER = "X-CSRF-Token"
 # Falls back to static key if ADMIN_API_SECRET not configured (though CSRF is skipped in that case)
 CSRF_HMAC_KEY = (ADMIN_API_SECRET or "vlog-csrf-fallback").encode()
 
+# Permanent cache for user existence (security: never revert once True)
+# This prevents race condition attacks during the setup->authenticated transition
+_users_exist_cache: Optional[bool] = None
+
+
+async def _check_users_exist() -> bool:
+    """
+    Check if any users exist in the database.
+
+    Security: Uses permanent positive caching - once users exist,
+    the result is cached forever for this process. This prevents
+    race condition attacks during the setup->authenticated transition.
+
+    On database errors, returns True (fail-closed: require authentication).
+    This prevents attackers from accessing setup endpoint during DB outages.
+    """
+    global _users_exist_cache
+
+    # Once users exist, cache permanently (never revert)
+    if _users_exist_cache is True:
+        return True
+
+    try:
+        # Use EXISTS for efficiency - stops at first row found
+        exists = await database.fetch_val("SELECT EXISTS(SELECT 1 FROM users LIMIT 1)")
+        if exists:
+            _users_exist_cache = True  # Permanent positive cache
+        return exists
+    except Exception as e:
+        # Fail closed: on DB error, require authentication (assume users exist)
+        # This prevents setup endpoint access during database outages
+        security_logger.error(
+            "Database error checking user existence - failing closed (requiring auth)",
+            extra={"event": "db_error", "error": str(e)},
+            exc_info=True,
+        )
+        return True
+
 
 def generate_csrf_token(session_token: str) -> str:
     """
@@ -575,15 +613,57 @@ class AdminAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Skip auth for auth endpoints (login, logout, check, csrf-token)
-        if path.startswith("/api/auth/"):
+        # Skip auth for specific public auth endpoints only (not all /api/auth/*)
+        # This prevents bypass of authentication for sensitive endpoints like
+        # /api/auth/users, /api/auth/invites, /api/auth/api-keys
+        public_auth_endpoints = {
+            # Login and session endpoints
+            "/api/auth/login",
+            "/api/auth/check",
+            "/api/auth/csrf-token",
+            "/api/v1/auth/login",
+            "/api/v1/auth/check",
+            "/api/v1/auth/csrf-token",
+            # Password reset endpoints
+            "/api/auth/forgot-password",
+            "/api/auth/reset-password",
+            "/api/v1/auth/forgot-password",
+            "/api/v1/auth/reset-password",
+            # OIDC endpoints (must be public for SSO flows)
+            "/api/auth/oidc/status",
+            "/api/auth/oidc/authorize",
+            "/api/auth/oidc/callback",
+            "/api/v1/auth/oidc/status",
+            "/api/v1/auth/oidc/authorize",
+            "/api/v1/auth/oidc/callback",
+        }
+        # Normalize path (strip trailing slash) for consistent matching
+        normalized_path = path.rstrip("/")
+        if normalized_path in public_auth_endpoints:
             await self.app(scope, receive, send)
             return
 
-        # If ADMIN_API_SECRET is not configured, allow all requests (backwards compatible)
+        # Handle authentication when ADMIN_API_SECRET is not configured
+        # Issue #431: Require authentication by default instead of allowing all requests
         if not ADMIN_API_SECRET:
-            await self.app(scope, receive, send)
-            return
+            if await _check_users_exist():
+                # Users exist - require session authentication (fall through to session check)
+                pass
+            else:
+                # No users exist - ONLY allow setup endpoint
+                # Use normalized_path for consistent matching (handles trailing slashes)
+                if normalized_path in {"/api/v1/auth/setup", "/api/auth/setup"}:
+                    await self.app(scope, receive, send)
+                    return
+                # Block all other endpoints until setup is complete
+                response = JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "Initial setup required. Visit /api/auth/setup to create an admin account."
+                    },
+                )
+                await response(scope, receive, send)
+                return
 
         # Extract client IP for logging
         client = scope.get("client")
@@ -593,28 +673,30 @@ class AdminAuthMiddleware:
         headers = dict(scope.get("headers", []))
 
         # Method 1: Check X-Admin-Secret header (for API clients/CLI)
+        # Only available when ADMIN_API_SECRET is configured
         # API clients using the secret header don't need CSRF protection
-        admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
-        if admin_secret:
-            if hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
-                # Header auth successful - no CSRF needed for API clients
-                security_logger.info(
-                    "Admin API auth successful via header",
-                    extra={"event": "auth_success", "method": "header", "path": path, "client_ip": client_ip},
-                )
-                await self.app(scope, receive, send)
-                return
-            else:
-                security_logger.warning(
-                    "Admin API auth failed: invalid secret header",
-                    extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
-                )
-                response = JSONResponse(
-                    status_code=403,
-                    content={"detail": "Invalid admin secret"},
-                )
-                await response(scope, receive, send)
-                return
+        if ADMIN_API_SECRET:
+            admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
+            if admin_secret:
+                if hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+                    # Header auth successful - no CSRF needed for API clients
+                    security_logger.info(
+                        "Admin API auth successful via header",
+                        extra={"event": "auth_success", "method": "header", "path": path, "client_ip": client_ip},
+                    )
+                    await self.app(scope, receive, send)
+                    return
+                else:
+                    security_logger.warning(
+                        "Admin API auth failed: invalid secret header",
+                        extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
+                    )
+                    response = JSONResponse(
+                        status_code=403,
+                        content={"detail": "Invalid admin secret"},
+                    )
+                    await response(scope, receive, send)
+                    return
 
         # Method 2: Check session cookie (for browser UI)
         cookie_header = headers.get(b"cookie", b"")
@@ -991,6 +1073,16 @@ async def lifespan(app: FastAPI):
     create_tables()
     await database.connect()
     await configure_database()
+
+    # Issue #431: Check admin authentication status and log appropriate message
+    user_count = await database.fetch_val("SELECT COUNT(*) FROM users")
+    if not ADMIN_API_SECRET and user_count == 0:
+        logger.warning(
+            "SECURITY: Admin API requires initial setup. "
+            "Only /api/auth/setup is accessible until an admin account is created."
+        )
+    elif not ADMIN_API_SECRET and user_count > 0:
+        logger.info(f"Admin API: User-based authentication active ({user_count} users)")
 
     # Initialize Prometheus metrics
     init_app_info()
