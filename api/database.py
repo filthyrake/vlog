@@ -1,6 +1,9 @@
+import logging
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
+
+logger = logging.getLogger(__name__)
 from databases import Database
 
 from config import DATABASE_URL
@@ -1466,4 +1469,4 @@ def create_tables():
 
 if __name__ == "__main__":
     create_tables()
-    print("Database tables created successfully!")
+    logger.info("Database tables created successfully!")
