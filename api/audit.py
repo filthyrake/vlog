@@ -110,6 +110,12 @@ class AuditAction(str, Enum):
     COMMENT_MODERATE = "comment_moderate"
     COMMENT_DELETE = "comment_delete"
 
+    # Backup and restore actions (Issue #216)
+    BACKUP_CREATE = "backup_create"
+    BACKUP_RESTORE = "backup_restore"
+    BACKUP_DELETE = "backup_delete"
+    BACKUP_VERIFY = "backup_verify"
+
 
 class AuditLogger:
     """

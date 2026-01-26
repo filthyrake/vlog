@@ -1462,6 +1462,254 @@ def cmd_auth(args):
         sys.exit(1)
 
 
+def cmd_backup(args):
+    """Backup management commands."""
+    import asyncio
+
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
+    async def run_backup_command():
+        """Run the backup command with database connection."""
+        from api.database import configure_database, database
+        from config import (
+            BACKUP_ENABLED,
+            BACKUP_PATH,
+            BACKUP_SIGNING_KEY,
+            DATABASE_URL,
+            VIDEOS_DIR,
+        )
+
+        if not BACKUP_ENABLED:
+            print("Error: Backup feature is disabled. Set VLOG_BACKUP_ENABLED=true")
+            return
+
+        if args.backup_command == "create":
+            from backup.manifest import BackupType
+            from backup.service import BackupService
+
+            # Map type argument to BackupType enum
+            type_map = {
+                "full": BackupType.FULL,
+                "database_only": BackupType.DATABASE_ONLY,
+                "incremental": BackupType.INCREMENTAL,
+            }
+            backup_type = type_map[args.type]
+
+            # Create progress callback
+            def progress_callback(stage, detail, current, total):
+                print(f"  [{stage}] {detail}", end="\r" if current else "\n")
+
+            print("Creating backup...")
+            print(f"  Type: {args.type}")
+            print(f"  Include videos: {args.include_videos}")
+
+            try:
+                service = BackupService(
+                    database_url=DATABASE_URL,
+                    videos_dir=VIDEOS_DIR,
+                    backup_path=BACKUP_PATH,
+                    progress_callback=progress_callback,
+                )
+
+                result = await service.create_backup(
+                    backup_type=backup_type,
+                    include_videos=args.include_videos,
+                    description=args.description,
+                    upload_to_s3=args.upload_s3,
+                    created_by="cli",
+                )
+
+                print()
+                print("Backup created successfully!")
+                print(f"  Backup ID: {result['backup_id']}")
+                print(f"  Size: {result['size_bytes'] / (1024*1024):.2f} MB")
+                print(f"  Location: {result['local_path']}")
+                if result.get('s3_location'):
+                    print(f"  S3: {result['s3_location']}")
+
+            except Exception as e:
+                print(f"Error creating backup: {e}")
+                sys.exit(1)
+
+        elif args.backup_command == "list":
+            from backup.service import BackupService
+
+            try:
+                service = BackupService(
+                    database_url=DATABASE_URL,
+                    videos_dir=VIDEOS_DIR,
+                    backup_path=BACKUP_PATH,
+                )
+
+                backups = await service.list_backups(
+                    include_remote=not args.local_only
+                )
+
+                if not backups:
+                    print("No backups found.")
+                    return
+
+                print(f"{'Backup ID':<30} {'Type':<15} {'Size':<12} {'Created':<20} {'S3':<5}")
+                print("-" * 85)
+
+                for b in backups:
+                    backup_id = b["backup_id"][:28]
+                    btype = b["backup_type"][:13]
+                    size = f"{b['size_bytes'] / (1024*1024):.1f} MB" if b.get("size_bytes") else "-"
+                    created = b["created_at"][:19] if b.get("created_at") else "-"
+                    has_s3 = "Yes" if b.get("s3_location") else "No"
+
+                    print(f"{backup_id:<30} {btype:<15} {size:<12} {created:<20} {has_s3:<5}")
+
+            except Exception as e:
+                print(f"Error listing backups: {e}")
+                sys.exit(1)
+
+        elif args.backup_command == "restore":
+            from backup.restore import RestoreService
+
+            if not args.force and not args.dry_run:
+                print("WARNING: Restoring will overwrite your current database and files!")
+                confirm = input("Type 'yes' to continue: ")
+                if confirm.lower() != "yes":
+                    print("Restore cancelled.")
+                    return
+
+            print(f"Restoring from backup {args.backup_id}...")
+
+            def progress_callback(stage, detail):
+                print(f"  [{stage}] {detail}")
+
+            try:
+                service = RestoreService(
+                    database_url=DATABASE_URL,
+                    videos_dir=VIDEOS_DIR,
+                    backup_path=BACKUP_PATH,
+                    progress_callback=progress_callback,
+                )
+
+                result = await service.restore_backup(
+                    args.backup_id,
+                    restore_type=args.type,
+                    dry_run=args.dry_run,
+                    force=args.force,
+                    signing_key=BACKUP_SIGNING_KEY or None,
+                    accept_no_file_rollback=getattr(args, 'accept_no_file_rollback', False),
+                )
+
+                if args.dry_run:
+                    print()
+                    print("Dry run complete - backup verified successfully.")
+                    print("Run with --force to perform actual restore.")
+                else:
+                    print()
+                    print("Restore completed successfully!")
+                    print(f"  Restored at: {result.get('restored_at')}")
+
+            except Exception as e:
+                print(f"Error restoring backup: {e}")
+                sys.exit(1)
+
+        elif args.backup_command == "verify":
+            from backup.verify import BackupVerifier
+
+            print(f"Verifying backup {args.backup_id}...")
+
+            try:
+                verifier = BackupVerifier()
+                result = await verifier.verify_backup(
+                    args.backup_id,
+                    signing_key=BACKUP_SIGNING_KEY or None,
+                    verify_files=not args.skip_files,
+                )
+
+                print()
+                print("Verification Results:")
+                print(f"  Archive valid: {'Yes' if result['archive_valid'] else 'No'}")
+                print(f"  Manifest valid: {'Yes' if result['manifest_valid'] else 'No'}")
+                if result['signature_valid'] is not None:
+                    print(f"  Signature valid: {'Yes' if result['signature_valid'] else 'No'}")
+                print(f"  Database valid: {'Yes' if result['database_valid'] else 'No'}")
+                if result['files_valid'] is not None:
+                    print(f"  Files valid: {'Yes' if result['files_valid'] else 'No'}")
+
+                if result.get('errors'):
+                    print()
+                    print("Errors:")
+                    for error in result['errors']:
+                        print(f"  - {error}")
+                else:
+                    print()
+                    print("Backup integrity verified successfully!")
+
+            except Exception as e:
+                print(f"Verification failed: {e}")
+                sys.exit(1)
+
+        elif args.backup_command == "delete":
+            from backup.service import BackupService
+
+            if not input(f"Delete backup {args.backup_id}? [y/N]: ").lower().startswith("y"):
+                print("Cancelled.")
+                return
+
+            try:
+                service = BackupService(
+                    database_url=DATABASE_URL,
+                    videos_dir=VIDEOS_DIR,
+                    backup_path=BACKUP_PATH,
+                )
+
+                await service.delete_backup(
+                    args.backup_id,
+                    delete_remote=not args.keep_remote,
+                )
+
+                print(f"Backup {args.backup_id} deleted.")
+
+            except Exception as e:
+                print(f"Error deleting backup: {e}")
+                sys.exit(1)
+
+        elif args.backup_command == "schedule":
+            from config import (
+                BACKUP_SCHEDULE_ENABLED,
+                BACKUP_SCHEDULE_TIME,
+                BACKUP_SCHEDULE_DAY,
+            )
+
+            if args.show or (not args.time and not args.daily and not args.weekly):
+                # Show current configuration
+                print("Backup Schedule Configuration:")
+                print(f"  Enabled: {BACKUP_SCHEDULE_ENABLED}")
+                print(f"  Time: {BACKUP_SCHEDULE_TIME}")
+                if BACKUP_SCHEDULE_DAY:
+                    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                    print(f"  Day: {days[int(BACKUP_SCHEDULE_DAY)]}")
+                else:
+                    print("  Frequency: Daily")
+                print()
+                print("To change schedule, set environment variables:")
+                print("  VLOG_BACKUP_SCHEDULE_ENABLED=true")
+                print("  VLOG_BACKUP_SCHEDULE_TIME=02:00")
+                print("  VLOG_BACKUP_SCHEDULE_DAY=0  # 0=Monday, 6=Sunday (optional)")
+                print()
+                print("To run the scheduler daemon:")
+                print("  python -m backup.scheduler")
+            else:
+                print("Schedule configuration must be done via environment variables.")
+                print("Set VLOG_BACKUP_SCHEDULE_* and restart the scheduler daemon.")
+
+    try:
+        asyncio.run(run_backup_command())
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
 def cmd_settings(args):
     """Settings management commands."""
     import asyncio
@@ -1823,6 +2071,101 @@ def main():
     )
 
     manifests_parser.set_defaults(func=cmd_manifests)
+
+    # Backup management command (Issue #216)
+    backup_parser = subparsers.add_parser("backup", help="Manage backups and restore")
+    backup_subparsers = backup_parser.add_subparsers(dest="backup_command", required=True)
+
+    # backup create
+    backup_create = backup_subparsers.add_parser("create", help="Create a new backup")
+    backup_create.add_argument(
+        "-t", "--type",
+        choices=["full", "database_only", "incremental"],
+        default="database_only",
+        help="Backup type (default: database_only)"
+    )
+    backup_create.add_argument(
+        "--include-videos", action="store_true",
+        help="Include video files in backup (increases size significantly)"
+    )
+    backup_create.add_argument(
+        "-d", "--description",
+        help="Backup description"
+    )
+    backup_create.add_argument(
+        "--upload-s3", action="store_true",
+        help="Upload backup to S3 after creation"
+    )
+
+    # backup list
+    backup_list = backup_subparsers.add_parser("list", help="List available backups")
+    backup_list.add_argument(
+        "--local-only", action="store_true",
+        help="Only show local backups (exclude S3)"
+    )
+
+    # backup restore
+    backup_restore = backup_subparsers.add_parser("restore", help="Restore from a backup")
+    backup_restore.add_argument("backup_id", help="Backup ID to restore from")
+    backup_restore.add_argument(
+        "-t", "--type",
+        choices=["full", "database_only", "files_only"],
+        default="full",
+        help="Restore type (default: full)"
+    )
+    backup_restore.add_argument(
+        "--dry-run", action="store_true",
+        help="Verify backup without restoring"
+    )
+    backup_restore.add_argument(
+        "--force", action="store_true",
+        help="Skip confirmation prompts"
+    )
+    backup_restore.add_argument(
+        "--accept-no-file-rollback", action="store_true",
+        help="Required for 'full' or 'files_only' restores. Acknowledges that file "
+             "safety backup is NOT implemented - if file restoration fails, there is "
+             "no automatic rollback. Use 'database_only' for safe restore with rollback."
+    )
+
+    # backup verify
+    backup_verify = backup_subparsers.add_parser("verify", help="Verify backup integrity")
+    backup_verify.add_argument("backup_id", help="Backup ID to verify")
+    backup_verify.add_argument(
+        "--skip-files", action="store_true",
+        help="Skip individual file checksum verification"
+    )
+
+    # backup delete
+    backup_delete = backup_subparsers.add_parser("delete", help="Delete a backup")
+    backup_delete.add_argument("backup_id", help="Backup ID to delete")
+    backup_delete.add_argument(
+        "--keep-remote", action="store_true",
+        help="Keep backup in S3 (only delete local copy)"
+    )
+
+    # backup schedule
+    backup_schedule = backup_subparsers.add_parser("schedule", help="Configure backup schedule")
+    backup_schedule.add_argument(
+        "--time", metavar="HH:MM",
+        help="Time to run backup (24-hour format)"
+    )
+    schedule_group = backup_schedule.add_mutually_exclusive_group()
+    schedule_group.add_argument(
+        "--daily", action="store_true",
+        help="Run backup daily"
+    )
+    schedule_group.add_argument(
+        "--weekly", metavar="DAY",
+        choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        help="Run backup weekly on specified day"
+    )
+    backup_schedule.add_argument(
+        "--show", action="store_true",
+        help="Show current schedule configuration"
+    )
+
+    backup_parser.set_defaults(func=cmd_backup)
 
     args = parser.parse_args()
     args.func(args)

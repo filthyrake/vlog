@@ -1848,3 +1848,137 @@ class VideoSocialStatus(BaseModel):
     rating_avg: Optional[float] = None
     likes_count: int = 0
     dislikes_count: int = 0
+
+
+# =============================================================================
+# Backup and Restore Models (Issue #216)
+# =============================================================================
+
+
+class BackupType(str, Enum):
+    """Type of backup."""
+
+    FULL = "full"
+    DATABASE_ONLY = "database_only"
+    INCREMENTAL = "incremental"
+
+
+class BackupStatus(str, Enum):
+    """Status of backup operation."""
+
+    PENDING = "pending"
+    BACKING_UP_DATABASE = "backing_up_database"
+    BACKING_UP_FILES = "backing_up_files"
+    UPLOADING_S3 = "uploading_s3"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class BackupCreateRequest(BaseModel):
+    """Request to create a new backup."""
+
+    backup_type: BackupType = Field(
+        default=BackupType.DATABASE_ONLY,
+        description="Type of backup: full, database_only, or incremental",
+    )
+    include_videos: bool = Field(
+        default=False,
+        description="Whether to include video files in backup",
+    )
+    upload_to_s3: bool = Field(
+        default=False,
+        description="Whether to upload backup to S3",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Optional description for the backup",
+    )
+
+
+class BackupResponse(BaseModel):
+    """Response containing backup details."""
+
+    backup_id: str = Field(..., description="Unique backup identifier")
+    backup_type: str = Field(..., description="Type of backup")
+    status: str = Field(..., description="Current status of backup")
+    size_bytes: Optional[int] = Field(default=None, description="Total size in bytes")
+    database_size_bytes: Optional[int] = Field(default=None, description="Database dump size")
+    files_size_bytes: Optional[int] = Field(default=None, description="Video files size")
+    video_count: Optional[int] = Field(default=None, description="Number of videos backed up")
+    file_count: Optional[int] = Field(default=None, description="Number of files backed up")
+    description: Optional[str] = Field(default=None, description="Backup description")
+    local_path: Optional[str] = Field(default=None, description="Local file path")
+    s3_location: Optional[str] = Field(default=None, description="S3 storage location")
+    created_at: datetime = Field(..., description="When backup was started")
+    completed_at: Optional[datetime] = Field(default=None, description="When backup completed")
+    created_by: Optional[str] = Field(default=None, description="Who created the backup")
+    error_message: Optional[str] = Field(default=None, description="Error message if failed")
+    vlog_version: Optional[str] = Field(default=None, description="VLog version at backup time")
+    schema_version: Optional[str] = Field(default=None, description="Database schema version")
+    database_type: Optional[str] = Field(default=None, description="Database type (postgresql/sqlite)")
+
+
+class BackupListResponse(BaseModel):
+    """Response containing list of backups."""
+
+    backups: List[BackupResponse]
+    total_count: int = Field(..., description="Total number of backups")
+
+
+class BackupRestoreRequest(BaseModel):
+    """Request to restore from a backup."""
+
+    restore_type: str = Field(
+        default="full",
+        description="Type of restore: full, database_only, or files_only",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="If true, only verify backup without restoring",
+    )
+    force: bool = Field(
+        default=False,
+        description="Skip confirmation and restore immediately",
+    )
+    accept_no_file_rollback: bool = Field(
+        default=False,
+        description=(
+            "Required for 'full' or 'files_only' restores. Acknowledges that file "
+            "safety backup is NOT implemented - if file restoration fails partway "
+            "through, there is no automatic rollback capability. Use 'database_only' "
+            "for safe database-only restore with full rollback."
+        ),
+    )
+
+    @field_validator("restore_type")
+    @classmethod
+    def validate_restore_type(cls, v: str) -> str:
+        """Validate restore type."""
+        valid_types = {"full", "database_only", "files_only"}
+        if v not in valid_types:
+            raise ValueError(f"restore_type must be one of: {', '.join(valid_types)}")
+        return v
+
+
+class BackupRestoreResponse(BaseModel):
+    """Response from a restore operation."""
+
+    backup_id: str = Field(..., description="Backup that was restored")
+    restore_type: str = Field(..., description="Type of restore performed")
+    dry_run: bool = Field(..., description="Whether this was a dry run")
+    status: str = Field(..., description="Result status")
+    message: Optional[str] = Field(default=None, description="Status message")
+    restored_at: Optional[datetime] = Field(default=None, description="When restore completed")
+
+
+class BackupVerifyResponse(BaseModel):
+    """Response from a backup verification."""
+
+    backup_id: str = Field(..., description="Backup that was verified")
+    archive_valid: bool = Field(..., description="Whether archive is intact")
+    manifest_valid: bool = Field(..., description="Whether manifest is valid")
+    signature_valid: Optional[bool] = Field(default=None, description="Whether signature is valid")
+    database_valid: bool = Field(..., description="Whether database checksum matches")
+    files_valid: Optional[bool] = Field(default=None, description="Whether file checksums match")
+    errors: List[str] = Field(default_factory=list, description="List of errors found")

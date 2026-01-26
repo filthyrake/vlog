@@ -1457,6 +1457,92 @@ ratings = sa.Table(
 )
 
 
+# =============================================================================
+# Backup and Restore Tables (Issue #216)
+# Comprehensive backup system with database, file, and S3 support
+# =============================================================================
+
+# Backup records for tracking backup operations
+#
+# BACKUP TYPES:
+# -------------
+# - full: Complete backup (database + optionally video files)
+# - database_only: Database dump only (fastest)
+# - incremental: Only new/changed files since last backup
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> backing_up_database -> backing_up_files -> uploading_s3 -> completed
+# pending -> backing_up_database -> failed (on error at any stage)
+#
+# STORAGE:
+# --------
+# - local_path: Path on local/NAS storage
+# - s3_location: S3 URI (s3://bucket/prefix/backup_id.tar.gz)
+#
+# MANIFEST:
+# ---------
+# - manifest_json: Cached manifest for quick access (full manifest stored in backup)
+# - Manifest includes checksums for integrity verification
+#
+# See: https://github.com/filthyrake/vlog/issues/216
+backups = sa.Table(
+    "backups",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("backup_id", sa.String(50), unique=True, nullable=False),  # backup_20260126_020000
+    sa.Column(
+        "backup_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "backup_type IN ('full', 'database_only', 'incremental')",
+            name="ck_backups_backup_type",
+        ),
+        nullable=False,
+    ),
+    sa.Column(
+        "status",
+        sa.String(30),
+        sa.CheckConstraint(
+            "status IN ('pending', 'backing_up_database', 'backing_up_files', "
+            "'uploading_s3', 'completed', 'failed')",
+            name="ck_backups_status",
+        ),
+        nullable=False,
+        default="pending",
+    ),
+    # Size and content statistics
+    sa.Column("size_bytes", sa.BigInteger, nullable=True),  # Total backup size
+    sa.Column("database_size_bytes", sa.BigInteger, nullable=True),  # DB dump size
+    sa.Column("files_size_bytes", sa.BigInteger, nullable=True),  # Video files size
+    sa.Column("video_count", sa.Integer, nullable=True),  # Number of videos backed up
+    sa.Column("file_count", sa.Integer, nullable=True),  # Number of files in backup
+    # Description and metadata
+    sa.Column("description", sa.Text, nullable=True),  # User-provided description
+    # Storage locations
+    sa.Column("local_path", sa.String(500), nullable=True),  # Local filesystem path
+    sa.Column("s3_location", sa.String(500), nullable=True),  # S3 URI
+    # Manifest (JSON for quick access, full manifest in backup archive)
+    sa.Column("manifest_json", sa.Text, nullable=True),  # JSON-encoded manifest
+    sa.Column("manifest_signature", sa.String(64), nullable=True),  # HMAC-SHA256 signature
+    # Timestamps
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    # Provenance
+    sa.Column("created_by", sa.String(100), nullable=True),  # User/system that created
+    # Error tracking
+    sa.Column("error_message", sa.Text, nullable=True),
+    # VLog version info (for compatibility checking during restore)
+    sa.Column("vlog_version", sa.String(50), nullable=True),
+    sa.Column("schema_version", sa.String(10), nullable=True),  # Migration version
+    sa.Column("database_type", sa.String(20), nullable=True),  # postgresql or sqlite
+    sa.Index("ix_backups_backup_id", "backup_id"),
+    sa.Index("ix_backups_status", "status"),
+    sa.Index("ix_backups_created_at", "created_at"),
+    sa.Index("ix_backups_backup_type", "backup_type"),
+)
+
+
 def create_tables():
     """
     Create database tables directly using SQLAlchemy metadata.
