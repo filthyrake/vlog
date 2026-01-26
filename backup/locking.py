@@ -3,17 +3,41 @@ Backup locking mechanism.
 
 Prevents concurrent backup operations using both file-based locks
 and database flags for distributed safety.
+
+Supports both Unix (fcntl) and Windows (msvcrt) platforms.
 """
 
-import fcntl
 import logging
 import os
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
 from backup.exceptions import BackupLockError
+
+# Platform-specific file locking
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_file(fd):
+        """Acquire exclusive lock on file (Windows)."""
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock_file(fd):
+        """Release lock on file (Windows)."""
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_file(fd):
+        """Acquire exclusive lock on file (Unix)."""
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock_file(fd):
+        """Release lock on file (Unix)."""
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +83,7 @@ class BackupLock:
             self._file_handle = open(self.lock_file_path, "w")
 
             # Try to acquire exclusive lock (non-blocking)
-            fcntl.flock(self._file_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_file(self._file_handle.fileno())
 
             # Write lock info
             lock_info = {
@@ -84,7 +108,7 @@ class BackupLock:
         """Release file-based lock."""
         if self._file_handle:
             try:
-                fcntl.flock(self._file_handle.fileno(), fcntl.LOCK_UN)
+                _unlock_file(self._file_handle.fileno())
                 self._file_handle.close()
                 # Clean up lock file
                 if self.lock_file_path.exists():

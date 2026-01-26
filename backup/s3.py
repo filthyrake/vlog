@@ -11,7 +11,6 @@ Supports:
 
 import asyncio
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock

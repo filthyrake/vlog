@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from backup.database import get_database_handler
-from backup.exceptions import BackupError, IntegrityError, RestoreError, ValidationError
-from backup.files import FileRestoreHandler, validate_path_safe
+from backup.exceptions import IntegrityError, RestoreError, ValidationError
+from backup.files import FileRestoreHandler
 from backup.manifest import BackupManifest, validate_backup_id
 from backup.s3 import get_s3_storage
 from backup.verify import BackupVerifier

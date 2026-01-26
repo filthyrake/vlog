@@ -4,7 +4,6 @@ Main BackupService orchestrator.
 Coordinates database backup, file backup, S3 upload, and retention policy.
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -13,10 +12,10 @@ import tarfile
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Optional
 
 from backup.database import get_database_handler
-from backup.exceptions import BackupError, BackupLockError, DiskSpaceError
+from backup.exceptions import BackupError, DiskSpaceError
 from backup.files import FileBackupHandler
 from backup.locking import BackupLock
 from backup.manifest import (
@@ -25,7 +24,6 @@ from backup.manifest import (
     FileInfo,
     Statistics,
     VideoFilesInfo,
-    compute_file_checksum,
     validate_backup_id,
 )
 from backup.s3 import get_s3_storage
@@ -85,9 +83,8 @@ class BackupService:
         return f"backup_{now.strftime('%Y%m%d_%H%M%S')}"
 
     def _get_free_space(self, path: Path) -> int:
-        """Get free space at path in bytes."""
-        stat = os.statvfs(path)
-        return stat.f_bavail * stat.f_frsize
+        """Get free space at path in bytes (cross-platform)."""
+        return shutil.disk_usage(path).free
 
     async def _get_statistics(self, database) -> Statistics:
         """
@@ -276,7 +273,6 @@ class BackupService:
                         tar.add(item, arcname=item.name)
 
             archive_size = archive_path.stat().st_size
-            archive_checksum = compute_file_checksum(archive_path)
 
             # Step 6: Move to final location
             final_path = self.backup_path / archive_name

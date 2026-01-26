@@ -11764,7 +11764,7 @@ async def delete_backup(
             backup_path=BACKUP_PATH,
         )
 
-        await service.delete_backup(backup_id, delete_from_s3=delete_from_s3)
+        await service.delete_backup(backup_id, delete_remote=delete_from_s3)
 
         # Audit log
         log_audit(

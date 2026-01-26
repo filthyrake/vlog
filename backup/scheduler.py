@@ -20,7 +20,7 @@ import signal
 import sys
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +207,7 @@ class BackupScheduler:
             if PID_FILE.exists():
                 PID_FILE.unlink()
         except Exception:
+            # Best effort cleanup - don't fail shutdown if PID file can't be removed
             pass
 
     def _setup_signal_handlers(self) -> None:
@@ -219,15 +220,26 @@ class BackupScheduler:
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
 
+    def _is_running_as_root(self) -> bool:
+        """Check if running as root (Unix) or Administrator (Windows)."""
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                return ctypes.windll.shell32.IsUserAnAdmin() != 0
+            except Exception:
+                return False  # Assume not admin if check fails
+        else:
+            return os.getuid() == 0
+
     async def run(self) -> None:
         """
         Run the scheduler daemon.
 
         Blocks until shutdown signal received.
         """
-        # Refuse to run as root
-        if os.getuid() == 0:
-            logger.error("Refusing to run as root. Use a non-privileged user.")
+        # Refuse to run as root/administrator
+        if self._is_running_as_root():
+            logger.error("Refusing to run as root/administrator. Use a non-privileged user.")
             sys.exit(1)
 
         self._setup_signal_handlers()

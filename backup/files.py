@@ -11,7 +11,6 @@ Handles copying video files with:
 import asyncio
 import hashlib
 import logging
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +47,7 @@ def validate_path_safe(path: Path, allowed_parent: Path) -> Path:
     # Convert to string for checks
     path_str = str(path)
 
-    # Check for path traversal attempts
+    # Check for path traversal attempts (catches both Unix ../ and Windows ..\)
     if ".." in path_str:
         raise ValidationError(f"Path traversal attempt detected: {path_str}")
 
@@ -105,8 +104,8 @@ class FileBackupHandler:
         Returns:
             Free space in bytes
         """
-        stat = os.statvfs(path)
-        return stat.f_bavail * stat.f_frsize
+        # shutil.disk_usage works on both Unix and Windows
+        return shutil.disk_usage(path).free
 
     async def scan_files(self) -> list[tuple[Path, int, datetime]]:
         """

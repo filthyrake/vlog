@@ -14,9 +14,7 @@ from backup.exceptions import IntegrityError, ValidationError
 from backup.manifest import (
     CHECKSUM_CHUNK_SIZE,
     BackupManifest,
-    compute_file_checksum,
     validate_backup_id,
-    verify_file_checksum,
 )
 
 logger = logging.getLogger(__name__)

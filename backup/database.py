@@ -14,7 +14,6 @@ import logging
 import os
 import shutil
 import sqlite3
-import subprocess
 import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
