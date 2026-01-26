@@ -49,6 +49,7 @@ from api.common import (
 )
 from api.database import (
     admin_sessions,
+    backups,
     categories,
     chapters,
     comments,
@@ -132,6 +133,12 @@ from api.schemas import (
     BulkRetranscodeResponse,
     BulkUpdateRequest,
     BulkUpdateResponse,
+    BackupCreateRequest,
+    BackupListResponse,
+    BackupResponse,
+    BackupRestoreRequest,
+    BackupRestoreResponse,
+    BackupVerifyResponse,
     CategoryCreate,
     CategoryResponse,
     CommentListResponse,
@@ -255,6 +262,12 @@ from config import (
     ANALYTICS_CACHE_TTL,
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
     ARCHIVE_DIR,
+    BACKUP_ENABLED,
+    BACKUP_PATH,
+    BACKUP_RESTORE_COOLDOWN_SECONDS,
+    BACKUP_S3_BUCKET,
+    BACKUP_SIGNING_KEY,
+    DATABASE_URL,
     JOB_QUEUE_MODE,
     MAX_THUMBNAIL_UPLOAD_SIZE,
     MAX_UPLOAD_SIZE,
@@ -11295,6 +11308,428 @@ async def force_delete_comment(
         "message": f"Comment {comment_id} permanently deleted",
         "replies_deleted": reply_count,
     }
+
+
+# =============================================================================
+# Backup and Restore Endpoints (Issue #216)
+# =============================================================================
+
+# Track last restore time for rate limiting
+_last_restore_time: Optional[datetime] = None
+
+
+@v1_router.post("/backups", response_model=BackupResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_backup(request: Request, data: BackupCreateRequest) -> BackupResponse:
+    """
+    Create a new backup.
+
+    Creates a backup of the database and optionally video files.
+    The backup runs in the background and status can be monitored via GET /backups/{backup_id}.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    from backup.service import BackupService
+    from backup.manifest import BackupType
+
+    # Map request type to BackupType
+    backup_type_map = {
+        "full": BackupType.FULL,
+        "database_only": BackupType.DATABASE_ONLY,
+        "incremental": BackupType.INCREMENTAL,
+    }
+    backup_type = backup_type_map.get(data.backup_type.value, BackupType.DATABASE_ONLY)
+
+    # Get username from session if available
+    created_by = "api"
+    session_token = request.cookies.get("vlog_admin_session")
+    if session_token:
+        session = await fetch_one_with_retry(
+            admin_sessions.select().where(admin_sessions.c.token == session_token)
+        )
+        if session:
+            user = await fetch_one_with_retry(
+                users.select().where(users.c.id == session["user_id"])
+            )
+            if user:
+                created_by = user["username"]
+
+    try:
+        service = BackupService(
+            database_url=DATABASE_URL,
+            videos_dir=VIDEOS_DIR,
+            backup_path=BACKUP_PATH,
+        )
+
+        result = await service.create_backup(
+            backup_type=backup_type,
+            include_videos=data.include_videos,
+            description=data.description,
+            upload_to_s3=data.upload_to_s3,
+            created_by=created_by,
+        )
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_CREATE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=result["backup_id"],
+            details={
+                "backup_type": data.backup_type.value,
+                "include_videos": data.include_videos,
+                "upload_to_s3": data.upload_to_s3,
+            },
+        )
+
+        # Fetch full backup record
+        backup = await fetch_one_with_retry(
+            backups.select().where(backups.c.backup_id == result["backup_id"])
+        )
+
+        return BackupResponse(
+            backup_id=backup["backup_id"],
+            backup_type=backup["backup_type"],
+            status=backup["status"],
+            size_bytes=backup["size_bytes"],
+            database_size_bytes=backup["database_size_bytes"],
+            files_size_bytes=backup["files_size_bytes"],
+            video_count=backup["video_count"],
+            file_count=backup["file_count"],
+            description=backup["description"],
+            local_path=backup["local_path"],
+            s3_location=backup["s3_location"],
+            created_at=backup["created_at"],
+            completed_at=backup["completed_at"],
+            created_by=backup["created_by"],
+            error_message=backup["error_message"],
+            vlog_version=backup["vlog_version"],
+            schema_version=backup["schema_version"],
+            database_type=backup["database_type"],
+        )
+
+    except Exception as e:
+        logger.error(f"Backup creation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Backup creation failed: {sanitize_error_message(str(e))}")
+
+
+@v1_router.get("/backups", response_model=BackupListResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_backups(
+    request: Request,
+    status: Optional[str] = Query(None, description="Filter by status"),
+    backup_type: Optional[str] = Query(None, description="Filter by backup type"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of backups to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+) -> BackupListResponse:
+    """
+    List all backups.
+
+    Returns a list of backups ordered by creation date (newest first).
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    query = backups.select().order_by(backups.c.created_at.desc())
+
+    # Apply filters
+    if status:
+        query = query.where(backups.c.status == status)
+    if backup_type:
+        query = query.where(backups.c.backup_type == backup_type)
+
+    # Get total count
+    count_query = sa.select(sa.func.count()).select_from(backups)
+    if status:
+        count_query = count_query.where(backups.c.status == status)
+    if backup_type:
+        count_query = count_query.where(backups.c.backup_type == backup_type)
+    total_count = await fetch_val_with_retry(count_query) or 0
+
+    # Apply pagination
+    query = query.limit(limit).offset(offset)
+    rows = await fetch_all_with_retry(query)
+
+    backup_list = [
+        BackupResponse(
+            backup_id=row["backup_id"],
+            backup_type=row["backup_type"],
+            status=row["status"],
+            size_bytes=row["size_bytes"],
+            database_size_bytes=row["database_size_bytes"],
+            files_size_bytes=row["files_size_bytes"],
+            video_count=row["video_count"],
+            file_count=row["file_count"],
+            description=row["description"],
+            local_path=row["local_path"],
+            s3_location=row["s3_location"],
+            created_at=row["created_at"],
+            completed_at=row["completed_at"],
+            created_by=row["created_by"],
+            error_message=row["error_message"],
+            vlog_version=row["vlog_version"],
+            schema_version=row["schema_version"],
+            database_type=row["database_type"],
+        )
+        for row in rows
+    ]
+
+    return BackupListResponse(backups=backup_list, total_count=total_count)
+
+
+@v1_router.get("/backups/{backup_id}", response_model=BackupResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID"),
+) -> BackupResponse:
+    """
+    Get backup details.
+
+    Returns detailed information about a specific backup.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    return BackupResponse(
+        backup_id=backup["backup_id"],
+        backup_type=backup["backup_type"],
+        status=backup["status"],
+        size_bytes=backup["size_bytes"],
+        database_size_bytes=backup["database_size_bytes"],
+        files_size_bytes=backup["files_size_bytes"],
+        video_count=backup["video_count"],
+        file_count=backup["file_count"],
+        description=backup["description"],
+        local_path=backup["local_path"],
+        s3_location=backup["s3_location"],
+        created_at=backup["created_at"],
+        completed_at=backup["completed_at"],
+        created_by=backup["created_by"],
+        error_message=backup["error_message"],
+        vlog_version=backup["vlog_version"],
+        schema_version=backup["schema_version"],
+        database_type=backup["database_type"],
+    )
+
+
+@v1_router.post("/backups/{backup_id}/restore", response_model=BackupRestoreResponse)
+@limiter.limit("1/hour")
+async def restore_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID to restore"),
+    data: BackupRestoreRequest = None,
+) -> BackupRestoreResponse:
+    """
+    Restore from a backup.
+
+    WARNING: This operation will replace the current database and optionally files.
+    A safety backup is created before restoration. Rate limited to 1 per hour.
+
+    Use dry_run=true to verify the backup without performing the actual restore.
+    """
+    global _last_restore_time
+
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    if data is None:
+        data = BackupRestoreRequest()
+
+    # Additional rate limiting check (cooldown)
+    if _last_restore_time and not data.dry_run:
+        elapsed = (datetime.now(timezone.utc) - _last_restore_time).total_seconds()
+        if elapsed < BACKUP_RESTORE_COOLDOWN_SECONDS:
+            remaining = int(BACKUP_RESTORE_COOLDOWN_SECONDS - elapsed)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Restore rate limited. Please wait {remaining} seconds.",
+                headers={"Retry-After": str(remaining)},
+            )
+
+    # Verify backup exists
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    if backup["status"] != "completed":
+        raise HTTPException(status_code=400, detail=f"Cannot restore from backup with status: {backup['status']}")
+
+    from backup.restore import RestoreService
+
+    try:
+        service = RestoreService(
+            database_url=DATABASE_URL,
+            videos_dir=VIDEOS_DIR,
+            backup_path=BACKUP_PATH,
+        )
+
+        result = await service.restore_backup(
+            backup_id=backup_id,
+            restore_type=data.restore_type,
+            dry_run=data.dry_run,
+            force=data.force,
+            signing_key=BACKUP_SIGNING_KEY or None,
+        )
+
+        # Update last restore time if not a dry run
+        if not data.dry_run:
+            _last_restore_time = datetime.now(timezone.utc)
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_RESTORE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=backup_id,
+            details={
+                "restore_type": data.restore_type,
+                "dry_run": data.dry_run,
+                "status": result["status"],
+            },
+        )
+
+        return BackupRestoreResponse(
+            backup_id=result["backup_id"],
+            restore_type=result["restore_type"],
+            dry_run=result["dry_run"],
+            status=result["status"],
+            message=result.get("message"),
+            restored_at=datetime.fromisoformat(result["restored_at"]) if result.get("restored_at") else None,
+        )
+
+    except Exception as e:
+        logger.error(f"Backup restore failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Restore failed: {sanitize_error_message(str(e))}")
+
+
+@v1_router.post("/backups/{backup_id}/verify", response_model=BackupVerifyResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def verify_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID to verify"),
+) -> BackupVerifyResponse:
+    """
+    Verify backup integrity.
+
+    Checks archive integrity, manifest signature, and file checksums.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    # Verify backup exists
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    from backup.verify import BackupVerifier
+
+    try:
+        verifier = BackupVerifier(backup_path=BACKUP_PATH)
+        result = await verifier.verify_backup(
+            backup_id=backup_id,
+            signing_key=BACKUP_SIGNING_KEY or None,
+            verify_files=True,
+        )
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_VERIFY,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=backup_id,
+            details={
+                "archive_valid": result["archive_valid"],
+                "manifest_valid": result["manifest_valid"],
+                "database_valid": result["database_valid"],
+                "errors": result.get("errors", []),
+            },
+        )
+
+        return BackupVerifyResponse(
+            backup_id=result["backup_id"],
+            archive_valid=result["archive_valid"],
+            manifest_valid=result["manifest_valid"],
+            signature_valid=result.get("signature_valid"),
+            database_valid=result["database_valid"],
+            files_valid=result.get("files_valid"),
+            errors=result.get("errors", []),
+        )
+
+    except Exception as e:
+        logger.error(f"Backup verification failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Verification failed: {sanitize_error_message(str(e))}")
+
+
+@v1_router.delete("/backups/{backup_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID to delete"),
+    delete_from_s3: bool = Query(False, description="Also delete from S3"),
+) -> dict:
+    """
+    Delete a backup.
+
+    Removes the backup from the local filesystem and optionally from S3.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    # Verify backup exists
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    from backup.service import BackupService
+
+    try:
+        service = BackupService(
+            database_url=DATABASE_URL,
+            videos_dir=VIDEOS_DIR,
+            backup_path=BACKUP_PATH,
+        )
+
+        await service.delete_backup(backup_id, delete_from_s3=delete_from_s3)
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_DELETE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=backup_id,
+            details={
+                "backup_type": backup["backup_type"],
+                "deleted_from_s3": delete_from_s3,
+            },
+        )
+
+        return {"status": "ok", "message": f"Backup {backup_id} deleted"}
+
+    except Exception as e:
+        logger.error(f"Backup deletion failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {sanitize_error_message(str(e))}")
 
 
 # =============================================================================

@@ -881,3 +881,83 @@ LOG_FILE = os.getenv("VLOG_LOG_FILE", "")
 # Log file rotation settings
 LOG_FILE_MAX_BYTES = get_int_env("VLOG_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024, min_val=1024)  # 10 MB default
 LOG_FILE_BACKUP_COUNT = get_int_env("VLOG_LOG_FILE_BACKUP_COUNT", 5, min_val=0)
+
+# =============================================================================
+# Backup and Restore Configuration (Issue #216)
+# Comprehensive backup system with database, file, and S3 support
+# =============================================================================
+
+# Master switch for backup feature
+BACKUP_ENABLED = os.getenv("VLOG_BACKUP_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Local backup storage path (default: NAS_STORAGE/backups)
+# SECURITY: Path is validated at runtime to prevent path traversal
+_backup_path_env = os.getenv("VLOG_BACKUP_PATH", "")
+if _backup_path_env:
+    BACKUP_PATH = Path(_backup_path_env)
+else:
+    BACKUP_PATH = NAS_STORAGE / "backups"
+
+# Validate backup path - reject suspicious patterns
+def _validate_backup_path(path: Path, var_name: str) -> None:
+    """Validate backup path at startup to prevent path traversal attacks."""
+    path_str = str(path)
+    # Check for path traversal attempts
+    if ".." in path_str:
+        raise ValueError(
+            f"Invalid {var_name}: path contains '..'. "
+            "Use an absolute path without parent directory references."
+        )
+    # Check for shell metacharacters
+    dangerous_chars = [";", "|", "&", "$", "`", "(", ")", "{", "}", "<", ">", "\\"]
+    for char in dangerous_chars:
+        if char in path_str:
+            raise ValueError(
+                f"Invalid {var_name}: path contains shell metacharacter '{char}'. "
+                "Use a simple absolute path."
+            )
+
+if _backup_path_env and not os.environ.get("VLOG_TEST_MODE"):
+    _validate_backup_path(BACKUP_PATH, "VLOG_BACKUP_PATH")
+
+# Number of backups to retain (older backups are deleted)
+BACKUP_RETENTION_COUNT = get_int_env("VLOG_BACKUP_RETENTION_COUNT", 7, min_val=1, max_val=365)
+
+# Include video files in backup (increases backup size significantly)
+BACKUP_INCLUDE_VIDEOS = os.getenv("VLOG_BACKUP_INCLUDE_VIDEOS", "false").lower() in ("true", "1", "yes")
+
+# Maximum backup size in GB (prevents runaway storage consumption)
+BACKUP_MAX_SIZE_GB = get_int_env("VLOG_BACKUP_MAX_SIZE_GB", 500, min_val=1)
+
+# Timeout settings (seconds)
+BACKUP_DB_TIMEOUT = get_int_env("VLOG_BACKUP_DB_TIMEOUT", 3600, min_val=60)  # 1 hour default
+BACKUP_S3_TIMEOUT = get_int_env("VLOG_BACKUP_S3_TIMEOUT", 14400, min_val=60)  # 4 hours default
+
+# HMAC signing key for manifest integrity verification
+# Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+# If not set, manifest signing is disabled (not recommended for production)
+BACKUP_SIGNING_KEY = os.getenv("VLOG_BACKUP_SIGNING_KEY", "")
+
+# S3-compatible storage configuration
+BACKUP_S3_BUCKET = os.getenv("VLOG_BACKUP_S3_BUCKET", "")
+BACKUP_S3_PREFIX = os.getenv("VLOG_BACKUP_S3_PREFIX", "vlog-backups/")
+BACKUP_S3_REGION = os.getenv("VLOG_BACKUP_S3_REGION", "us-east-1")
+# Custom endpoint URL for S3-compatible storage (MinIO, DigitalOcean Spaces, etc.)
+BACKUP_S3_ENDPOINT_URL = os.getenv("VLOG_BACKUP_S3_ENDPOINT_URL", "")
+
+# Scheduler configuration
+BACKUP_SCHEDULE_ENABLED = os.getenv("VLOG_BACKUP_SCHEDULE_ENABLED", "false").lower() in ("true", "1", "yes")
+# Time to run scheduled backups (24-hour format, e.g., "02:00")
+BACKUP_SCHEDULE_TIME = os.getenv("VLOG_BACKUP_SCHEDULE_TIME", "02:00")
+# Day of week for weekly backups (0=Monday, 6=Sunday), empty for daily
+BACKUP_SCHEDULE_DAY = os.getenv("VLOG_BACKUP_SCHEDULE_DAY", "")
+
+# Restore rate limiting (API only, CLI can bypass with --force)
+BACKUP_RESTORE_COOLDOWN_SECONDS = get_int_env("VLOG_BACKUP_RESTORE_COOLDOWN_SECONDS", 3600, min_val=0)
+
+# Ensure backup directory exists (skip in test/CI environments)
+if not os.environ.get("VLOG_TEST_MODE") and BACKUP_ENABLED:
+    try:
+        BACKUP_PATH.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass  # CI environment or insufficient permissions
