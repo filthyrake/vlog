@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Optional
 
 from backup.exceptions import IntegrityError, ValidationError
-from backup.manifest import BackupManifest, compute_file_checksum, verify_file_checksum
+from backup.manifest import (
+    CHECKSUM_CHUNK_SIZE,
+    BackupManifest,
+    compute_file_checksum,
+    validate_backup_id,
+    verify_file_checksum,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +60,12 @@ class BackupVerifier:
             Dict with verification results
 
         Raises:
-            ValidationError: If backup not found
+            ValidationError: If backup not found or ID format invalid
             IntegrityError: If verification fails
         """
+        # Validate backup ID format to prevent injection attacks
+        validate_backup_id(backup_id)
+
         from api.database import backups, database
 
         # Get backup info
@@ -176,7 +185,7 @@ class BackupVerifier:
                 for member in tar:
                     pass  # Just verify it can be read
 
-        await asyncio.get_event_loop().run_in_executor(None, _check)
+        await asyncio.get_running_loop().run_in_executor(None, _check)
 
     async def _extract_manifest(self, archive_path: Path) -> BackupManifest:
         """Extract and parse manifest from archive."""
@@ -188,12 +197,11 @@ class BackupVerifier:
                 content = manifest_file.read().decode("utf-8")
                 return BackupManifest.from_json(content)
 
-        return await asyncio.get_event_loop().run_in_executor(None, _extract)
+        return await asyncio.get_running_loop().run_in_executor(None, _extract)
 
     async def _extract_and_checksum(self, archive_path: Path, member_name: str) -> str:
         """Extract a member and compute its checksum."""
         import hashlib
-        import io
 
         def _compute():
             sha256 = hashlib.sha256()
@@ -202,12 +210,13 @@ class BackupVerifier:
                 if not member_file:
                     raise ValidationError(f"File not found in archive: {member_name}")
 
-                while chunk := member_file.read(8192):
+                # Use 1 MB chunks for better performance on large files
+                while chunk := member_file.read(CHECKSUM_CHUNK_SIZE):
                     sha256.update(chunk)
 
             return sha256.hexdigest()
 
-        return await asyncio.get_event_loop().run_in_executor(None, _compute)
+        return await asyncio.get_running_loop().run_in_executor(None, _compute)
 
 
 async def verify_backup(

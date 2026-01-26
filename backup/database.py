@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from urllib.parse import urlparse
 
-from backup.exceptions import BackupError, TimeoutError, ValidationError
+from backup.exceptions import BackupError, BackupTimeoutError, ValidationError
 from backup.manifest import compute_file_checksum
 
 logger = logging.getLogger(__name__)
@@ -166,7 +166,7 @@ class PostgreSQLBackupHandler(DatabaseBackupHandler):
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
-                raise TimeoutError(
+                raise BackupTimeoutError(
                     f"Database backup timed out after {timeout_seconds} seconds",
                     operation="pg_dump",
                     timeout_seconds=timeout_seconds,
@@ -231,7 +231,7 @@ class PostgreSQLBackupHandler(DatabaseBackupHandler):
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
-                raise TimeoutError(
+                raise BackupTimeoutError(
                     f"Database restore timed out after {timeout_seconds} seconds",
                     operation="pg_restore",
                     timeout_seconds=timeout_seconds,
@@ -348,11 +348,11 @@ class SQLiteBackupHandler(DatabaseBackupHandler):
         try:
             # Run backup with timeout
             await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, _do_backup),
+                asyncio.get_running_loop().run_in_executor(None, _do_backup),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            raise TimeoutError(
+            raise BackupTimeoutError(
                 f"Database backup timed out after {timeout_seconds} seconds",
                 operation="sqlite_backup",
                 timeout_seconds=timeout_seconds,
@@ -407,11 +407,11 @@ class SQLiteBackupHandler(DatabaseBackupHandler):
 
         try:
             await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, _do_restore),
+                asyncio.get_running_loop().run_in_executor(None, _do_restore),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            raise TimeoutError(
+            raise BackupTimeoutError(
                 f"Database restore timed out after {timeout_seconds} seconds",
                 operation="sqlite_restore",
                 timeout_seconds=timeout_seconds,

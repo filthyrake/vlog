@@ -1594,6 +1594,7 @@ def cmd_backup(args):
                     dry_run=args.dry_run,
                     force=args.force,
                     signing_key=BACKUP_SIGNING_KEY or None,
+                    accept_no_file_rollback=getattr(args, 'accept_no_file_rollback', False),
                 )
 
                 if args.dry_run:
@@ -2119,6 +2120,12 @@ def main():
     backup_restore.add_argument(
         "--force", action="store_true",
         help="Skip confirmation prompts"
+    )
+    backup_restore.add_argument(
+        "--accept-no-file-rollback", action="store_true",
+        help="Required for 'full' or 'files_only' restores. Acknowledges that file "
+             "safety backup is NOT implemented - if file restoration fails, there is "
+             "no automatic rollback. Use 'database_only' for safe restore with rollback."
     )
 
     # backup verify

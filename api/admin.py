@@ -11314,8 +11314,61 @@ async def force_delete_comment(
 # Backup and Restore Endpoints (Issue #216)
 # =============================================================================
 
-# Track last restore time for rate limiting
-_last_restore_time: Optional[datetime] = None
+# Rate limiting key for restore operations (stored in settings table)
+RESTORE_RATE_LIMIT_KEY = "backup.last_restore_time"
+
+
+async def _get_last_restore_time() -> Optional[datetime]:
+    """
+    Get the last restore time from database settings.
+
+    Returns:
+        Last restore datetime or None if never restored
+    """
+    result = await fetch_one_with_retry(
+        settings.select().where(settings.c.key == RESTORE_RATE_LIMIT_KEY)
+    )
+    if result and result["value"]:
+        try:
+            return datetime.fromisoformat(result["value"].strip('"'))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+async def _set_last_restore_time(restore_time: datetime) -> None:
+    """
+    Set the last restore time in database settings.
+
+    Args:
+        restore_time: The time of the restore operation
+    """
+    value = restore_time.isoformat()
+
+    # Check if setting exists
+    existing = await fetch_one_with_retry(
+        settings.select().where(settings.c.key == RESTORE_RATE_LIMIT_KEY)
+    )
+
+    if existing:
+        # Update existing setting
+        await execute_with_retry(
+            settings.update()
+            .where(settings.c.key == RESTORE_RATE_LIMIT_KEY)
+            .values(value=value, updated_at=datetime.now(timezone.utc))
+        )
+    else:
+        # Insert new setting
+        await execute_with_retry(
+            settings.insert().values(
+                key=RESTORE_RATE_LIMIT_KEY,
+                value=value,
+                category="backup",
+                description="Last backup restore time (for rate limiting)",
+                value_type="string",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
 
 
 @v1_router.post("/backups", response_model=BackupResponse)
@@ -11537,24 +11590,24 @@ async def restore_backup(
 
     Use dry_run=true to verify the backup without performing the actual restore.
     """
-    global _last_restore_time
-
     if not BACKUP_ENABLED:
         raise HTTPException(status_code=403, detail="Backup functionality is disabled")
 
     if data is None:
         data = BackupRestoreRequest()
 
-    # Additional rate limiting check (cooldown)
-    if _last_restore_time and not data.dry_run:
-        elapsed = (datetime.now(timezone.utc) - _last_restore_time).total_seconds()
-        if elapsed < BACKUP_RESTORE_COOLDOWN_SECONDS:
-            remaining = int(BACKUP_RESTORE_COOLDOWN_SECONDS - elapsed)
-            raise HTTPException(
-                status_code=429,
-                detail=f"Restore rate limited. Please wait {remaining} seconds.",
-                headers={"Retry-After": str(remaining)},
-            )
+    # Additional rate limiting check (cooldown) - uses database for multi-process safety
+    if not data.dry_run:
+        last_restore_time = await _get_last_restore_time()
+        if last_restore_time:
+            elapsed = (datetime.now(timezone.utc) - last_restore_time).total_seconds()
+            if elapsed < BACKUP_RESTORE_COOLDOWN_SECONDS:
+                remaining = int(BACKUP_RESTORE_COOLDOWN_SECONDS - elapsed)
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Restore rate limited. Please wait {remaining} seconds.",
+                    headers={"Retry-After": str(remaining)},
+                )
 
     # Verify backup exists
     backup = await fetch_one_with_retry(
@@ -11582,11 +11635,12 @@ async def restore_backup(
             dry_run=data.dry_run,
             force=data.force,
             signing_key=BACKUP_SIGNING_KEY or None,
+            accept_no_file_rollback=data.accept_no_file_rollback,
         )
 
-        # Update last restore time if not a dry run
+        # Update last restore time in database if not a dry run (for rate limiting)
         if not data.dry_run:
-            _last_restore_time = datetime.now(timezone.utc)
+            await _set_last_restore_time(datetime.now(timezone.utc))
 
         # Audit log
         log_audit(

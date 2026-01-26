@@ -1941,6 +1941,15 @@ class BackupRestoreRequest(BaseModel):
         default=False,
         description="Skip confirmation and restore immediately",
     )
+    accept_no_file_rollback: bool = Field(
+        default=False,
+        description=(
+            "Required for 'full' or 'files_only' restores. Acknowledges that file "
+            "safety backup is NOT implemented - if file restoration fails partway "
+            "through, there is no automatic rollback capability. Use 'database_only' "
+            "for safe database-only restore with full rollback."
+        ),
+    )
 
     @field_validator("restore_type")
     @classmethod

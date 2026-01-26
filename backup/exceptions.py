@@ -70,8 +70,11 @@ class ValidationError(BackupError):
     pass
 
 
-class TimeoutError(BackupError):
-    """Raised when a backup operation times out."""
+class BackupTimeoutError(BackupError):
+    """Raised when a backup operation times out.
+
+    Note: Named BackupTimeoutError to avoid shadowing the built-in TimeoutError.
+    """
 
     def __init__(self, message: str, operation: str, timeout_seconds: int):
         super().__init__(

@@ -26,6 +26,7 @@ from backup.manifest import (
     Statistics,
     VideoFilesInfo,
     compute_file_checksum,
+    validate_backup_id,
 )
 from backup.s3 import get_s3_storage
 
@@ -89,23 +90,28 @@ class BackupService:
         return stat.f_bavail * stat.f_frsize
 
     async def _get_statistics(self, database) -> Statistics:
-        """Get backup statistics from database."""
-        from api.database import categories, users, videos
+        """
+        Get backup statistics from database.
 
-        video_count = await database.fetch_val(
-            "SELECT COUNT(*) FROM videos WHERE deleted_at IS NULL"
+        Uses a single combined query for better performance instead of
+        making multiple round trips to the database.
+        """
+        # Combined query to get all statistics in one round trip
+        result = await database.fetch_one(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM videos WHERE deleted_at IS NULL) as video_count,
+                (SELECT COUNT(*) FROM categories) as category_count,
+                (SELECT COUNT(*) FROM users) as user_count,
+                (SELECT COALESCE(SUM(duration), 0) FROM videos WHERE deleted_at IS NULL) as total_duration
+            """
         )
-        category_count = await database.fetch_val("SELECT COUNT(*) FROM categories")
-        user_count = await database.fetch_val("SELECT COUNT(*) FROM users")
-        total_duration = await database.fetch_val(
-            "SELECT COALESCE(SUM(duration), 0) FROM videos WHERE deleted_at IS NULL"
-        ) or 0
 
         return Statistics(
-            video_count=video_count or 0,
-            category_count=category_count or 0,
-            user_count=user_count or 0,
-            total_duration_seconds=float(total_duration),
+            video_count=result["video_count"] or 0,
+            category_count=result["category_count"] or 0,
+            user_count=result["user_count"] or 0,
+            total_duration_seconds=float(result["total_duration"] or 0),
             total_file_count=0,  # Updated during file backup
             total_size_bytes=0,  # Updated at end
         )
@@ -459,7 +465,11 @@ class BackupService:
 
         Raises:
             BackupError: If deletion fails
+            ValidationError: If backup ID format is invalid
         """
+        # Validate backup ID format to prevent injection attacks
+        validate_backup_id(backup_id)
+
         from api.database import backups, database
 
         await database.connect()

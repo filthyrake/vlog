@@ -10,12 +10,14 @@ See: https://github.com/filthyrake/vlog/issues/216
 from backup.exceptions import (
     BackupError,
     BackupLockError,
+    BackupTimeoutError,
+    DiskSpaceError,
     IntegrityError,
     RestoreError,
     S3Error,
     ValidationError,
 )
-from backup.manifest import BackupManifest, BackupType, FileInfo
+from backup.manifest import BackupManifest, BackupType, FileInfo, validate_backup_id
 from backup.service import BackupService
 
 __all__ = [
@@ -24,6 +26,8 @@ __all__ = [
     # Exceptions
     "BackupError",
     "BackupLockError",
+    "BackupTimeoutError",
+    "DiskSpaceError",
     "IntegrityError",
     "RestoreError",
     "S3Error",
@@ -32,4 +36,6 @@ __all__ = [
     "BackupManifest",
     "BackupType",
     "FileInfo",
+    # Utilities
+    "validate_backup_id",
 ]

@@ -4,7 +4,7 @@ S3 storage integration for backup uploads and downloads.
 Supports:
 - AWS S3
 - S3-compatible storage (MinIO, DigitalOcean Spaces, Backblaze B2, etc.)
-- Multipart uploads with progress tracking
+- Multipart uploads with parallel part uploads and progress tracking
 - Server-side encryption (AES-256)
 - Retry with exponential backoff
 """
@@ -12,8 +12,10 @@ Supports:
 import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable, List, Optional
+from threading import Lock
+from typing import Callable, List, Optional, Tuple
 
 from backup.exceptions import S3Error, ValidationError
 
@@ -24,6 +26,9 @@ MULTIPART_THRESHOLD = 5 * 1024 * 1024
 
 # Multipart chunk size (10 MB)
 MULTIPART_CHUNK_SIZE = 10 * 1024 * 1024
+
+# Maximum concurrent part uploads for multipart
+MAX_CONCURRENT_UPLOADS = 4
 
 # Maximum retry attempts
 MAX_RETRIES = 3
@@ -139,7 +144,7 @@ class S3Storage:
                     bucket=self.bucket,
                 )
 
-        return await asyncio.get_event_loop().run_in_executor(None, _check)
+        return await asyncio.get_running_loop().run_in_executor(None, _check)
 
     async def upload_file(
         self,
@@ -192,7 +197,7 @@ class S3Storage:
         for attempt in range(MAX_RETRIES):
             try:
                 await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, _upload),
+                    asyncio.get_running_loop().run_in_executor(None, _upload),
                     timeout=timeout_seconds,
                 )
                 break
@@ -230,7 +235,12 @@ class S3Storage:
         file_size: int,
         extra_args: dict,
     ) -> None:
-        """Multipart upload for large files with progress tracking."""
+        """
+        Multipart upload for large files with parallel part uploads.
+
+        Uploads parts in parallel using a thread pool to maximize throughput.
+        Progress is tracked atomically across all concurrent uploads.
+        """
         # Initiate multipart upload
         response = client.create_multipart_upload(
             Bucket=self.bucket,
@@ -239,37 +249,58 @@ class S3Storage:
         )
         upload_id = response["UploadId"]
 
-        parts = []
-        uploaded_bytes = 0
+        # Calculate parts
+        parts_info: List[Tuple[int, int, int]] = []  # (part_number, offset, size)
+        offset = 0
+        part_number = 1
+        while offset < file_size:
+            chunk_size = min(MULTIPART_CHUNK_SIZE, file_size - offset)
+            parts_info.append((part_number, offset, chunk_size))
+            offset += chunk_size
+            part_number += 1
+
+        # Thread-safe progress tracking
+        uploaded_bytes = [0]  # Use list for mutable closure
+        progress_lock = Lock()
+
+        def upload_part(part_info: Tuple[int, int, int]) -> dict:
+            """Upload a single part (runs in thread pool)."""
+            p_num, p_offset, p_size = part_info
+
+            # Read chunk from file at specific offset
+            with open(local_path, "rb") as f:
+                f.seek(p_offset)
+                chunk = f.read(p_size)
+
+            # Upload part
+            part_response = client.upload_part(
+                Bucket=self.bucket,
+                Key=key,
+                PartNumber=p_num,
+                UploadId=upload_id,
+                Body=chunk,
+            )
+
+            # Update progress atomically
+            with progress_lock:
+                uploaded_bytes[0] += len(chunk)
+                if self.progress_callback:
+                    self.progress_callback("upload", uploaded_bytes[0], file_size)
+
+            return {
+                "PartNumber": p_num,
+                "ETag": part_response["ETag"],
+            }
 
         try:
-            with open(local_path, "rb") as f:
-                part_number = 1
+            # Upload parts in parallel
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_UPLOADS) as executor:
+                # Submit all parts and collect results
+                # Parts are uploaded in parallel but we preserve order for completion
+                part_results = list(executor.map(upload_part, parts_info))
 
-                while True:
-                    chunk = f.read(MULTIPART_CHUNK_SIZE)
-                    if not chunk:
-                        break
-
-                    # Upload part
-                    part_response = client.upload_part(
-                        Bucket=self.bucket,
-                        Key=key,
-                        PartNumber=part_number,
-                        UploadId=upload_id,
-                        Body=chunk,
-                    )
-
-                    parts.append({
-                        "PartNumber": part_number,
-                        "ETag": part_response["ETag"],
-                    })
-
-                    uploaded_bytes += len(chunk)
-                    if self.progress_callback:
-                        self.progress_callback("upload", uploaded_bytes, file_size)
-
-                    part_number += 1
+            # Sort parts by part number (required for completion)
+            parts = sorted(part_results, key=lambda p: p["PartNumber"])
 
             # Complete multipart upload
             client.complete_multipart_upload(
@@ -277,6 +308,11 @@ class S3Storage:
                 Key=key,
                 UploadId=upload_id,
                 MultipartUpload={"Parts": parts},
+            )
+
+            logger.info(
+                f"Completed parallel multipart upload: {len(parts)} parts, "
+                f"{MAX_CONCURRENT_UPLOADS} concurrent workers"
             )
 
         except Exception as e:
@@ -350,7 +386,7 @@ class S3Storage:
         for attempt in range(MAX_RETRIES):
             try:
                 await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, _download),
+                    asyncio.get_running_loop().run_in_executor(None, _download),
                     timeout=timeout_seconds,
                 )
                 break
@@ -404,7 +440,7 @@ class S3Storage:
             return backups
 
         try:
-            return await asyncio.get_event_loop().run_in_executor(None, _list)
+            return await asyncio.get_running_loop().run_in_executor(None, _list)
         except Exception as e:
             raise S3Error(f"Failed to list backups: {e}", operation="list", bucket=self.bucket)
 
@@ -427,7 +463,7 @@ class S3Storage:
             client.delete_object(Bucket=self.bucket, Key=full_key)
 
         try:
-            await asyncio.get_event_loop().run_in_executor(None, _delete)
+            await asyncio.get_running_loop().run_in_executor(None, _delete)
             logger.info(f"Deleted: s3://{self.bucket}/{full_key}")
         except Exception as e:
             raise S3Error(f"Failed to delete backup: {e}", operation="delete", bucket=self.bucket)
@@ -461,7 +497,7 @@ class S3Storage:
                     bucket=self.bucket,
                 )
 
-        return await asyncio.get_event_loop().run_in_executor(None, _verify)
+        return await asyncio.get_running_loop().run_in_executor(None, _verify)
 
 
 def get_s3_storage(

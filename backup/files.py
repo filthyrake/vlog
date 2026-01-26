@@ -138,7 +138,7 @@ class FileBackupHandler:
                     except OSError as e:
                         logger.warning(f"Could not stat file {filepath}: {e}")
 
-        await asyncio.get_event_loop().run_in_executor(None, _scan)
+        await asyncio.get_running_loop().run_in_executor(None, _scan)
         return files
 
     async def get_files_to_backup(
@@ -218,7 +218,7 @@ class FileBackupHandler:
             return total_bytes, sha256.hexdigest()
 
         try:
-            return await asyncio.get_event_loop().run_in_executor(None, _copy)
+            return await asyncio.get_running_loop().run_in_executor(None, _copy)
         except OSError as e:
             raise BackupError(f"Failed to copy {source}: {e}")
 
@@ -394,7 +394,7 @@ class FileRestoreHandler:
                 return sha256.hexdigest()
 
             try:
-                actual_checksum = await asyncio.get_event_loop().run_in_executor(
+                actual_checksum = await asyncio.get_running_loop().run_in_executor(
                     None, _copy
                 )
 

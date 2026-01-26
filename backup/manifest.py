@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -21,6 +22,81 @@ logger = logging.getLogger(__name__)
 
 # Manifest version for compatibility checking
 MANIFEST_VERSION = "1.0"
+
+# Backup ID format: backup_YYYYMMDD_HHMMSS
+# Example: backup_20260126_143052
+BACKUP_ID_PATTERN = re.compile(r"^backup_\d{8}_\d{6}$")
+
+
+def validate_backup_id(backup_id: str) -> str:
+    """
+    Validate backup ID format.
+
+    Backup IDs must match the format: backup_YYYYMMDD_HHMMSS
+    Example: backup_20260126_143052
+
+    This validation prevents:
+    - Path traversal attacks (../)
+    - SQL injection via malformed IDs
+    - File system manipulation
+
+    Args:
+        backup_id: The backup ID to validate
+
+    Returns:
+        The validated backup ID (unchanged)
+
+    Raises:
+        ValidationError: If backup ID format is invalid
+    """
+    if not backup_id:
+        raise ValidationError("Backup ID cannot be empty")
+
+    if not isinstance(backup_id, str):
+        raise ValidationError(f"Backup ID must be a string, got {type(backup_id).__name__}")
+
+    # Check against pattern
+    if not BACKUP_ID_PATTERN.match(backup_id):
+        raise ValidationError(
+            f"Invalid backup ID format: '{backup_id}'. "
+            "Expected format: backup_YYYYMMDD_HHMMSS (e.g., backup_20260126_143052)"
+        )
+
+    # Additional validation: verify the date/time components are valid
+    try:
+        date_part = backup_id[7:15]  # YYYYMMDD
+        time_part = backup_id[16:22]  # HHMMSS
+
+        year = int(date_part[0:4])
+        month = int(date_part[4:6])
+        day = int(date_part[6:8])
+        hour = int(time_part[0:2])
+        minute = int(time_part[2:4])
+        second = int(time_part[4:6])
+
+        # Validate ranges
+        if not (2020 <= year <= 2100):
+            raise ValueError("Year out of reasonable range")
+        if not (1 <= month <= 12):
+            raise ValueError("Invalid month")
+        if not (1 <= day <= 31):
+            raise ValueError("Invalid day")
+        if not (0 <= hour <= 23):
+            raise ValueError("Invalid hour")
+        if not (0 <= minute <= 59):
+            raise ValueError("Invalid minute")
+        if not (0 <= second <= 59):
+            raise ValueError("Invalid second")
+
+        # Verify it can be parsed as a valid datetime
+        datetime(year, month, day, hour, minute, second)
+
+    except (ValueError, IndexError) as e:
+        raise ValidationError(
+            f"Invalid backup ID: '{backup_id}' contains invalid date/time components: {e}"
+        )
+
+    return backup_id
 
 
 class BackupType(str, Enum):
@@ -326,13 +402,18 @@ class BackupManifest:
         return True
 
 
-def compute_file_checksum(path: Path, chunk_size: int = 8192) -> str:
+# Default chunk size for checksum computation (1 MB)
+# Larger chunk size improves performance on large files by reducing read syscalls
+CHECKSUM_CHUNK_SIZE = 1024 * 1024
+
+
+def compute_file_checksum(path: Path, chunk_size: int = CHECKSUM_CHUNK_SIZE) -> str:
     """
     Compute SHA-256 checksum of a file.
 
     Args:
         path: Path to file
-        chunk_size: Read chunk size in bytes
+        chunk_size: Read chunk size in bytes (default: 1 MB for performance)
 
     Returns:
         Hex-encoded SHA-256 checksum

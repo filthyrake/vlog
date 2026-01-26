@@ -21,7 +21,7 @@ from typing import Callable, Optional
 from backup.database import get_database_handler
 from backup.exceptions import BackupError, IntegrityError, RestoreError, ValidationError
 from backup.files import FileRestoreHandler, validate_path_safe
-from backup.manifest import BackupManifest
+from backup.manifest import BackupManifest, validate_backup_id
 from backup.s3 import get_s3_storage
 from backup.verify import BackupVerifier
 
@@ -76,6 +76,7 @@ class RestoreService:
         dry_run: bool = False,
         force: bool = False,
         signing_key: Optional[str] = None,
+        accept_no_file_rollback: bool = False,
     ) -> dict:
         """
         Restore from a backup.
@@ -86,6 +87,12 @@ class RestoreService:
             dry_run: If True, only verify without restoring
             force: Skip confirmation prompts
             signing_key: Key for manifest signature verification
+            accept_no_file_rollback: Must be True when restore includes files.
+                IMPORTANT: File safety backup is NOT implemented due to the
+                potentially large size of video directories. If file restoration
+                fails partway through, there is NO automatic rollback capability.
+                Set this to True to acknowledge you understand this limitation.
+                Database-only restores have full rollback capability.
 
         Returns:
             Dict with restore results
@@ -93,8 +100,34 @@ class RestoreService:
         Raises:
             RestoreError: If restore fails
             IntegrityError: If backup verification fails
+            RestoreError: If restore includes files but accept_no_file_rollback=False
         """
         from config import BACKUP_DB_TIMEOUT, BACKUP_S3_TIMEOUT
+
+        # Validate backup ID format to prevent injection attacks
+        validate_backup_id(backup_id)
+
+        # Validate restore_type
+        if restore_type not in ("full", "database_only", "files_only"):
+            raise RestoreError(
+                f"Invalid restore_type: {restore_type}. "
+                "Must be 'full', 'database_only', or 'files_only'",
+                stage="validation",
+            )
+
+        # CRITICAL: File safety backup is not implemented due to potentially
+        # large video directories. Require explicit acknowledgment.
+        if restore_type in ("full", "files_only") and not accept_no_file_rollback:
+            raise RestoreError(
+                "File restore requested but accept_no_file_rollback=False. "
+                "WARNING: File safety backup is NOT implemented. If file restoration "
+                "fails partway through, there is NO automatic rollback capability - "
+                "some files may be overwritten with no way to recover them. "
+                "Set accept_no_file_rollback=True to proceed, or use "
+                "restore_type='database_only' for safe database-only restore with "
+                "full rollback capability.",
+                stage="validation",
+            )
 
         logger.info(f"Starting {restore_type} restore from backup {backup_id}")
         self._report_progress("init", f"Starting restore from {backup_id}")
@@ -132,15 +165,41 @@ class RestoreService:
 
             def _extract():
                 with tarfile.open(archive_path, "r:gz") as tar:
-                    # Validate all paths before extraction (security)
+                    # Security: Comprehensive validation of all archive members
+                    # Protects against CVE-2007-4559 and similar path traversal attacks
+                    safe_members = []
                     for member in tar.getmembers():
+                        # Reject path traversal attempts
                         if ".." in member.name or member.name.startswith("/"):
                             raise ValidationError(
                                 f"Unsafe path in archive: {member.name}"
                             )
-                    tar.extractall(temp_dir)
 
-            await asyncio.get_event_loop().run_in_executor(None, _extract)
+                        # Reject symlinks and hardlinks (could point outside extract dir)
+                        if member.issym() or member.islnk():
+                            raise ValidationError(
+                                f"Archive contains unsafe link: {member.name}"
+                            )
+
+                        # Reject device files and other special files
+                        if member.isdev() or member.ischr() or member.isblk() or member.isfifo():
+                            raise ValidationError(
+                                f"Archive contains unsafe special file: {member.name}"
+                            )
+
+                        # Verify resolved path stays within temp_dir
+                        target_path = (temp_dir / member.name).resolve()
+                        if not str(target_path).startswith(str(temp_dir.resolve())):
+                            raise ValidationError(
+                                f"Path escapes extraction directory: {member.name}"
+                            )
+
+                        safe_members.append(member)
+
+                    # Extract only validated members
+                    tar.extractall(temp_dir, members=safe_members)
+
+            await asyncio.get_running_loop().run_in_executor(None, _extract)
 
             # Load manifest
             manifest = BackupManifest.from_file(temp_dir / "manifest.json")
@@ -262,6 +321,24 @@ class RestoreService:
         """
         Create safety backup before restore.
 
+        IMPORTANT LIMITATION:
+        - Database safety backup: FULLY IMPLEMENTED - can rollback database on failure
+        - File safety backup: NOT IMPLEMENTED - no rollback for file operations
+
+        File safety backup is intentionally not implemented because video directories
+        can be extremely large (hundreds of GB or TB). Creating a full copy would:
+        - Require double the disk space
+        - Take hours for large collections
+        - Make restore operations impractically slow
+
+        For production use with file restoration, consider:
+        - Using filesystem snapshots (ZFS, LVM, BTRFS) before restore
+        - Using cloud storage with versioning enabled
+        - Maintaining separate offsite backups
+
+        The restore process requires explicit acknowledgment via
+        accept_no_file_rollback=True when restoring files.
+
         Returns:
             Path to safety backup directory
         """
@@ -270,16 +347,49 @@ class RestoreService:
         safety_dir = Path(tempfile.mkdtemp(prefix="safety_backup_"))
 
         if restore_type in ("full", "database_only"):
-            # Backup current database
+            # Backup current database - this provides full rollback capability
             db_handler = get_database_handler(self.database_url)
             db_file = "database.dump" if db_handler.get_database_type() == "postgresql" else "database.db.gz"
-            await db_handler.backup(safety_dir / db_file, BACKUP_DB_TIMEOUT)
-            logger.info(f"Created safety database backup")
+            safety_db_path = safety_dir / db_file
+
+            # Create the safety backup
+            size_bytes, checksum = await db_handler.backup(safety_db_path, BACKUP_DB_TIMEOUT)
+
+            # CRITICAL: Verify safety backup was created correctly before proceeding
+            # This prevents proceeding with restore when safety backup failed silently
+            if not safety_db_path.exists():
+                raise RestoreError(
+                    "Safety backup file not created - aborting restore for safety",
+                    stage="safety_backup",
+                    can_rollback=False,
+                )
+
+            actual_size = safety_db_path.stat().st_size
+            if actual_size == 0:
+                raise RestoreError(
+                    "Safety backup file is empty - aborting restore for safety",
+                    stage="safety_backup",
+                    can_rollback=False,
+                )
+
+            if actual_size != size_bytes:
+                raise RestoreError(
+                    f"Safety backup size mismatch: expected {size_bytes}, got {actual_size}",
+                    stage="safety_backup",
+                    can_rollback=False,
+                )
+
+            logger.info(
+                f"Created and verified safety database backup: {size_bytes} bytes, "
+                f"checksum {checksum[:16]}... (rollback available)"
+            )
 
         if restore_type in ("full", "files_only"):
-            # Note: For large video directories, this could take a long time
-            # In production, consider using filesystem snapshots instead
-            logger.info("Safety backup for files would be created here (not implemented for large directories)")
+            # File safety backup NOT IMPLEMENTED - user acknowledged via accept_no_file_rollback
+            logger.warning(
+                "File safety backup NOT available. If file restore fails, "
+                "manual recovery from the original backup may be required."
+            )
 
         return safety_dir
 
@@ -370,18 +480,25 @@ async def restore_backup(
     restore_type: str = "full",
     dry_run: bool = False,
     force: bool = False,
+    accept_no_file_rollback: bool = False,
 ) -> dict:
     """
     Convenience function to restore from backup.
 
     Args:
         backup_id: Backup to restore
-        restore_type: Type of restore
+        restore_type: Type of restore ("full", "database_only", "files_only")
         dry_run: Verify only
         force: Skip prompts
+        accept_no_file_rollback: Required for file restores. Acknowledges that
+            file safety backup is not implemented and there is no rollback
+            capability if file restoration fails.
 
     Returns:
         Restore result dict
+
+    Raises:
+        RestoreError: If restore includes files but accept_no_file_rollback=False
     """
     from config import BACKUP_PATH, BACKUP_SIGNING_KEY, DATABASE_URL, VIDEOS_DIR
 
@@ -397,4 +514,5 @@ async def restore_backup(
         dry_run=dry_run,
         force=force,
         signing_key=BACKUP_SIGNING_KEY or None,
+        accept_no_file_rollback=accept_no_file_rollback,
     )
