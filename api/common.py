@@ -79,6 +79,9 @@ def require_valid_slug(slug: str, resource_type: str = "resource") -> None:
     """
     Validate slug or raise HTTPException with 400 status.
 
+    Security: Prevents path traversal attacks by ensuring slug contains
+    only safe characters (lowercase alphanumeric with hyphens).
+
     Args:
         slug: The slug string to validate
         resource_type: Type of resource for error message (e.g., "video", "category")
@@ -86,8 +89,21 @@ def require_valid_slug(slug: str, resource_type: str = "resource") -> None:
     Raises:
         HTTPException: 400 error if slug is invalid
     """
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail=f"Invalid {resource_type} slug")
+    if not slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing {resource_type} slug"
+        )
+    if '..' in slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {resource_type} slug: path traversal not allowed"
+        )
+    if not SLUG_PATTERN.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {resource_type} slug: must be lowercase alphanumeric with hyphens"
+        )
 
 
 # Cache for storage health status to avoid hammering storage on every request

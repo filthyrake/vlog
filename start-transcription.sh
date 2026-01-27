@@ -4,7 +4,9 @@
 set -e  # Exit on error
 set -u  # Exit on undefined variable
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Ensure we're in the project root regardless of where script was called from
+# This is required because we use relative paths for venv and worker scripts
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Validate virtual environment exists
@@ -14,8 +16,11 @@ if [[ ! -f "$SCRIPT_DIR/venv/bin/activate" ]]; then
     exit 1
 fi
 
-source venv/bin/activate || {
+# Activate virtual environment with error capture
+activation_output=$(source venv/bin/activate 2>&1) || {
     echo "Error: Failed to activate virtual environment"
+    echo "Details: $activation_output"
+    echo "Check permissions and virtual environment integrity"
     exit 1
 }
 
@@ -26,17 +31,19 @@ if [[ ! -f "$SCRIPT_DIR/worker/transcription.py" ]]; then
 fi
 
 # Verify required modules are available
-if ! python -c "from worker.transcription import main" 2>/dev/null; then
-    echo "Error: Failed to import worker.transcription module"
+import_error=$(python -c "from worker.transcription import main" 2>&1) || {
+    echo "Error: worker.transcription module not available for import"
+    echo "Details: $import_error"
     echo "Ensure the package is installed: pip install -e ."
     exit 1
-fi
+}
 
 # Verify whisper module is installed
-if ! python -c "import whisper" 2>/dev/null; then
+whisper_error=$(python -c "import whisper" 2>&1) || {
     echo "Error: whisper module not installed"
+    echo "Details: $whisper_error"
     echo "Install with: pip install openai-whisper"
     exit 1
-fi
+}
 
 exec python worker/transcription.py "$@"
