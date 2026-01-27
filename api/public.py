@@ -39,6 +39,7 @@ from api.common import (
     get_storage_status,
     rate_limit_exceeded_handler,
     require_storage_available,
+    require_valid_slug,
     validate_slug,
 )
 from api.database import (
@@ -879,8 +880,7 @@ async def get_embed_code(request: Request, slug: str):
     - Embeds are disabled
     """
     # Validate slug format (security: prevents log injection, ensures valid input)
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Check if embeds are enabled
     embed_settings = await get_embed_settings()
@@ -1670,8 +1670,7 @@ async def get_videos_bulk(
 async def get_video(request: Request, slug: str) -> VideoResponse:
     """Get a single video by slug."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     query = (
         sa.select(
@@ -1795,8 +1794,7 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
 async def get_video_progress(request: Request, slug: str) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
@@ -1862,8 +1860,7 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
 async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
@@ -1982,8 +1979,7 @@ async def _find_related_videos_for_slug(
         HTTPException: If video not found (404)
     """
     # Validate slug
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Get the source video with its category
     video_query = (
@@ -2278,8 +2274,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
 async def get_category(request: Request, slug: str) -> CategoryResponse:
     """Get a single category by slug."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid category slug")
+    require_valid_slug(slug, "category")
 
     query = categories.select().where(categories.c.slug == slug)
     row = await fetch_one_with_retry(query)
@@ -2346,8 +2341,7 @@ async def list_tags(request: Request) -> List[TagResponse]:
 async def get_tag(request: Request, slug: str) -> TagResponse:
     """Get a single tag by slug."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid tag slug")
+    require_valid_slug(slug, "tag")
 
     query = tags.select().where(tags.c.slug == slug)
     row = await fetch_one_with_retry(query)
@@ -2480,8 +2474,7 @@ async def list_public_playlists(
 async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResponse:
     """Get a public playlist by slug with its videos."""
     # Validate slug
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+    require_valid_slug(slug, "playlist")
 
     # Get playlist (only public or unlisted)
     playlist = await fetch_one_with_retry(
@@ -2552,8 +2545,7 @@ async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResp
 async def get_public_playlist_videos(request: Request, slug: str) -> List[PlaylistVideoInfo]:
     """Get videos in a public playlist."""
     # Validate slug
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+    require_valid_slug(slug, "playlist")
 
     # Get playlist (only public or unlisted)
     playlist = await fetch_one_with_retry(
@@ -3336,8 +3328,7 @@ async def download_original(
     client_ip = get_real_ip(request)
 
     # Validate slug
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Check download settings
     settings = await get_download_settings()
@@ -3636,8 +3627,7 @@ async def get_video_by_slug(slug: str) -> dict:
 
     Returns the video row or raises 404.
     """
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     video_query = (
         videos.select()
