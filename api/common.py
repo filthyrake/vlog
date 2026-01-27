@@ -82,6 +82,10 @@ def require_valid_slug(slug: str, resource_type: str = "resource") -> None:
     Security: Prevents path traversal attacks by ensuring slug contains
     only safe characters (lowercase alphanumeric with hyphens).
 
+    Note: This function intentionally duplicates validate_slug() logic to provide
+    specific error messages for each failure case (missing, path traversal, format).
+    This improves API usability by helping clients understand exactly what's wrong.
+
     Args:
         slug: The slug string to validate
         resource_type: Type of resource for error message (e.g., "video", "category")
