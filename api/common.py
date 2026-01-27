@@ -10,13 +10,14 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -72,6 +73,21 @@ def validate_slug(slug: str) -> bool:
         return False
     # Check against allowed pattern
     return bool(SLUG_PATTERN.match(slug))
+
+
+def require_valid_slug(slug: str, resource_type: str = "resource") -> None:
+    """
+    Validate slug or raise HTTPException with 400 status.
+
+    Args:
+        slug: The slug string to validate
+        resource_type: Type of resource for error message (e.g., "video", "category")
+
+    Raises:
+        HTTPException: 400 error if slug is invalid
+    """
+    if not validate_slug(slug):
+        raise HTTPException(status_code=400, detail=f"Invalid {resource_type} slug")
 
 
 # Cache for storage health status to avoid hammering storage on every request
@@ -182,7 +198,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     - Automatic inclusion of request context in structured JSON logs (Issue #208)
     """
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Defensive: clear any leaked context from previous request
         clear_request_context()
 
@@ -232,7 +248,7 @@ def get_request_id(request: Request) -> Optional[str]:
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all responses."""
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         response = await call_next(request)
         # Prevent clickjacking (skip for embed pages - they use CSP frame-ancestors)
         if not request.url.path.startswith("/embed/"):

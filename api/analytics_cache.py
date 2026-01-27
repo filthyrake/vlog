@@ -18,6 +18,16 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
+# Cache configuration constants
+DEFAULT_CACHE_TTL_SECONDS = 60  # Default time-to-live for cache entries
+DEFAULT_CACHE_MAX_SIZE = 1000  # Maximum entries before triggering eviction
+CACHE_EVICTION_DIVISOR = 10  # Evict 1/10th of cache when full (10%)
+
+# Redis connection constants
+REDIS_SOCKET_TIMEOUT = 5.0  # Timeout for Redis socket operations
+REDIS_CONNECT_TIMEOUT = 5.0  # Timeout for establishing Redis connection
+REDIS_SCAN_BATCH_SIZE = 100  # Number of keys to scan per iteration
+
 
 class AnalyticsCache:
     """
@@ -30,7 +40,7 @@ class AnalyticsCache:
 
     CLEANUP_PROBABILITY = 0.01  # 1% chance of cleanup on each set operation
 
-    def __init__(self, ttl_seconds: int = 60, enabled: bool = True, max_size: int = 1000):
+    def __init__(self, ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS, enabled: bool = True, max_size: int = DEFAULT_CACHE_MAX_SIZE):
         """
         Initialize the cache.
 
@@ -94,7 +104,7 @@ class AnalyticsCache:
             # and TTL expiration. For default max_size of 1000, performance is acceptable.
             if len(self._cache) >= self._max_size:
                 items = sorted(self._cache.items(), key=lambda x: x[1]["timestamp"])
-                evict_count = max(1, len(items) // 10)
+                evict_count = max(1, len(items) // CACHE_EVICTION_DIVISOR)
                 for k, _ in items[:evict_count]:
                     del self._cache[k]
 
@@ -166,7 +176,7 @@ class RedisAnalyticsCache:
     def __init__(
         self,
         redis_url: str,
-        ttl_seconds: int = 60,
+        ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
         enabled: bool = True,
     ):
         """
@@ -192,8 +202,8 @@ class RedisAnalyticsCache:
             import redis  # Lazy import
             self._client = redis.Redis.from_url(
                 self._redis_url,
-                socket_timeout=5.0,
-                socket_connect_timeout=5.0,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
                 decode_responses=True,
             )
             # Test connection
@@ -267,7 +277,7 @@ class RedisAnalyticsCache:
             cursor = 0
             pattern = f"{self.CACHE_KEY_PREFIX}*"
             while True:
-                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                cursor, keys = self._client.scan(cursor, match=pattern, count=REDIS_SCAN_BATCH_SIZE)
                 if keys:
                     self._client.delete(*keys)
                 if cursor == 0:
@@ -312,7 +322,7 @@ class RedisAnalyticsCache:
             cursor = 0
             pattern = f"{self.CACHE_KEY_PREFIX}*"
             while True:
-                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                cursor, keys = self._client.scan(cursor, match=pattern, count=REDIS_SCAN_BATCH_SIZE)
                 entry_count += len(keys)
                 if cursor == 0:
                     break
@@ -336,9 +346,9 @@ AnalyticsCacheType = Union[AnalyticsCache, RedisAnalyticsCache]
 
 def create_analytics_cache(
     storage_url: str = "memory://",
-    ttl_seconds: int = 60,
+    ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
     enabled: bool = True,
-    max_size: int = 1000,
+    max_size: int = DEFAULT_CACHE_MAX_SIZE,
 ) -> AnalyticsCacheType:
     """
     Factory function to create the appropriate analytics cache implementation.
