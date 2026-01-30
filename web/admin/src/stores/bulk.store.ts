@@ -40,8 +40,6 @@ export interface BulkActions {
   clearSelection(): void;
   toggleVideoSelection(videoId: number): void;
   isSelected(videoId: number): boolean;
-  hasSelectedVideos(): boolean;
-  hasDeletedSelectedVideos(videos: Video[]): boolean;
 
   // Bulk delete
   openBulkDeleteModal(): void;
@@ -66,12 +64,6 @@ export interface BulkActions {
   closeBulkCustomFieldsModal(): void;
   bulkUpdateCustomFields(): Promise<void>;
   toggleBulkMultiSelectOption(fieldId: string, option: string): void;
-
-  // Aliases for template compatibility
-  executeBulkDelete(): Promise<void>;
-  executeBulkUpdate(): Promise<void>;
-  executeBulkRetranscode(): Promise<void>;
-  executeBulkCustomFields(): Promise<void>;
 }
 
 export type BulkStore = BulkState & BulkActions;
@@ -131,17 +123,6 @@ export function createBulkStore(): BulkStore {
 
     isSelected(videoId: number): boolean {
       return this.selectedVideos.includes(videoId);
-    },
-
-    hasSelectedVideos(): boolean {
-      return this.selectedVideos.length > 0;
-    },
-
-    hasDeletedSelectedVideos(videos: Video[]): boolean {
-      return this.selectedVideos.some((id) => {
-        const video = videos.find((v) => v.id === id);
-        return video?.deleted_at;
-      });
     },
 
     // ===========================================================================
@@ -376,26 +357,6 @@ export function createBulkStore(): BulkStore {
         (current as string[]).push(option);
       }
       this.bulkCustomFieldValues[fieldId] = [...(current as string[])];
-    },
-
-    // ===========================================================================
-    // Aliases for template compatibility
-    // ===========================================================================
-
-    async executeBulkDelete(): Promise<void> {
-      return this.bulkDeleteVideos();
-    },
-
-    async executeBulkUpdate(): Promise<void> {
-      return this.bulkUpdateVideos();
-    },
-
-    async executeBulkRetranscode(): Promise<void> {
-      return this.bulkRetranscodeVideos();
-    },
-
-    async executeBulkCustomFields(): Promise<void> {
-      return this.bulkUpdateCustomFields();
     },
   };
 }

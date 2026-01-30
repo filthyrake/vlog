@@ -44,10 +44,9 @@ export interface BaseStore {
 /**
  * Tab identifiers for the admin UI
  */
-export type AdminTab = 'videos' | 'categories' | 'playlists' | 'upload' | 'workers' | 'analytics' | 'settings' | 'profile' | 'users';
+export type AdminTab = 'videos' | 'categories' | 'playlists' | 'upload' | 'workers' | 'analytics' | 'settings';
 
 /**
  * Settings sub-tabs
- * Note: Dynamic category tabs (from settingsCategories) are also valid as string values
  */
-export type SettingsTab = 'branding' | 'watermark' | 'custom_fields' | string;
+export type SettingsTab = 'watermark' | 'custom-fields' | 'database';

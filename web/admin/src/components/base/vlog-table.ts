@@ -3,7 +3,6 @@
  *
  * A data-driven table with sorting, selection, and responsive behavior.
  * Supports custom cell rendering via slots.
- * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-table
@@ -14,232 +13,6 @@
  *   @row-select="handleSelect"
  * ></vlog-table>
  */
-
-// CSS extracted for constructable stylesheets (CSP-compliant)
-const styles = `
-  :host {
-    display: block;
-  }
-
-  :host([hidden]) {
-    display: none;
-  }
-
-  .table-wrapper {
-    width: 100%;
-    overflow-x: auto;
-    background-color: var(--vlog-bg-secondary, #0f172a);
-    border: 1px solid var(--vlog-border-primary, #334155);
-    border-radius: var(--vlog-radius-xl, 0.75rem);
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--vlog-font-sans, system-ui, sans-serif);
-  }
-
-  /* Header */
-  thead {
-    background-color: var(--vlog-bg-tertiary, #1e293b);
-  }
-
-  th {
-    padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-4, 1rem);
-    font-size: var(--vlog-text-sm, 0.875rem);
-    font-weight: var(--vlog-font-semibold, 600);
-    color: var(--vlog-text-secondary, #cbd5e1);
-    text-align: left;
-    white-space: nowrap;
-    border-bottom: 1px solid var(--vlog-border-primary, #334155);
-  }
-
-  th.align-center {
-    text-align: center;
-  }
-
-  th.align-right {
-    text-align: right;
-  }
-
-  /* Sortable header */
-  .sortable-header {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--vlog-space-1, 0.25rem);
-    padding: var(--vlog-space-1, 0.25rem) var(--vlog-space-2, 0.5rem);
-    margin: calc(-1 * var(--vlog-space-1, 0.25rem)) calc(-1 * var(--vlog-space-2, 0.5rem));
-    border: none;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-    border-radius: var(--vlog-radius-md, 0.375rem);
-    transition: var(--vlog-transition-colors);
-  }
-
-  .sortable-header:hover {
-    background-color: var(--vlog-bg-elevated, #334155);
-    color: var(--vlog-text-primary, #f1f5f9);
-  }
-
-  .sortable-header:focus-visible {
-    outline: none;
-    box-shadow:
-      0 0 0 var(--vlog-focus-ring-offset, 2px) var(--vlog-bg-tertiary, #1e293b),
-      0 0 0 calc(var(--vlog-focus-ring-offset, 2px) + var(--vlog-focus-ring-width, 2px)) var(--vlog-focus-ring-color, #3b82f6);
-  }
-
-  .sort-icon {
-    width: 1rem;
-    height: 1rem;
-    opacity: 0.5;
-    transition: opacity var(--vlog-transition-fast, 150ms ease);
-  }
-
-  .sortable-header:hover .sort-icon,
-  .sort-icon.active {
-    opacity: 1;
-  }
-
-  .sort-icon.desc {
-    transform: rotate(180deg);
-  }
-
-  /* Checkbox column */
-  .checkbox-cell {
-    width: 3rem;
-    text-align: center;
-  }
-
-  .row-checkbox {
-    width: 1rem;
-    height: 1rem;
-    accent-color: var(--vlog-primary, #3b82f6);
-    cursor: pointer;
-  }
-
-  .row-checkbox:focus-visible {
-    outline: none;
-    box-shadow:
-      0 0 0 var(--vlog-focus-ring-offset, 2px) var(--vlog-bg-secondary, #0f172a),
-      0 0 0 calc(var(--vlog-focus-ring-offset, 2px) + var(--vlog-focus-ring-width, 2px)) var(--vlog-focus-ring-color, #3b82f6);
-  }
-
-  /* Body */
-  tbody tr {
-    border-bottom: 1px solid var(--vlog-border-secondary, #1e293b);
-    transition: background-color var(--vlog-transition-fast, 150ms ease);
-  }
-
-  tbody tr:last-child {
-    border-bottom: none;
-  }
-
-  .hoverable tbody tr:hover {
-    background-color: var(--vlog-bg-tertiary, #1e293b);
-  }
-
-  tbody tr.selected {
-    background-color: var(--vlog-bg-selected, rgba(59, 130, 246, 0.15));
-  }
-
-  tbody tr:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 2px var(--vlog-focus-ring-color, #3b82f6);
-  }
-
-  .striped tbody tr:nth-child(even) {
-    background-color: var(--vlog-bg-tertiary, #1e293b);
-  }
-
-  .striped tbody tr:nth-child(even).selected {
-    background-color: var(--vlog-bg-selected, rgba(59, 130, 246, 0.15));
-  }
-
-  td {
-    padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-4, 1rem);
-    font-size: var(--vlog-text-sm, 0.875rem);
-    color: var(--vlog-text-primary, #f1f5f9);
-    vertical-align: middle;
-  }
-
-  td.align-center {
-    text-align: center;
-  }
-
-  td.align-right {
-    text-align: right;
-  }
-
-  /* Empty state */
-  .empty-state {
-    padding: var(--vlog-space-12, 3rem) var(--vlog-space-6, 1.5rem);
-    text-align: center;
-  }
-
-  .empty-message {
-    font-size: var(--vlog-text-sm, 0.875rem);
-    color: var(--vlog-text-tertiary, #94a3b8);
-  }
-
-  /* Loading state */
-  .loading-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background-color: rgba(2, 6, 23, 0.7);
-    border-radius: var(--vlog-radius-xl, 0.75rem);
-  }
-
-  .loading-spinner {
-    width: 2rem;
-    height: 2rem;
-    border: 2px solid var(--vlog-border-primary, #334155);
-    border-top-color: var(--vlog-primary, #3b82f6);
-    border-radius: 50%;
-    animation: spin 0.75s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .table-container {
-    position: relative;
-  }
-
-  /* Screen reader announcements */
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border-width: 0;
-  }
-
-  /* Clickable rows */
-  tbody tr.clickable {
-    cursor: pointer;
-  }
-
-  /* CSP-compliant visibility control */
-  .hidden {
-    display: none !important;
-  }
-`;
-
-// Create constructable stylesheet (CSP-compliant)
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
 
 export interface TableColumn {
   key: string;
@@ -255,9 +28,224 @@ export interface TableRow {
   [key: string]: unknown;
 }
 
-// HTML template without styles (styles applied via adoptedStyleSheets)
 const template = document.createElement('template');
 template.innerHTML = `
+  <style>
+    :host {
+      display: block;
+    }
+
+    :host([hidden]) {
+      display: none;
+    }
+
+    .table-wrapper {
+      width: 100%;
+      overflow-x: auto;
+      background-color: var(--vlog-bg-secondary, #0f172a);
+      border: 1px solid var(--vlog-border-primary, #334155);
+      border-radius: var(--vlog-radius-xl, 0.75rem);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--vlog-font-sans, system-ui, sans-serif);
+    }
+
+    /* Header */
+    thead {
+      background-color: var(--vlog-bg-tertiary, #1e293b);
+    }
+
+    th {
+      padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-4, 1rem);
+      font-size: var(--vlog-text-sm, 0.875rem);
+      font-weight: var(--vlog-font-semibold, 600);
+      color: var(--vlog-text-secondary, #cbd5e1);
+      text-align: left;
+      white-space: nowrap;
+      border-bottom: 1px solid var(--vlog-border-primary, #334155);
+    }
+
+    th.align-center {
+      text-align: center;
+    }
+
+    th.align-right {
+      text-align: right;
+    }
+
+    /* Sortable header */
+    .sortable-header {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--vlog-space-1, 0.25rem);
+      padding: var(--vlog-space-1, 0.25rem) var(--vlog-space-2, 0.5rem);
+      margin: calc(-1 * var(--vlog-space-1, 0.25rem)) calc(-1 * var(--vlog-space-2, 0.5rem));
+      border: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+      border-radius: var(--vlog-radius-md, 0.375rem);
+      transition: var(--vlog-transition-colors);
+    }
+
+    .sortable-header:hover {
+      background-color: var(--vlog-bg-elevated, #334155);
+      color: var(--vlog-text-primary, #f1f5f9);
+    }
+
+    .sortable-header:focus-visible {
+      outline: none;
+      box-shadow:
+        0 0 0 var(--vlog-focus-ring-offset, 2px) var(--vlog-bg-tertiary, #1e293b),
+        0 0 0 calc(var(--vlog-focus-ring-offset, 2px) + var(--vlog-focus-ring-width, 2px)) var(--vlog-focus-ring-color, #3b82f6);
+    }
+
+    .sort-icon {
+      width: 1rem;
+      height: 1rem;
+      opacity: 0.5;
+      transition: opacity var(--vlog-transition-fast, 150ms ease);
+    }
+
+    .sortable-header:hover .sort-icon,
+    .sort-icon.active {
+      opacity: 1;
+    }
+
+    .sort-icon.desc {
+      transform: rotate(180deg);
+    }
+
+    /* Checkbox column */
+    .checkbox-cell {
+      width: 3rem;
+      text-align: center;
+    }
+
+    .row-checkbox {
+      width: 1rem;
+      height: 1rem;
+      accent-color: var(--vlog-primary, #3b82f6);
+      cursor: pointer;
+    }
+
+    .row-checkbox:focus-visible {
+      outline: none;
+      box-shadow:
+        0 0 0 var(--vlog-focus-ring-offset, 2px) var(--vlog-bg-secondary, #0f172a),
+        0 0 0 calc(var(--vlog-focus-ring-offset, 2px) + var(--vlog-focus-ring-width, 2px)) var(--vlog-focus-ring-color, #3b82f6);
+    }
+
+    /* Body */
+    tbody tr {
+      border-bottom: 1px solid var(--vlog-border-secondary, #1e293b);
+      transition: background-color var(--vlog-transition-fast, 150ms ease);
+    }
+
+    tbody tr:last-child {
+      border-bottom: none;
+    }
+
+    .hoverable tbody tr:hover {
+      background-color: var(--vlog-bg-tertiary, #1e293b);
+    }
+
+    tbody tr.selected {
+      background-color: var(--vlog-bg-selected, rgba(59, 130, 246, 0.15));
+    }
+
+    tbody tr:focus-visible {
+      outline: none;
+      box-shadow: inset 0 0 0 2px var(--vlog-focus-ring-color, #3b82f6);
+    }
+
+    .striped tbody tr:nth-child(even) {
+      background-color: var(--vlog-bg-tertiary, #1e293b);
+    }
+
+    .striped tbody tr:nth-child(even).selected {
+      background-color: var(--vlog-bg-selected, rgba(59, 130, 246, 0.15));
+    }
+
+    td {
+      padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-4, 1rem);
+      font-size: var(--vlog-text-sm, 0.875rem);
+      color: var(--vlog-text-primary, #f1f5f9);
+      vertical-align: middle;
+    }
+
+    td.align-center {
+      text-align: center;
+    }
+
+    td.align-right {
+      text-align: right;
+    }
+
+    /* Empty state */
+    .empty-state {
+      padding: var(--vlog-space-12, 3rem) var(--vlog-space-6, 1.5rem);
+      text-align: center;
+    }
+
+    .empty-message {
+      font-size: var(--vlog-text-sm, 0.875rem);
+      color: var(--vlog-text-tertiary, #94a3b8);
+    }
+
+    /* Loading state */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: rgba(2, 6, 23, 0.7);
+      border-radius: var(--vlog-radius-xl, 0.75rem);
+    }
+
+    .loading-spinner {
+      width: 2rem;
+      height: 2rem;
+      border: 2px solid var(--vlog-border-primary, #334155);
+      border-top-color: var(--vlog-primary, #3b82f6);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .table-container {
+      position: relative;
+    }
+
+    /* Screen reader announcements */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border-width: 0;
+    }
+
+    /* Clickable rows */
+    tbody tr.clickable {
+      cursor: pointer;
+    }
+  </style>
+
   <div class="table-container" part="container">
     <div class="table-wrapper" part="wrapper">
       <table role="grid" aria-label="Data table" part="table">
@@ -266,13 +254,13 @@ template.innerHTML = `
         </thead>
         <tbody part="tbody"></tbody>
       </table>
-      <div class="empty-state hidden">
+      <div class="empty-state" style="display: none;">
         <slot name="empty">
           <p class="empty-message">No data available</p>
         </slot>
       </div>
     </div>
-    <div class="loading-overlay hidden">
+    <div class="loading-overlay" style="display: none;">
       <div class="loading-spinner"></div>
     </div>
     <div class="sr-only" aria-live="polite" aria-atomic="true"></div>
@@ -302,9 +290,6 @@ export class VlogTable extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-
-    // Use adoptedStyleSheets for CSP compliance
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.tableWrapper = this.shadowRoot!.querySelector('.table-wrapper')!;
@@ -340,7 +325,7 @@ export class VlogTable extends HTMLElement {
       this._sortDirection = (newValue as 'asc' | 'desc') || 'asc';
       this.updateSortIndicators();
     } else if (name === 'loading') {
-      this.loadingOverlay.classList.toggle('hidden', newValue === null);
+      this.loadingOverlay.style.display = newValue !== null ? 'flex' : 'none';
     } else {
       this.updateTableClasses();
     }
@@ -384,8 +369,9 @@ export class VlogTable extends HTMLElement {
       const th = document.createElement('th');
       th.setAttribute('scope', 'col');
 
-      // Note: Column width is handled via CSS variables or utility classes
-      // for CSP compliance. Use :host([column-key="name"]) { width: X } in custom CSS
+      if (column.width) {
+        th.style.width = column.width;
+      }
 
       if (column.align) {
         th.classList.add(`align-${column.align}`);
@@ -503,8 +489,8 @@ export class VlogTable extends HTMLElement {
 
   private updateEmptyState() {
     const isEmpty = this._data.length === 0;
-    this.emptyState.classList.toggle('hidden', !isEmpty);
-    this.table.classList.toggle('hidden', isEmpty);
+    this.emptyState.style.display = isEmpty ? 'block' : 'none';
+    this.table.style.display = isEmpty ? 'none' : 'table';
   }
 
   private updateSortIndicators() {

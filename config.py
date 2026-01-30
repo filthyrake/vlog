@@ -217,43 +217,6 @@ ARCHIVE_RETENTION_DAYS = get_int_env("VLOG_ARCHIVE_RETENTION_DAYS", 30, min_val=
 PUBLIC_PORT = get_int_env("VLOG_PUBLIC_PORT", 9000, min_val=1, max_val=65535)
 ADMIN_PORT = get_int_env("VLOG_ADMIN_PORT", 9001, min_val=1, max_val=65535)
 
-# =============================================================================
-# API Versioning Configuration (Issue #218)
-# Supports versioned API routes (e.g., /api/v1/videos) and OpenAPI documentation
-# =============================================================================
-
-# Current API version (used in route prefixes and documentation)
-# Changing this does NOT affect existing routes - it only sets the "current" version marker
-API_VERSION = os.getenv("VLOG_API_VERSION", "v1")
-
-# List of supported API versions (for documentation and deprecation notices)
-# Versions listed here will have routes registered and documentation generated
-API_SUPPORTED_VERSIONS = ["v1"]
-
-# Enable deprecation notices for older API versions
-# When True, deprecated versions include Deprecation and Sunset headers
-API_DEPRECATION_NOTICE = os.getenv("VLOG_API_DEPRECATION_NOTICE", "true").lower() in ("true", "1", "yes")
-
-# Sunset date for deprecated API versions (ISO 8601 format)
-# Leave empty to not include Sunset header
-API_DEPRECATION_SUNSET = os.getenv("VLOG_API_DEPRECATION_SUNSET", "")
-
-# Include legacy unversioned routes (/api/videos) that alias to current version
-# Set to false to require explicit version in all API requests
-API_INCLUDE_LEGACY_ROUTES = os.getenv("VLOG_API_INCLUDE_LEGACY_ROUTES", "true").lower() in ("true", "1", "yes")
-
-# OpenAPI documentation customization
-OPENAPI_TITLE = os.getenv("VLOG_OPENAPI_TITLE", "VLog API")
-OPENAPI_DESCRIPTION = os.getenv(
-    "VLOG_OPENAPI_DESCRIPTION",
-    "Self-hosted video platform API with versioned endpoints",
-)
-OPENAPI_TERMS_OF_SERVICE = os.getenv("VLOG_OPENAPI_TERMS_OF_SERVICE", "")
-OPENAPI_CONTACT_NAME = os.getenv("VLOG_OPENAPI_CONTACT_NAME", "")
-OPENAPI_CONTACT_EMAIL = os.getenv("VLOG_OPENAPI_CONTACT_EMAIL", "")
-OPENAPI_LICENSE_NAME = os.getenv("VLOG_OPENAPI_LICENSE_NAME", "")
-OPENAPI_LICENSE_URL = os.getenv("VLOG_OPENAPI_LICENSE_URL", "")
-
 # Transcoding quality presets (YouTube-style)
 QUALITY_PRESETS = [
     {"name": "2160p", "height": 2160, "bitrate": "15000k", "audio_bitrate": "192k"},
@@ -343,88 +306,14 @@ WORKER_API_KEY = os.getenv("VLOG_WORKER_API_KEY", "")
 # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
 WORKER_ADMIN_SECRET = os.getenv("VLOG_WORKER_ADMIN_SECRET", "")
 
-# Admin API secret for authentication (#234) - DEPRECATED
-# This is the legacy single-admin secret. Use user authentication (Issue #200) instead.
-# When set AND no users exist, enables legacy admin mode for backward compatibility.
+# Admin API secret for authentication (#234)
+# When set, all /api/ endpoints on the Admin API require X-Admin-Secret header
+# If empty/unset, Admin API endpoints are unauthenticated (for backwards compatibility)
 # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
 ADMIN_API_SECRET = os.getenv("VLOG_ADMIN_API_SECRET", "")
 # Session expiry for admin UI (hours). Sessions are stored server-side with HTTP-only cookies.
 # See: https://github.com/filthyrake/vlog/issues/324
 ADMIN_SESSION_EXPIRY_HOURS = get_int_env("VLOG_ADMIN_SESSION_EXPIRY_HOURS", 24, min_val=1)
-
-# =============================================================================
-# User Authentication Configuration (Issue #200)
-# Multi-user authentication with session-based browser auth, API keys, and RBAC
-# =============================================================================
-
-# Session Secret Key (REQUIRED in production)
-# Used for signing session tokens and CSRF tokens.
-# MUST be set in production - startup fails if not configured.
-# Generate with: openssl rand -base64 32
-SESSION_SECRET_KEY = os.getenv("VLOG_SESSION_SECRET_KEY", "")
-
-# Session expiry settings
-USER_SESSION_EXPIRY_HOURS = get_int_env("VLOG_SESSION_EXPIRY_HOURS", 24, min_val=1)
-USER_REFRESH_TOKEN_EXPIRY_DAYS = get_int_env("VLOG_REFRESH_EXPIRY_DAYS", 7, min_val=1)
-
-# Session grace period (seconds) - allow expired sessions briefly during refresh
-USER_SESSION_GRACE_SECONDS = get_int_env("VLOG_SESSION_GRACE_SECONDS", 30, min_val=0, max_val=300)
-
-# Maximum concurrent sessions per user
-USER_MAX_SESSIONS = get_int_env("VLOG_MAX_SESSIONS_PER_USER", 10, min_val=1, max_val=100)
-
-# Registration mode: "invite" (default), "open", or "disabled"
-# - invite: Users can only register via admin-generated invite links
-# - open: Anyone can register (use with caution)
-# - disabled: No new registrations allowed
-REGISTRATION_MODE = os.getenv("VLOG_REGISTRATION_MODE", "invite")
-
-# Invite expiry (days)
-INVITE_EXPIRY_DAYS = get_int_env("VLOG_INVITE_EXPIRY_DAYS", 7, min_val=1, max_val=90)
-
-# Password policy
-PASSWORD_MIN_LENGTH = get_int_env("VLOG_PASSWORD_MIN_LENGTH", 12, min_val=8, max_val=128)
-
-# Brute force protection
-LOGIN_LOCKOUT_THRESHOLD = get_int_env("VLOG_LOCKOUT_THRESHOLD", 5, min_val=1, max_val=20)
-LOGIN_LOCKOUT_DURATION_MINUTES = get_int_env("VLOG_LOCKOUT_DURATION_MINUTES", 30, min_val=1, max_val=1440)
-
-# Password reset token expiry (hours)
-PASSWORD_RESET_EXPIRY_HOURS = get_int_env("VLOG_PASSWORD_RESET_EXPIRY_HOURS", 1, min_val=1, max_val=24)
-
-# =============================================================================
-# OIDC Configuration (Issue #200)
-# Generic OpenID Connect for self-hosted identity providers
-# =============================================================================
-
-# Enable/disable OIDC authentication
-OIDC_ENABLED = os.getenv("VLOG_OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
-
-# Display name for OIDC provider (shown on login button)
-OIDC_PROVIDER_NAME = os.getenv("VLOG_OIDC_PROVIDER_NAME", "SSO")
-
-# OIDC Discovery URL (e.g., https://keycloak.example.com/realms/vlog/.well-known/openid-configuration)
-OIDC_DISCOVERY_URL = os.getenv("VLOG_OIDC_DISCOVERY_URL", "")
-
-# OIDC Client credentials
-OIDC_CLIENT_ID = os.getenv("VLOG_OIDC_CLIENT_ID", "")
-OIDC_CLIENT_SECRET = os.getenv("VLOG_OIDC_CLIENT_SECRET", "")
-
-# OIDC Scopes (comma-separated)
-OIDC_SCOPES = os.getenv("VLOG_OIDC_SCOPES", "openid,profile,email")
-
-# Auto-create users on first OIDC login
-OIDC_AUTO_CREATE_USERS = os.getenv("VLOG_OIDC_AUTO_CREATE_USERS", "false").lower() in ("true", "1", "yes")
-
-# Default role for auto-created OIDC users
-OIDC_DEFAULT_ROLE = os.getenv("VLOG_OIDC_DEFAULT_ROLE", "viewer")
-
-# OIDC request timeout (seconds)
-OIDC_TIMEOUT_SECONDS = get_int_env("VLOG_OIDC_TIMEOUT_SECONDS", 10, min_val=1, max_val=60)
-
-# OIDC state expiry (minutes)
-OIDC_STATE_EXPIRY_MINUTES = get_int_env("VLOG_OIDC_STATE_EXPIRY_MINUTES", 10, min_val=1, max_val=30)
-
 WORKER_HEARTBEAT_INTERVAL = get_int_env("VLOG_WORKER_HEARTBEAT_INTERVAL", 30, min_val=1)
 WORKER_CLAIM_DURATION_MINUTES = get_int_env("VLOG_WORKER_CLAIM_DURATION", 30, min_val=1)
 WORKER_POLL_INTERVAL = get_int_env("VLOG_WORKER_POLL_INTERVAL", 10, min_val=1)
@@ -473,44 +362,14 @@ MAX_HLS_SINGLE_FILE_SIZE = get_int_env("VLOG_MAX_HLS_SINGLE_FILE_SIZE", 500 * 10
 _cors_origins_env = os.getenv("VLOG_CORS_ORIGINS", "")
 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
 
-# Admin API CORS configuration
-# Default: Empty list (same-origin only) for defense-in-depth security (Issue #433)
-# Only set this if you access admin UI from a different hostname than the API
-# Example: VLOG_ADMIN_CORS_ORIGINS=http://192.168.1.100:3000,http://devbox.local:3000
+# For admin API - internal only, not exposed externally
+# Defaults to allow all origins since it's behind firewall/not public
 _admin_cors_env = os.getenv("VLOG_ADMIN_CORS_ORIGINS", "")
-ADMIN_CORS_ALLOWED_ORIGINS = [origin.strip() for origin in _admin_cors_env.split(",") if origin.strip()]
-
-# Validate CORS origins format (fail fast with clear errors)
-def _validate_cors_origins(origins: list, var_name: str) -> None:
-    """Validate CORS origin format at startup."""
-    has_wildcard = "*" in origins
-    has_specific = any(o != "*" for o in origins)
-
-    # Warn about mixing wildcard with specific origins (breaks credentials/session auth)
-    if has_wildcard and has_specific:
-        logger.warning(
-            f"{var_name} contains '*' mixed with specific origins. "
-            "This disables credentials (session auth won't work). "
-            "Use '*' alone or specific origins only."
-        )
-
-    for origin in origins:
-        if origin == "*":
-            continue
-        # Check for common mistakes
-        if not origin.startswith(("http://", "https://")):
-            raise ValueError(
-                f"Invalid CORS origin in {var_name}: '{origin}' - "
-                "must start with http:// or https:// (e.g., http://192.168.1.100:3000)"
-            )
-        if origin.endswith("/"):
-            raise ValueError(
-                f"Invalid CORS origin in {var_name}: '{origin}' - "
-                "must not have trailing slash"
-            )
-
-_validate_cors_origins(CORS_ALLOWED_ORIGINS, "VLOG_CORS_ORIGINS")
-_validate_cors_origins(ADMIN_CORS_ALLOWED_ORIGINS, "VLOG_ADMIN_CORS_ORIGINS")
+ADMIN_CORS_ALLOWED_ORIGINS = (
+    [origin.strip() for origin in _admin_cors_env.split(",") if origin.strip()]
+    if _admin_cors_env
+    else ["*"]  # Admin is internal-only, allow all origins by default
+)
 
 # Rate Limiting Configuration
 # Set to "0" or "false" to disable rate limiting entirely
@@ -530,12 +389,6 @@ RATE_LIMIT_ADMIN_UPLOAD = os.getenv("VLOG_RATE_LIMIT_ADMIN_UPLOAD", "10/hour")
 RATE_LIMIT_WORKER_DEFAULT = os.getenv("VLOG_RATE_LIMIT_WORKER_DEFAULT", "300/minute")
 RATE_LIMIT_WORKER_REGISTER = os.getenv("VLOG_RATE_LIMIT_WORKER_REGISTER", "5/hour")
 RATE_LIMIT_WORKER_PROGRESS = os.getenv("VLOG_RATE_LIMIT_WORKER_PROGRESS", "600/minute")
-
-# Live ingest API limits (per stream key, not per IP since authenticated)
-# 300 segments/minute is ~5 segments/second which covers 4-second segments with margin
-RATE_LIMIT_LIVE_SEGMENT = os.getenv("VLOG_RATE_LIMIT_LIVE_SEGMENT", "300/minute")
-# Global per-IP limit to prevent flood attacks via multiple stream keys
-RATE_LIMIT_LIVE_GLOBAL = os.getenv("VLOG_RATE_LIMIT_LIVE_GLOBAL", "1000/minute")
 
 # Storage backend for rate limiting
 # Options: "memory" (per-process), or a Redis URL like "redis://localhost:6379"
@@ -761,236 +614,3 @@ DOWNLOADS_RATE_LIMIT_PER_HOUR = get_int_env("VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR"
 # Maximum concurrent downloads per IP (prevents bandwidth abuse)
 # This is tracked in-memory so resets on server restart
 DOWNLOADS_MAX_CONCURRENT = get_int_env("VLOG_DOWNLOADS_MAX_CONCURRENT", 2, min_val=1, max_val=10)
-
-# =============================================================================
-# Playback Configuration (Issue #211)
-# Autoplay and "Up Next" settings for video player
-# =============================================================================
-
-# Enable autoplay feature globally (can be overridden by user preferences)
-AUTOPLAY_ENABLED = os.getenv("VLOG_AUTOPLAY_ENABLED", "true").lower() in ("true", "1", "yes")
-
-# Enable "Up Next" suggestions after video ends
-UPNEXT_ENABLED = os.getenv("VLOG_UPNEXT_ENABLED", "true").lower() in ("true", "1", "yes")
-
-# Countdown duration in seconds before autoplay starts (5-30)
-AUTOPLAY_COUNTDOWN_SECONDS = get_int_env("VLOG_AUTOPLAY_COUNTDOWN_SECONDS", 10, min_val=5, max_val=30)
-
-# =============================================================================
-# Video Embed Configuration (Issue #210)
-# Allow embedding videos on external websites with security controls
-# =============================================================================
-
-# Master switch for embed feature
-EMBED_ENABLED = os.getenv("VLOG_EMBED_ENABLED", "true").lower() in ("true", "1", "yes")
-
-# Domain whitelist for frame-ancestors CSP directive
-# SECURITY: Defaults to 'self' only - external embeds blocked by default
-# Set to comma-separated domains to allow specific sites: "example.com,blog.example.com"
-# This is the recommended secure configuration for controlled embedding
-EMBED_ALLOWED_DOMAINS = os.getenv("VLOG_EMBED_ALLOWED_DOMAINS", "'self'")
-
-# Allow embedding on ANY domain (sets frame-ancestors to *)
-# SECURITY WARNING: Only enable for truly public video platforms
-# When True, overrides EMBED_ALLOWED_DOMAINS
-EMBED_ALLOW_ALL_DOMAINS = os.getenv("VLOG_EMBED_ALLOW_ALL_DOMAINS", "false").lower() in ("true", "1", "yes")
-
-# Default autoplay behavior for embeds (can be overridden via query param)
-EMBED_DEFAULT_AUTOPLAY = os.getenv("VLOG_EMBED_DEFAULT_AUTOPLAY", "false").lower() in ("true", "1", "yes")
-
-# Minimum seconds of playback before counting as a view (prevents view inflation)
-EMBED_MIN_PLAYBACK_FOR_VIEW = get_int_env("VLOG_EMBED_MIN_PLAYBACK_FOR_VIEW", 5, min_val=1, max_val=60)
-
-# Rate limit for embed page requests (higher than normal to allow pages with multiple embeds)
-RATE_LIMIT_EMBED = os.getenv("VLOG_RATE_LIMIT_EMBED", "500/minute")
-
-# =============================================================================
-# Live Streaming Configuration
-# HTTP segment push for live streaming without RTMP/SRT servers
-# =============================================================================
-
-# Master switch for live streaming feature
-LIVE_ENABLED = os.getenv("VLOG_LIVE_ENABLED", "true").lower() in ("true", "1", "yes")
-
-# Storage path for live stream segments
-LIVE_STORAGE_PATH = NAS_STORAGE / os.getenv("VLOG_LIVE_SUBDIR", "live")
-
-# Default DVR window in seconds (2 hours)
-LIVE_DEFAULT_DVR_WINDOW = get_int_env("VLOG_LIVE_DEFAULT_DVR_WINDOW", 7200, min_val=60, max_val=86400)
-
-# Stale stream detection threshold in seconds
-# If no segment received within this period, stream enters "ending" state
-LIVE_STALE_THRESHOLD = get_int_env("VLOG_LIVE_STALE_THRESHOLD", 60, min_val=10, max_val=300)
-
-# Grace period multiplier for stale detection
-# Stream finalizes to "ended" after stale_threshold * this multiplier
-LIVE_STALE_GRACE_MULTIPLIER = 2
-
-# Maximum segment size (50MB - generous for high bitrate 4K)
-LIVE_MAX_SEGMENT_SIZE = get_int_env("VLOG_LIVE_MAX_SEGMENT_SIZE", 50 * 1024 * 1024, min_val=1024 * 1024)
-
-# Rate limiting: segments per minute per stream
-LIVE_SEGMENT_RATE_LIMIT = get_int_env("VLOG_LIVE_SEGMENT_RATE_LIMIT", 300, min_val=10)
-
-# Global rate limit: segments per minute per source IP
-LIVE_GLOBAL_SEGMENT_RATE_LIMIT = get_int_env("VLOG_LIVE_GLOBAL_SEGMENT_RATE_LIMIT", 1000, min_val=100)
-
-# Maximum concurrent live streams
-LIVE_MAX_CONCURRENT_STREAMS = get_int_env("VLOG_LIVE_MAX_CONCURRENT_STREAMS", 10, min_val=1)
-
-# DVR cleanup interval in seconds
-LIVE_DVR_CLEANUP_INTERVAL = get_int_env("VLOG_LIVE_DVR_CLEANUP_INTERVAL", 30, min_val=10, max_val=300)
-
-# Batch size for DVR cleanup DELETEs (reduces lock contention)
-LIVE_DVR_CLEANUP_BATCH_SIZE = get_int_env("VLOG_LIVE_DVR_CLEANUP_BATCH_SIZE", 10, min_val=1, max_val=100)
-
-# HLS segment duration for live streams (must match FFmpeg -hls_time)
-LIVE_HLS_SEGMENT_DURATION = get_int_env("VLOG_LIVE_HLS_SEGMENT_DURATION", 4, min_val=1, max_val=10)
-
-# Number of segments to include in live playlist (sliding window)
-LIVE_HLS_PLAYLIST_LENGTH = get_int_env("VLOG_LIVE_HLS_PLAYLIST_LENGTH", 5, min_val=3, max_val=30)
-
-# Allowed quality names for live streams
-LIVE_ALLOWED_QUALITIES = frozenset({"2160p", "1440p", "1080p", "720p", "480p", "360p"})
-
-# =============================================================================
-# Broadcaster Dashboard / Studio Configuration (Issue #524)
-# Real-time metrics and viewer tracking for broadcasters
-# =============================================================================
-
-# Secret for hashing viewer IPs (privacy-preserving unique viewer tracking)
-# Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
-# SECURITY: If not set, IP hashing is disabled (not recommended for production)
-VIEWER_IP_HASH_SECRET = os.getenv("VLOG_VIEWER_IP_HASH_SECRET", "")
-
-# Metrics retention in hours (metrics older than this are deleted)
-LIVE_METRICS_RETENTION_HOURS = get_int_env("VLOG_LIVE_METRICS_RETENTION_HOURS", 24, min_val=1, max_val=168)
-
-# Metrics aggregation interval in seconds
-LIVE_METRICS_AGGREGATION_INTERVAL = get_int_env("VLOG_LIVE_METRICS_AGGREGATION_INTERVAL", 10, min_val=5, max_val=60)
-
-# Viewer heartbeat interval and timeout (seconds)
-LIVE_VIEWER_HEARTBEAT_INTERVAL = get_int_env("VLOG_LIVE_VIEWER_HEARTBEAT_INTERVAL", 30, min_val=10, max_val=120)
-LIVE_VIEWER_TIMEOUT = get_int_env("VLOG_LIVE_VIEWER_TIMEOUT", 60, min_val=30, max_val=300)
-
-# Viewer cleanup interval (how often to check for stale viewers)
-LIVE_VIEWER_CLEANUP_INTERVAL = get_int_env("VLOG_LIVE_VIEWER_CLEANUP_INTERVAL", 30, min_val=10, max_val=120)
-
-# SSE connection limits for studio dashboard
-LIVE_STUDIO_SSE_MAX_PER_USER = get_int_env("VLOG_LIVE_STUDIO_SSE_MAX_PER_USER", 5, min_val=1, max_val=20)
-LIVE_STUDIO_SSE_MAX_PER_STREAM = get_int_env("VLOG_LIVE_STUDIO_SSE_MAX_PER_STREAM", 20, min_val=5, max_val=100)
-
-# Health classification thresholds
-LIVE_HEALTH_LATENCY_GOOD_MS = get_int_env("VLOG_LIVE_HEALTH_LATENCY_GOOD_MS", 500, min_val=100, max_val=5000)
-LIVE_HEALTH_LATENCY_DEGRADED_MS = get_int_env("VLOG_LIVE_HEALTH_LATENCY_DEGRADED_MS", 2000, min_val=500, max_val=10000)
-LIVE_HEALTH_DROP_RATE_GOOD = get_float_env("VLOG_LIVE_HEALTH_DROP_RATE_GOOD", 0.01, min_val=0.0, max_val=1.0)
-LIVE_HEALTH_DROP_RATE_DEGRADED = get_float_env("VLOG_LIVE_HEALTH_DROP_RATE_DEGRADED", 0.05, min_val=0.0, max_val=1.0)
-
-# Ensure live storage directory exists (skip in test/CI environments)
-if not os.environ.get("VLOG_TEST_MODE"):
-    try:
-        LIVE_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        pass  # CI environment without NAS access
-
-# =============================================================================
-# Structured Logging Configuration (Issue #208)
-# JSON logging for production, text format for development
-# =============================================================================
-
-# Log format: "json" for production (log aggregation), "text" for development
-LOG_FORMAT = os.getenv("VLOG_LOG_FORMAT", "json")
-
-# Default log level for all loggers
-LOG_LEVEL = os.getenv("VLOG_LOG_LEVEL", "INFO")
-
-# Module-specific log levels (comma-separated, e.g., "api.auth=DEBUG,worker=WARNING")
-LOG_LEVELS = os.getenv("VLOG_LOG_LEVELS", "")
-
-# Optional log file output (in addition to stdout)
-# Leave empty to only log to stdout
-LOG_FILE = os.getenv("VLOG_LOG_FILE", "")
-
-# Log file rotation settings
-LOG_FILE_MAX_BYTES = get_int_env("VLOG_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024, min_val=1024)  # 10 MB default
-LOG_FILE_BACKUP_COUNT = get_int_env("VLOG_LOG_FILE_BACKUP_COUNT", 5, min_val=0)
-
-# =============================================================================
-# Backup and Restore Configuration (Issue #216)
-# Comprehensive backup system with database, file, and S3 support
-# =============================================================================
-
-# Master switch for backup feature
-BACKUP_ENABLED = os.getenv("VLOG_BACKUP_ENABLED", "true").lower() in ("true", "1", "yes")
-
-# Local backup storage path (default: NAS_STORAGE/backups)
-# SECURITY: Path is validated at runtime to prevent path traversal
-_backup_path_env = os.getenv("VLOG_BACKUP_PATH", "")
-if _backup_path_env:
-    BACKUP_PATH = Path(_backup_path_env)
-else:
-    BACKUP_PATH = NAS_STORAGE / "backups"
-
-# Validate backup path - reject suspicious patterns
-def _validate_backup_path(path: Path, var_name: str) -> None:
-    """Validate backup path at startup to prevent path traversal attacks."""
-    path_str = str(path)
-    # Check for path traversal attempts
-    if ".." in path_str:
-        raise ValueError(
-            f"Invalid {var_name}: path contains '..'. "
-            "Use an absolute path without parent directory references."
-        )
-    # Check for shell metacharacters
-    dangerous_chars = [";", "|", "&", "$", "`", "(", ")", "{", "}", "<", ">", "\\"]
-    for char in dangerous_chars:
-        if char in path_str:
-            raise ValueError(
-                f"Invalid {var_name}: path contains shell metacharacter '{char}'. "
-                "Use a simple absolute path."
-            )
-
-if _backup_path_env and not os.environ.get("VLOG_TEST_MODE"):
-    _validate_backup_path(BACKUP_PATH, "VLOG_BACKUP_PATH")
-
-# Number of backups to retain (older backups are deleted)
-BACKUP_RETENTION_COUNT = get_int_env("VLOG_BACKUP_RETENTION_COUNT", 7, min_val=1, max_val=365)
-
-# Include video files in backup (increases backup size significantly)
-BACKUP_INCLUDE_VIDEOS = os.getenv("VLOG_BACKUP_INCLUDE_VIDEOS", "false").lower() in ("true", "1", "yes")
-
-# Maximum backup size in GB (prevents runaway storage consumption)
-BACKUP_MAX_SIZE_GB = get_int_env("VLOG_BACKUP_MAX_SIZE_GB", 500, min_val=1)
-
-# Timeout settings (seconds)
-BACKUP_DB_TIMEOUT = get_int_env("VLOG_BACKUP_DB_TIMEOUT", 3600, min_val=60)  # 1 hour default
-BACKUP_S3_TIMEOUT = get_int_env("VLOG_BACKUP_S3_TIMEOUT", 14400, min_val=60)  # 4 hours default
-
-# HMAC signing key for manifest integrity verification
-# Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
-# If not set, manifest signing is disabled (not recommended for production)
-BACKUP_SIGNING_KEY = os.getenv("VLOG_BACKUP_SIGNING_KEY", "")
-
-# S3-compatible storage configuration
-BACKUP_S3_BUCKET = os.getenv("VLOG_BACKUP_S3_BUCKET", "")
-BACKUP_S3_PREFIX = os.getenv("VLOG_BACKUP_S3_PREFIX", "vlog-backups/")
-BACKUP_S3_REGION = os.getenv("VLOG_BACKUP_S3_REGION", "us-east-1")
-# Custom endpoint URL for S3-compatible storage (MinIO, DigitalOcean Spaces, etc.)
-BACKUP_S3_ENDPOINT_URL = os.getenv("VLOG_BACKUP_S3_ENDPOINT_URL", "")
-
-# Scheduler configuration
-BACKUP_SCHEDULE_ENABLED = os.getenv("VLOG_BACKUP_SCHEDULE_ENABLED", "false").lower() in ("true", "1", "yes")
-# Time to run scheduled backups (24-hour format, e.g., "02:00")
-BACKUP_SCHEDULE_TIME = os.getenv("VLOG_BACKUP_SCHEDULE_TIME", "02:00")
-# Day of week for weekly backups (0=Monday, 6=Sunday), empty for daily
-BACKUP_SCHEDULE_DAY = os.getenv("VLOG_BACKUP_SCHEDULE_DAY", "")
-
-# Restore rate limiting (API only, CLI can bypass with --force)
-BACKUP_RESTORE_COOLDOWN_SECONDS = get_int_env("VLOG_BACKUP_RESTORE_COOLDOWN_SECONDS", 3600, min_val=0)
-
-# Ensure backup directory exists (skip in test/CI environments)
-if not os.environ.get("VLOG_TEST_MODE") and BACKUP_ENABLED:
-    try:
-        BACKUP_PATH.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        pass  # CI environment or insufficient permissions

@@ -6,32 +6,13 @@ The VLog Admin UI provides a modern, responsive interface for managing your vide
 
 **URL:** `http://your-server:9001`
 
-### First-Time Setup
-
-If no users exist, you'll see the **Setup Wizard** to create the initial admin account:
-
-1. Navigate to the Admin UI
-2. Enter a username, email, and password (minimum 12 characters)
-3. Click "Create Admin Account"
-4. You'll be logged in automatically
-
-### Logging In
-
-VLog uses multi-user authentication with role-based access control:
-
-1. Enter your username or email
-2. Enter your password
-3. Click "Sign In"
-
-**OIDC/SSO:** If configured, you can also sign in with your organization's identity provider by clicking "Sign in with SSO".
-
-**Note:** The admin panel is intended for internal use and should not be exposed to the public internet.
+If authentication is enabled (`VLOG_ADMIN_API_SECRET` is set), you'll be prompted to log in. The admin panel is intended for internal use and should not be exposed to the public internet.
 
 ---
 
 ## Navigation
 
-The admin interface has nine main tabs:
+The admin interface has eight main tabs:
 
 | Tab | Purpose |
 |-----|---------|
@@ -42,7 +23,6 @@ The admin interface has nine main tabs:
 | **Workers** | Monitor transcoding workers and job status |
 | **Webhooks** | Configure event notifications |
 | **Analytics** | View playback statistics and trends |
-| **Users** | Manage users and invites (Admin only) |
 | **Settings** | Configure runtime settings and watermarks |
 
 ---
@@ -486,119 +466,6 @@ See your most popular content:
 
 ---
 
-## Users Tab
-
-Manage users, invites, and access control. **Admin only.**
-
-### User Roles
-
-| Role | Description |
-|------|-------------|
-| **Admin** | Full system access including user management |
-| **Editor** | Upload and manage own videos, view own analytics |
-| **Viewer** | Browse and watch videos (for private instances) |
-
-### Viewing Users
-
-The Users tab displays all registered users with:
-- Username and display name
-- Email address
-- Role (admin, editor, viewer)
-- Status (active, disabled, pending)
-- Last login time
-
-**Features:**
-- **Search:** Find users by username, email, or display name
-- **Filter by Role:** Show only admins, editors, or viewers
-- **Filter by Status:** Show only active, disabled, or pending users
-
-### Creating Users
-
-**Option 1: Direct Creation (Admin)**
-1. Click "New User"
-2. Enter username (3-100 characters)
-3. Enter email address
-4. Enter password (minimum 12 characters)
-5. Optionally add display name
-6. Select role
-7. Click "Create"
-
-**Option 2: Send Invite**
-1. Click "Invite User"
-2. Enter email address
-3. Select role for the new user
-4. Set expiration (1-90 days)
-5. Click "Send Invite"
-6. Share the invite link with the user
-
-### Managing Users
-
-**Editing a User:**
-1. Click on a user row
-2. Update fields:
-   - Username
-   - Email
-   - Display name
-   - Role
-   - Status (active/disabled)
-3. Click "Save"
-
-**Disabling a User:**
-1. Select the user
-2. Click "Disable"
-3. User's sessions are invalidated immediately
-4. User cannot log in until re-enabled
-
-**Force Password Reset:**
-1. Select the user
-2. Click "Reset Password"
-3. User is logged out immediately
-4. Reset link is sent via email (if configured)
-
-### Invite Management
-
-**Pending Invites:**
-- View all pending invites
-- See email, role, and expiration date
-- Revoke invites that are no longer needed
-
-**Invite Status:**
-| Status | Description |
-|--------|-------------|
-| **Pending** | Invite sent, not yet accepted |
-| **Accepted** | User created account |
-| **Expired** | Invite expired before use |
-| **Revoked** | Admin revoked the invite |
-
-### API Keys
-
-Each user can create personal API keys for programmatic access.
-
-**User API Keys (Self-Service):**
-1. Click your profile icon
-2. Select "API Keys"
-3. Click "New Key"
-4. Enter a name and optional expiration
-5. **Copy the key immediately** (shown only once)
-
-**Admin View:**
-- Admins can see all users' API key metadata
-- Cannot view actual key values (hashed)
-- Can revoke any user's keys
-
-### Session Management
-
-Users can view and manage their active sessions:
-1. Click your profile icon
-2. Select "Sessions"
-3. View all active sessions with:
-   - IP address
-   - Browser/device info
-   - Login time
-4. Click "Revoke" to terminate a session
-
----
-
 ## Settings Tab
 
 Configure runtime settings without restarting services.
@@ -703,12 +570,9 @@ On mobile, action buttons appear as floating action buttons (FAB):
 
 1. **Never expose port 9001 to the internet**
 2. Use a VPN or internal network for admin access
-3. Create the initial admin via the setup wizard
-4. Use strong passwords (minimum 12 characters)
-5. Enable OIDC/SSO for centralized identity management
-6. Regularly review user accounts and disable unused ones
-7. Use API keys with expiration dates for programmatic access
-8. Review audit logs regularly
+3. Enable authentication via `VLOG_ADMIN_API_SECRET`
+4. Rotate admin secrets periodically
+5. Review audit logs regularly
 
 ---
 

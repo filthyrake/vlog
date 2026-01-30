@@ -31,7 +31,6 @@ import { analyticsApi } from '@/api/endpoints/analytics';
 import { settingsApi } from '@/api/endpoints/settings';
 import { customFieldsApi } from '@/api/endpoints/custom-fields';
 import { sseApi } from '@/api/endpoints/sse';
-import { usersApi } from '@/api/endpoints/users';
 
 // Import formatters for template use
 import * as formatters from '@/utils/formatters';
@@ -57,7 +56,6 @@ declare global {
       settings: typeof settingsApi;
       customFields: typeof customFieldsApi;
       sse: typeof sseApi;
-      users: typeof usersApi;
     };
 
     // Formatters
@@ -86,17 +84,14 @@ window.VLogApi = {
   settings: settingsApi,
   customFields: customFieldsApi,
   sse: sseApi,
-  users: usersApi,
 };
 
 // Export formatters
 window.VLogFormatters = formatters;
 
-// Register admin store with Alpine.data() for CSP compatibility
-// This allows x-data="admin()" to work without eval
-Alpine.data('admin', createAdminStore);
-
 // Start Alpine.js AFTER everything is set up
+// Note: Keyboard shortcuts are initialized in stores/index.ts when the admin store starts
+// This ensures window.admin() is defined before Alpine processes x-data
 Alpine.start();
 
 // Export for module consumers

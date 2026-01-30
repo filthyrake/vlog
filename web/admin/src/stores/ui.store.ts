@@ -46,13 +46,6 @@ export interface UIActions {
   // Sorting
   setSort(column: string, direction?: 'asc' | 'desc'): void;
   toggleSort(column: string): void;
-
-  // CSP-compliant helpers
-  getWidthClass(percent: number | undefined | null): string;
-
-  // Tab styling helpers (CSP-compliant)
-  tabClass(tabName: AdminTab): string;
-  settingsTabClass(tabName: SettingsTab): string;
 }
 
 export type UIStore = UIState & UIActions;
@@ -170,39 +163,6 @@ export function createUIStore(): UIStore {
         this.sortColumn = column;
         this.sortDirection = 'asc';
       }
-    },
-
-    /**
-     * Get CSS class for percentage width (CSP-compliant alternative to inline styles)
-     * Returns class like 'w-pct-50' for 50%
-     */
-    getWidthClass(percent: number | undefined | null): string {
-      const value = Math.max(0, Math.min(100, Math.round(percent || 0)));
-      return `w-pct-${value}`;
-    },
-
-    /**
-     * Get CSS classes for main tab buttons (CSP-compliant)
-     * Returns appropriate classes based on whether tab is active
-     */
-    tabClass(tabName: AdminTab): string {
-      const baseClasses = 'px-4 py-2 transition-colors';
-      const activeClasses = 'text-blue-400 border-b-2 border-blue-400';
-      const inactiveClasses = 'text-slate-400 hover:text-slate-200';
-      return this.tab === tabName
-        ? `${baseClasses} ${activeClasses}`
-        : `${baseClasses} ${inactiveClasses}`;
-    },
-
-    /**
-     * Get CSS classes for settings sub-tab buttons (CSP-compliant)
-     * Returns appropriate classes based on whether tab is active
-     * Matches the dynamic category button styling
-     */
-    settingsTabClass(tabName: SettingsTab): string {
-      const activeClasses = 'bg-blue-600 text-white';
-      const inactiveClasses = 'bg-dark-800 text-dark-300 hover:bg-dark-700';
-      return this.settingsTab === tabName ? activeClasses : inactiveClasses;
     },
   };
 }

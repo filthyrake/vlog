@@ -3,7 +3,6 @@
  *
  * A toast notification component for user feedback.
  * Supports multiple variants and auto-dismiss.
- * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-alert variant="success" dismissible auto-dismiss="5000">
@@ -27,8 +26,9 @@ const icons = {
   </svg>`,
 };
 
-// Constructable stylesheet for CSP compliance
-const styles = `
+const template = document.createElement('template');
+template.innerHTML = `
+  <style>
     :host {
       display: block;
     }
@@ -209,13 +209,8 @@ const styles = `
         opacity: 0;
       }
     }
-`;
+  </style>
 
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
-
-const template = document.createElement('template');
-template.innerHTML = `
   <div class="alert" part="alert">
     <div class="icon" part="icon" aria-hidden="true">
       <slot name="icon"></slot>
@@ -251,8 +246,6 @@ export class VlogAlert extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    // Use constructable stylesheet for CSP compliance
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.alert = this.shadowRoot!.querySelector('.alert')!;

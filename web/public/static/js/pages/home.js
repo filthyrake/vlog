@@ -40,17 +40,9 @@
         showViewCounts: true,
         showTagline: true,
         tagline: '',
-        // Theme/branding settings from API (Issue #214)
-        siteName: 'VLog',
-        logoUrl: null,
-        footerText: null,
-        footerLinks: [],
         // Precomputed current year for footer (Alpine CSP)
         _currentYear: new Date().getFullYear(),
         _showFooterTagline: false, // Precomputed for Alpine CSP
-        _showCustomFooterText: false, // Precomputed for Alpine CSP
-        _showDefaultFooterText: true, // Precomputed for Alpine CSP (inverse of above)
-        _hasFooterLinks: false, // Precomputed for Alpine CSP
         _emptyStateTitle: 'No videos found',
         _emptyStateMessage: 'Check back soon for new content!',
         // Precomputed arrays for skeleton loaders (Alpine CSP)
@@ -73,7 +65,6 @@
         _mobileNavClass: '',
         _showContinueWatchingLoading: false,
         _showContinueWatchingError: false,
-        _showFeaturedSection: true, // Precomputed for Alpine CSP (!searchQuery)
 
         async init() {
             // Load display config
@@ -84,8 +75,6 @@
             if (searchParam) {
                 // Limit search length for safety
                 this.searchQuery = searchParam.slice(0, MAX_SEARCH_LENGTH);
-                // Update UI state immediately (before $watch is set up)
-                this._showFeaturedSection = false;
                 // Clean URL without reloading
                 window.history.replaceState({}, '', '/');
             }
@@ -289,7 +278,6 @@
             this._showSearchCount = this.searchQuery && !this.loading;
             this._searchCountClass = this.searchQuery ? 'site-header__search-count--has-clear' : '';
             this._searchClearClass = this.searchQuery ? 'site-header__search-clear--visible' : '';
-            this._showFeaturedSection = !this.searchQuery;
         },
 
         updateContinueWatchingState() {
@@ -408,40 +396,6 @@
             } catch (e) {
                 // Use defaults on error
                 console.debug('Failed to load display config, using defaults');
-            }
-
-            // Load theme/branding config (Issue #214)
-            await this.loadThemeConfig();
-        },
-
-        async loadThemeConfig() {
-            try {
-                // Use VLogTheme if available (loaded before Alpine)
-                if (window.VLogTheme) {
-                    const config = await window.VLogTheme.init();
-                    this.siteName = config.site_name || 'VLog';
-                    this.logoUrl = config.logo_path ? '/api/v1/branding/logo' : null;
-                    this.footerText = config.footer_text;
-                    this.footerLinks = config.footer_links || [];
-                    this._showCustomFooterText = !!config.footer_text;
-                    this._showDefaultFooterText = !config.footer_text;
-                    this._hasFooterLinks = this.footerLinks.length > 0;
-                } else {
-                    // Fallback: fetch directly if VLogTheme not loaded
-                    const res = await VLogUtils.fetchWithTimeout('/api/v1/config/theme', {}, 5000);
-                    if (res.ok) {
-                        const config = await res.json();
-                        this.siteName = config.site_name || 'VLog';
-                        this.logoUrl = config.logo_path ? '/api/v1/branding/logo' : null;
-                        this.footerText = config.footer_text;
-                        this.footerLinks = config.footer_links || [];
-                        this._showCustomFooterText = !!config.footer_text;
-                        this._showDefaultFooterText = !config.footer_text;
-                        this._hasFooterLinks = this.footerLinks.length > 0;
-                    }
-                }
-            } catch (e) {
-                console.debug('Failed to load theme config, using defaults');
             }
         },
 

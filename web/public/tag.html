@@ -147,7 +147,7 @@
         </div>
 
         <!-- Error State -->
-        <div x-show="_showError" class="text-center py-12">
+        <div x-show="!loading && error" class="text-center py-12">
             <svg class="mx-auto h-16 w-16 text-red-500 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="8" x2="12" y2="12"></line>
@@ -160,7 +160,7 @@
         </div>
 
         <!-- Breadcrumb -->
-        <nav class="breadcrumb" aria-label="Breadcrumb" x-show="_showContent">
+        <nav class="breadcrumb" aria-label="Breadcrumb" x-show="!loading && tag">
             <ol class="breadcrumb__list">
                 <li class="breadcrumb__item">
                     <a href="/" class="breadcrumb__link">Home</a>
@@ -173,7 +173,7 @@
         </nav>
 
         <!-- Tag Header -->
-        <div x-show="_showContent" class="mb-8">
+        <div x-show="!loading && tag" class="mb-8">
             <div class="flex items-center gap-2 mb-2">
                 <span class="bg-blue-600 text-white px-3 py-1 rounded-full text-sm">#</span>
                 <h1 class="text-3xl font-bold text-white" x-text="_tagName"></h1>
@@ -182,7 +182,7 @@
         </div>
 
         <!-- Empty State -->
-        <div x-show="_showEmptyState" class="text-center py-12">
+        <div x-show="!loading && !error && resultCount === 0" class="text-center py-12">
             <svg class="mx-auto h-16 w-16 text-dark-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
                 <path d="M10 12l4-2.5v5L10 12z" fill="currentColor" stroke="none"></path>

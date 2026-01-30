@@ -64,19 +64,6 @@ export interface WorkersActions {
 
   // Stats computation
   computeWorkerStats(): void;
-
-  // CSP-safe helpers (Alpine.js CSP build doesn't support arrow functions or ?.)
-  hasActiveWorkers(): boolean;
-
-  // Metrics helpers
-  isMetricsLoading(): boolean;
-  hasMetricsError(): boolean;
-  hasMetricsGpu(): boolean;
-  hasMetricsData(): boolean;
-  getMetricsProcess(prop: string): number;
-  getMetricsSystem(prop: string): number;
-  getMetricsDisk(prop: string): number;
-  getMetricsGpu(prop: string): number;
 }
 
 export type WorkersStore = WorkersState & WorkersActions;
@@ -324,53 +311,6 @@ export function createWorkersStore(): WorkersStore {
       }
 
       this.workerStats = stats;
-    },
-
-    // ===========================================================================
-    // CSP-safe Helpers
-    // ===========================================================================
-
-    hasActiveWorkers(): boolean {
-      return this.workersList.some((w) => w.status !== 'offline' && w.status !== 'disabled');
-    },
-
-    // Metrics helpers
-    isMetricsLoading(): boolean {
-      return this.metricsLoading;
-    },
-
-    hasMetricsError(): boolean {
-      const data = this.metricsData as Record<string, unknown>;
-      return !!(data && data.error);
-    },
-
-    hasMetricsGpu(): boolean {
-      const data = this.metricsData as Record<string, unknown>;
-      return !!(data && data.gpu);
-    },
-
-    hasMetricsData(): boolean {
-      return !!this.metricsData;
-    },
-
-    getMetricsProcess(prop: string): number {
-      const data = this.metricsData as { process?: Record<string, number> };
-      return (data && data.process && data.process[prop]) || 0;
-    },
-
-    getMetricsSystem(prop: string): number {
-      const data = this.metricsData as { system?: Record<string, number> };
-      return (data && data.system && data.system[prop]) || 0;
-    },
-
-    getMetricsDisk(prop: string): number {
-      const data = this.metricsData as { disk?: Record<string, number> };
-      return (data && data.disk && data.disk[prop]) || 0;
-    },
-
-    getMetricsGpu(prop: string): number {
-      const data = this.metricsData as { gpu?: Record<string, number> };
-      return (data && data.gpu && data.gpu[prop]) || 0;
     },
   };
 }

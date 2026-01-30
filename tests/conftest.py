@@ -21,8 +21,6 @@ from databases import Database
 # Set up test paths BEFORE importing config
 _test_temp_dir = tempfile.mkdtemp()
 os.environ["VLOG_TEST_MODE"] = "1"
-# Required for authentication system startup validation (not a real secret)
-os.environ["VLOG_SESSION_SECRET_KEY"] = "x" * 32  # noqa: S105
 
 # Import config and override paths for testing
 from api.database import (  # noqa: E402

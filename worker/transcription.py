@@ -5,7 +5,6 @@ Monitors the database for videos needing transcription and generates WebVTT capt
 """
 
 import asyncio
-import logging
 import os
 import signal
 import subprocess
@@ -29,8 +28,6 @@ from config import (
     VIDEOS_DIR,
     WHISPER_MODEL,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class TranscriptionCancelled(Exception):
@@ -76,7 +73,7 @@ class TranscriptionWorker:
         if self.model_loaded:
             return
 
-        logger.info(f"Loading Whisper model: {WHISPER_MODEL}...")
+        print(f"Loading Whisper model: {WHISPER_MODEL}...")
         try:
             from faster_whisper import WhisperModel
 
@@ -87,9 +84,9 @@ class TranscriptionWorker:
                 compute_type=TRANSCRIPTION_COMPUTE_TYPE,
             )
             self.model_loaded = True
-            logger.info("Model loaded successfully")
+            print("Model loaded successfully")
         except Exception as e:
-            logger.error(f"Failed to load model: {e}")
+            print(f"Failed to load model: {e}")
             raise
 
     def transcribe(self, audio_path: Path, language: Optional[str] = None) -> dict:
@@ -100,7 +97,7 @@ class TranscriptionWorker:
         if not self.model_loaded:
             self.load_model()
 
-        logger.debug(f"Transcribing: {audio_path.name}")
+        print(f"  Transcribing: {audio_path.name}")
 
         # Use specified language or auto-detect
         lang = language or TRANSCRIPTION_LANGUAGE
@@ -308,11 +305,11 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
     slug = video["slug"]
     title = video["title"]
 
-    logger.info(f"Processing transcription for: {title} ({slug})")
+    print(f"Processing transcription for: {title} ({slug})")
 
     # Check for shutdown before starting
     if worker.shutdown_requested:
-        logger.info("Shutdown requested before processing started")
+        print("  Shutdown requested before processing started")
         raise TranscriptionCancelled("Shutdown requested")
 
     # Get or create transcription record
@@ -332,11 +329,11 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
 
         # Find audio source
         audio_source = find_audio_source(video_id, slug)
-        logger.debug(f"Using audio source: {audio_source}")
+        print(f"  Using audio source: {audio_source}")
 
         # Check for shutdown before extraction
         if worker.shutdown_requested:
-            logger.info("Shutdown requested before audio extraction")
+            print("  Shutdown requested before audio extraction")
             raise TranscriptionCancelled("Shutdown requested")
 
         # Extract audio to temporary WAV file for reliable processing
@@ -346,7 +343,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         temp_wav = Path(temp_wav_path)  # Assign before close
         os.close(fd)  # Close file descriptor, we'll use the path
 
-        logger.debug("Extracting audio to WAV...")
+        print("  Extracting audio to WAV...")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, extract_audio_to_wav, audio_source, temp_wav)
 
@@ -355,12 +352,12 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
 
         # Check for shutdown before transcription
         if worker.shutdown_requested:
-            logger.info("Shutdown requested before transcription")
+            print("  Shutdown requested before transcription")
             raise TranscriptionCancelled("Shutdown requested")
 
         # Run transcription with timeout (this is CPU-intensive and blocking)
         # We run it in the default executor to not block the event loop
-        logger.debug("Running Whisper transcription...")
+        print("  Running Whisper transcription...")
         result = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
@@ -373,7 +370,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
 
         # Check for shutdown before saving results
         if worker.shutdown_requested:
-            logger.info("Shutdown requested before saving results")
+            print("  Shutdown requested before saving results")
             raise TranscriptionCancelled("Shutdown requested")
 
         # Generate WebVTT
@@ -382,7 +379,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         # Save WebVTT file
         vtt_path = VIDEOS_DIR / slug / "captions.vtt"
         vtt_path.write_text(vtt_content, encoding="utf-8")
-        logger.debug(f"Saved captions to: {vtt_path}")
+        print(f"  Saved captions to: {vtt_path}")
 
         # Calculate stats
         duration = time.time() - start_time
@@ -400,7 +397,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
             word_count=word_count,
         )
 
-        logger.info(f"Completed in {duration:.1f}s ({word_count} words, language: {result['language']})")
+        print(f"  Completed in {duration:.1f}s ({word_count} words, language: {result['language']})")
 
         # Trigger webhook for transcription completion (Issue #203)
         try:
@@ -418,11 +415,11 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
             )
         except Exception as e:
             # Don't fail transcription if webhook fails
-            logger.warning(f"Failed to trigger transcription webhook: {e}")
+            print(f"  Warning: Failed to trigger transcription webhook: {e}")
 
     except TranscriptionCancelled:
         # Graceful shutdown - reset status to pending so it can be retried
-        logger.info("Transcription cancelled due to shutdown, resetting to pending")
+        print("  Transcription cancelled due to shutdown, resetting to pending")
         await update_transcription_status(
             transcription_id,
             TranscriptionStatus.PENDING,
@@ -430,7 +427,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         raise
     except asyncio.TimeoutError:
         error_msg = f"Transcription timed out after {TRANSCRIPTION_TIMEOUT} seconds"
-        logger.error(error_msg)
+        print(f"  Error: {error_msg}")
         await update_transcription_status(
             transcription_id,
             TranscriptionStatus.FAILED,
@@ -438,7 +435,7 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
         )
     except Exception as e:
         error_msg = str(e)[:500]
-        logger.error(error_msg)
+        print(f"  Error: {error_msg}")
         await update_transcription_status(
             transcription_id,
             TranscriptionStatus.FAILED,
@@ -450,13 +447,13 @@ async def process_transcription(video: dict, worker: TranscriptionWorker):
             try:
                 temp_wav.unlink()
             except Exception as e:
-                logger.warning(f"Failed to delete temp file {temp_wav}: {e}")
+                print(f"  Warning: Failed to delete temp file {temp_wav}: {e}")
 
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
-    logger.info(f"{sig_name} received, finishing current job and shutting down gracefully...")
+    print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
     # Access global worker instance (may be None if called during startup/shutdown)
     global _worker_instance
     if _worker_instance:
@@ -472,14 +469,14 @@ async def worker_loop():
     global _worker_instance
 
     if not TRANSCRIPTION_ENABLED:
-        logger.info("Transcription is disabled in config. Exiting.")
+        print("Transcription is disabled in config. Exiting.")
         return
 
     await database.connect()
     await configure_database()
-    logger.info("Transcription worker started")
-    logger.info(f"Model: {WHISPER_MODEL}, Compute type: {TRANSCRIPTION_COMPUTE_TYPE}")
-    logger.info("Watching for videos needing transcription...")
+    print("Transcription worker started")
+    print(f"Model: {WHISPER_MODEL}, Compute type: {TRANSCRIPTION_COMPUTE_TYPE}")
+    print("Watching for videos needing transcription...")
 
     worker = TranscriptionWorker()
     _worker_instance = worker
@@ -494,18 +491,18 @@ async def worker_loop():
             videos_to_process = await get_videos_needing_transcription()
 
             if videos_to_process:
-                logger.info(f"Found {len(videos_to_process)} video(s) needing transcription")
+                print(f"Found {len(videos_to_process)} video(s) needing transcription")
 
                 for video in videos_to_process:
                     if worker.shutdown_requested:
-                        logger.info("Shutdown requested, stopping worker loop...")
+                        print("Shutdown requested, stopping worker loop...")
                         break
 
                     try:
                         await process_transcription(video, worker)
                     except TranscriptionCancelled:
                         # Shutdown requested during processing
-                        logger.info("Processing cancelled due to shutdown")
+                        print("Processing cancelled due to shutdown")
                         break
 
             # Wait before checking again (exit early if shutdown requested)
@@ -513,7 +510,7 @@ async def worker_loop():
                 await asyncio.sleep(30)
 
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received.")
+        print("\nKeyboardInterrupt received.")
     finally:
         await database.disconnect()
         _worker_instance = None

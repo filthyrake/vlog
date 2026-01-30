@@ -4,8 +4,6 @@
  * A search input with debounce, clear button, and keyboard support.
  * Emits 'search' event on input with debouncing.
  *
- * Uses constructable stylesheets for CSP compliance.
- *
  * @example
  * <vlog-search placeholder="Search videos..." debounce="300"></vlog-search>
  *
@@ -13,136 +11,132 @@
  * @fires clear - When search is cleared
  */
 
-// Constructable stylesheet for CSP compliance
-const styles = `
-  :host {
-    display: block;
-  }
-
-  :host([hidden]) {
-    display: none;
-  }
-
-  .search-container {
-    position: relative;
-    display: flex;
-    align-items: center;
-  }
-
-  .search-icon {
-    position: absolute;
-    left: var(--vlog-space-3, 0.75rem);
-    pointer-events: none;
-    color: var(--vlog-text-tertiary, #94a3b8);
-    width: 1rem;
-    height: 1rem;
-  }
-
-  .search-input {
-    width: 100%;
-    padding: var(--vlog-space-2, 0.5rem) var(--vlog-space-12, 3rem) var(--vlog-space-2, 0.5rem) var(--vlog-space-10, 2.5rem);
-    border: 1px solid var(--vlog-border-secondary, #334155);
-    border-radius: var(--vlog-radius-md, 0.375rem);
-    background-color: var(--vlog-bg-tertiary, #1e293b);
-    color: var(--vlog-text-primary, #f1f5f9);
-    font-family: var(--vlog-font-sans, system-ui, sans-serif);
-    font-size: var(--vlog-text-sm, 0.875rem);
-    transition: var(--vlog-transition-colors);
-  }
-
-  .search-input::placeholder {
-    color: var(--vlog-text-tertiary, #94a3b8);
-  }
-
-  .search-input:hover {
-    border-color: var(--vlog-border-primary, #475569);
-  }
-
-  .search-input:focus {
-    outline: none;
-    border-color: var(--vlog-primary, #3b82f6);
-    box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
-  }
-
-  .clear-button {
-    position: absolute;
-    right: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border: none;
-    border-radius: var(--vlog-radius-sm, 0.25rem);
-    background: transparent;
-    color: var(--vlog-text-tertiary, #94a3b8);
-    cursor: pointer;
-    opacity: 0;
-    visibility: hidden;
-    transition: var(--vlog-transition-colors), opacity 150ms ease;
-  }
-
-  .clear-button:hover {
-    background-color: var(--vlog-bg-secondary, #0f172a);
-    color: var(--vlog-text-primary, #f1f5f9);
-  }
-
-  .clear-button:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
-  }
-
-  .clear-button.visible {
-    opacity: 1;
-    visibility: visible;
-  }
-
-  .clear-button svg {
-    width: 0.875rem;
-    height: 0.875rem;
-  }
-
-  /* Loading state */
-  .search-container.loading .search-icon {
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* Size variants */
-  :host([size="sm"]) .search-input {
-    padding: var(--vlog-space-1, 0.25rem) var(--vlog-space-12, 3rem) var(--vlog-space-1, 0.25rem) var(--vlog-space-8, 2rem);
-    font-size: var(--vlog-text-xs, 0.75rem);
-  }
-
-  :host([size="sm"]) .search-icon {
-    left: var(--vlog-space-2, 0.5rem);
-    width: 0.875rem;
-    height: 0.875rem;
-  }
-
-  :host([size="lg"]) .search-input {
-    padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-12, 3rem) var(--vlog-space-3, 0.75rem) var(--vlog-space-12, 3rem);
-    font-size: var(--vlog-text-base, 1rem);
-  }
-
-  :host([size="lg"]) .search-icon {
-    left: var(--vlog-space-4, 1rem);
-    width: 1.25rem;
-    height: 1.25rem;
-  }
-`;
-
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
-
 const template = document.createElement('template');
 template.innerHTML = `
+  <style>
+    :host {
+      display: block;
+    }
+
+    :host([hidden]) {
+      display: none;
+    }
+
+    .search-container {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: var(--vlog-space-3, 0.75rem);
+      pointer-events: none;
+      color: var(--vlog-text-tertiary, #94a3b8);
+      width: 1rem;
+      height: 1rem;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: var(--vlog-space-2, 0.5rem) var(--vlog-space-12, 3rem) var(--vlog-space-2, 0.5rem) var(--vlog-space-10, 2.5rem);
+      border: 1px solid var(--vlog-border-secondary, #334155);
+      border-radius: var(--vlog-radius-md, 0.375rem);
+      background-color: var(--vlog-bg-tertiary, #1e293b);
+      color: var(--vlog-text-primary, #f1f5f9);
+      font-family: var(--vlog-font-sans, system-ui, sans-serif);
+      font-size: var(--vlog-text-sm, 0.875rem);
+      transition: var(--vlog-transition-colors);
+    }
+
+    .search-input::placeholder {
+      color: var(--vlog-text-tertiary, #94a3b8);
+    }
+
+    .search-input:hover {
+      border-color: var(--vlog-border-primary, #475569);
+    }
+
+    .search-input:focus {
+      outline: none;
+      border-color: var(--vlog-primary, #3b82f6);
+      box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
+    }
+
+    .clear-button {
+      position: absolute;
+      right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border: none;
+      border-radius: var(--vlog-radius-sm, 0.25rem);
+      background: transparent;
+      color: var(--vlog-text-tertiary, #94a3b8);
+      cursor: pointer;
+      opacity: 0;
+      visibility: hidden;
+      transition: var(--vlog-transition-colors), opacity 150ms ease;
+    }
+
+    .clear-button:hover {
+      background-color: var(--vlog-bg-secondary, #0f172a);
+      color: var(--vlog-text-primary, #f1f5f9);
+    }
+
+    .clear-button:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
+    }
+
+    .clear-button.visible {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .clear-button svg {
+      width: 0.875rem;
+      height: 0.875rem;
+    }
+
+    /* Loading state */
+    .search-container.loading .search-icon {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* Size variants */
+    :host([size="sm"]) .search-input {
+      padding: var(--vlog-space-1, 0.25rem) var(--vlog-space-12, 3rem) var(--vlog-space-1, 0.25rem) var(--vlog-space-8, 2rem);
+      font-size: var(--vlog-text-xs, 0.75rem);
+    }
+
+    :host([size="sm"]) .search-icon {
+      left: var(--vlog-space-2, 0.5rem);
+      width: 0.875rem;
+      height: 0.875rem;
+    }
+
+    :host([size="lg"]) .search-input {
+      padding: var(--vlog-space-3, 0.75rem) var(--vlog-space-12, 3rem) var(--vlog-space-3, 0.75rem) var(--vlog-space-12, 3rem);
+      font-size: var(--vlog-text-base, 1rem);
+    }
+
+    :host([size="lg"]) .search-icon {
+      left: var(--vlog-space-4, 1rem);
+      width: 1.25rem;
+      height: 1.25rem;
+    }
+  </style>
+
   <div class="search-container" part="container">
     <svg class="search-icon" part="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
       <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
@@ -175,7 +169,6 @@ export class VlogSearch extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.container = this.shadowRoot!.querySelector('.search-container')!;

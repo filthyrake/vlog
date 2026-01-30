@@ -30,14 +30,9 @@ dependencies = [
     "prometheus-client>=0.19.0",  # Prometheus metrics
     "psutil>=5.9.0",  # System resource monitoring for sprite worker
     "argon2-cffi>=23.1.0",  # Secure API key hashing (Issue #445)
-    "email-validator>=2.0.0",  # Pydantic EmailStr validation (Issue #200)
-    "authlib>=1.3.0",  # OIDC integration (Issue #200)
     # Security patches for transitive dependencies
     # Note: filelock>=3.20.3 fix requires Python 3.10+, pinned in Dockerfile only
     "jaraco-context>=6.1.0",  # GHSA-58pv-8j8x-9vj2 path traversal vulnerability
-    "wheel>=0.46.2",  # CVE-2026-24049 privilege escalation vulnerability
-    "urllib3>=2.6.3",  # GHSA-38jv-5279-wg99, GHSA-2xpw-w6gg-jr37, GHSA-gm62-xv2j-4w53, GHSA-pq67-6m6q-mj2v
-    "python-json-logger>=2.0.0",  # Structured JSON logging (Issue #208)
 ]
 
 [project.optional-dependencies]

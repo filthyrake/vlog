@@ -3,7 +3,6 @@
  *
  * A tab panel component used within vlog-tabs.
  * Handles visibility based on active state.
- * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-tab-panel tab-id="videos">
@@ -11,32 +10,28 @@
  * </vlog-tab-panel>
  */
 
-// Constructable stylesheet for CSP compliance
-const styles = `
-  :host {
-    display: block;
-  }
-
-  :host([hidden]) {
-    display: none !important;
-  }
-
-  .panel {
-    outline: none;
-  }
-
-  .panel:focus-visible {
-    box-shadow:
-      inset 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, #3b82f6);
-    border-radius: var(--vlog-radius-md, 0.375rem);
-  }
-`;
-
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
-
 const template = document.createElement('template');
 template.innerHTML = `
+  <style>
+    :host {
+      display: block;
+    }
+
+    :host([hidden]) {
+      display: none !important;
+    }
+
+    .panel {
+      outline: none;
+    }
+
+    .panel:focus-visible {
+      box-shadow:
+        inset 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, #3b82f6);
+      border-radius: var(--vlog-radius-md, 0.375rem);
+    }
+  </style>
+
   <div class="panel" part="panel">
     <slot></slot>
   </div>
@@ -52,7 +47,6 @@ export class VlogTabPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.panel = this.shadowRoot!.querySelector('.panel')!;

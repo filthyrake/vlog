@@ -3,7 +3,6 @@
  *
  * A container for managing multiple toast notifications.
  * Handles stacking, positioning, and programmatic alert creation.
- * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-alert-container position="top-right" max-alerts="3"></vlog-alert-container>
@@ -25,8 +24,9 @@ export interface AlertConfig {
   autoDismiss?: number;
 }
 
-// Constructable stylesheet for CSP compliance
-const styles = `
+const template = document.createElement('template');
+template.innerHTML = `
+  <style>
     :host {
       display: block;
       position: fixed;
@@ -83,13 +83,8 @@ const styles = `
     ::slotted(vlog-alert) {
       pointer-events: auto;
     }
-`;
+  </style>
 
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
-
-const template = document.createElement('template');
-template.innerHTML = `
   <div class="container" part="container" role="region" aria-label="Notifications">
     <slot></slot>
   </div>
@@ -105,8 +100,6 @@ export class VlogAlertContainer extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    // Use constructable stylesheet for CSP compliance
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
   }
 

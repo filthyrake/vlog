@@ -85,9 +85,6 @@ class AuditAction(str, Enum):
     WORKER_DISABLE = "worker_disable"
     WORKER_ENABLE = "worker_enable"
     WORKER_DELETE = "worker_delete"
-    # API key rotation actions (Issue #226)
-    WORKER_KEY_ROTATE = "worker_key_rotate"
-    WORKER_BULK_REVOKE = "worker_bulk_revoke"
 
     # Settings actions
     SETTINGS_CHANGE = "settings_change"
@@ -105,16 +102,6 @@ class AuditAction(str, Enum):
     WEBHOOK_UPDATE = "webhook_update"
     WEBHOOK_DELETE = "webhook_delete"
     WEBHOOK_RETRY = "webhook_retry"
-
-    # Comment moderation actions (Issue #213)
-    COMMENT_MODERATE = "comment_moderate"
-    COMMENT_DELETE = "comment_delete"
-
-    # Backup and restore actions (Issue #216)
-    BACKUP_CREATE = "backup_create"
-    BACKUP_RESTORE = "backup_restore"
-    BACKUP_DELETE = "backup_delete"
-    BACKUP_VERIFY = "backup_verify"
 
 
 class AuditLogger:

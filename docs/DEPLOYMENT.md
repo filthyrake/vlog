@@ -896,8 +896,7 @@ These settings cannot be changed at runtime and still require environment variab
 - `VLOG_DATABASE_URL`
 - `VLOG_STORAGE_PATH`
 - `VLOG_PUBLIC_PORT`, `VLOG_ADMIN_PORT`, `VLOG_WORKER_API_PORT`
-- `VLOG_SESSION_SECRET_KEY` (required for user authentication)
-- `VLOG_WORKER_ADMIN_SECRET`
+- `VLOG_ADMIN_API_SECRET`, `VLOG_WORKER_ADMIN_SECRET`
 
 ---
 
@@ -1253,11 +1252,8 @@ Before going to production, verify:
 
 ### Security
 - [ ] Admin API (9001) not exposed to internet
-- [ ] `VLOG_SESSION_SECRET_KEY` is set (required for auth)
-- [ ] Initial admin account created via setup wizard
-- [ ] `VLOG_REGISTRATION_MODE` configured (invite, open, or disabled)
+- [ ] `VLOG_ADMIN_API_SECRET` is set
 - [ ] `VLOG_WORKER_ADMIN_SECRET` is set
-- [ ] `VLOG_SECURE_COOKIES=true` (when using HTTPS)
 - [ ] HTTPS enabled via reverse proxy
 - [ ] Rate limiting enabled
 - [ ] Firewall rules configured

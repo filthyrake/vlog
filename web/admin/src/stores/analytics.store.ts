@@ -29,9 +29,6 @@ export interface AnalyticsActions {
   formatPercent: typeof formatPercent;
   formatWatchTime: typeof formatWatchTime;
   formatHours: typeof formatHours;
-
-  // CSP-safe helpers
-  getTotalViewsFormatted(): string;
 }
 
 export type AnalyticsStore = AnalyticsState & AnalyticsActions;
@@ -110,15 +107,6 @@ export function createAnalyticsStore(): AnalyticsStore {
     async setPeriod(period: AnalyticsPeriod): Promise<void> {
       this.analyticsPeriod = period;
       await this.loadAnalytics();
-    },
-
-    // ===========================================================================
-    // CSP-safe Helpers
-    // ===========================================================================
-
-    getTotalViewsFormatted(): string {
-      const views = this.analyticsOverview && this.analyticsOverview.total_views;
-      return views ? views.toLocaleString() : '0';
     },
   };
 }

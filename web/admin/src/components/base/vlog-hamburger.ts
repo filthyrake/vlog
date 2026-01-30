@@ -4,102 +4,96 @@
  * An animated hamburger menu button for mobile navigation.
  * Toggles between hamburger and X states with smooth animation.
  *
- * Uses constructable stylesheets for CSP compliance.
- *
  * @example
  * <vlog-hamburger aria-controls="mobile-nav" @click="toggleNav()"></vlog-hamburger>
  *
  * @fires toggle - When the button is clicked
  */
 
-// Constructable stylesheet for CSP compliance
-const styles = `
-  :host {
-    display: inline-flex;
-  }
-
-  :host([hidden]) {
-    display: none;
-  }
-
-  .hamburger {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border: none;
-    border-radius: var(--vlog-radius-md, 0.375rem);
-    background: transparent;
-    cursor: pointer;
-    transition: var(--vlog-transition-colors);
-  }
-
-  .hamburger:hover {
-    background-color: var(--vlog-bg-tertiary, #1e293b);
-  }
-
-  .hamburger:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
-  }
-
-  .hamburger-lines {
-    position: relative;
-    width: 24px;
-    height: 18px;
-  }
-
-  .hamburger-line {
-    position: absolute;
-    left: 0;
-    width: 100%;
-    height: 2px;
-    background-color: var(--vlog-text-primary, #f1f5f9);
-    border-radius: 1px;
-    transition: transform 200ms ease, opacity 200ms ease;
-  }
-
-  .hamburger-line:nth-child(1) {
-    top: 0;
-  }
-
-  .hamburger-line:nth-child(2) {
-    top: 50%;
-    transform: translateY(-50%);
-  }
-
-  .hamburger-line:nth-child(3) {
-    bottom: 0;
-  }
-
-  /* Open state - X shape */
-  :host([open]) .hamburger-line:nth-child(1) {
-    transform: translateY(8px) rotate(45deg);
-  }
-
-  :host([open]) .hamburger-line:nth-child(2) {
-    opacity: 0;
-  }
-
-  :host([open]) .hamburger-line:nth-child(3) {
-    transform: translateY(-8px) rotate(-45deg);
-  }
-
-  /* Hide on desktop */
-  @media (min-width: 768px) {
-    :host(:not([always-visible])) {
-      display: none;
-    }
-  }
-`;
-
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
-
 const template = document.createElement('template');
 template.innerHTML = `
+  <style>
+    :host {
+      display: inline-flex;
+    }
+
+    :host([hidden]) {
+      display: none;
+    }
+
+    .hamburger {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border: none;
+      border-radius: var(--vlog-radius-md, 0.375rem);
+      background: transparent;
+      cursor: pointer;
+      transition: var(--vlog-transition-colors);
+    }
+
+    .hamburger:hover {
+      background-color: var(--vlog-bg-tertiary, #1e293b);
+    }
+
+    .hamburger:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
+    }
+
+    .hamburger-lines {
+      position: relative;
+      width: 24px;
+      height: 18px;
+    }
+
+    .hamburger-line {
+      position: absolute;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background-color: var(--vlog-text-primary, #f1f5f9);
+      border-radius: 1px;
+      transition: transform 200ms ease, opacity 200ms ease;
+    }
+
+    .hamburger-line:nth-child(1) {
+      top: 0;
+    }
+
+    .hamburger-line:nth-child(2) {
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .hamburger-line:nth-child(3) {
+      bottom: 0;
+    }
+
+    /* Open state - X shape */
+    :host([open]) .hamburger-line:nth-child(1) {
+      transform: translateY(8px) rotate(45deg);
+    }
+
+    :host([open]) .hamburger-line:nth-child(2) {
+      opacity: 0;
+    }
+
+    :host([open]) .hamburger-line:nth-child(3) {
+      transform: translateY(-8px) rotate(-45deg);
+    }
+
+    /* Hide on desktop */
+    @media (min-width: 768px) {
+      :host(:not([always-visible])) {
+        display: none;
+      }
+    }
+  </style>
+
   <button
     type="button"
     class="hamburger"
@@ -125,7 +119,6 @@ export class VlogHamburger extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
     this.button = this.shadowRoot!.querySelector('.hamburger')!;
 

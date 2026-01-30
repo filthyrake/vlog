@@ -3,7 +3,6 @@
  *
  * A status badge component with semantic colors and accessibility icons.
  * Icons are included by default to ensure colorblind accessibility.
- * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-badge variant="success">Ready</vlog-badge>
@@ -11,148 +10,6 @@
  * <vlog-badge variant="error">Failed</vlog-badge>
  * <vlog-badge variant="info">Pending</vlog-badge>
  */
-
-// CSS extracted for constructable stylesheets (CSP-compliant)
-const styles = `
-  :host {
-    display: inline-flex;
-  }
-
-  :host([hidden]) {
-    display: none;
-  }
-
-  .hidden {
-    display: none !important;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--vlog-space-1, 0.25rem);
-    border-radius: var(--vlog-radius-md, 0.375rem);
-    font-family: var(--vlog-font-sans, system-ui, sans-serif);
-    font-weight: var(--vlog-font-medium, 500);
-    white-space: nowrap;
-  }
-
-  /* Size variants */
-  .badge.size-sm {
-    padding: 0.125rem 0.375rem;
-    font-size: var(--vlog-text-xs, 0.75rem);
-  }
-
-  .badge.size-md {
-    padding: 0.25rem 0.5rem;
-    font-size: var(--vlog-text-sm, 0.875rem);
-  }
-
-  /* Variant styles */
-  .badge.variant-success {
-    background-color: var(--vlog-success-bg, rgba(34, 197, 94, 0.15));
-    color: var(--vlog-success-text, #86efac);
-  }
-
-  .badge.variant-warning {
-    background-color: var(--vlog-warning-bg, rgba(234, 179, 8, 0.15));
-    color: var(--vlog-warning-text, #fde047);
-  }
-
-  .badge.variant-error {
-    background-color: var(--vlog-error-bg, rgba(239, 68, 68, 0.15));
-    color: var(--vlog-error-text, #fca5a5);
-  }
-
-  .badge.variant-info {
-    background-color: var(--vlog-info-bg, rgba(6, 182, 212, 0.15));
-    color: var(--vlog-info-text, #67e8f9);
-  }
-
-  .badge.variant-neutral {
-    background-color: var(--vlog-bg-tertiary, #1e293b);
-    color: var(--vlog-text-tertiary, #94a3b8);
-  }
-
-  .badge.variant-processing {
-    background-color: var(--vlog-warning-bg, rgba(234, 179, 8, 0.15));
-    color: var(--vlog-warning-text, #fde047);
-  }
-
-  .badge.variant-pending {
-    background-color: var(--vlog-info-bg, rgba(6, 182, 212, 0.15));
-    color: var(--vlog-info-text, #67e8f9);
-  }
-
-  /* Icon styles */
-  .icon {
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-  }
-
-  .icon svg {
-    width: 1em;
-    height: 1em;
-  }
-
-  .icon svg.spin {
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* Dot indicator (alternative to icon) */
-  .dot {
-    width: 0.5em;
-    height: 0.5em;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .variant-success .dot {
-    background-color: var(--vlog-success, #22c55e);
-  }
-
-  .variant-warning .dot,
-  .variant-processing .dot {
-    background-color: var(--vlog-warning, #eab308);
-  }
-
-  .variant-error .dot {
-    background-color: var(--vlog-error, #ef4444);
-  }
-
-  .variant-info .dot,
-  .variant-pending .dot {
-    background-color: var(--vlog-info, #06b6d4);
-  }
-
-  .variant-neutral .dot {
-    background-color: var(--vlog-text-tertiary, #94a3b8);
-  }
-
-  /* Pulsing dot for processing */
-  .variant-processing .dot {
-    animation: pulse 2s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    0%, 100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-`;
-
-// Create constructable stylesheet (CSP-compliant)
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
 
 // SVG icons for each variant (accessible alternatives to color-only)
 const icons = {
@@ -179,9 +36,140 @@ const icons = {
   </svg>`,
 };
 
-// HTML template without styles (styles applied via adoptedStyleSheets)
 const template = document.createElement('template');
 template.innerHTML = `
+  <style>
+    :host {
+      display: inline-flex;
+    }
+
+    :host([hidden]) {
+      display: none;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--vlog-space-1, 0.25rem);
+      border-radius: var(--vlog-radius-md, 0.375rem);
+      font-family: var(--vlog-font-sans, system-ui, sans-serif);
+      font-weight: var(--vlog-font-medium, 500);
+      white-space: nowrap;
+    }
+
+    /* Size variants */
+    .badge.size-sm {
+      padding: 0.125rem 0.375rem;
+      font-size: var(--vlog-text-xs, 0.75rem);
+    }
+
+    .badge.size-md {
+      padding: 0.25rem 0.5rem;
+      font-size: var(--vlog-text-sm, 0.875rem);
+    }
+
+    /* Variant styles */
+    .badge.variant-success {
+      background-color: var(--vlog-success-bg, rgba(34, 197, 94, 0.15));
+      color: var(--vlog-success-text, #86efac);
+    }
+
+    .badge.variant-warning {
+      background-color: var(--vlog-warning-bg, rgba(234, 179, 8, 0.15));
+      color: var(--vlog-warning-text, #fde047);
+    }
+
+    .badge.variant-error {
+      background-color: var(--vlog-error-bg, rgba(239, 68, 68, 0.15));
+      color: var(--vlog-error-text, #fca5a5);
+    }
+
+    .badge.variant-info {
+      background-color: var(--vlog-info-bg, rgba(6, 182, 212, 0.15));
+      color: var(--vlog-info-text, #67e8f9);
+    }
+
+    .badge.variant-neutral {
+      background-color: var(--vlog-bg-tertiary, #1e293b);
+      color: var(--vlog-text-tertiary, #94a3b8);
+    }
+
+    .badge.variant-processing {
+      background-color: var(--vlog-warning-bg, rgba(234, 179, 8, 0.15));
+      color: var(--vlog-warning-text, #fde047);
+    }
+
+    .badge.variant-pending {
+      background-color: var(--vlog-info-bg, rgba(6, 182, 212, 0.15));
+      color: var(--vlog-info-text, #67e8f9);
+    }
+
+    /* Icon styles */
+    .icon {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .icon svg {
+      width: 1em;
+      height: 1em;
+    }
+
+    .icon svg.spin {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* Dot indicator (alternative to icon) */
+    .dot {
+      width: 0.5em;
+      height: 0.5em;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .variant-success .dot {
+      background-color: var(--vlog-success, #22c55e);
+    }
+
+    .variant-warning .dot,
+    .variant-processing .dot {
+      background-color: var(--vlog-warning, #eab308);
+    }
+
+    .variant-error .dot {
+      background-color: var(--vlog-error, #ef4444);
+    }
+
+    .variant-info .dot,
+    .variant-pending .dot {
+      background-color: var(--vlog-info, #06b6d4);
+    }
+
+    .variant-neutral .dot {
+      background-color: var(--vlog-text-tertiary, #94a3b8);
+    }
+
+    /* Pulsing dot for processing */
+    .variant-processing .dot {
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.5;
+      }
+    }
+  </style>
   <span class="badge" role="status">
     <span class="icon"></span>
     <slot></slot>
@@ -199,11 +187,7 @@ export class VlogBadge extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-
-    // Use adoptedStyleSheets for CSP compliance
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
-
     this.badge = this.shadowRoot!.querySelector('.badge')!;
     this.iconContainer = this.shadowRoot!.querySelector('.icon')!;
   }
@@ -232,14 +216,14 @@ export class VlogBadge extends HTMLElement {
     // Update icon/dot
     if (noIcon) {
       this.iconContainer.innerHTML = '';
-      this.iconContainer.classList.add('hidden');
+      this.iconContainer.style.display = 'none';
     } else if (useDot) {
       this.iconContainer.innerHTML = '<span class="dot"></span>';
-      this.iconContainer.classList.remove('hidden');
+      this.iconContainer.style.display = 'flex';
     } else {
       const iconHtml = icons[variant as keyof typeof icons] || icons.neutral;
       this.iconContainer.innerHTML = iconHtml;
-      this.iconContainer.classList.remove('hidden');
+      this.iconContainer.style.display = 'flex';
     }
   }
 

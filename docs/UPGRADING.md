@@ -83,45 +83,6 @@ vlog worker status
 
 ## Version-Specific Upgrade Notes
 
-### Security: Admin API CORS Default Change (Issue #433)
-
-**Impact:** If you access the admin UI from a different origin than the API, you MUST configure CORS.
-
-**What Changed:**
-- **Previous behavior:** Admin API allowed all origins by default (`*`)
-- **New behavior:** Admin API defaults to same-origin only (empty list)
-
-**Who is affected:**
-- Users with reverse proxy setups serving UI and API from different hosts
-- Users running development servers (e.g., Vite on :3000, API on :9001)
-- Users with Docker Compose using separate UI and API containers on different ports
-
-**Who is NOT affected:**
-- Users accessing admin UI directly from the server (same hostname) - most common setup
-- Single-origin deployments where UI and API share the same hostname
-
-**How to tell if you need to configure CORS:**
-1. After upgrading, open browser console when accessing admin UI
-2. If you see "CORS policy" errors, configure `VLOG_ADMIN_CORS_ORIGINS`
-3. Same-origin setups (typical) need no changes
-
-**Action Required (if affected):**
-```bash
-# Set the origin(s) that should access the admin API
-export VLOG_ADMIN_CORS_ORIGINS=http://192.168.1.100:3000,http://devbox.local:3000
-
-# Restart admin API
-sudo systemctl restart vlog-admin
-```
-
-**Configuration notes:**
-- Origins must include protocol: `http://example.com:3000` (correct), `example.com:3000` (wrong)
-- Origins must NOT have trailing slash: `http://example.com:3000` (correct), `http://example.com:3000/` (wrong)
-- Do not mix `*` with specific origins - use either `*` alone or specific origins only
-- Invalid origin format will cause startup failure with clear error message
-
----
-
 ### Upgrading to v0.0.3
 
 This version adds significant new features: playlists, chapters, sprite sheets, advanced player features, and reliability improvements.

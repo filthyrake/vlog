@@ -4,17 +4,15 @@
  * A universal form input component supporting text, textarea, select,
  * checkbox, and radio with validation states and full accessibility.
  *
- * Uses constructable stylesheets for CSP compliance.
- *
  * @example
  * <vlog-input type="text" label="Title" :value="title" @change="title = $event.detail.value"></vlog-input>
  * <vlog-input type="textarea" label="Description" rows="4"></vlog-input>
  * <vlog-input type="select" label="Category"><option value="1">Option 1</option></vlog-input>
  */
 
-// Styles for main template (text, textarea, select inputs)
-// Uses constructable stylesheets for CSP compliance
-const styles = `
+const template = document.createElement('template');
+template.innerHTML = `
+  <style>
     :host {
       display: block;
     }
@@ -298,16 +296,32 @@ const styles = `
       background-color: var(--vlog-bg-tertiary, #1e293b);
       color: var(--vlog-text-primary, #f1f5f9);
     }
+  </style>
 
-    /* CSP-compliant visibility control */
-    .hidden {
-      display: none !important;
-    }
+  <div class="input-wrapper" part="wrapper">
+    <label class="label" part="label">
+      <span class="label-text"></span>
+      <span class="required-indicator" aria-hidden="true" style="display: none;">*</span>
+    </label>
+    <div class="input-container" part="container">
+      <span class="icon-left"><slot name="icon-left"></slot></span>
+      <!-- Input element will be inserted here -->
+      <span class="icon-right"><slot name="icon-right"></slot></span>
+    </div>
+    <div class="helper-text" part="helper" style="display: none;"></div>
+    <div class="error-message" part="error" role="alert" aria-live="polite" style="display: none;">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
+      </svg>
+      <span class="error-text"></span>
+    </div>
+  </div>
 `;
 
-// Styles for checkbox/radio template
-// Uses constructable stylesheets for CSP compliance
-const checkboxStyles = `
+// Checkbox/Radio template
+const checkboxTemplate = document.createElement('template');
+checkboxTemplate.innerHTML = `
+  <style>
     :host {
       display: block;
     }
@@ -369,50 +383,13 @@ const checkboxStyles = `
       margin-top: var(--vlog-space-1, 0.25rem);
       margin-left: calc(1rem + var(--vlog-space-2, 0.5rem));
     }
+  </style>
 
-    /* CSP-compliant visibility control */
-    .hidden {
-      display: none !important;
-    }
-`;
-
-// Create constructable stylesheets for CSP compliance
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(styles);
-
-const checkboxSheet = new CSSStyleSheet();
-checkboxSheet.replaceSync(checkboxStyles);
-
-const template = document.createElement('template');
-template.innerHTML = `
-  <div class="input-wrapper" part="wrapper">
-    <label class="label" part="label">
-      <span class="label-text"></span>
-      <span class="required-indicator hidden" aria-hidden="true">*</span>
-    </label>
-    <div class="input-container" part="container">
-      <span class="icon-left"><slot name="icon-left"></slot></span>
-      <!-- Input element will be inserted here -->
-      <span class="icon-right"><slot name="icon-right"></slot></span>
-    </div>
-    <div class="helper-text hidden" part="helper"></div>
-    <div class="error-message hidden" part="error" role="alert" aria-live="polite">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
-      </svg>
-      <span class="error-text"></span>
-    </div>
-  </div>
-`;
-
-// Checkbox/Radio template
-const checkboxTemplate = document.createElement('template');
-checkboxTemplate.innerHTML = `
   <div class="checkbox-wrapper" part="wrapper">
     <input type="checkbox" class="checkbox" part="input" />
     <label class="checkbox-label" part="label"><slot></slot></label>
   </div>
-  <div class="helper-text hidden" part="helper"></div>
+  <div class="helper-text" part="helper" style="display: none;"></div>
 `;
 
 export class VlogInput extends HTMLElement {
@@ -481,7 +458,6 @@ export class VlogInput extends HTMLElement {
     // Use main template for text/textarea/select
     this.shadowRoot!.innerHTML = '';
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
-    this.shadowRoot!.adoptedStyleSheets = [sheet];
 
     this.labelElement = this.shadowRoot!.querySelector('.label')!;
     this.labelText = this.shadowRoot!.querySelector('.label-text')!;
@@ -501,7 +477,6 @@ export class VlogInput extends HTMLElement {
   private renderCheckboxOrRadio(type: 'checkbox' | 'radio') {
     this.shadowRoot!.innerHTML = '';
     this.shadowRoot!.appendChild(checkboxTemplate.content.cloneNode(true));
-    this.shadowRoot!.adoptedStyleSheets = [checkboxSheet];
 
     const wrapper = this.shadowRoot!.querySelector('.checkbox-wrapper')!;
     wrapper.className = type === 'radio' ? 'radio-wrapper' : 'checkbox-wrapper';
@@ -608,12 +583,12 @@ export class VlogInput extends HTMLElement {
       this.labelText.textContent = label;
       this.labelElement.classList.add(`size-${size}`);
     } else {
-      this.labelElement.classList.add('hidden');
+      this.labelElement.style.display = 'none';
     }
 
     // Required
     if (this.hasAttribute('required')) {
-      this.requiredIndicator.classList.remove('hidden');
+      this.requiredIndicator.style.display = 'inline';
       this.inputElement.required = true;
       this.inputElement.setAttribute('aria-required', 'true');
     }
@@ -664,7 +639,7 @@ export class VlogInput extends HTMLElement {
     const helperText = this.getAttribute('helper-text');
     if (helperText) {
       this.helperElement.textContent = helperText;
-      this.helperElement.classList.remove('hidden');
+      this.helperElement.style.display = 'block';
       this.helperElement.id = `${this.inputId}-helper`;
     }
 
@@ -673,7 +648,7 @@ export class VlogInput extends HTMLElement {
     const state = this.getAttribute('state');
     if (errorMessage && state === 'error') {
       this.errorText.textContent = errorMessage;
-      this.errorElement.classList.remove('hidden');
+      this.errorElement.style.display = 'flex';
       this.errorElement.id = `${this.inputId}-error`;
       this.inputElement.setAttribute('aria-invalid', 'true');
       this.inputElement.setAttribute('aria-describedby', `${this.inputId}-error`);
@@ -713,7 +688,7 @@ export class VlogInput extends HTMLElement {
     const helperText = this.getAttribute('helper-text');
     if (helperText) {
       this.helperElement.textContent = helperText;
-      this.helperElement.classList.remove('hidden');
+      this.helperElement.style.display = 'block';
     }
   }
 
@@ -728,7 +703,7 @@ export class VlogInput extends HTMLElement {
       case 'label':
         if (this.labelText) {
           this.labelText.textContent = value || '';
-          this.labelElement.classList.toggle('hidden', !value);
+          this.labelElement.style.display = value ? 'flex' : 'none';
         }
         break;
       case 'placeholder':
@@ -748,7 +723,7 @@ export class VlogInput extends HTMLElement {
         this.inputElement.required = value !== null;
         this.inputElement.setAttribute('aria-required', value !== null ? 'true' : 'false');
         if (this.requiredIndicator) {
-          this.requiredIndicator.classList.toggle('hidden', value === null);
+          this.requiredIndicator.style.display = value !== null ? 'inline' : 'none';
         }
         break;
       case 'value':
@@ -766,14 +741,14 @@ export class VlogInput extends HTMLElement {
       case 'helper-text':
         if (this.helperElement) {
           this.helperElement.textContent = value || '';
-          this.helperElement.classList.toggle('hidden', !value);
+          this.helperElement.style.display = value ? 'block' : 'none';
         }
         break;
       case 'error-message':
         if (this.errorElement && this.errorText) {
           const state = this.getAttribute('state');
           this.errorText.textContent = value || '';
-          this.errorElement.classList.toggle('hidden', !(value && state === 'error'));
+          this.errorElement.style.display = (value && state === 'error') ? 'flex' : 'none';
           if (value && state === 'error') {
             this.inputElement.setAttribute('aria-invalid', 'true');
             this.inputElement.setAttribute('aria-describedby', `${this.inputId}-error`);
@@ -823,7 +798,7 @@ export class VlogInput extends HTMLElement {
     // Update error display
     const errorMessage = this.getAttribute('error-message');
     if (this.errorElement) {
-      this.errorElement.classList.toggle('hidden', !(errorMessage && state === 'error'));
+      this.errorElement.style.display = (errorMessage && state === 'error') ? 'flex' : 'none';
     }
 
     // Update aria-invalid

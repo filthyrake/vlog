@@ -15,7 +15,6 @@ import { createSettingsStore, type SettingsStore } from './settings.store';
 import { createBulkStore, type BulkStore } from './bulk.store';
 import { createSSEStore, type SSEStore, getActiveVideoIds } from './sse.store';
 import { createChaptersStore, type ChaptersStore } from './chapters.store';
-import { createUsersStore, type UsersStore } from './users.store';
 import { getKeyboardManager, destroyKeyboardManager } from '@/utils/keyboard';
 import type { ProgressSSEEvent, WorkerSSEEvent, CustomField } from '@/api/types';
 
@@ -34,23 +33,12 @@ export type AdminStore = AuthStore &
   SettingsStore &
   BulkStore &
   SSEStore &
-  ChaptersStore &
-  UsersStore & {
+  ChaptersStore & {
     init(): Promise<void>;
     destroy(): void;
     getApplicableCustomFields(): CustomField[];
     editModalTab: 'details' | 'chapters';
     openEditModalWithChapters(video: import('@/api/types').Video): void;
-    // CSP-compatible navigation methods
-    // Alpine.js CSP mode doesn't support semicolons in @click expressions
-    // These methods combine tab switching with data loading
-    openWorkersTab(): void;
-    openAnalyticsTab(): void;
-    openSettingsTab(): void;
-    openBrandingSettings(): void;
-    openCustomFieldsSettings(): void;
-    openProfileTab(): void;
-    openUsersTab(): void;
   };
 
 /**
@@ -71,7 +59,6 @@ export function createAdminStore(): AdminStore {
   const bulkStore = createBulkStore();
   const sseStore = createSSEStore();
   const chaptersStore = createChaptersStore();
-  const usersStore = createUsersStore();
 
   // Create the combined store
   const store: AdminStore = {
@@ -88,7 +75,6 @@ export function createAdminStore(): AdminStore {
     ...bulkStore,
     ...sseStore,
     ...chaptersStore,
-    ...usersStore,
 
     // Edit modal tab state
     editModalTab: 'details' as 'details' | 'chapters',
@@ -102,82 +88,6 @@ export function createAdminStore(): AdminStore {
       this.editModalTab = 'details';
       // Load chapters asynchronously
       this.loadChapters(video.id);
-    },
-
-    // =========================================================================
-    // CSP-Compatible Navigation Methods
-    // =========================================================================
-    // Alpine.js CSP mode doesn't support semicolons in @click expressions.
-    // Instead of: @click="tab = 'workers'; loadWorkers(); loadDeploymentHistory()"
-    // We use:     @click="openWorkersTab()"
-    //
-    // These methods combine tab switching with the necessary data loading,
-    // making the intent clear: "open" indicates navigation + setup.
-    // =========================================================================
-
-    /**
-     * Navigate to Workers tab and load worker data
-     * Replaces: tab = 'workers'; loadWorkers(); loadDeploymentHistory()
-     */
-    openWorkersTab(): void {
-      this.tab = 'workers';
-      this.loadWorkers();
-      this.loadDeploymentHistory();
-    },
-
-    /**
-     * Navigate to Analytics tab and load analytics data
-     * Replaces: tab = 'analytics'; loadAnalytics()
-     */
-    openAnalyticsTab(): void {
-      this.tab = 'analytics';
-      this.loadAnalytics();
-    },
-
-    /**
-     * Navigate to Settings tab and load settings data
-     * Replaces: tab = 'settings'; loadWatermarkSettings(); loadAllSettings()
-     */
-    openSettingsTab(): void {
-      this.tab = 'settings';
-      this.loadWatermarkSettings();
-      this.loadAllSettings();
-    },
-
-    /**
-     * Navigate to Branding settings sub-tab and load branding data
-     * Replaces: settingsTab = 'branding'; loadBrandingSettings()
-     */
-    openBrandingSettings(): void {
-      this.settingsTab = 'branding';
-      this.loadBrandingSettings();
-    },
-
-    /**
-     * Navigate to Custom Fields settings sub-tab and load custom fields data
-     * Replaces: settingsTab = 'custom_fields'; loadCustomFields()
-     */
-    openCustomFieldsSettings(): void {
-      this.settingsTab = 'custom_fields';
-      this.loadCustomFields();
-    },
-
-    /**
-     * Navigate to Profile tab and load user data
-     */
-    openProfileTab(): void {
-      this.tab = 'profile';
-      this.loadSessions();
-      this.loadApiKeys();
-    },
-
-    /**
-     * Navigate to Users tab and load user management data (admin only)
-     */
-    openUsersTab(): void {
-      this.tab = 'users';
-      this.loadUsers();
-      this.loadInvites();
     },
 
     /**
@@ -342,5 +252,4 @@ export { createSettingsStore, type SettingsStore } from './settings.store';
 export { createBulkStore, type BulkStore } from './bulk.store';
 export { createSSEStore, type SSEStore } from './sse.store';
 export { createChaptersStore, type ChaptersStore } from './chapters.store';
-export { createUsersStore, type UsersStore } from './users.store';
 export type { AlpineContext, AdminTab, SettingsTab } from './types';
