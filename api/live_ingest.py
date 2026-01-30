@@ -33,6 +33,7 @@ from api.common import get_real_ip
 from api.database import live_stream_segments, live_streams
 from api.db_retry import db_execute_with_retry
 from api.live_auth import verify_stream_key
+from api.live_metrics import push_raw_metric
 from api.live_playlist import update_master_playlist, update_variant_playlist
 from api.live_schemas import IngestStatusResponse, SegmentUploadResponse
 
@@ -490,6 +491,28 @@ async def put_media_segment(
             except Exception as playlist_error:
                 # Log but don't fail the upload if playlist update fails
                 logger.warning(f"Failed to update playlists for {slug}/{quality}: {playlist_error}")
+
+            # Push raw metrics to Redis for background aggregation (non-blocking)
+            # Calculate latency if segment has creation timestamp in header
+            latency_ms = None
+            x_segment_created = request.headers.get("x-segment-created-at")
+            if x_segment_created:
+                try:
+                    created_at = datetime.fromisoformat(x_segment_created.replace("Z", "+00:00"))
+                    latency_ms = int((now - created_at).total_seconds() * 1000)
+                except (ValueError, TypeError):
+                    pass  # Invalid timestamp, skip latency calculation
+
+            # Fire-and-forget: don't await or block on metrics push
+            asyncio.create_task(
+                push_raw_metric(
+                    stream_id=stream_id,
+                    size_bytes=len(data),
+                    duration_ms=duration_ms,
+                    latency_ms=latency_ms,
+                    quality=quality,
+                )
+            )
 
     except Exception as e:
         # Clean up orphaned file if DB operations failed after file write

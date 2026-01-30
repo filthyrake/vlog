@@ -120,7 +120,7 @@ class TestPasswordValidation:
 
     def test_validate_letters_only(self):
         """Password with only letters should fail."""
-        is_valid, error = validate_password_strength("abcdefghijklmnop")
+        is_valid, error = validate_password_strength("abcdefghijklmnop")  # pragma: allowlist secret
         assert is_valid is False
         assert "numbers" in error.lower() or "symbols" in error.lower()
 

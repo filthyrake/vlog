@@ -237,6 +237,7 @@ from api.settings_service import (
 from api.worker_auth import authenticate_api_key
 from api.live_auth import generate_stream_key, get_key_prefix, hash_stream_key, revoke_stream_key
 from api.live_schemas import (
+    ActiveViewersResponse,
     LiveStreamCreate,
     LiveStreamCreatedResponse,
     LiveStreamKeyRegenerateResponse,
@@ -244,6 +245,9 @@ from api.live_schemas import (
     LiveStreamResponse,
     LiveStreamStatus,
     LiveStreamUpdate,
+    MetricDataPoint,
+    StreamMetricsResponse,
+    ViewerStatsResponse,
 )
 from api.logging_config import setup_logging
 from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
@@ -1240,11 +1244,42 @@ else:
 
 app.mount("/static", StaticFiles(directory=str(ADMIN_SRC_DIR / "static")), name="static")
 
+# Serve studio web files (Issue #524 - Broadcaster Dashboard)
+STUDIO_SRC_DIR = Path(__file__).parent.parent / "web" / "studio"
+STUDIO_DIST_DIR = STUDIO_SRC_DIR / "dist"
+
+# Check if studio dist exists (production build)
+if STUDIO_DIST_DIR.exists():
+    STUDIO_WEB_DIR = STUDIO_DIST_DIR
+    # Mount the studio assets directory
+    if (STUDIO_DIST_DIR / "assets").exists():
+        app.mount("/studio/assets", StaticFiles(directory=str(STUDIO_DIST_DIR / "assets")), name="studio-assets")
+else:
+    STUDIO_WEB_DIR = STUDIO_SRC_DIR
+
+# Mount studio source files for development
+if STUDIO_SRC_DIR.exists():
+    app.mount("/studio/src", StaticFiles(directory=str(STUDIO_SRC_DIR / "src")), name="studio-src")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def admin_home():
     """Serve the admin page."""
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/studio/", response_class=HTMLResponse)
+@app.get("/studio", response_class=HTMLResponse)
+async def studio_home():
+    """Serve the studio/broadcaster dashboard."""
+    if STUDIO_SRC_DIR.exists():
+        if STUDIO_DIST_DIR.exists():
+            return FileResponse(STUDIO_DIST_DIR / "index.html")
+        return FileResponse(STUDIO_SRC_DIR / "index.html")
+    return HTMLResponse(
+        content="<html><body><h1>Studio not available</h1><p>The studio frontend has not been built.</p></body></html>",
+        status_code=503,
+    )
 
 
 @app.get("/health")
@@ -11015,6 +11050,184 @@ async def delete_live_stream(request: Request, slug: str):
 
 
 # =============================================================================
+# Live Stream Metrics & Viewer Stats (Issue #524)
+# =============================================================================
+
+
+@v1_router.get("/live/streams/{slug}/metrics")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_live_stream_metrics(
+    request: Request,
+    slug: str,
+    minutes: int = Query(5, ge=1, le=60, description="Minutes of history to return"),
+) -> StreamMetricsResponse:
+    """
+    Get recent metrics for a live stream.
+
+    Only accessible by stream owner or admin.
+    Returns bitrate, latency, and health data for the last N minutes.
+    """
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Import here to avoid circular imports
+    from api.live_metrics import get_recent_metrics
+
+    metrics_data = await get_recent_metrics(row["id"], minutes=minutes)
+
+    return StreamMetricsResponse(
+        stream_id=row["id"],
+        current_bitrate=row["current_bitrate"],
+        connection_health=row["connection_health"] or "unknown",
+        last_metric_at=row["last_metric_at"],
+        metrics=[
+            MetricDataPoint(
+                timestamp=m["timestamp"],
+                bitrate_video=m["bitrate_video"],
+                bitrate_audio=m["bitrate_audio"],
+                bitrate_total=m["bitrate_total"],
+                segment_push_latency_ms=m["segment_push_latency_ms"],
+                segments_received=m["segments_received"] or 0,
+                segments_dropped=m["segments_dropped"] or 0,
+                interval_seconds=m["interval_seconds"] or 10,
+            )
+            for m in metrics_data
+        ],
+    )
+
+
+@v1_router.get("/live/streams/{slug}/metrics/history")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_live_stream_metrics_history(
+    request: Request,
+    slug: str,
+    start: datetime = Query(..., description="Start of time range (ISO 8601)"),
+    end: datetime = Query(..., description="End of time range (ISO 8601)"),
+) -> StreamMetricsResponse:
+    """
+    Get historical metrics for a live stream within a time range.
+
+    Only accessible by stream owner or admin.
+    Maximum time range is 24 hours (limited by metrics retention).
+    """
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    # Validate time range
+    if end <= start:
+        raise HTTPException(status_code=400, detail="End time must be after start time")
+
+    max_range = timedelta(hours=24)
+    if (end - start) > max_range:
+        raise HTTPException(status_code=400, detail="Time range cannot exceed 24 hours")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Import here to avoid circular imports
+    from api.live_metrics import get_metrics_history
+
+    metrics_data = await get_metrics_history(row["id"], start=start, end=end)
+
+    return StreamMetricsResponse(
+        stream_id=row["id"],
+        current_bitrate=row["current_bitrate"],
+        connection_health=row["connection_health"] or "unknown",
+        last_metric_at=row["last_metric_at"],
+        metrics=[
+            MetricDataPoint(
+                timestamp=m["timestamp"],
+                bitrate_video=m["bitrate_video"],
+                bitrate_audio=m["bitrate_audio"],
+                bitrate_total=m["bitrate_total"],
+                segment_push_latency_ms=m["segment_push_latency_ms"],
+                segments_received=m["segments_received"] or 0,
+                segments_dropped=m["segments_dropped"] or 0,
+                interval_seconds=m["interval_seconds"] or 10,
+            )
+            for m in metrics_data
+        ],
+    )
+
+
+@v1_router.get("/live/streams/{slug}/viewers")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_live_stream_viewer_stats(
+    request: Request,
+    slug: str,
+) -> ViewerStatsResponse:
+    """
+    Get viewer statistics for a live stream.
+
+    Only accessible by stream owner or admin.
+    Returns current, peak, and total viewer counts plus quality distribution.
+    """
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Import here to avoid circular imports
+    from api.live_viewers import get_stream_viewer_stats
+
+    stats = await get_stream_viewer_stats(row["id"])
+
+    return ViewerStatsResponse(
+        current=stats["current"],
+        peak=stats["peak"],
+        total=stats["total"],
+        quality_distribution=stats["quality_distribution"],
+    )
+
+
+@v1_router.get("/live/streams/{slug}/viewers/active")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_live_stream_active_viewers(
+    request: Request,
+    slug: str,
+    limit: int = Query(100, ge=1, le=500, description="Maximum viewers to return"),
+) -> ActiveViewersResponse:
+    """
+    Get list of active viewers for a live stream.
+
+    Only accessible by stream owner or admin.
+    Returns viewer details (truncated session IDs for privacy).
+    """
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Import here to avoid circular imports
+    from api.live_viewers import get_active_viewers
+    from api.live_schemas import ActiveViewerInfo
+
+    viewers = await get_active_viewers(row["id"], limit=limit)
+
+    return ActiveViewersResponse(
+        viewers=[
+            ActiveViewerInfo(
+                session_id_prefix=v["session_id_prefix"],
+                user_id=v["user_id"],
+                joined_at=datetime.fromisoformat(v["joined_at"]) if v["joined_at"] else None,
+                quality=v["quality"],
+            )
+            for v in viewers
+        ],
+        total=row["viewer_count_current"],
+    )
+
+
+# =============================================================================
 # Comment Moderation Endpoints (Issue #213)
 # =============================================================================
 
@@ -11798,6 +12011,19 @@ v1_router.include_router(auth_api_keys.router)
 v1_router.include_router(auth_invite.router)
 v1_router.include_router(auth_oidc.router)
 logger.info("Mounted user authentication routers")
+
+
+# =============================================================================
+# Studio/Broadcaster Dashboard Routers (Issue #524)
+# =============================================================================
+
+from api import studio as studio_api
+from api import studio_sse
+
+# Include studio routers directly (they have their own /api prefixes)
+app.include_router(studio_api.router)
+app.include_router(studio_sse.router)
+logger.info("Mounted studio/broadcaster dashboard routers")
 
 
 # =============================================================================
