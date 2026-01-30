@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; form-action 'self'; object-src 'none'; base-uri 'self';">
+    <title>VLog Studio - Broadcaster Dashboard</title>
+    <link rel="stylesheet" href="/static/vendor/tailwind.css">
+    <script type="module" src="./src/main.ts"></script>
+</head>
+<body class="bg-dark-950 text-dark-100 min-h-screen" x-data="studio()" x-init="init()" x-cloak>
+    <!-- Auth Modal -->
+    <template x-if="showAuthModal">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" @keydown.escape.window="false">
+            <div class="bg-dark-900 rounded-lg p-8 w-full max-w-md border border-dark-700">
+                <h2 class="text-2xl font-bold text-white mb-6">Sign In to Studio</h2>
+
+                <form @submit.prevent="submitAuth()">
+                    <div class="mb-4">
+                        <label class="block text-dark-300 mb-2">Username or Email</label>
+                        <input
+                            type="text"
+                            x-model="loginUsername"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Enter username or email"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-6">
+                        <label class="block text-dark-300 mb-2">Password</label>
+                        <input
+                            type="password"
+                            x-model="loginPassword"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Enter password"
+                            required
+                        >
+                    </div>
+
+                    <template x-if="authError">
+                        <div class="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm" x-text="authError"></div>
+                    </template>
+
+                    <button
+                        type="submit"
+                        class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                        :disabled="authLoading"
+                    >
+                        <span x-show="!authLoading">Sign In</span>
+                        <span x-show="authLoading">Signing in...</span>
+                    </button>
+                </form>
+
+                <template x-if="oidcEnabled">
+                    <div class="mt-4">
+                        <div class="text-center text-dark-400 mb-4">or</div>
+                        <button
+                            @click="startOidcLogin()"
+                            class="w-full py-3 bg-dark-700 hover:bg-dark-600 text-white font-medium rounded-lg transition-colors"
+                        >
+                            Sign in with <span x-text="oidcProviderName"></span>
+                        </button>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </template>
+
+    <!-- Main App -->
+    <template x-if="isAuthenticated">
+        <div class="min-h-screen flex flex-col">
+            <!-- Header -->
+            <header class="bg-dark-900 border-b border-dark-800 sticky top-0 z-40">
+                <div class="max-w-7xl mx-auto px-4 py-4">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-4">
+                            <h1 class="text-2xl font-bold text-white">VLog Studio</h1>
+                            <template x-if="view === 'detail' && selectedStream">
+                                <button
+                                    @click="goToList()"
+                                    class="text-dark-400 hover:text-white transition-colors"
+                                >
+                                    &larr; Back to Streams
+                                </button>
+                            </template>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <span class="text-dark-400" x-text="currentUser?.display_name || currentUser?.username"></span>
+                            <button
+                                @click="logout()"
+                                class="px-4 py-2 text-dark-400 hover:text-white transition-colors"
+                            >
+                                Sign Out
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Content -->
+            <main class="flex-1">
+                <!-- Stream List View -->
+                <template x-if="view === 'list'">
+                    <div class="max-w-7xl mx-auto px-4 py-8">
+                        <div class="flex items-center justify-between mb-8">
+                            <h2 class="text-xl font-semibold text-white">My Streams</h2>
+                            <button
+                                @click="openCreateModal()"
+                                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                            >
+                                + New Stream
+                            </button>
+                        </div>
+
+                        <!-- Loading state -->
+                        <template x-if="loading && streams.length === 0">
+                            <div class="text-center py-12 text-dark-400">Loading streams...</div>
+                        </template>
+
+                        <!-- Empty state -->
+                        <template x-if="!loading && streams.length === 0">
+                            <div class="text-center py-12">
+                                <p class="text-dark-400 mb-4">You haven't created any streams yet.</p>
+                                <button
+                                    @click="openCreateModal()"
+                                    class="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                                >
+                                    Create Your First Stream
+                                </button>
+                            </div>
+                        </template>
+
+                        <!-- Stream grid -->
+                        <template x-if="streams.length > 0">
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                <template x-for="stream in streams" :key="stream.id">
+                                    <div
+                                        @click="goToDetail(stream.slug)"
+                                        class="bg-dark-900 border border-dark-800 rounded-lg p-6 cursor-pointer hover:border-dark-700 transition-colors"
+                                    >
+                                        <div class="flex items-start justify-between mb-4">
+                                            <h3 class="font-semibold text-white" x-text="stream.title"></h3>
+                                            <span
+                                                class="px-2 py-1 text-xs font-medium rounded uppercase"
+                                                :class="{
+                                                    'bg-green-900/30 text-green-400': stream.status === 'live',
+                                                    'bg-yellow-900/30 text-yellow-400': stream.status === 'idle',
+                                                    'bg-orange-900/30 text-orange-400': stream.status === 'ending',
+                                                    'bg-dark-700 text-dark-400': stream.status === 'ended'
+                                                }"
+                                                x-text="stream.status"
+                                            ></span>
+                                        </div>
+                                        <p class="text-dark-400 text-sm mb-4 line-clamp-2" x-text="stream.description || 'No description'"></p>
+                                        <div class="flex items-center justify-between text-sm text-dark-500">
+                                            <span x-text="stream.segment_count + ' segments'"></span>
+                                            <span x-text="formatTimeSince(stream.last_segment_at)"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+
+                        <!-- Pagination -->
+                        <template x-if="hasMore">
+                            <div class="mt-8 text-center">
+                                <button
+                                    @click="loadStreams(page + 1)"
+                                    class="px-6 py-2 bg-dark-800 hover:bg-dark-700 text-white rounded-lg transition-colors"
+                                    :disabled="loading"
+                                >
+                                    Load More
+                                </button>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <!-- Stream Detail View -->
+                <template x-if="view === 'detail' && selectedStream">
+                    <div class="max-w-7xl mx-auto px-4 py-8">
+                        <!-- Stream Header -->
+                        <div class="bg-dark-900 border border-dark-800 rounded-lg p-6 mb-6">
+                            <div class="flex items-start justify-between mb-4">
+                                <div>
+                                    <h2 class="text-2xl font-bold text-white" x-text="selectedStream.title"></h2>
+                                    <p class="text-dark-400 mt-1" x-text="selectedStream.description || 'No description'"></p>
+                                </div>
+                                <span
+                                    class="px-3 py-1 text-sm font-medium rounded uppercase"
+                                    :class="{
+                                        'bg-green-900/30 text-green-400': selectedStream.status === 'live',
+                                        'bg-yellow-900/30 text-yellow-400': selectedStream.status === 'idle',
+                                        'bg-orange-900/30 text-orange-400': selectedStream.status === 'ending',
+                                        'bg-dark-700 text-dark-400': selectedStream.status === 'ended'
+                                    }"
+                                    x-text="selectedStream.status.toUpperCase()"
+                                ></span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <!-- Live Metrics -->
+                            <div class="bg-dark-900 border border-dark-800 rounded-lg p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4">Live Metrics</h3>
+                                <div class="grid grid-cols-3 gap-4">
+                                    <div class="bg-dark-800 rounded-lg p-4">
+                                        <div class="text-dark-400 text-sm mb-1">Segments</div>
+                                        <div class="text-2xl font-bold text-white" x-text="metrics?.segment_count ?? selectedStream.segment_count"></div>
+                                    </div>
+                                    <div class="bg-dark-800 rounded-lg p-4">
+                                        <div class="text-dark-400 text-sm mb-1">Bitrate</div>
+                                        <div class="text-2xl font-bold text-white" x-text="formatBitrate(metrics?.bitrate_kbps ?? null)"></div>
+                                    </div>
+                                    <div class="bg-dark-800 rounded-lg p-4">
+                                        <div class="text-dark-400 text-sm mb-1">Last Update</div>
+                                        <div class="text-lg font-medium text-white" x-text="formatTimeSince(metrics?.last_segment_at ?? selectedStream.last_segment_at)"></div>
+                                    </div>
+                                </div>
+                                <template x-if="metrics?.qualities && metrics.qualities.length > 0">
+                                    <div class="mt-4">
+                                        <div class="text-dark-400 text-sm mb-2">Active Qualities</div>
+                                        <div class="flex gap-2">
+                                            <template x-for="quality in metrics.qualities" :key="quality">
+                                                <span class="px-2 py-1 bg-blue-900/30 text-blue-400 text-sm rounded" x-text="quality"></span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Connection Info -->
+                            <div class="bg-dark-900 border border-dark-800 rounded-lg p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4">Connection Info</h3>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-dark-400 text-sm mb-1">Stream Slug</label>
+                                        <div class="flex items-center gap-2">
+                                            <code class="flex-1 px-3 py-2 bg-dark-800 rounded text-white font-mono text-sm" x-text="selectedStream.slug"></code>
+                                            <button
+                                                @click="VLogFormatters.copyToClipboard(selectedStream.slug)"
+                                                class="px-3 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded transition-colors"
+                                            >
+                                                Copy
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="border-t border-dark-800 pt-4">
+                                        <p class="text-dark-400 text-sm mb-3">Lost your stream key?</p>
+                                        <button
+                                            @click="openRegenerateModal()"
+                                            class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded transition-colors"
+                                            :disabled="selectedStream.status === 'live'"
+                                            :class="{'opacity-50 cursor-not-allowed': selectedStream.status === 'live'}"
+                                        >
+                                            Regenerate Key
+                                        </button>
+                                        <template x-if="selectedStream.status === 'live'">
+                                            <p class="text-yellow-400 text-xs mt-2">Cannot regenerate while streaming</p>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Stream Settings -->
+                            <div class="bg-dark-900 border border-dark-800 rounded-lg p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4">Settings</h3>
+                                <div class="space-y-4">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-dark-300">DVR Enabled</span>
+                                        <span class="text-white" x-text="selectedStream.dvr_enabled ? 'Yes' : 'No'"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-dark-300">DVR Window</span>
+                                        <span class="text-white" x-text="Math.round(selectedStream.dvr_window_seconds / 3600) + ' hours'"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-dark-300">Auto Record VOD</span>
+                                        <span class="text-white" x-text="selectedStream.auto_record_vod ? 'Yes' : 'No'"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Stream Controls -->
+                            <div class="bg-dark-900 border border-dark-800 rounded-lg p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4">Controls</h3>
+                                <template x-if="selectedStream.status !== 'ended'">
+                                    <button
+                                        @click="openEndModal()"
+                                        class="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
+                                    >
+                                        End Stream
+                                    </button>
+                                </template>
+                                <template x-if="selectedStream.status === 'ended'">
+                                    <p class="text-dark-400 text-center">This stream has ended.</p>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </main>
+        </div>
+    </template>
+
+    <!-- Create Stream Modal -->
+    <template x-if="showCreateModal">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" @keydown.escape.window="closeCreateModal()">
+            <div class="bg-dark-900 rounded-lg p-8 w-full max-w-lg border border-dark-700">
+                <h2 class="text-xl font-bold text-white mb-6">Create New Stream</h2>
+
+                <form @submit.prevent="createStream()">
+                    <div class="mb-4">
+                        <label class="block text-dark-300 mb-2">Title *</label>
+                        <input
+                            type="text"
+                            x-model="createTitle"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Enter stream title"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="block text-dark-300 mb-2">Description</label>
+                        <textarea
+                            x-model="createDescription"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-white focus:outline-none focus:border-blue-500 h-24 resize-none"
+                            placeholder="Enter stream description (optional)"
+                        ></textarea>
+                    </div>
+
+                    <div class="mb-4 flex items-center gap-3">
+                        <input
+                            type="checkbox"
+                            id="dvrEnabled"
+                            x-model="createDvrEnabled"
+                            class="w-5 h-5 bg-dark-800 border-dark-700 rounded"
+                        >
+                        <label for="dvrEnabled" class="text-dark-300">Enable DVR (viewers can rewind)</label>
+                    </div>
+
+                    <div class="mb-4 flex items-center gap-3">
+                        <input
+                            type="checkbox"
+                            id="autoRecordVod"
+                            x-model="createAutoRecordVod"
+                            class="w-5 h-5 bg-dark-800 border-dark-700 rounded"
+                        >
+                        <label for="autoRecordVod" class="text-dark-300">Auto-record as VOD</label>
+                    </div>
+
+                    <template x-if="createError">
+                        <div class="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm" x-text="createError"></div>
+                    </template>
+
+                    <div class="flex gap-3 justify-end">
+                        <button
+                            type="button"
+                            @click="closeCreateModal()"
+                            class="px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                            :disabled="createLoading"
+                        >
+                            <span x-show="!createLoading">Create Stream</span>
+                            <span x-show="createLoading">Creating...</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </template>
+
+    <!-- Stream Key Modal -->
+    <template x-if="showKeyModal && newStreamKey">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+            <div class="bg-dark-900 rounded-lg p-8 w-full max-w-lg border border-dark-700">
+                <div class="flex items-start gap-4 mb-6">
+                    <div class="flex-shrink-0 w-10 h-10 bg-yellow-900/30 rounded-full flex items-center justify-center">
+                        <span class="text-yellow-400 text-xl">!</span>
+                    </div>
+                    <div>
+                        <h2 class="text-xl font-bold text-white">Save Your Stream Key</h2>
+                        <p class="text-dark-400 mt-1">This key will only be shown <strong>once</strong>. Copy it now and store it securely.</p>
+                    </div>
+                </div>
+
+                <div class="space-y-4 mb-6">
+                    <div>
+                        <label class="block text-dark-400 text-sm mb-1">RTMP URL</label>
+                        <div class="flex items-center gap-2">
+                            <code class="flex-1 px-3 py-2 bg-dark-800 rounded text-white font-mono text-sm overflow-x-auto" x-text="newStreamRtmpUrl"></code>
+                            <button
+                                @click="VLogFormatters.copyToClipboard(newStreamRtmpUrl)"
+                                class="px-3 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded transition-colors flex-shrink-0"
+                            >
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-dark-400 text-sm mb-1">Stream Key</label>
+                        <div class="flex items-center gap-2">
+                            <code class="flex-1 px-3 py-2 bg-dark-800 rounded text-white font-mono text-sm overflow-x-auto" x-text="newStreamKey"></code>
+                            <button
+                                @click="VLogFormatters.copyToClipboard(newStreamKey)"
+                                class="px-3 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded transition-colors flex-shrink-0"
+                            >
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-6 flex items-center gap-3">
+                    <input
+                        type="checkbox"
+                        id="keySaved"
+                        x-model="keySaved"
+                        @change="acknowledgeKeySaved()"
+                        class="w-5 h-5 bg-dark-800 border-dark-700 rounded"
+                    >
+                    <label for="keySaved" class="text-dark-300">I have saved my stream key</label>
+                </div>
+
+                <button
+                    @click="clearNewStreamKey()"
+                    class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                    :disabled="!keySaved"
+                    :class="{'opacity-50 cursor-not-allowed': !keySaved}"
+                >
+                    Continue to Dashboard
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <!-- Regenerate Key Modal -->
+    <template x-if="showRegenerateModal">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" @keydown.escape.window="closeRegenerateModal()">
+            <div class="bg-dark-900 rounded-lg p-8 w-full max-w-md border border-dark-700">
+                <h2 class="text-xl font-bold text-white mb-4">Regenerate Stream Key?</h2>
+                <p class="text-dark-400 mb-6">
+                    This will invalidate your current stream key immediately. Any software using the old key will no longer be able to stream.
+                </p>
+
+                <template x-if="regenerateError">
+                    <div class="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm" x-text="regenerateError"></div>
+                </template>
+
+                <div class="flex gap-3 justify-end">
+                    <button
+                        @click="closeRegenerateModal()"
+                        class="px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg transition-colors"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        @click="regenerateKey(selectedStream.slug)"
+                        class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded-lg transition-colors"
+                        :disabled="regenerateLoading"
+                    >
+                        <span x-show="!regenerateLoading">Regenerate Key</span>
+                        <span x-show="regenerateLoading">Regenerating...</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- End Stream Modal -->
+    <template x-if="showEndModal">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" @keydown.escape.window="closeEndModal()">
+            <div class="bg-dark-900 rounded-lg p-8 w-full max-w-md border border-dark-700">
+                <h2 class="text-xl font-bold text-white mb-4">End Stream?</h2>
+                <p class="text-dark-400 mb-6">
+                    Are you sure you want to end this stream? This action cannot be undone.
+                </p>
+
+                <div class="flex gap-3 justify-end">
+                    <button
+                        @click="closeEndModal()"
+                        class="px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg transition-colors"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        @click="endStream(selectedStream.slug)"
+                        class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
+                        :disabled="endLoading"
+                    >
+                        <span x-show="!endLoading">End Stream</span>
+                        <span x-show="endLoading">Ending...</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+</body>
+</html>

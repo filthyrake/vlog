@@ -656,6 +656,12 @@ class AdminAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Skip middleware for studio routes - they use user session auth (vlog_session)
+        # instead of admin session (vlog_admin_session) and handle their own CSRF
+        if path.startswith("/api/v1/studio"):
+            await self.app(scope, receive, send)
+            return
+
         # Handle authentication when ADMIN_API_SECRET is not configured
         # Issue #431: Require authentication by default instead of allowing all requests
         if not ADMIN_API_SECRET:
@@ -1240,11 +1246,31 @@ else:
 
 app.mount("/static", StaticFiles(directory=str(ADMIN_SRC_DIR / "static")), name="static")
 
+# Serve studio web files
+# Use dist/ for production (built files), source for development
+STUDIO_SRC_DIR = Path(__file__).parent.parent / "web" / "studio"
+STUDIO_DIST_DIR = STUDIO_SRC_DIR / "dist"
+
+# Check if dist exists (production build), otherwise fall back to source
+if STUDIO_DIST_DIR.exists():
+    STUDIO_WEB_DIR = STUDIO_DIST_DIR
+    # Mount the studio assets directory for bundled JS/CSS
+    app.mount("/studio/assets", StaticFiles(directory=str(STUDIO_DIST_DIR / "assets")), name="studio-assets")
+else:
+    STUDIO_WEB_DIR = STUDIO_SRC_DIR
+
 
 @app.get("/", response_class=HTMLResponse)
 async def admin_home():
     """Serve the admin page."""
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/studio", response_class=HTMLResponse)
+@app.get("/studio/", response_class=HTMLResponse)
+async def studio_home():
+    """Serve the studio broadcaster dashboard."""
+    return FileResponse(STUDIO_WEB_DIR / "index.html")
 
 
 @app.get("/health")
@@ -11798,6 +11824,18 @@ v1_router.include_router(auth_api_keys.router)
 v1_router.include_router(auth_invite.router)
 v1_router.include_router(auth_oidc.router)
 logger.info("Mounted user authentication routers")
+
+
+# =============================================================================
+# Studio/Broadcaster Dashboard Routers (Issue #524)
+# =============================================================================
+
+from api import studio, studio_sse
+
+# Include studio module routers - these have their own /api/v1/studio prefix
+app.include_router(studio.router)
+app.include_router(studio_sse.router)
+logger.info("Mounted studio dashboard routers")
 
 
 # =============================================================================

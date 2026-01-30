@@ -1028,10 +1028,19 @@ live_streams = sa.Table(
         sa.ForeignKey("categories.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Stream ownership for multi-user auth (Issue #524)
+    # Nullable for backward compatibility - existing streams assigned to first admin during migration
+    sa.Column(
+        "owner_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Index("ix_live_streams_slug", "slug"),
     sa.Index("ix_live_streams_status", "status"),
     sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
     sa.Index("ix_live_streams_created_at", "created_at"),
+    sa.Index("ix_live_streams_owner_id", "owner_id"),
 )
 
 # Live stream segment tracking for DVR and VOD recording

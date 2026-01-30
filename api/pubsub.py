@@ -488,6 +488,71 @@ async def publish_worker_command(
         return False
 
 
+async def publish_stream_metrics(
+    stream_id: int,
+    stream_slug: str,
+    status: str,
+    segment_count: int,
+    qualities: List[str],
+    bitrate_kbps: Optional[int] = None,
+    last_segment_at: Optional[str] = None,
+) -> bool:
+    """
+    Publish stream metrics for studio dashboard SSE.
+
+    Args:
+        stream_id: Stream ID
+        stream_slug: Stream slug
+        status: Current stream status (idle, live, ending, ended)
+        segment_count: Total segment count
+        qualities: List of active qualities
+        bitrate_kbps: Estimated bitrate in kbps
+        last_segment_at: ISO timestamp of last segment
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "metrics",
+        "stream_id": stream_id,
+        "stream_slug": stream_slug,
+        "status": status,
+        "segment_count": segment_count,
+        "qualities": qualities,
+        "bitrate_kbps": bitrate_kbps,
+        "last_segment_at": last_segment_at,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        payload = json.dumps(message)
+        # Publish to stream-specific channel for studio dashboard
+        await redis.publish(channel_name("live", f"{stream_id}:metrics"), payload)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish stream metrics: {e}")
+        return False
+
+
+async def subscribe_to_stream_metrics(stream_id: int) -> Subscriber:
+    """
+    Create a subscriber for stream metrics updates.
+
+    Args:
+        stream_id: The stream ID to subscribe to
+
+    Returns:
+        Configured Subscriber instance
+    """
+    subscriber = Subscriber()
+    await subscriber.subscribe(channel_name("live", f"{stream_id}:metrics"))
+    return subscriber
+
+
 async def request_worker_response(
     worker_id: str,
     command: str,
