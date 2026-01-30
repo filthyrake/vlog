@@ -1028,10 +1028,34 @@ live_streams = sa.Table(
         sa.ForeignKey("categories.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Health metrics (Issue #524 - Broadcaster Dashboard)
+    sa.Column("current_bitrate", sa.Integer, nullable=True),
+    sa.Column(
+        "connection_health",
+        sa.String(20),
+        sa.CheckConstraint(
+            "connection_health IN ('good', 'degraded', 'poor', 'unknown')",
+            name="ck_live_streams_connection_health",
+        ),
+        nullable=True,
+    ),
+    sa.Column("last_metric_at", sa.DateTime(timezone=True), nullable=True),
+    # Viewer counts (Issue #524 - Broadcaster Dashboard)
+    sa.Column("viewer_count_current", sa.Integer, default=0),
+    sa.Column("viewer_count_peak", sa.Integer, default=0),
+    sa.Column("viewer_count_total", sa.Integer, default=0),
+    # Ownership (Issue #524 - Broadcaster Dashboard)
+    sa.Column(
+        "owner_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Index("ix_live_streams_slug", "slug"),
     sa.Index("ix_live_streams_status", "status"),
     sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
     sa.Index("ix_live_streams_created_at", "created_at"),
+    sa.Index("ix_live_streams_owner_id", "owner_id"),
 )
 
 # Live stream segment tracking for DVR and VOD recording
@@ -1074,6 +1098,99 @@ live_stream_segments = sa.Table(
     sa.Index("ix_live_segments_stream_quality_seq", "stream_id", "quality", "sequence_number"),
     sa.Index("ix_live_segments_received_at", "received_at"),
     sa.Index("ix_live_segments_cleanup", "stream_id", "received_at"),
+)
+
+
+# Live stream metrics for broadcaster dashboard (Issue #524)
+#
+# Stores aggregated metrics computed every 10 seconds by background task.
+# Raw segment data is stored temporarily in Redis for aggregation.
+#
+# METRICS:
+# --------
+# - bitrate_video/audio/total: Bytes per second
+# - segment_push_latency_ms: Time from segment creation to receipt
+# - segments_received/dropped: For drop rate calculation
+#
+# CLEANUP:
+# --------
+# Metrics older than LIVE_METRICS_RETENTION_HOURS are deleted by cleanup task.
+live_stream_metrics = sa.Table(
+    "live_stream_metrics",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
+    # Bitrate metrics (bytes per second)
+    sa.Column("bitrate_video", sa.Integer, nullable=True),
+    sa.Column("bitrate_audio", sa.Integer, nullable=True),
+    sa.Column("bitrate_total", sa.Integer, nullable=True),
+    # Latency and reliability
+    sa.Column("segment_push_latency_ms", sa.Integer, nullable=True),
+    sa.Column("segments_received", sa.Integer, default=0),
+    sa.Column("segments_dropped", sa.Integer, default=0),
+    # Aggregation window (default 10 seconds)
+    sa.Column("interval_seconds", sa.Integer, default=10),
+    sa.Index("ix_live_metrics_stream_ts_desc", "stream_id", "timestamp"),
+    sa.Index("ix_live_metrics_timestamp", "timestamp"),
+)
+
+
+# Live stream viewers for real-time viewer tracking (Issue #524)
+#
+# Tracks active viewers with heartbeat-based presence detection.
+# Session IDs are server-generated for security.
+#
+# SECURITY:
+# ---------
+# - session_id: Server-generated (secrets.token_urlsafe(32))
+# - ip_hash: HMAC-SHA256 with per-instance secret (privacy-preserving)
+#
+# LIFECYCLE:
+# ----------
+# 1. Viewer joins: Creates row with joined_at, last_heartbeat
+# 2. Heartbeats: Updates last_heartbeat (every 30s)
+# 3. Leave/timeout: Sets left_at
+#
+# CLEANUP:
+# --------
+# Background task marks viewers as left if no heartbeat > 60s.
+live_stream_viewers = sa.Table(
+    "live_stream_viewers",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Server-generated session ID (cryptographically random)
+    sa.Column("session_id", sa.String(64), nullable=False),
+    # Optional user ID for logged-in viewers
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Timestamps
+    sa.Column("joined_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_heartbeat", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("left_at", sa.DateTime(timezone=True), nullable=True),
+    # Viewing metadata
+    sa.Column("quality_watched", sa.String(10), nullable=True),
+    # Salted IP hash for unique viewer tracking
+    sa.Column("ip_hash", sa.String(128), nullable=True),
+    sa.UniqueConstraint("stream_id", "session_id", name="uq_live_viewers_stream_session"),
+    sa.Index("ix_live_viewers_stream_heartbeat", "stream_id", "last_heartbeat"),
+    sa.Index("ix_live_viewers_cleanup", "last_heartbeat"),
+    sa.Index("ix_live_viewers_user_id", "user_id"),
 )
 
 
