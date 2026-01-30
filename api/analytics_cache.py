@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Cache configuration constants
 DEFAULT_CACHE_TTL_SECONDS = 60  # Default time-to-live for cache entries
 DEFAULT_CACHE_MAX_SIZE = 1000  # Maximum entries before triggering eviction
-CACHE_EVICTION_RATIO = 0.10  # Evict 10% of entries when cache is full
+CACHE_EVICTION_RATIO = 0.10  # In _set(), evict 10% of entries using LRU when cache remains at max_size after cleanup_expired()
 
 # Redis connection constants
 # 5 second timeout balances fast failure detection with tolerance for network latency
