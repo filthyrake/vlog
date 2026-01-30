@@ -853,6 +853,39 @@ LIVE_HLS_PLAYLIST_LENGTH = get_int_env("VLOG_LIVE_HLS_PLAYLIST_LENGTH", 5, min_v
 # Allowed quality names for live streams
 LIVE_ALLOWED_QUALITIES = frozenset({"2160p", "1440p", "1080p", "720p", "480p", "360p"})
 
+# =============================================================================
+# Broadcaster Dashboard / Studio Configuration (Issue #524)
+# Real-time metrics and viewer tracking for broadcasters
+# =============================================================================
+
+# Secret for hashing viewer IPs (privacy-preserving unique viewer tracking)
+# Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+# SECURITY: If not set, IP hashing is disabled (not recommended for production)
+VIEWER_IP_HASH_SECRET = os.getenv("VLOG_VIEWER_IP_HASH_SECRET", "")
+
+# Metrics retention in hours (metrics older than this are deleted)
+LIVE_METRICS_RETENTION_HOURS = get_int_env("VLOG_LIVE_METRICS_RETENTION_HOURS", 24, min_val=1, max_val=168)
+
+# Metrics aggregation interval in seconds
+LIVE_METRICS_AGGREGATION_INTERVAL = get_int_env("VLOG_LIVE_METRICS_AGGREGATION_INTERVAL", 10, min_val=5, max_val=60)
+
+# Viewer heartbeat interval and timeout (seconds)
+LIVE_VIEWER_HEARTBEAT_INTERVAL = get_int_env("VLOG_LIVE_VIEWER_HEARTBEAT_INTERVAL", 30, min_val=10, max_val=120)
+LIVE_VIEWER_TIMEOUT = get_int_env("VLOG_LIVE_VIEWER_TIMEOUT", 60, min_val=30, max_val=300)
+
+# Viewer cleanup interval (how often to check for stale viewers)
+LIVE_VIEWER_CLEANUP_INTERVAL = get_int_env("VLOG_LIVE_VIEWER_CLEANUP_INTERVAL", 30, min_val=10, max_val=120)
+
+# SSE connection limits for studio dashboard
+LIVE_STUDIO_SSE_MAX_PER_USER = get_int_env("VLOG_LIVE_STUDIO_SSE_MAX_PER_USER", 5, min_val=1, max_val=20)
+LIVE_STUDIO_SSE_MAX_PER_STREAM = get_int_env("VLOG_LIVE_STUDIO_SSE_MAX_PER_STREAM", 20, min_val=5, max_val=100)
+
+# Health classification thresholds
+LIVE_HEALTH_LATENCY_GOOD_MS = get_int_env("VLOG_LIVE_HEALTH_LATENCY_GOOD_MS", 500, min_val=100, max_val=5000)
+LIVE_HEALTH_LATENCY_DEGRADED_MS = get_int_env("VLOG_LIVE_HEALTH_LATENCY_DEGRADED_MS", 2000, min_val=500, max_val=10000)
+LIVE_HEALTH_DROP_RATE_GOOD = get_float_env("VLOG_LIVE_HEALTH_DROP_RATE_GOOD", 0.01, min_val=0.0, max_val=1.0)
+LIVE_HEALTH_DROP_RATE_DEGRADED = get_float_env("VLOG_LIVE_HEALTH_DROP_RATE_DEGRADED", 0.05, min_val=0.0, max_val=1.0)
+
 # Ensure live storage directory exists (skip in test/CI environments)
 if not os.environ.get("VLOG_TEST_MODE"):
     try:
