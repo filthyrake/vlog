@@ -71,9 +71,9 @@ async def create_vod_from_stream(stream_id: int) -> Optional[int]:
         try:
             qualities = json.loads(stream["qualities"])
         except json.JSONDecodeError:
-            # Invalid qualities JSON; cannot proceed with VOD creation
+            # Invalid qualities JSON; treat as empty and return None
             logger.warning(f"Failed to decode qualities JSON for stream {slug}")
-            return None
+            qualities = []
 
     if not qualities:
         logger.warning(f"No qualities found for stream {slug}")

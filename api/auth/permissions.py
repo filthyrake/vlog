@@ -77,10 +77,6 @@ class Permission(str, Enum):
     LIVE_STREAM_READ = "live_stream:read"
     LIVE_STREAM_MANAGE = "live_stream:manage"
 
-    # Studio dashboard (Issue #524)
-    LIVE_STREAM_STUDIO_ACCESS = "live_stream:studio:access"
-    LIVE_STREAM_STUDIO_ACCESS_ANY = "live_stream:studio:access:any"
-
     # Analytics
     ANALYTICS_VIEW = "analytics:view"
     ANALYTICS_VIEW_ALL = "analytics:view:all"
@@ -130,7 +126,6 @@ _ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
             # Live streaming (own streams only)
             Permission.LIVE_STREAM_CREATE,
             Permission.LIVE_STREAM_READ,
-            Permission.LIVE_STREAM_STUDIO_ACCESS,
             # Comment/rating permissions (Issue #213)
             Permission.COMMENT_CREATE,
             Permission.COMMENT_READ,
