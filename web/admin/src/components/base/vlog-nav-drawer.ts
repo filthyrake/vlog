@@ -3,6 +3,7 @@
  *
  * A slide-out navigation drawer for mobile devices.
  * Supports backdrop click to close and focus trapping.
+ * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-nav-drawer id="mobile-nav">
@@ -13,134 +14,138 @@
  * @fires close - When the drawer closes
  */
 
-const template = document.createElement('template');
-template.innerHTML = `
-  <style>
-    :host {
-      display: contents;
-    }
+// Constructable stylesheet for CSP compliance
+const styles = `
+  :host {
+    display: contents;
+  }
 
-    :host([hidden]) {
+  :host([hidden]) {
+    display: none;
+  }
+
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--vlog-z-drawer-backdrop, 40);
+    background-color: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 200ms ease, visibility 200ms ease;
+  }
+
+  :host([open]) .backdrop {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: var(--vlog-z-drawer, 50);
+    width: 280px;
+    max-width: 85vw;
+    height: 100vh;
+    padding: var(--vlog-space-4, 1rem);
+    background-color: var(--vlog-bg-secondary, #0f172a);
+    border-right: 1px solid var(--vlog-border-secondary, #334155);
+    transform: translateX(-100%);
+    transition: transform 200ms ease;
+    overflow-y: auto;
+  }
+
+  :host([open]) .drawer {
+    transform: translateX(0);
+  }
+
+  /* Right side variant */
+  :host([position="right"]) .drawer {
+    left: auto;
+    right: 0;
+    border-right: none;
+    border-left: 1px solid var(--vlog-border-secondary, #334155);
+    transform: translateX(100%);
+  }
+
+  :host([open][position="right"]) .drawer {
+    transform: translateX(0);
+  }
+
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: var(--vlog-space-4, 1rem);
+    margin-bottom: var(--vlog-space-4, 1rem);
+    border-bottom: 1px solid var(--vlog-border-secondary, #334155);
+  }
+
+  .drawer-title {
+    margin: 0;
+    font-family: var(--vlog-font-sans, system-ui, sans-serif);
+    font-size: var(--vlog-text-lg, 1.125rem);
+    font-weight: var(--vlog-font-semibold, 600);
+    color: var(--vlog-text-primary, #f1f5f9);
+  }
+
+  .close-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: none;
+    border-radius: var(--vlog-radius-md, 0.375rem);
+    background: transparent;
+    color: var(--vlog-text-tertiary, #94a3b8);
+    cursor: pointer;
+    transition: var(--vlog-transition-colors);
+  }
+
+  .close-button:hover {
+    background-color: var(--vlog-bg-tertiary, #1e293b);
+    color: var(--vlog-text-primary, #f1f5f9);
+  }
+
+  .close-button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
+  }
+
+  .close-button svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .drawer-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--vlog-space-2, 0.5rem);
+  }
+
+  /* Hide on desktop by default */
+  @media (min-width: 768px) {
+    :host(:not([always-visible])) {
       display: none;
     }
+  }
 
-    .backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: var(--vlog-z-drawer-backdrop, 40);
-      background-color: rgba(0, 0, 0, 0.5);
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity 200ms ease, visibility 200ms ease;
-    }
-
-    :host([open]) .backdrop {
-      opacity: 1;
-      visibility: visible;
-    }
-
+  /* Reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .backdrop,
     .drawer {
-      position: fixed;
-      top: 0;
-      left: 0;
-      z-index: var(--vlog-z-drawer, 50);
-      width: 280px;
-      max-width: 85vw;
-      height: 100vh;
-      padding: var(--vlog-space-4, 1rem);
-      background-color: var(--vlog-bg-secondary, #0f172a);
-      border-right: 1px solid var(--vlog-border-secondary, #334155);
-      transform: translateX(-100%);
-      transition: transform 200ms ease;
-      overflow-y: auto;
+      transition: none;
     }
+  }
+`;
 
-    :host([open]) .drawer {
-      transform: translateX(0);
-    }
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(styles);
 
-    /* Right side variant */
-    :host([position="right"]) .drawer {
-      left: auto;
-      right: 0;
-      border-right: none;
-      border-left: 1px solid var(--vlog-border-secondary, #334155);
-      transform: translateX(100%);
-    }
-
-    :host([open][position="right"]) .drawer {
-      transform: translateX(0);
-    }
-
-    .drawer-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding-bottom: var(--vlog-space-4, 1rem);
-      margin-bottom: var(--vlog-space-4, 1rem);
-      border-bottom: 1px solid var(--vlog-border-secondary, #334155);
-    }
-
-    .drawer-title {
-      margin: 0;
-      font-family: var(--vlog-font-sans, system-ui, sans-serif);
-      font-size: var(--vlog-text-lg, 1.125rem);
-      font-weight: var(--vlog-font-semibold, 600);
-      color: var(--vlog-text-primary, #f1f5f9);
-    }
-
-    .close-button {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 44px;
-      height: 44px;
-      padding: 0;
-      border: none;
-      border-radius: var(--vlog-radius-md, 0.375rem);
-      background: transparent;
-      color: var(--vlog-text-tertiary, #94a3b8);
-      cursor: pointer;
-      transition: var(--vlog-transition-colors);
-    }
-
-    .close-button:hover {
-      background-color: var(--vlog-bg-tertiary, #1e293b);
-      color: var(--vlog-text-primary, #f1f5f9);
-    }
-
-    .close-button:focus-visible {
-      outline: none;
-      box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
-    }
-
-    .close-button svg {
-      width: 24px;
-      height: 24px;
-    }
-
-    .drawer-content {
-      display: flex;
-      flex-direction: column;
-      gap: var(--vlog-space-2, 0.5rem);
-    }
-
-    /* Hide on desktop by default */
-    @media (min-width: 768px) {
-      :host(:not([always-visible])) {
-        display: none;
-      }
-    }
-
-    /* Reduced motion */
-    @media (prefers-reduced-motion: reduce) {
-      .backdrop,
-      .drawer {
-        transition: none;
-      }
-    }
-  </style>
-
+const template = document.createElement('template');
+template.innerHTML = `
   <div class="backdrop" part="backdrop"></div>
   <aside class="drawer" part="drawer" role="dialog" aria-modal="true" aria-label="Navigation menu">
     <div class="drawer-header" part="header">
@@ -172,6 +177,7 @@ export class VlogNavDrawer extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.backdrop = this.shadowRoot!.querySelector('.backdrop')!;
@@ -193,10 +199,9 @@ export class VlogNavDrawer extends HTMLElement {
     this.backdrop.removeEventListener('click', this.handleBackdropClick);
     this.closeButton.removeEventListener('click', this.handleCloseClick);
     document.removeEventListener('keydown', this.handleKeyDown);
-    // Reset body styles if component is removed while open
+    // Reset body class if component is removed while open
     if (this.hasAttribute('open')) {
-      document.body.style.overflow = '';
-      document.body.style.paddingRight = '';
+      document.body.classList.remove('modal-open');
     }
   }
 
@@ -263,19 +268,9 @@ export class VlogNavDrawer extends HTMLElement {
     }
   }
 
-  private getScrollbarWidth(): number {
-    return window.innerWidth - document.documentElement.clientWidth;
-  }
-
   private onOpen() {
     this.previousActiveElement = document.activeElement;
-
-    // Compensate for scrollbar width to prevent layout shift
-    const scrollbarWidth = this.getScrollbarWidth();
-    if (scrollbarWidth > 0) {
-      document.body.style.paddingRight = `${scrollbarWidth}px`;
-    }
-    document.body.style.overflow = 'hidden';
+    document.body.classList.add('modal-open');
     this.closeButton.focus();
 
     this.dispatchEvent(
@@ -287,8 +282,7 @@ export class VlogNavDrawer extends HTMLElement {
   }
 
   private onClose() {
-    document.body.style.overflow = '';
-    document.body.style.paddingRight = '';
+    document.body.classList.remove('modal-open');
     if (this.previousActiveElement instanceof HTMLElement) {
       this.previousActiveElement.focus();
     }

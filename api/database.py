@@ -1,9 +1,12 @@
+import logging
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from databases import Database
 
 from config import DATABASE_URL
+
+logger = logging.getLogger(__name__)
 
 # Create database instance - works with PostgreSQL or SQLite
 # PostgreSQL is the default and recommended database
@@ -94,6 +97,25 @@ videos = sa.Table(
     sa.Column("sprite_sheet_tile_size", sa.Integer, nullable=True),  # Grid size (e.g., 10 for 10x10)
     sa.Column("sprite_sheet_frame_width", sa.Integer, nullable=True),  # Width of each frame
     sa.Column("sprite_sheet_frame_height", sa.Integer, nullable=True),  # Height of each frame
+    # Video ownership for multi-user auth (Issue #200)
+    # Nullable for backward compatibility - existing videos assigned to first admin during migration
+    sa.Column(
+        "owner_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Comments and ratings settings (Issue #213)
+    # NULL = inherit from global settings, true/false = per-video override
+    sa.Column("comments_enabled", sa.Boolean, nullable=True),
+    sa.Column("ratings_enabled", sa.Boolean, nullable=True),
+    # Denormalized aggregates for comments/ratings (updated via triggers)
+    sa.Column("comment_count", sa.Integer, default=0),
+    sa.Column("rating_avg", sa.Numeric(3, 2), nullable=True),
+    sa.Column("rating_count", sa.Integer, default=0),
+    sa.Column("rating_distribution", sa.Text, default="{}"),  # JSON: {"1": 5, "2": 3, ...}
+    sa.Column("likes_count", sa.Integer, default=0),  # For thumbs up/down mode
+    sa.Column("dislikes_count", sa.Integer, default=0),  # For thumbs up/down mode
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
@@ -101,6 +123,7 @@ videos = sa.Table(
     sa.Index("ix_videos_deleted_at", "deleted_at"),
     sa.Index("ix_videos_streaming_format", "streaming_format"),
     sa.Index("ix_videos_sprite_sheet_status", "sprite_sheet_status"),
+    sa.Index("ix_videos_owner_id", "owner_id"),
 )
 
 # Available quality variants for each video
@@ -419,8 +442,18 @@ worker_api_keys = sa.Table(
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    # Rotation tracking (Issue #226): self-referential FK to track key rotation chain
+    # NULL = original key, otherwise points to the previous key that was rotated
+    sa.Column(
+        "rotated_from",
+        sa.Integer,
+        sa.ForeignKey("worker_api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Index("ix_worker_api_keys_key_prefix", "key_prefix"),
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
+    sa.Index("ix_worker_api_keys_rotated_from", "rotated_from"),
+    sa.Index("ix_worker_api_keys_expires_at", "expires_at"),
 )
 
 # Deployment events for worker management (Issue #410)
@@ -926,6 +959,706 @@ webhook_deliveries = sa.Table(
     sa.Index("ix_webhook_deliveries_status_next_retry", "status", "next_retry_at"),
 )
 
+# Live streaming via HTTP segment push
+#
+# STREAM STATES:
+# --------------
+# - idle: Stream created but not yet started (no segments received)
+# - live: Actively receiving segments
+# - ending: No segments received for threshold period (grace period)
+# - ended: Stream explicitly ended or stale timeout exceeded
+#
+# ARCHITECTURE:
+# -------------
+# - Client (FFmpeg) encodes locally into HLS/CMAF segments
+# - Client pushes segments to VLog API via HTTP PUT
+# - VLog stores segments, writes playlists to disk on each segment
+# - Viewers watch via standard HLS playback (static file serving)
+# - On stream end, segments become a VOD recording
+#
+# AUTH:
+# -----
+# - Stream keys follow worker API key pattern (argon2id hashed)
+# - Keys are prefixed with "sk_live_" for easy identification
+# - Prefix lookup for fast authentication
+#
+# See: https://github.com/filthyrake/vlog/issues/XXX
+live_streams = sa.Table(
+    "live_streams",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("title", sa.String(255), nullable=False),
+    sa.Column("slug", sa.String(255), unique=True, nullable=False),
+    sa.Column("description", sa.Text, default=""),
+    # Auth (argon2id hashed like worker API keys)
+    sa.Column("stream_key_hash", sa.Text, nullable=False),
+    sa.Column("stream_key_prefix", sa.String(8), nullable=False),
+    sa.Column("hash_version", sa.Integer, nullable=False, server_default="2"),
+    # Status
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('idle', 'live', 'ending', 'ended')",
+            name="ck_live_streams_status",
+        ),
+        default="idle",
+    ),
+    sa.Column("qualities", sa.Text, nullable=True),  # JSON: ["720p", "480p"]
+    # Timestamps
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_segment_at", sa.DateTime(timezone=True), nullable=True),
+    # Metrics
+    sa.Column("segment_count", sa.Integer, default=0),
+    # DVR/VOD
+    sa.Column("dvr_enabled", sa.Boolean, default=True),
+    sa.Column("dvr_window_seconds", sa.Integer, default=7200),  # 2 hours
+    sa.Column("auto_record_vod", sa.Boolean, default=True),
+    sa.Column(
+        "vod_video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column(
+        "category_id",
+        sa.Integer,
+        sa.ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Health metrics (Issue #524 - Broadcaster Dashboard)
+    sa.Column("current_bitrate", sa.Integer, nullable=True),
+    sa.Column(
+        "connection_health",
+        sa.String(20),
+        sa.CheckConstraint(
+            "connection_health IN ('good', 'degraded', 'poor', 'unknown')",
+            name="ck_live_streams_connection_health",
+        ),
+        nullable=True,
+    ),
+    sa.Column("last_metric_at", sa.DateTime(timezone=True), nullable=True),
+    # Viewer counts (Issue #524 - Broadcaster Dashboard)
+    sa.Column("viewer_count_current", sa.Integer, default=0),
+    sa.Column("viewer_count_peak", sa.Integer, default=0),
+    sa.Column("viewer_count_total", sa.Integer, default=0),
+    # Ownership (Issue #524 - Broadcaster Dashboard)
+    sa.Column(
+        "owner_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_live_streams_slug", "slug"),
+    sa.Index("ix_live_streams_status", "status"),
+    sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
+    sa.Index("ix_live_streams_created_at", "created_at"),
+    sa.Index("ix_live_streams_owner_id", "owner_id"),
+)
+
+# Live stream segment tracking for DVR and VOD recording
+#
+# SEGMENT SEMANTICS:
+# ------------------
+# - Each segment is a single HLS/CMAF fragment
+# - Segments are stored on disk at: live/{slug}/{quality}/seg_{sequence}.m4s
+# - Init segments stored at: live/{slug}/{quality}/init.mp4
+# - Playlists generated dynamically from database records
+#
+# DVR CLEANUP:
+# ------------
+# - Background task deletes segments older than dvr_window_seconds
+# - Batched DELETEs (10 at a time) to reduce lock contention
+# - Async file deletion to avoid blocking segment uploads
+#
+# VOD RECORDING:
+# --------------
+# - On stream end, segments are hardlinked to videos directory
+# - Fallback to copy if hardlinks fail (different filesystems)
+live_stream_segments = sa.Table(
+    "live_stream_segments",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("quality", sa.String(10), nullable=False),
+    sa.Column("filename", sa.String(255), nullable=False),
+    sa.Column("sequence_number", sa.Integer, nullable=False),
+    sa.Column("duration_ms", sa.Integer, nullable=True),
+    sa.Column("size_bytes", sa.Integer, nullable=False),
+    sa.Column("received_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("stream_id", "quality", "sequence_number", name="uq_live_segment_stream_quality_seq"),
+    # Critical indexes for performance (from Brendan's review)
+    sa.Index("ix_live_segments_stream_quality_seq", "stream_id", "quality", "sequence_number"),
+    sa.Index("ix_live_segments_received_at", "received_at"),
+    sa.Index("ix_live_segments_cleanup", "stream_id", "received_at"),
+)
+
+
+# Live stream metrics for broadcaster dashboard (Issue #524)
+#
+# Stores aggregated metrics computed every 10 seconds by background task.
+# Raw segment data is stored temporarily in Redis for aggregation.
+#
+# METRICS:
+# --------
+# - bitrate_video/audio/total: Bytes per second
+# - segment_push_latency_ms: Time from segment creation to receipt
+# - segments_received/dropped: For drop rate calculation
+#
+# CLEANUP:
+# --------
+# Metrics older than LIVE_METRICS_RETENTION_HOURS are deleted by cleanup task.
+live_stream_metrics = sa.Table(
+    "live_stream_metrics",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
+    # Bitrate metrics (bytes per second)
+    sa.Column("bitrate_video", sa.Integer, nullable=True),
+    sa.Column("bitrate_audio", sa.Integer, nullable=True),
+    sa.Column("bitrate_total", sa.Integer, nullable=True),
+    # Latency and reliability
+    sa.Column("segment_push_latency_ms", sa.Integer, nullable=True),
+    sa.Column("segments_received", sa.Integer, default=0),
+    sa.Column("segments_dropped", sa.Integer, default=0),
+    # Aggregation window (default 10 seconds)
+    sa.Column("interval_seconds", sa.Integer, default=10),
+    sa.Index("ix_live_metrics_stream_ts_desc", "stream_id", "timestamp"),
+    sa.Index("ix_live_metrics_timestamp", "timestamp"),
+)
+
+
+# Live stream viewers for real-time viewer tracking (Issue #524)
+#
+# Tracks active viewers with heartbeat-based presence detection.
+# Session IDs are server-generated for security.
+#
+# SECURITY:
+# ---------
+# - session_id: Server-generated (secrets.token_urlsafe(32))
+# - ip_hash: HMAC-SHA256 with per-instance secret (privacy-preserving)
+#
+# LIFECYCLE:
+# ----------
+# 1. Viewer joins: Creates row with joined_at, last_heartbeat
+# 2. Heartbeats: Updates last_heartbeat (every 30s)
+# 3. Leave/timeout: Sets left_at
+#
+# CLEANUP:
+# --------
+# Background task marks viewers as left if no heartbeat > 60s.
+live_stream_viewers = sa.Table(
+    "live_stream_viewers",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Server-generated session ID (cryptographically random)
+    sa.Column("session_id", sa.String(64), nullable=False),
+    # Optional user ID for logged-in viewers
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Timestamps
+    sa.Column("joined_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_heartbeat", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("left_at", sa.DateTime(timezone=True), nullable=True),
+    # Viewing metadata
+    sa.Column("quality_watched", sa.String(10), nullable=True),
+    # Salted IP hash for unique viewer tracking
+    sa.Column("ip_hash", sa.String(128), nullable=True),
+    sa.UniqueConstraint("stream_id", "session_id", name="uq_live_viewers_stream_session"),
+    sa.Index("ix_live_viewers_stream_heartbeat", "stream_id", "last_heartbeat"),
+    sa.Index("ix_live_viewers_cleanup", "last_heartbeat"),
+    sa.Index("ix_live_viewers_user_id", "user_id"),
+)
+
+
+# =============================================================================
+# User Authentication Tables (Issue #200)
+# Multi-user authentication with session-based browser auth, API keys, and RBAC
+# =============================================================================
+
+# User accounts for multi-user authentication
+#
+# ROLES:
+# ------
+# - admin: Full system access + user management
+# - editor: Upload, edit/delete own videos, view own analytics
+# - viewer: Browse and watch videos (for private instances)
+#
+# STATUS:
+# -------
+# - active: Normal user access
+# - disabled: Account disabled by admin (cannot login)
+# - pending: Awaiting email verification or admin approval
+#
+# SECURITY:
+# ---------
+# - Passwords hashed with argon2id (same as worker API keys)
+# - Failed login tracking with lockout support
+# - Email verification support for self-registration
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+users = sa.Table(
+    "users",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("username", sa.String(100), unique=True, nullable=False),
+    sa.Column("email", sa.String(255), unique=True, nullable=False),
+    sa.Column("password_hash", sa.String(255), nullable=True),  # NULL for OIDC-only users
+    sa.Column("display_name", sa.String(100), nullable=True),
+    sa.Column("avatar_url", sa.String(500), nullable=True),
+    sa.Column(
+        "role",
+        sa.String(20),
+        sa.CheckConstraint("role IN ('admin', 'editor', 'viewer')", name="ck_users_role"),
+        default="viewer",
+        nullable=False,
+    ),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint("status IN ('active', 'disabled', 'pending')", name="ck_users_status"),
+        default="active",
+        nullable=False,
+    ),
+    sa.Column("email_verified", sa.Boolean, default=False, nullable=False),
+    sa.Column("failed_login_attempts", sa.Integer, default=0, nullable=False),
+    sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_by", sa.String(36), nullable=True),  # FK to users.id (nullable for first admin)
+    sa.Index("ix_users_username", "username"),
+    sa.Index("ix_users_email", "email"),
+    sa.Index("ix_users_role", "role"),
+    sa.Index("ix_users_status", "status"),
+    sa.Index("ix_users_created_at", "created_at"),
+)
+
+# User sessions for browser authentication (HTTP-only cookies)
+#
+# SESSION TOKENS:
+# ---------------
+# - session_token: Short-lived access token (default 24 hours)
+# - refresh_token: Long-lived token for session rotation (default 7 days)
+#
+# REFRESH TOKEN ROTATION:
+# -----------------------
+# - refresh_family_id: Groups related refresh tokens together
+# - refresh_generation: Incremented on each rotation
+# - Detects token theft: if a rotated token is reused, entire family is revoked
+#
+# SECURITY:
+# ---------
+# - All tokens stored as argon2id hashes
+# - IP and user-agent logged for audit
+# - Revocation support via revoked_at timestamp
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_sessions = sa.Table(
+    "user_sessions",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("token_prefix", sa.String(8), nullable=True),  # For indexed lookup
+    sa.Column("refresh_token_hash", sa.String(255), unique=True, nullable=True),
+    sa.Column("refresh_token_prefix", sa.String(8), nullable=True),  # For indexed lookup
+    sa.Column("refresh_family_id", sa.String(36), nullable=True),  # UUID for token family
+    sa.Column("refresh_generation", sa.Integer, default=0, nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("refresh_expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ip_address", sa.String(45), nullable=True),  # IPv6 max length
+    sa.Column("user_agent", sa.String(512), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),  # Track session usage
+    sa.Index("ix_user_sessions_user_id", "user_id"),
+    sa.Index("ix_user_sessions_token_hash", "token_hash"),
+    sa.Index("ix_user_sessions_token_prefix", "token_prefix"),
+    sa.Index("ix_user_sessions_refresh_token_hash", "refresh_token_hash"),
+    sa.Index("ix_user_sessions_refresh_token_prefix", "refresh_token_prefix"),
+    sa.Index("ix_user_sessions_expires_at", "expires_at"),
+    sa.Index("ix_user_sessions_refresh_family_id", "refresh_family_id"),
+)
+
+# User API keys for programmatic access
+#
+# KEY LIFECYCLE:
+# -------------
+# 1. Generation: POST /api/v1/api-keys → generates 256-bit API key
+#    → Key shown once at creation, never retrievable again
+#    → Stored as argon2id hash
+# 2. Usage: Client includes key in X-API-Key header
+#    → Fast lookup via key_prefix (first 8 chars)
+# 3. Permissions: Inherited from user's role (no per-key overrides)
+# 4. Expiration: Optional expires_at timestamp
+# 5. Revocation: DELETE /api/v1/api-keys/{id} sets revoked_at
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_api_keys = sa.Table(
+    "user_api_keys",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("name", sa.String(100), nullable=False),
+    sa.Column("key_prefix", sa.String(8), nullable=False),  # First 8 chars for lookup
+    sa.Column("key_hash", sa.String(255), nullable=False),  # argon2id hash
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_user_api_keys_user_id", "user_id"),
+    sa.Index("ix_user_api_keys_key_prefix", "key_prefix"),
+)
+
+# OIDC connections for linking users to external identity providers
+#
+# Supports any OIDC-compliant provider:
+# - Keycloak, Authentik, Authelia, Zitadel
+# - Google, GitHub, Microsoft (if configured as OIDC)
+#
+# Users can have multiple OIDC connections (different providers)
+# OIDC-only users have NULL password_hash in users table
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+oidc_connections = sa.Table(
+    "oidc_connections",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("provider_user_id", sa.String(255), nullable=False),  # Subject claim from OIDC
+    sa.Column("provider_email", sa.String(255), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_oidc_connections_user_id", "user_id"),
+    sa.Index("ix_oidc_connections_provider_user_id", "provider_user_id"),
+    sa.UniqueConstraint("provider_user_id", name="uq_oidc_connections_provider_user_id"),
+)
+
+# OIDC state tokens for CSRF and replay protection
+#
+# SECURITY:
+# ---------
+# - state: Random value sent to OIDC provider, returned in callback
+#   → CSRF protection: validates callback originated from our flow
+# - nonce: Random value included in ID token request
+#   → Replay protection: validates token is for this specific flow
+#
+# States are single-use and expire after 10 minutes
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+oidc_states = sa.Table(
+    "oidc_states",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("state", sa.String(64), unique=True, nullable=False),
+    sa.Column("nonce", sa.String(64), nullable=False),
+    sa.Column("redirect_uri", sa.String(500), nullable=True),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("ix_oidc_states_state", "state"),
+    sa.Index("ix_oidc_states_expires_at", "expires_at"),
+)
+
+# Password reset tokens
+#
+# SECURITY:
+# ---------
+# - Tokens are single-use (used_at set on use)
+# - Short expiry (default 1 hour)
+# - IP address logged for abuse detection
+# - Reset endpoint returns constant-time response to prevent user enumeration
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+password_reset_tokens = sa.Table(
+    "password_reset_tokens",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("ip_address", sa.String(45), nullable=True),  # For abuse detection
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("ix_password_reset_tokens_user_id", "user_id"),
+    sa.Index("ix_password_reset_tokens_token_hash", "token_hash"),
+    sa.Index("ix_password_reset_tokens_expires_at", "expires_at"),
+)
+
+# User invites for invite-only registration
+#
+# FLOW:
+# -----
+# 1. Admin creates invite: POST /api/v1/invites
+# 2. Email sent with invite link containing token
+# 3. User clicks link, creates account: POST /api/v1/invites/{token}/accept
+# 4. Invite marked as used, user created with specified role
+#
+# SECURITY:
+# ---------
+# - Tokens are single-use (used_at set on acceptance)
+# - Configurable expiry (default 7 days)
+# - Role pre-assigned by admin
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_invites = sa.Table(
+    "user_invites",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("email", sa.String(255), nullable=False),
+    sa.Column(
+        "role",
+        sa.String(20),
+        sa.CheckConstraint("role IN ('admin', 'editor', 'viewer')", name="ck_user_invites_role"),
+        default="viewer",
+        nullable=False,
+    ),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("used_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Index("ix_user_invites_email", "email"),
+    sa.Index("ix_user_invites_token_hash", "token_hash"),
+    sa.Index("ix_user_invites_expires_at", "expires_at"),
+)
+
+
+# =============================================================================
+# Comments and Ratings Tables (Issue #213)
+# Social engagement features with threading support and moderation
+# =============================================================================
+
+# Comments with ltree materialized path for efficient threading
+#
+# THREADING:
+# ----------
+# Uses PostgreSQL ltree extension for hierarchical queries.
+# - path: Materialized path like "1.5.23" (comment 23 is a reply to comment 5, which replies to 1)
+# - depth: 1 for root comments, max 5 for deep nesting
+# - parent_id: Direct parent reference for cascade deletes
+#
+# STATUS:
+# -------
+# - pending: Awaiting moderation (when comments_require_approval is enabled)
+# - approved: Visible to all users
+# - rejected: Hidden by moderator
+# - spam: Flagged as spam
+#
+# SOFT DELETE:
+# ------------
+# - deleted_at: When set, comment is hidden but preserved for audit
+# - Hard delete only via admin force-delete endpoint
+#
+# See: https://github.com/filthyrake/vlog/issues/213
+comments = sa.Table(
+    "comments",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Materialized path for threading (stored as text, handled as ltree in PostgreSQL)
+    # Example paths: "1" (root), "1.5" (reply to 1), "1.5.23" (reply to reply)
+    sa.Column("path", sa.Text, nullable=False),
+    sa.Column(
+        "depth",
+        sa.Integer,
+        sa.CheckConstraint("depth >= 1 AND depth <= 5", name="ck_comments_depth"),
+        nullable=False,
+        default=1,
+    ),
+    sa.Column(
+        "parent_id",
+        sa.Integer,
+        sa.ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    sa.Column("content", sa.Text, nullable=False),
+    # Video timestamp for "comment at X:XX" feature (millisecond precision)
+    sa.Column("video_timestamp", sa.Numeric(10, 3), nullable=True),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'spam')",
+            name="ck_comments_status",
+        ),
+        nullable=False,
+        default="approved",
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    # Note: GiST index on path is created in migration using raw SQL for ltree
+    sa.Index("ix_comments_video_id", "video_id"),
+    sa.Index("ix_comments_user_id", "user_id"),
+    sa.Index("ix_comments_parent_id", "parent_id"),
+    sa.Index("ix_comments_status", "status"),
+    sa.Index("ix_comments_created_at", "created_at"),
+)
+
+# Ratings with composite primary key (one rating per user per video)
+#
+# RATING VALUES:
+# --------------
+# For stars mode (rating_type = "stars"):
+# - rating_value: 1-5 (star count)
+#
+# For thumbs mode (rating_type = "thumbs"):
+# - rating_value: 1 (like) or -1 (dislike)
+#
+# Aggregates are maintained on videos table via triggers:
+# - rating_avg: Average of all rating_values
+# - rating_count: Total number of ratings
+# - rating_distribution: JSON object {"1": count, "2": count, ...}
+# - likes_count: Count of rating_value > 0 (for thumbs mode)
+# - dislikes_count: Count of rating_value < 0 (for thumbs mode)
+#
+# See: https://github.com/filthyrake/vlog/issues/213
+ratings = sa.Table(
+    "ratings",
+    metadata,
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Rating value: 1-5 for stars, 1 or -1 for thumbs
+    sa.Column("rating_value", sa.Integer, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.PrimaryKeyConstraint("video_id", "user_id"),
+    sa.Index("ix_ratings_video_id", "video_id"),
+    sa.Index("ix_ratings_user_id", "user_id"),
+)
+
+
+# =============================================================================
+# Backup and Restore Tables (Issue #216)
+# Comprehensive backup system with database, file, and S3 support
+# =============================================================================
+
+# Backup records for tracking backup operations
+#
+# BACKUP TYPES:
+# -------------
+# - full: Complete backup (database + optionally video files)
+# - database_only: Database dump only (fastest)
+# - incremental: Only new/changed files since last backup
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> backing_up_database -> backing_up_files -> uploading_s3 -> completed
+# pending -> backing_up_database -> failed (on error at any stage)
+#
+# STORAGE:
+# --------
+# - local_path: Path on local/NAS storage
+# - s3_location: S3 URI (s3://bucket/prefix/backup_id.tar.gz)
+#
+# MANIFEST:
+# ---------
+# - manifest_json: Cached manifest for quick access (full manifest stored in backup)
+# - Manifest includes checksums for integrity verification
+#
+# See: https://github.com/filthyrake/vlog/issues/216
+backups = sa.Table(
+    "backups",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("backup_id", sa.String(50), unique=True, nullable=False),  # backup_20260126_020000
+    sa.Column(
+        "backup_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "backup_type IN ('full', 'database_only', 'incremental')",
+            name="ck_backups_backup_type",
+        ),
+        nullable=False,
+    ),
+    sa.Column(
+        "status",
+        sa.String(30),
+        sa.CheckConstraint(
+            "status IN ('pending', 'backing_up_database', 'backing_up_files', "
+            "'uploading_s3', 'completed', 'failed')",
+            name="ck_backups_status",
+        ),
+        nullable=False,
+        default="pending",
+    ),
+    # Size and content statistics
+    sa.Column("size_bytes", sa.BigInteger, nullable=True),  # Total backup size
+    sa.Column("database_size_bytes", sa.BigInteger, nullable=True),  # DB dump size
+    sa.Column("files_size_bytes", sa.BigInteger, nullable=True),  # Video files size
+    sa.Column("video_count", sa.Integer, nullable=True),  # Number of videos backed up
+    sa.Column("file_count", sa.Integer, nullable=True),  # Number of files in backup
+    # Description and metadata
+    sa.Column("description", sa.Text, nullable=True),  # User-provided description
+    # Storage locations
+    sa.Column("local_path", sa.String(500), nullable=True),  # Local filesystem path
+    sa.Column("s3_location", sa.String(500), nullable=True),  # S3 URI
+    # Manifest (JSON for quick access, full manifest in backup archive)
+    sa.Column("manifest_json", sa.Text, nullable=True),  # JSON-encoded manifest
+    sa.Column("manifest_signature", sa.String(64), nullable=True),  # HMAC-SHA256 signature
+    # Timestamps
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    # Provenance
+    sa.Column("created_by", sa.String(100), nullable=True),  # User/system that created
+    # Error tracking
+    sa.Column("error_message", sa.Text, nullable=True),
+    # VLog version info (for compatibility checking during restore)
+    sa.Column("vlog_version", sa.String(50), nullable=True),
+    sa.Column("schema_version", sa.String(10), nullable=True),  # Migration version
+    sa.Column("database_type", sa.String(20), nullable=True),  # postgresql or sqlite
+    sa.Index("ix_backups_backup_id", "backup_id"),
+    sa.Index("ix_backups_status", "status"),
+    sa.Index("ix_backups_created_at", "created_at"),
+    sa.Index("ix_backups_backup_type", "backup_type"),
+)
+
 
 def create_tables():
     """
@@ -939,4 +1672,4 @@ def create_tables():
 
 if __name__ == "__main__":
     create_tables()
-    print("Database tables created successfully!")
+    logger.info("Database tables created successfully!")

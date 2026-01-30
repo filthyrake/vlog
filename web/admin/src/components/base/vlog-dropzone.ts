@@ -2,6 +2,7 @@
  * VLog Dropzone Web Component
  *
  * A drag-and-drop file upload zone with validation and progress tracking.
+ * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-dropzone accept="video/*" max-size="5368709120">
@@ -12,205 +13,209 @@
  * @fires file-rejected - When a file is rejected due to validation
  */
 
+// Constructable stylesheet for CSP compliance
+const styles = `
+  :host {
+    display: block;
+  }
+
+  :host([hidden]) {
+    display: none;
+  }
+
+  .dropzone {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 12rem;
+    padding: var(--vlog-space-8, 2rem);
+    border: 2px dashed var(--vlog-border-secondary, #334155);
+    border-radius: var(--vlog-radius-lg, 0.5rem);
+    background-color: var(--vlog-bg-tertiary, #1e293b);
+    cursor: pointer;
+    transition: var(--vlog-transition-colors);
+  }
+
+  .dropzone:hover {
+    border-color: var(--vlog-border-primary, #475569);
+    background-color: var(--vlog-bg-secondary, #0f172a);
+  }
+
+  .dropzone:focus-visible {
+    outline: none;
+    border-color: var(--vlog-primary, #3b82f6);
+    box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
+  }
+
+  .dropzone.dragover {
+    border-color: var(--vlog-primary, #3b82f6);
+    background-color: var(--vlog-primary-bg, rgba(59, 130, 246, 0.1));
+  }
+
+  .dropzone.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .dropzone-icon {
+    width: 3rem;
+    height: 3rem;
+    margin-bottom: var(--vlog-space-4, 1rem);
+    color: var(--vlog-text-tertiary, #94a3b8);
+    transition: var(--vlog-transition-colors);
+  }
+
+  .dropzone:hover .dropzone-icon,
+  .dropzone.dragover .dropzone-icon {
+    color: var(--vlog-primary, #3b82f6);
+  }
+
+  .dropzone-content {
+    text-align: center;
+  }
+
+  .dropzone-text {
+    margin: 0;
+    font-family: var(--vlog-font-sans, system-ui, sans-serif);
+    font-size: var(--vlog-text-sm, 0.875rem);
+    color: var(--vlog-text-secondary, #cbd5e1);
+  }
+
+  .dropzone-hint {
+    margin-top: var(--vlog-space-2, 0.5rem);
+    font-family: var(--vlog-font-sans, system-ui, sans-serif);
+    font-size: var(--vlog-text-xs, 0.75rem);
+    color: var(--vlog-text-tertiary, #94a3b8);
+  }
+
+  .dropzone-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .dropzone.disabled .dropzone-input {
+    cursor: not-allowed;
+  }
+
+  /* File list */
+  .file-list {
+    width: 100%;
+    margin-top: var(--vlog-space-4, 1rem);
+    padding-top: var(--vlog-space-4, 1rem);
+    border-top: 1px solid var(--vlog-border-secondary, #334155);
+  }
+
+  .file-list:empty {
+    display: none;
+  }
+
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: var(--vlog-space-3, 0.75rem);
+    padding: var(--vlog-space-2, 0.5rem) var(--vlog-space-3, 0.75rem);
+    border-radius: var(--vlog-radius-md, 0.375rem);
+    background-color: var(--vlog-bg-secondary, #0f172a);
+  }
+
+  .file-item + .file-item {
+    margin-top: var(--vlog-space-2, 0.5rem);
+  }
+
+  .file-icon {
+    flex-shrink: 0;
+    width: 1.5rem;
+    height: 1.5rem;
+    color: var(--vlog-text-tertiary, #94a3b8);
+  }
+
+  .file-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .file-name {
+    font-family: var(--vlog-font-sans, system-ui, sans-serif);
+    font-size: var(--vlog-text-sm, 0.875rem);
+    color: var(--vlog-text-primary, #f1f5f9);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .file-size {
+    font-family: var(--vlog-font-sans, system-ui, sans-serif);
+    font-size: var(--vlog-text-xs, 0.75rem);
+    color: var(--vlog-text-tertiary, #94a3b8);
+  }
+
+  .file-remove {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    border: none;
+    border-radius: var(--vlog-radius-sm, 0.25rem);
+    background: transparent;
+    color: var(--vlog-text-tertiary, #94a3b8);
+    cursor: pointer;
+    transition: var(--vlog-transition-colors);
+  }
+
+  .file-remove:hover {
+    background-color: var(--vlog-error-bg, rgba(239, 68, 68, 0.15));
+    color: var(--vlog-error, #ef4444);
+  }
+
+  .file-remove:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
+  }
+
+  .file-remove svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  /* Compact variant */
+  :host([compact]) .dropzone {
+    min-height: auto;
+    padding: var(--vlog-space-4, 1rem);
+  }
+
+  :host([compact]) .dropzone-icon {
+    width: 2rem;
+    height: 2rem;
+    margin-bottom: var(--vlog-space-2, 0.5rem);
+  }
+
+  /* Size variants */
+  :host([size="sm"]) .dropzone {
+    min-height: 8rem;
+    padding: var(--vlog-space-4, 1rem);
+  }
+
+  :host([size="lg"]) .dropzone {
+    min-height: 16rem;
+    padding: var(--vlog-space-12, 3rem);
+  }
+`;
+
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(styles);
+
 const template = document.createElement('template');
 template.innerHTML = `
-  <style>
-    :host {
-      display: block;
-    }
-
-    :host([hidden]) {
-      display: none;
-    }
-
-    .dropzone {
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 12rem;
-      padding: var(--vlog-space-8, 2rem);
-      border: 2px dashed var(--vlog-border-secondary, #334155);
-      border-radius: var(--vlog-radius-lg, 0.5rem);
-      background-color: var(--vlog-bg-tertiary, #1e293b);
-      cursor: pointer;
-      transition: var(--vlog-transition-colors);
-    }
-
-    .dropzone:hover {
-      border-color: var(--vlog-border-primary, #475569);
-      background-color: var(--vlog-bg-secondary, #0f172a);
-    }
-
-    .dropzone:focus-visible {
-      outline: none;
-      border-color: var(--vlog-primary, #3b82f6);
-      box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
-    }
-
-    .dropzone.dragover {
-      border-color: var(--vlog-primary, #3b82f6);
-      background-color: var(--vlog-primary-bg, rgba(59, 130, 246, 0.1));
-    }
-
-    .dropzone.disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      pointer-events: none;
-    }
-
-    .dropzone-icon {
-      width: 3rem;
-      height: 3rem;
-      margin-bottom: var(--vlog-space-4, 1rem);
-      color: var(--vlog-text-tertiary, #94a3b8);
-      transition: var(--vlog-transition-colors);
-    }
-
-    .dropzone:hover .dropzone-icon,
-    .dropzone.dragover .dropzone-icon {
-      color: var(--vlog-primary, #3b82f6);
-    }
-
-    .dropzone-content {
-      text-align: center;
-    }
-
-    .dropzone-text {
-      margin: 0;
-      font-family: var(--vlog-font-sans, system-ui, sans-serif);
-      font-size: var(--vlog-text-sm, 0.875rem);
-      color: var(--vlog-text-secondary, #cbd5e1);
-    }
-
-    .dropzone-hint {
-      margin-top: var(--vlog-space-2, 0.5rem);
-      font-family: var(--vlog-font-sans, system-ui, sans-serif);
-      font-size: var(--vlog-text-xs, 0.75rem);
-      color: var(--vlog-text-tertiary, #94a3b8);
-    }
-
-    .dropzone-input {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      opacity: 0;
-      cursor: pointer;
-    }
-
-    .dropzone.disabled .dropzone-input {
-      cursor: not-allowed;
-    }
-
-    /* File list */
-    .file-list {
-      width: 100%;
-      margin-top: var(--vlog-space-4, 1rem);
-      padding-top: var(--vlog-space-4, 1rem);
-      border-top: 1px solid var(--vlog-border-secondary, #334155);
-    }
-
-    .file-list:empty {
-      display: none;
-    }
-
-    .file-item {
-      display: flex;
-      align-items: center;
-      gap: var(--vlog-space-3, 0.75rem);
-      padding: var(--vlog-space-2, 0.5rem) var(--vlog-space-3, 0.75rem);
-      border-radius: var(--vlog-radius-md, 0.375rem);
-      background-color: var(--vlog-bg-secondary, #0f172a);
-    }
-
-    .file-item + .file-item {
-      margin-top: var(--vlog-space-2, 0.5rem);
-    }
-
-    .file-icon {
-      flex-shrink: 0;
-      width: 1.5rem;
-      height: 1.5rem;
-      color: var(--vlog-text-tertiary, #94a3b8);
-    }
-
-    .file-info {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .file-name {
-      font-family: var(--vlog-font-sans, system-ui, sans-serif);
-      font-size: var(--vlog-text-sm, 0.875rem);
-      color: var(--vlog-text-primary, #f1f5f9);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .file-size {
-      font-family: var(--vlog-font-sans, system-ui, sans-serif);
-      font-size: var(--vlog-text-xs, 0.75rem);
-      color: var(--vlog-text-tertiary, #94a3b8);
-    }
-
-    .file-remove {
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 1.5rem;
-      height: 1.5rem;
-      padding: 0;
-      border: none;
-      border-radius: var(--vlog-radius-sm, 0.25rem);
-      background: transparent;
-      color: var(--vlog-text-tertiary, #94a3b8);
-      cursor: pointer;
-      transition: var(--vlog-transition-colors);
-    }
-
-    .file-remove:hover {
-      background-color: var(--vlog-error-bg, rgba(239, 68, 68, 0.15));
-      color: var(--vlog-error, #ef4444);
-    }
-
-    .file-remove:focus-visible {
-      outline: none;
-      box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
-    }
-
-    .file-remove svg {
-      width: 1rem;
-      height: 1rem;
-    }
-
-    /* Compact variant */
-    :host([compact]) .dropzone {
-      min-height: auto;
-      padding: var(--vlog-space-4, 1rem);
-    }
-
-    :host([compact]) .dropzone-icon {
-      width: 2rem;
-      height: 2rem;
-      margin-bottom: var(--vlog-space-2, 0.5rem);
-    }
-
-    /* Size variants */
-    :host([size="sm"]) .dropzone {
-      min-height: 8rem;
-      padding: var(--vlog-space-4, 1rem);
-    }
-
-    :host([size="lg"]) .dropzone {
-      min-height: 16rem;
-      padding: var(--vlog-space-12, 3rem);
-    }
-  </style>
-
   <div class="dropzone" part="dropzone" tabindex="0" role="button" aria-label="Upload files">
     <input type="file" class="dropzone-input" tabindex="-1" aria-hidden="true" />
     <svg class="dropzone-icon" part="icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
@@ -246,6 +251,7 @@ export class VlogDropzone extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.dropzone = this.shadowRoot!.querySelector('.dropzone')!;

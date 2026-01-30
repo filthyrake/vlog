@@ -28,6 +28,8 @@ export interface VideosState {
   editPublishedAt: string;
   editCustomFieldValues: Record<string, unknown>; // Custom field values for edit modal
   editFeatured: boolean;
+  editCommentsEnabled: string; // "inherit", "true", or "false" (Issue #213)
+  editRatingsEnabled: string;  // "inherit", "true", or "false" (Issue #213)
   editSaving: boolean;
   editMessage: string;
   editError: string;
@@ -100,6 +102,9 @@ export interface VideosActions {
   submitRetranscode(): Promise<void>; // Alias for startRetranscode
   retranscodeAll(video: Video): Promise<void>;
   toggleRetranscodeQuality(quality: string): void;
+  selectAllQualities(): void;
+  deselectAllQualities(): void;
+  getQualityStatus(quality: string): string;
 
   // Sprite sheet generation
   generateSprites(video: Video): Promise<void>;
@@ -119,6 +124,14 @@ export interface VideosActions {
   // Progress tracking
   loadProgressForActiveVideos(): Promise<void>;
   updateProgress(videoId: number, progress: VideoProgress): void;
+
+  // CSP-safe progress helpers
+  getProgressPercent(videoId: number): number;
+  getProgressStep(videoId: number): string;
+  hasProgressQualities(videoId: number): boolean;
+  getProgressQualities(videoId: number): QualityInfo[];
+  getProgressError(videoId: number): string;
+  hasProgressError(videoId: number): boolean;
 
   // Formatters (bound to this store for use in templates)
   formatDuration: typeof formatDuration;
@@ -149,6 +162,8 @@ export function createVideosStore(): VideosStore {
     editPublishedAt: '',
     editCustomFieldValues: {},
     editFeatured: false,
+    editCommentsEnabled: 'inherit',
+    editRatingsEnabled: 'inherit',
     editSaving: false,
     editMessage: '',
     editError: '',
@@ -316,6 +331,11 @@ export function createVideosStore(): VideosStore {
       this.editCategory = video.category_id || 0;
       this.editPublishedAt = video.published_at?.slice(0, 16) || '';
       this.editFeatured = video.is_featured || false;
+      // Issue #213: Convert boolean/null to string for 3-state select
+      this.editCommentsEnabled = video.comments_enabled === null ? 'inherit' :
+        video.comments_enabled === true ? 'true' : 'false';
+      this.editRatingsEnabled = video.ratings_enabled === null ? 'inherit' :
+        video.ratings_enabled === true ? 'true' : 'false';
       this.editMessage = '';
       this.editError = '';
       this.editModal = true;
@@ -344,6 +364,9 @@ export function createVideosStore(): VideosStore {
           formData.append('published_at', new Date(this.editPublishedAt).toISOString());
         }
         formData.append('is_featured', this.editFeatured.toString());
+        // Issue #213: Include social settings
+        formData.append('comments_enabled', this.editCommentsEnabled);
+        formData.append('ratings_enabled', this.editRatingsEnabled);
 
         const updated = await videosApi.update(this.editVideoId, formData);
 
@@ -495,6 +518,22 @@ export function createVideosStore(): VideosStore {
       } else {
         this.retranscodeSelected.splice(idx, 1);
       }
+    },
+
+    selectAllQualities(): void {
+      this.retranscodeSelected = this.retranscodeAvailable.map((q) => q.quality);
+    },
+
+    deselectAllQualities(): void {
+      this.retranscodeSelected = [];
+    },
+
+    getQualityStatus(quality: string): string {
+      const existing = this.retranscodeExisting.find((q) => q.quality === quality);
+      if (existing) {
+        return 'completed';
+      }
+      return 'not transcoded';
     },
 
     // ===========================================================================
@@ -699,6 +738,41 @@ export function createVideosStore(): VideosStore {
         video.current_step = progress.current_step;
         video.current_progress = progress.current_progress;
       }
+    },
+
+    // ===========================================================================
+    // CSP-safe Progress Helpers (Alpine.js CSP build doesn't support ?.)
+    // ===========================================================================
+
+    getProgressPercent(videoId: number): number {
+      const progress = this.progressData[videoId] as VideoProgress & { progress_percent?: number };
+      // Handle both property names that might be used
+      return progress ? (progress.progress_percent || progress.current_progress || 0) : 0;
+    },
+
+    getProgressStep(videoId: number): string {
+      const progress = this.progressData[videoId];
+      return progress ? (progress.current_step || '') : '';
+    },
+
+    hasProgressQualities(videoId: number): boolean {
+      const progress = this.progressData[videoId];
+      return !!(progress && progress.qualities && progress.qualities.length > 0);
+    },
+
+    getProgressQualities(videoId: number): QualityInfo[] {
+      const progress = this.progressData[videoId];
+      return (progress && progress.qualities) || [];
+    },
+
+    getProgressError(videoId: number): string {
+      const progress = this.progressData[videoId] as VideoProgress & { last_error?: string };
+      return (progress && progress.last_error) || '';
+    },
+
+    hasProgressError(videoId: number): boolean {
+      const progress = this.progressData[videoId] as VideoProgress & { last_error?: string };
+      return !!(progress && progress.last_error);
     },
   };
 }

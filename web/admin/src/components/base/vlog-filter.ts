@@ -4,6 +4,8 @@
  * A dropdown filter component with badge showing active filter count.
  * Supports single or multiple selection.
  *
+ * Uses constructable stylesheets for CSP compliance.
+ *
  * @example
  * <vlog-filter label="Status" name="status">
  *   <vlog-filter-option value="ready">Ready</vlog-filter-option>
@@ -14,9 +16,8 @@
  * @fires change - When filter selection changes
  */
 
-const template = document.createElement('template');
-template.innerHTML = `
-  <style>
+// Constructable stylesheet for CSP compliance
+const styles = `
     :host {
       display: inline-block;
       position: relative;
@@ -190,8 +191,18 @@ template.innerHTML = `
       outline: none;
       box-shadow: 0 0 0 var(--vlog-focus-ring-width, 2px) var(--vlog-focus-ring-color, rgba(59, 130, 246, 0.5));
     }
-  </style>
 
+    /* CSP-compliant visibility control */
+    .hidden {
+      display: none !important;
+    }
+`;
+
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(styles);
+
+const template = document.createElement('template');
+template.innerHTML = `
   <button type="button" class="filter-trigger" part="trigger" aria-haspopup="listbox" aria-expanded="false">
     <span class="filter-label" part="label"></span>
     <span class="filter-badge" part="badge"></span>
@@ -233,6 +244,7 @@ export class VlogFilter extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.trigger = this.shadowRoot!.querySelector('.filter-trigger')!;
@@ -340,7 +352,7 @@ export class VlogFilter extends HTMLElement {
     // Hide slot since we've rendered buttons
     const slot = this.optionsContainer.querySelector('slot');
     if (slot) {
-      slot.style.display = 'none';
+      slot.classList.add('hidden');
     }
   }
 

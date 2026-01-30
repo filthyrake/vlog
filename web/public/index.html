@@ -4,10 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https://cdn.damenknight.com; connect-src 'self' https://cdn.damenknight.com; font-src 'self'; object-src 'none'; base-uri 'self';">
-    <title>Damen's VLog</title>
+    <title>VLog</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
     <link rel="stylesheet" href="/static/css/bundle.css">
     <script defer src="/static/js/utils.js"></script>
+    <script defer src="/static/js/theme.js"></script>
     <script defer src="/static/js/pages/home.js"></script>
     <script defer src="/static/vendor/alpine.csp.min.js"></script>
 </head>
@@ -21,7 +22,12 @@
     <!-- Header -->
     <header class="site-header">
         <div class="site-header__container">
-            <a href="/" class="site-header__logo">Damen's VLog</a>
+            <a href="/" class="site-header__logo">
+                <template x-if="logoUrl">
+                    <img :src="logoUrl" :alt="siteName" class="site-header__logo-img">
+                </template>
+                <span x-text="siteName">VLog</span>
+            </a>
 
             <!-- Search -->
             <div role="search" class="site-header__search">
@@ -128,7 +134,7 @@
     <main id="main-content" class="max-w-7xl mx-auto px-4 py-8">
         <!-- Hero Section: Featured Video -->
         <template x-if="featuredVideo">
-            <section class="mb-8" x-show="!searchQuery" x-cloak>
+            <section class="mb-8" x-show="_showFeaturedSection" x-cloak>
                 <a
                     :href="featuredVideo._href"
                     class="block relative rounded-xl overflow-hidden group"
@@ -462,7 +468,7 @@
         <div class="site-footer__container">
             <div class="site-footer__content">
                 <div class="site-footer__brand">
-                    <a href="/" class="site-footer__logo">Damen's VLog</a>
+                    <a href="/" class="site-footer__logo" x-text="siteName">VLog</a>
                     <p class="site-footer__tagline" x-show="_showFooterTagline" x-text="tagline"></p>
                 </div>
                 <nav class="site-footer__nav" aria-label="Footer navigation">
@@ -470,10 +476,19 @@
                         <div class="site-footer__nav-title">Browse</div>
                         <a href="/" class="site-footer__nav-link">All Videos</a>
                     </div>
+                    <template x-if="_hasFooterLinks">
+                        <div class="site-footer__nav-group">
+                            <div class="site-footer__nav-title">Links</div>
+                            <template x-for="link in footerLinks" :key="link.url">
+                                <a :href="link.url" class="site-footer__nav-link" x-text="link.label"></a>
+                            </template>
+                        </div>
+                    </template>
                 </nav>
             </div>
             <div class="site-footer__bottom">
-                <p class="site-footer__copyright">&copy; <span x-text="_currentYear"></span> Damen's VLog. All rights reserved.</p>
+                <p class="site-footer__copyright" x-show="_showCustomFooterText" x-text="footerText"></p>
+                <p class="site-footer__copyright" x-show="_showDefaultFooterText">&copy; <span x-text="_currentYear"></span> <span x-text="siteName">VLog</span>. All rights reserved.</p>
             </div>
         </div>
     </footer>

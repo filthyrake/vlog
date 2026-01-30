@@ -3,6 +3,7 @@
  *
  * A tab navigation component with ARIA support and keyboard navigation.
  * Uses roving tabindex for proper accessibility.
+ * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-tabs active="videos" @tab-change="handleChange">
@@ -15,60 +16,64 @@
  * </vlog-tabs>
  */
 
+// Constructable stylesheet for CSP compliance
+const styles = `
+  :host {
+    display: block;
+  }
+
+  :host([hidden]) {
+    display: none;
+  }
+
+  .tabs-container {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Tab list */
+  .tab-list {
+    display: flex;
+    gap: var(--vlog-space-1, 0.25rem);
+    border-bottom: 1px solid var(--vlog-border-primary, #334155);
+    padding-bottom: var(--vlog-space-1, 0.25rem);
+    margin-bottom: var(--vlog-space-4, 1rem);
+  }
+
+  /* Variant: pills */
+  :host([variant="pills"]) .tab-list {
+    border-bottom: none;
+    background-color: var(--vlog-bg-tertiary, #1e293b);
+    padding: var(--vlog-space-1, 0.25rem);
+    border-radius: var(--vlog-radius-lg, 0.5rem);
+    gap: var(--vlog-space-1, 0.25rem);
+  }
+
+  /* Variant: underline */
+  :host([variant="underline"]) .tab-list {
+    gap: var(--vlog-space-4, 1rem);
+  }
+
+  /* Full width */
+  :host([full-width]) .tab-list {
+    width: 100%;
+  }
+
+  :host([full-width]) .tab-list ::slotted(vlog-tab-button) {
+    flex: 1;
+  }
+
+  /* Panels container */
+  .panels-container {
+    min-height: 0;
+  }
+`;
+
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(styles);
+
 const template = document.createElement('template');
 template.innerHTML = `
-  <style>
-    :host {
-      display: block;
-    }
-
-    :host([hidden]) {
-      display: none;
-    }
-
-    .tabs-container {
-      display: flex;
-      flex-direction: column;
-    }
-
-    /* Tab list */
-    .tab-list {
-      display: flex;
-      gap: var(--vlog-space-1, 0.25rem);
-      border-bottom: 1px solid var(--vlog-border-primary, #334155);
-      padding-bottom: var(--vlog-space-1, 0.25rem);
-      margin-bottom: var(--vlog-space-4, 1rem);
-    }
-
-    /* Variant: pills */
-    :host([variant="pills"]) .tab-list {
-      border-bottom: none;
-      background-color: var(--vlog-bg-tertiary, #1e293b);
-      padding: var(--vlog-space-1, 0.25rem);
-      border-radius: var(--vlog-radius-lg, 0.5rem);
-      gap: var(--vlog-space-1, 0.25rem);
-    }
-
-    /* Variant: underline */
-    :host([variant="underline"]) .tab-list {
-      gap: var(--vlog-space-4, 1rem);
-    }
-
-    /* Full width */
-    :host([full-width]) .tab-list {
-      width: 100%;
-    }
-
-    :host([full-width]) .tab-list ::slotted(vlog-tab-button) {
-      flex: 1;
-    }
-
-    /* Panels container */
-    .panels-container {
-      min-height: 0;
-    }
-  </style>
-
   <div class="tabs-container" part="container">
     <div class="tab-list" role="tablist" part="tablist">
       <slot name="tabs"></slot>
@@ -92,6 +97,7 @@ export class VlogTabs extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.tabList = this.shadowRoot!.querySelector('.tab-list')!;

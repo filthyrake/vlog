@@ -5,6 +5,8 @@ Provides publish methods for:
 - Transcoding progress updates
 - Worker status changes
 - Job completion/failure notifications
+- Live stream metrics updates (Issue #524)
+- Live stream viewer count updates (Issue #524)
 
 Channels:
 - vlog:progress:{video_id} - Per-video progress updates
@@ -12,6 +14,9 @@ Channels:
 - vlog:workers:status - Worker status changes
 - vlog:jobs:completed - Job completion notifications
 - vlog:jobs:failed - Job failure notifications
+- vlog:live:{stream_id}:metrics - Per-stream health metrics (Issue #524)
+- vlog:live:{stream_id}:viewers - Per-stream viewer counts (Issue #524)
+- vlog:live:{stream_id}:state - Stream state changes (Issue #524)
 """
 
 import asyncio
@@ -257,6 +262,151 @@ class Publisher:
             logger.warning(f"Failed to publish job failure: {e}")
             return False
 
+    # =========================================================================
+    # Live Stream Publishers (Issue #524)
+    # =========================================================================
+
+    @staticmethod
+    async def publish_stream_metrics(
+        stream_id: int,
+        bitrate_total: Optional[int],
+        connection_health: str,
+        segment_latency_ms: Optional[int],
+        segments_received: int,
+        segments_dropped: int,
+    ) -> bool:
+        """
+        Publish live stream metrics update.
+
+        Used by metrics aggregation task to push real-time health data
+        to studio dashboard via SSE.
+
+        Args:
+            stream_id: Stream ID
+            bitrate_total: Total bitrate in bytes/sec
+            connection_health: Health status (good/degraded/poor/unknown)
+            segment_latency_ms: Average segment push latency
+            segments_received: Segments received in this interval
+            segments_dropped: Segments dropped in this interval
+
+        Returns:
+            True if published successfully
+        """
+        redis = await get_redis()
+        if not redis:
+            return False
+
+        message = {
+            "type": "metrics",
+            "stream_id": stream_id,
+            "bitrate_total": bitrate_total,
+            "connection_health": connection_health,
+            "segment_latency_ms": segment_latency_ms,
+            "segments_received": segments_received,
+            "segments_dropped": segments_dropped,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            await redis.publish(
+                channel_name("live", f"{stream_id}:metrics"),
+                json.dumps(message),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to publish stream metrics: {e}")
+            return False
+
+    @staticmethod
+    async def publish_viewer_count(
+        stream_id: int,
+        current: int,
+        peak: int,
+        total: int,
+    ) -> bool:
+        """
+        Publish live stream viewer count update.
+
+        Used by viewer tracking to push real-time viewer counts
+        to studio dashboard via SSE.
+
+        Args:
+            stream_id: Stream ID
+            current: Current viewer count
+            peak: Peak viewer count
+            total: Total unique viewers
+
+        Returns:
+            True if published successfully
+        """
+        redis = await get_redis()
+        if not redis:
+            return False
+
+        message = {
+            "type": "viewers",
+            "stream_id": stream_id,
+            "current": current,
+            "peak": peak,
+            "total": total,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            await redis.publish(
+                channel_name("live", f"{stream_id}:viewers"),
+                json.dumps(message),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to publish viewer count: {e}")
+            return False
+
+    @staticmethod
+    async def publish_stream_state(
+        stream_id: int,
+        status: str,
+        slug: str,
+        title: str,
+    ) -> bool:
+        """
+        Publish live stream state change.
+
+        Used to notify studio dashboard of stream status changes
+        (live -> ending -> ended).
+
+        Args:
+            stream_id: Stream ID
+            status: New status (idle/live/ending/ended)
+            slug: Stream slug
+            title: Stream title
+
+        Returns:
+            True if published successfully
+        """
+        redis = await get_redis()
+        if not redis:
+            return False
+
+        message = {
+            "type": "state",
+            "stream_id": stream_id,
+            "status": status,
+            "slug": slug,
+            "title": title,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            await redis.publish(
+                channel_name("live", f"{stream_id}:state"),
+                json.dumps(message),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to publish stream state: {e}")
+            return False
+
 
 class Subscriber:
     """Subscribe to Redis Pub/Sub channels for SSE streaming."""
@@ -439,6 +589,28 @@ async def subscribe_to_worker_commands(worker_id: str) -> Subscriber:
     await subscriber.subscribe(
         channel_name("worker", f"{worker_id}:commands"),  # Worker-specific commands
         channel_name("workers", "commands"),  # Broadcast commands to all workers
+    )
+    return subscriber
+
+
+async def subscribe_to_live_stream(stream_id: int) -> Subscriber:
+    """
+    Create a subscriber for live stream updates.
+
+    Subscribes to metrics, viewers, and state channels for a stream.
+    Used by studio dashboard SSE endpoint.
+
+    Args:
+        stream_id: The stream ID to subscribe to
+
+    Returns:
+        Configured Subscriber instance
+    """
+    subscriber = Subscriber()
+    await subscriber.subscribe(
+        channel_name("live", f"{stream_id}:metrics"),
+        channel_name("live", f"{stream_id}:viewers"),
+        channel_name("live", f"{stream_id}:state"),
     )
     return subscriber
 

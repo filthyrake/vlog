@@ -1,0 +1,29 @@
+# Trivy vulnerability ignores
+# Review quarterly with pip-audit ignores
+
+# GHSA-58pv-8j8x-9vj2: jaraco.context path traversal
+# Ignored for setuptools vendored copy only - the vendored package is used
+# internally by setuptools for its own operations, not exposed to user input.
+# Main jaraco-context package is upgraded to 6.1.0.
+# setuptools upstream has not yet updated their vendored copy.
+# Last reviewed: 2026-01-18
+GHSA-58pv-8j8x-9vj2
+
+# GHSA-8rrh-rw8j-w5fx (CVE-2026-24049): wheel path traversal in unpack
+# Ignored for setuptools vendored copy only - the vendored wheel is used
+# internally by setuptools for its own operations. VLog does not use
+# `wheel unpack` on untrusted wheel files. Main wheel package upgraded to 0.46.2.
+# setuptools upstream has not yet updated their vendored copy.
+# See: https://github.com/advisories/GHSA-8rrh-rw8j-w5fx
+# Last reviewed: 2026-01-24
+GHSA-8rrh-rw8j-w5fx
+CVE-2026-24049
+
+# GHSA-7gcm-g887-7qv7 (CVE-2026-0994): protobuf JSON recursion DoS
+# Vulnerability in google.protobuf.json_format.ParseDict() allows DoS via
+# nested Any messages bypassing recursion limits. No patched version available.
+# VLog does not use ParseDict - protobuf is a transitive dependency of faster-whisper.
+# Monitor https://github.com/advisories/GHSA-7gcm-g887-7qv7 for fix release.
+# Last reviewed: 2026-01-24
+GHSA-7gcm-g887-7qv7
+CVE-2026-0994

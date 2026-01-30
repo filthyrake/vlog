@@ -4,6 +4,8 @@
  * An empty state component with illustrations and call-to-action buttons.
  * Used when there's no content to display.
  *
+ * Uses constructable stylesheets for CSP compliance.
+ *
  * @example
  * <vlog-empty-state icon="video" title="No videos" description="Upload your first video">
  *   <div slot="actions"><vlog-button>Upload</vlog-button></div>
@@ -39,9 +41,8 @@ const icons = {
   </svg>`,
 };
 
-const template = document.createElement('template');
-template.innerHTML = `
-  <style>
+// Constructable stylesheet for CSP compliance
+const styles = `
     :host {
       display: block;
     }
@@ -196,8 +197,18 @@ template.innerHTML = `
     .description:empty {
       display: none;
     }
-  </style>
 
+    /* CSP-compliant visibility control */
+    .hidden {
+      display: none !important;
+    }
+`;
+
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(styles);
+
+const template = document.createElement('template');
+template.innerHTML = `
   <div class="empty-state" role="status" part="wrapper">
     <div class="icon-wrapper" part="icon" aria-hidden="true">
       <slot name="icon"></slot>
@@ -205,7 +216,7 @@ template.innerHTML = `
     <h3 class="title" part="title"></h3>
     <p class="description" part="description"></p>
     <div class="actions" part="actions">
-      <button class="action-button" part="action-button"></button>
+      <button class="action-button hidden" part="action-button"></button>
       <slot name="actions"></slot>
     </div>
   </div>
@@ -225,6 +236,7 @@ export class VlogEmptyState extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
 
     this.wrapper = this.shadowRoot!.querySelector('.empty-state')!;
@@ -300,10 +312,10 @@ export class VlogEmptyState extends HTMLElement {
     // Update action button
     if (actionText) {
       this.actionButton.textContent = actionText;
-      this.actionButton.style.display = '';
+      this.actionButton.classList.remove('hidden');
     } else {
       this.actionButton.textContent = '';
-      this.actionButton.style.display = 'none';
+      this.actionButton.classList.add('hidden');
     }
   }
 

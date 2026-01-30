@@ -18,6 +18,23 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
+# Cache configuration constants
+DEFAULT_CACHE_TTL_SECONDS = 60  # Default time-to-live for cache entries
+DEFAULT_CACHE_MAX_SIZE = 1000  # Maximum entries before triggering eviction
+CACHE_EVICTION_RATIO = 0.10  # In _set(), evict 10% of entries using LRU when cache remains at max_size after cleanup_expired()
+
+# Redis connection constants
+# 5 second timeout balances fast failure detection with tolerance for network latency
+REDIS_SOCKET_TIMEOUT = 5.0
+REDIS_CONNECT_TIMEOUT = 5.0
+# Batch size of 100 balances memory usage vs network round-trips for SCAN operations
+REDIS_SCAN_BATCH_SIZE = 100
+# Maximum time (seconds) for bulk operations like clear() to prevent blocking
+REDIS_BULK_OPERATION_TIMEOUT = 5.0
+# Reconnection settings for transient failures
+REDIS_RECONNECT_MIN_INTERVAL = 1.0  # Minimum seconds between reconnection attempts
+REDIS_RECONNECT_MAX_INTERVAL = 60.0  # Maximum backoff interval
+
 
 class AnalyticsCache:
     """
@@ -30,7 +47,7 @@ class AnalyticsCache:
 
     CLEANUP_PROBABILITY = 0.01  # 1% chance of cleanup on each set operation
 
-    def __init__(self, ttl_seconds: int = 60, enabled: bool = True, max_size: int = 1000):
+    def __init__(self, ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS, enabled: bool = True, max_size: int = DEFAULT_CACHE_MAX_SIZE):
         """
         Initialize the cache.
 
@@ -94,7 +111,7 @@ class AnalyticsCache:
             # and TTL expiration. For default max_size of 1000, performance is acceptable.
             if len(self._cache) >= self._max_size:
                 items = sorted(self._cache.items(), key=lambda x: x[1]["timestamp"])
-                evict_count = max(1, len(items) // 10)
+                evict_count = max(1, int(len(items) * CACHE_EVICTION_RATIO))
                 for k, _ in items[:evict_count]:
                     del self._cache[k]
 
@@ -166,7 +183,7 @@ class RedisAnalyticsCache:
     def __init__(
         self,
         redis_url: str,
-        ttl_seconds: int = 60,
+        ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
         enabled: bool = True,
     ):
         """
@@ -182,28 +199,71 @@ class RedisAnalyticsCache:
         self._enabled = enabled
         self._client: Optional[Any] = None
         self._connection_failed = False
+        self._last_reconnect_attempt: Optional[float] = None
+        self._reconnect_backoff = REDIS_RECONNECT_MIN_INTERVAL
 
         if enabled:
             self._initialize_client()
 
-    def _initialize_client(self) -> None:
-        """Initialize the Redis client."""
+    def _initialize_client(self) -> bool:
+        """
+        Initialize the Redis client.
+
+        Returns:
+            True if connection successful, False otherwise.
+        """
         try:
             import redis  # Lazy import
             self._client = redis.Redis.from_url(
                 self._redis_url,
-                socket_timeout=5.0,
-                socket_connect_timeout=5.0,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
                 decode_responses=True,
             )
-            # Test connection
+            # Test connection (respects socket_timeout)
             self._client.ping()
             logger.info(f"Redis analytics cache connected: {self._redis_url.split('@')[-1]}")
+            self._connection_failed = False
+            self._reconnect_backoff = REDIS_RECONNECT_MIN_INTERVAL
+            return True
         except Exception as e:
             # Catch broad exceptions to avoid hard dependency on redis
             logger.warning(f"Redis analytics cache connection failed: {e}")
             self._client = None
             self._connection_failed = True
+            return False
+
+    def _maybe_reconnect(self) -> bool:
+        """
+        Attempt reconnection if enough time has passed since last attempt.
+
+        Uses exponential backoff to avoid hammering a failing Redis server.
+
+        Returns:
+            True if connected (either already or after reconnect), False otherwise.
+        """
+        if not self._connection_failed:
+            return self._client is not None
+
+        now = time.time()
+        if self._last_reconnect_attempt is not None:
+            elapsed = now - self._last_reconnect_attempt
+            if elapsed < self._reconnect_backoff:
+                return False
+
+        self._last_reconnect_attempt = now
+        logger.info(f"Attempting Redis reconnection (backoff: {self._reconnect_backoff}s)")
+
+        if self._initialize_client():
+            logger.info("Redis analytics cache reconnected successfully")
+            return True
+
+        # Increase backoff for next attempt (exponential with cap)
+        self._reconnect_backoff = min(
+            self._reconnect_backoff * 2,
+            REDIS_RECONNECT_MAX_INTERVAL
+        )
+        return False
 
     def _get_full_key(self, key: str) -> str:
         """Get the full Redis key with prefix."""
@@ -215,13 +275,31 @@ class RedisAnalyticsCache:
         operation_name: str,
         fallback: Optional[T] = None
     ) -> Optional[T]:
+        """
+        Execute a Redis operation with error handling and automatic reconnection.
 
-        if not self._enabled or self._client is None:
+        Args:
+            operation: The Redis operation to execute
+            operation_name: Name for logging purposes
+            fallback: Value to return on failure
+
+        Returns:
+            Operation result or fallback value on failure.
+        """
+        if not self._enabled:
             return fallback
+
+        # Attempt reconnection if previously failed
+        if self._client is None or self._connection_failed:
+            if not self._maybe_reconnect():
+                return fallback
+
         try:
             return operation()
         except Exception as e:
             logger.warning(f"Redis analytics cache {operation_name} failed: {e}")
+            # Mark as failed to trigger reconnection on next call
+            self._connection_failed = True
             return fallback
 
     def get(self, key: str) -> Optional[Any]:
@@ -262,14 +340,29 @@ class RedisAnalyticsCache:
         )
 
     def clear(self) -> None:
-        """Clear all analytics cache entries."""
+        """
+        Clear all analytics cache entries.
+
+        Uses a timeout to prevent blocking indefinitely on large keyspaces.
+        If the operation times out, some keys may remain.
+        """
         def operation():
+            start_time = time.time()
             cursor = 0
             pattern = f"{self.CACHE_KEY_PREFIX}*"
+            keys_deleted = 0
             while True:
-                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                # Check timeout to prevent blocking on large keyspaces
+                if time.time() - start_time > REDIS_BULK_OPERATION_TIMEOUT:
+                    logger.warning(
+                        f"Redis clear timed out after {REDIS_BULK_OPERATION_TIMEOUT}s, "
+                        f"deleted {keys_deleted} keys, some may remain"
+                    )
+                    return
+                cursor, keys = self._client.scan(cursor, match=pattern, count=REDIS_SCAN_BATCH_SIZE)
                 if keys:
                     self._client.delete(*keys)
+                    keys_deleted += len(keys)
                 if cursor == 0:
                     break
 
@@ -304,15 +397,22 @@ class RedisAnalyticsCache:
         Get cache statistics.
 
         Returns:
-            Dict with cache stats (TTL, enabled status, backend type)
-            # Redis has no fixed max size
+            Dict with cache stats (TTL, enabled status, backend type, connection status)
         """
         def count_keys():
+            start_time = time.time()
             entry_count = 0
             cursor = 0
             pattern = f"{self.CACHE_KEY_PREFIX}*"
             while True:
-                cursor, keys = self._client.scan(cursor, match=pattern, count=100)
+                # Check timeout to prevent blocking on large keyspaces
+                if time.time() - start_time > REDIS_BULK_OPERATION_TIMEOUT:
+                    logger.warning(
+                        f"Redis key count timed out after {REDIS_BULK_OPERATION_TIMEOUT}s, "
+                        f"returning partial count: {entry_count}"
+                    )
+                    return entry_count
+                cursor, keys = self._client.scan(cursor, match=pattern, count=REDIS_SCAN_BATCH_SIZE)
                 entry_count += len(keys)
                 if cursor == 0:
                     break
@@ -324,7 +424,7 @@ class RedisAnalyticsCache:
             "enabled": self._enabled,
             "ttl_seconds": self._ttl,
             "entry_count": entry_count,
-            "max_size": -1,
+            "max_size": -1,  # Redis has no fixed max size
             "backend": "redis",
             "connected": self._client is not None and not self._connection_failed,
         }
@@ -336,9 +436,9 @@ AnalyticsCacheType = Union[AnalyticsCache, RedisAnalyticsCache]
 
 def create_analytics_cache(
     storage_url: str = "memory://",
-    ttl_seconds: int = 60,
+    ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
     enabled: bool = True,
-    max_size: int = 1000,
+    max_size: int = DEFAULT_CACHE_MAX_SIZE,
 ) -> AnalyticsCacheType:
     """
     Factory function to create the appropriate analytics cache implementation.
