@@ -17,6 +17,7 @@ Related Issue: #524
 import asyncio
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Set
 
@@ -28,7 +29,7 @@ from api.audit import AuditAction, log_audit
 from api.auth.middleware import SESSION_COOKIE_NAME
 from api.auth.permissions import Permission, Role, has_permission
 from api.auth.sessions import validate_session_token
-from api.common import get_real_ip, get_request_id
+from api.common import get_real_ip, get_request_id, require_valid_slug
 from api.database import database, live_streams
 from api.db_retry import fetch_one_with_retry
 from api.live_metrics import get_stream_metrics
@@ -48,7 +49,10 @@ limiter = Limiter(
 )
 
 # Maximum SSE clients per stream (broadcasters only)
-MAX_SSE_CLIENTS_PER_STREAM = 10
+MAX_SSE_CLIENTS_PER_STREAM = 3
+
+# Maximum SSE clients globally (across all streams)
+MAX_SSE_CLIENTS_TOTAL = 500
 
 # Session revalidation interval (5 minutes)
 SESSION_REVALIDATION_SECONDS = 300
@@ -56,8 +60,12 @@ SESSION_REVALIDATION_SECONDS = 300
 # Heartbeat interval for SSE keepalive
 SSE_HEARTBEAT_SECONDS = 30
 
+# Timeout for initial metrics fetch (seconds)
+INITIAL_METRICS_TIMEOUT_SECONDS = 5.0
+
 # Track active SSE connections per stream
 _active_connections: Dict[int, Set[str]] = {}
+_total_connections: int = 0
 _connection_lock = asyncio.Lock()
 
 
@@ -67,7 +75,16 @@ async def _add_connection(stream_id: int, connection_id: str) -> bool:
 
     Returns True if added, False if limit reached.
     """
+    global _total_connections
     async with _connection_lock:
+        # Check global limit first
+        if _total_connections >= MAX_SSE_CLIENTS_TOTAL:
+            logger.warning(
+                "Global SSE connection limit reached",
+                extra={"total": _total_connections, "limit": MAX_SSE_CLIENTS_TOTAL},
+            )
+            return False
+
         if stream_id not in _active_connections:
             _active_connections[stream_id] = set()
 
@@ -75,16 +92,32 @@ async def _add_connection(stream_id: int, connection_id: str) -> bool:
             return False
 
         _active_connections[stream_id].add(connection_id)
+        _total_connections += 1
         return True
 
 
 async def _remove_connection(stream_id: int, connection_id: str) -> None:
-    """Remove a connection from the tracking set."""
-    async with _connection_lock:
-        if stream_id in _active_connections:
-            _active_connections[stream_id].discard(connection_id)
-            if not _active_connections[stream_id]:
-                del _active_connections[stream_id]
+    """
+    Remove a connection from the tracking set.
+
+    This function is designed to never raise exceptions to ensure
+    cleanup always succeeds.
+    """
+    global _total_connections
+    try:
+        async with _connection_lock:
+            if stream_id in _active_connections:
+                if connection_id in _active_connections[stream_id]:
+                    _active_connections[stream_id].discard(connection_id)
+                    _total_connections = max(0, _total_connections - 1)
+                if not _active_connections[stream_id]:
+                    del _active_connections[stream_id]
+    except Exception as e:
+        # Log but never raise - cleanup must succeed
+        logger.error(
+            f"Error removing SSE connection {connection_id}: {e}",
+            exc_info=True,
+        )
 
 
 async def get_sse_client_count(stream_id: int) -> int:
@@ -105,8 +138,12 @@ async def verify_stream_access_for_sse(slug: str, user: dict) -> dict:
         Stream record as dict
 
     Raises:
+        HTTPException: 400 if slug is invalid
         HTTPException: 404 if stream not found or user doesn't have access
     """
+    # Validate slug format to prevent enumeration/injection
+    require_valid_slug(slug, "stream")
+
     stream = await fetch_one_with_retry(
         live_streams.select().where(live_streams.c.slug == slug)
     )
@@ -154,7 +191,6 @@ async def stream_events(
     stream_id = stream["id"]
 
     # Generate connection ID
-    import uuid
     connection_id = str(uuid.uuid4())[:8]
 
     # Check connection limit
@@ -184,12 +220,25 @@ async def stream_events(
         last_session_check = datetime.now(timezone.utc)
 
         try:
-            # Send initial metrics
-            initial_metrics = await get_stream_metrics(stream_id)
-            if initial_metrics:
+            # Send initial metrics with timeout to prevent hanging
+            try:
+                initial_metrics = await asyncio.wait_for(
+                    get_stream_metrics(stream_id),
+                    timeout=INITIAL_METRICS_TIMEOUT_SECONDS,
+                )
+                if initial_metrics:
+                    yield {
+                        "event": "metrics",
+                        "data": json.dumps(initial_metrics),
+                    }
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Initial metrics fetch timed out for stream {stream_id}"
+                )
+                # Send empty metrics to indicate connection is working
                 yield {
                     "event": "metrics",
-                    "data": json.dumps(initial_metrics),
+                    "data": json.dumps({"status": "connecting", "stream_id": stream_id}),
                 }
 
             # Subscribe to metrics channel
@@ -239,10 +288,22 @@ async def stream_events(
         except Exception as e:
             logger.warning(f"SSE error for {connection_id}: {e}")
         finally:
-            # Cleanup
+            # Cleanup connection tracking FIRST - must succeed even if subscriber fails
             await _remove_connection(stream_id, connection_id)
+
+            # Then cleanup subscriber with timeout - allowed to fail
             if subscriber:
-                await subscriber.close()
+                try:
+                    await asyncio.wait_for(subscriber.close(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"SSE subscriber close timed out for {connection_id}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"SSE subscriber close error for {connection_id}: {e}"
+                    )
+
             logger.debug(f"SSE connection {connection_id} closed")
 
     return EventSourceResponse(event_generator())

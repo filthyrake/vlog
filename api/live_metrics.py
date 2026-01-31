@@ -7,10 +7,11 @@ for the studio/broadcaster dashboard.
 Related Issue: #524
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 from api.database import database, live_stream_segments, live_streams
 from api.pubsub import publish_stream_metrics
@@ -19,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 # Bitrate estimation window (seconds)
 BITRATE_WINDOW_SECONDS = 30
+
+# Cache TTL for bitrate estimates (seconds) - prevents query amplification
+BITRATE_CACHE_TTL_SECONDS = 3.0
+
+# Simple in-memory cache for bitrate estimates
+# Format: {stream_id: (bitrate_kbps, expiry_time)}
+_bitrate_cache: Dict[int, Tuple[Optional[int], float]] = {}
+_cache_lock = asyncio.Lock()
 
 
 async def compute_and_publish_metrics(stream_id: int) -> bool:
@@ -79,6 +88,8 @@ async def estimate_bitrate(stream_id: int, window_seconds: int = BITRATE_WINDOW_
     Estimate the current bitrate of a stream based on recent segments.
 
     Computes bitrate from segments received in the last N seconds.
+    Uses caching to prevent database query amplification when called
+    frequently (e.g., on every segment upload).
 
     Args:
         stream_id: The stream ID
@@ -86,6 +97,41 @@ async def estimate_bitrate(stream_id: int, window_seconds: int = BITRATE_WINDOW_
 
     Returns:
         Estimated bitrate in kbps, or None if not enough data
+    """
+    import time
+    current_time = time.monotonic()
+
+    # Check cache first (with lock to prevent race conditions)
+    async with _cache_lock:
+        if stream_id in _bitrate_cache:
+            cached_value, expiry_time = _bitrate_cache[stream_id]
+            if current_time < expiry_time:
+                return cached_value
+
+    # Cache miss or expired - compute fresh value
+    bitrate_kbps = await _compute_bitrate_uncached(stream_id, window_seconds)
+
+    # Update cache
+    async with _cache_lock:
+        _bitrate_cache[stream_id] = (bitrate_kbps, current_time + BITRATE_CACHE_TTL_SECONDS)
+
+        # Clean up old cache entries periodically (every 100 entries)
+        if len(_bitrate_cache) > 100:
+            expired_keys = [
+                k for k, (_, expiry) in _bitrate_cache.items()
+                if current_time >= expiry
+            ]
+            for k in expired_keys:
+                del _bitrate_cache[k]
+
+    return bitrate_kbps
+
+
+async def _compute_bitrate_uncached(stream_id: int, window_seconds: int) -> Optional[int]:
+    """
+    Compute bitrate from database (uncached).
+
+    Internal function - use estimate_bitrate() for cached access.
     """
     now = datetime.now(timezone.utc)
 

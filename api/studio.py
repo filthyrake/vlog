@@ -23,7 +23,7 @@ from slugify import slugify
 from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth, SESSION_COOKIE_NAME
 from api.auth.permissions import Permission, Role, has_permission
-from api.common import get_real_ip, get_request_id
+from api.common import get_real_ip, get_request_id, require_valid_slug
 from api.database import database, live_streams
 from api.db_retry import db_execute_with_retry, fetch_one_with_retry
 from api.live_auth import generate_stream_key, get_key_prefix, hash_stream_key
@@ -108,8 +108,12 @@ async def verify_stream_access(slug: str, user: dict) -> dict:
         Stream record as dict
 
     Raises:
+        HTTPException: 400 if slug is invalid
         HTTPException: 404 if stream not found or user doesn't have access
     """
+    # Validate slug format to prevent enumeration/injection
+    require_valid_slug(slug, "stream")
+
     stream = await fetch_one_with_retry(
         live_streams.select().where(live_streams.c.slug == slug)
     )
@@ -454,33 +458,53 @@ async def regenerate_stream_key(
     Returns the new key ONCE - it cannot be retrieved again.
 
     Rate limited to 3 requests per hour.
+
+    Uses atomic transaction with row lock to prevent race condition
+    where stream goes live between status check and key update.
     """
     if not LIVE_ENABLED:
         raise HTTPException(status_code=503, detail="Live streaming is disabled")
 
+    # First verify basic access (slug validation + ownership)
     stream = await verify_stream_access(slug, user)
+    stream_id = stream["id"]
 
-    # Block regeneration while live (race condition protection)
-    if stream["status"] == "live":
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot regenerate key while streaming. End the stream first.",
-        )
-
-    # Generate new key
+    # Generate new key before transaction to minimize lock time
     new_key = generate_stream_key()
     key_hash = hash_stream_key(new_key)
     key_prefix = get_key_prefix(new_key)
 
-    await db_execute_with_retry(
-        live_streams.update()
-        .where(live_streams.c.id == stream["id"])
-        .values(
-            stream_key_hash=key_hash,
-            stream_key_prefix=key_prefix,
-            hash_version=2,
+    # Use transaction with row lock to prevent race condition
+    async with database.transaction():
+        # Lock the row and re-check status atomically
+        locked_stream = await database.fetch_one(
+            sa.text("""
+                SELECT status FROM live_streams
+                WHERE id = :id
+                FOR UPDATE
+            """),
+            {"id": stream_id},
         )
-    )
+
+        if not locked_stream:
+            raise HTTPException(status_code=404, detail="Stream not found")
+
+        if locked_stream["status"] == "live":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot regenerate key while streaming. End the stream first.",
+            )
+
+        # Update key within same transaction (row is locked)
+        await database.execute(
+            live_streams.update()
+            .where(live_streams.c.id == stream_id)
+            .values(
+                stream_key_hash=key_hash,
+                stream_key_prefix=key_prefix,
+                hash_version=2,
+            )
+        )
 
     # Audit log
     log_audit(
