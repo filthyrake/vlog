@@ -686,3 +686,48 @@ class ModerationLogListResponse(BaseModel):
     logs: List[ModerationLogResponse]
     total: int
     has_more: bool
+
+
+# =============================================================================
+# Stream Analytics Schemas (Issue #530 - Phase 2D)
+# =============================================================================
+
+
+class ViewerCountResponse(BaseModel):
+    """Response for a single viewer count data point."""
+
+    recorded_at: datetime
+    viewer_count: int
+
+
+class StreamAnalyticsSummaryResponse(BaseModel):
+    """Response for stream analytics summary."""
+
+    stream_id: int
+    # Viewer metrics
+    peak_viewers: int
+    average_viewers: float
+    total_unique_viewers: int
+    # Chat metrics
+    total_chat_messages: int
+    # Watch time metrics
+    total_watch_minutes: float
+    average_watch_time_seconds: float
+    # Stream info
+    stream_duration_seconds: int
+    computed_at: Optional[datetime] = None
+
+
+class ViewerHistoryResponse(BaseModel):
+    """Response for viewer count history."""
+
+    stream_id: int
+    data_points: List[ViewerCountResponse]
+    total_points: int
+
+
+class StreamAnalyticsResponse(BaseModel):
+    """Combined analytics response for a stream."""
+
+    summary: StreamAnalyticsSummaryResponse
+    viewer_history: List[ViewerCountResponse]

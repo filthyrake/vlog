@@ -412,3 +412,35 @@ export interface ModerationLogListResponse {
   total: number;
   has_more: boolean;
 }
+
+// =============================================================================
+// Stream Analytics Types (Issue #530 - Phase 2D)
+// =============================================================================
+
+export interface ViewerCount {
+  recorded_at: string;
+  viewer_count: number;
+}
+
+export interface StreamAnalyticsSummary {
+  stream_id: number;
+  peak_viewers: number;
+  average_viewers: number;
+  total_unique_viewers: number;
+  total_chat_messages: number;
+  total_watch_minutes: number;
+  average_watch_time_seconds: number;
+  stream_duration_seconds: number;
+  computed_at: string | null;
+}
+
+export interface ViewerHistoryResponse {
+  stream_id: number;
+  data_points: ViewerCount[];
+  total_points: number;
+}
+
+export interface StreamAnalyticsResponse {
+  summary: StreamAnalyticsSummary;
+  viewer_history: ViewerCount[];
+}

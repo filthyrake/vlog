@@ -1277,6 +1277,56 @@ moderation_logs = sa.Table(
 
 
 # =============================================================================
+# Stream Analytics Tables (Issue #530 - Phase 2D)
+# Analytics for live streaming with viewer counts and aggregated summaries
+# =============================================================================
+
+# stream_viewer_counts: Historical viewer count snapshots during live streams
+# Typically recorded every minute during a stream for time-series analytics
+stream_viewer_counts = sa.Table(
+    "stream_viewer_counts",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("viewer_count", sa.Integer, nullable=False),
+    sa.Column("recorded_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Index("ix_stream_viewer_counts_stream_time", "stream_id", "recorded_at"),
+)
+
+# stream_analytics_summary: Pre-computed analytics summaries for ended streams
+# Updated via background task when stream ends or on-demand recomputation
+stream_analytics_summary = sa.Table(
+    "stream_analytics_summary",
+    metadata,
+    # Use stream_id as primary key (1:1 with live_streams)
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Viewer metrics
+    sa.Column("peak_viewers", sa.Integer, default=0, nullable=False),
+    sa.Column("average_viewers", sa.Float, default=0, nullable=False),
+    sa.Column("total_unique_viewers", sa.Integer, default=0, nullable=False),
+    # Chat metrics
+    sa.Column("total_chat_messages", sa.Integer, default=0, nullable=False),
+    # Watch time metrics
+    sa.Column("total_watch_minutes", sa.Float, default=0, nullable=False),
+    sa.Column("average_watch_time_seconds", sa.Float, default=0, nullable=False),
+    # Stream duration
+    sa.Column("stream_duration_seconds", sa.Integer, default=0, nullable=False),
+    # When analytics were last computed
+    sa.Column("computed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+
+# =============================================================================
 # User Authentication Tables (Issue #200)
 # Multi-user authentication with session-based browser auth, API keys, and RBAC
 # =============================================================================
