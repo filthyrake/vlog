@@ -329,10 +329,12 @@
                             </div>
                         </div>
 
-                        <!-- Chat Panel (Issue #530) -->
+                        <!-- Chat Panel (Issue #530 - Phase 2B-2) -->
                         <template x-if="selectedStream.status === 'live' || selectedStream.status === 'idle'">
                             <div class="mt-6 bg-dark-900 border border-dark-800 rounded-lg overflow-hidden"
-                                 x-init="connectChat(selectedStream.slug); loadMessages(selectedStream.slug)">
+                                 x-init="connectChat(selectedStream.slug); loadMessages(selectedStream.slug); loadModerators(selectedStream.slug)"
+                                 @click.away="hideUserActions()">
+                                <!-- Chat Header -->
                                 <div class="p-4 border-b border-dark-800 flex items-center justify-between">
                                     <h3 class="text-lg font-semibold text-white flex items-center gap-2">
                                         Chat
@@ -341,18 +343,186 @@
                                         <span x-show="!wsConnected && !wsReconnecting" class="w-2 h-2 bg-red-500 rounded-full" title="Disconnected"></span>
                                     </h3>
                                     <div class="flex items-center gap-2">
-                                        <span x-show="isModerator || isOwner" class="px-2 py-0.5 bg-purple-900/30 text-purple-400 text-xs rounded">
-                                            <template x-if="isOwner">Owner</template>
-                                            <template x-if="isModerator && !isOwner">Mod</template>
+                                        <span x-show="chatSettings?.chat_slow_mode_seconds > 0" class="px-2 py-0.5 bg-yellow-900/30 text-yellow-400 text-xs rounded" title="Slow mode enabled">
+                                            <span x-text="chatSettings.chat_slow_mode_seconds + 's'"></span>
                                         </span>
                                         <span x-show="chatSettings && !chatSettings.chat_enabled" class="px-2 py-0.5 bg-red-900/30 text-red-400 text-xs rounded">
                                             Disabled
                                         </span>
+                                        <!-- Settings button (owner only) -->
+                                        <template x-if="isOwner">
+                                            <button
+                                                @click="toggleSettingsPanel()"
+                                                class="p-1.5 text-dark-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                                                :class="{ 'bg-dark-700 text-white': showSettingsPanel }"
+                                                title="Chat Settings"
+                                            >
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                </svg>
+                                            </button>
+                                        </template>
+                                        <!-- Moderators button (owner only) -->
+                                        <template x-if="isOwner">
+                                            <button
+                                                @click="toggleModeratorsPanel()"
+                                                class="p-1.5 text-dark-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                                                :class="{ 'bg-dark-700 text-white': showModeratorsPanel }"
+                                                title="Manage Moderators"
+                                            >
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                                                </svg>
+                                            </button>
+                                        </template>
                                     </div>
                                 </div>
 
+                                <!-- Settings Panel (collapsible) -->
+                                <template x-if="showSettingsPanel && isOwner">
+                                    <div class="p-4 bg-dark-800/50 border-b border-dark-800 space-y-4">
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Chat Enabled</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_enabled: !chatSettings?.chat_enabled })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_enabled ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_enabled ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Slow Mode (seconds)</span>
+                                            <select
+                                                @change="updateSettings(selectedStream.slug, { chat_slow_mode_seconds: parseInt($event.target.value) })"
+                                                class="px-2 py-1 bg-dark-700 border border-dark-600 rounded text-white text-sm"
+                                            >
+                                                <option value="0" :selected="chatSettings?.chat_slow_mode_seconds === 0">Off</option>
+                                                <option value="3" :selected="chatSettings?.chat_slow_mode_seconds === 3">3s</option>
+                                                <option value="5" :selected="chatSettings?.chat_slow_mode_seconds === 5">5s</option>
+                                                <option value="10" :selected="chatSettings?.chat_slow_mode_seconds === 10">10s</option>
+                                                <option value="30" :selected="chatSettings?.chat_slow_mode_seconds === 30">30s</option>
+                                                <option value="60" :selected="chatSettings?.chat_slow_mode_seconds === 60">60s</option>
+                                            </select>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Subscriber Only</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_subscriber_only: !chatSettings?.chat_subscriber_only })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_subscriber_only ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_subscriber_only ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Follower Only</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_follower_only: !chatSettings?.chat_follower_only })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_follower_only ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_follower_only ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Emote Only</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_emote_only: !chatSettings?.chat_emote_only })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_emote_only ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_emote_only ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Allow Links</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_links_allowed: !chatSettings?.chat_links_allowed })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_links_allowed ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_links_allowed ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <!-- Moderators Panel (collapsible) -->
+                                <template x-if="showModeratorsPanel && isOwner">
+                                    <div class="p-4 bg-dark-800/50 border-b border-dark-800">
+                                        <div class="flex items-center justify-between mb-3">
+                                            <h4 class="text-sm font-medium text-white">Moderators</h4>
+                                            <span class="text-xs text-dark-400" x-text="moderators.length + ' total'"></span>
+                                        </div>
+                                        <!-- Add moderator form -->
+                                        <form @submit.prevent="async () => { try { await addModerator(selectedStream.slug, addModeratorUsername); addModeratorUsername = ''; addModeratorError = null; } catch(e) { addModeratorError = e.message; } }" class="flex gap-2 mb-3">
+                                            <input
+                                                type="text"
+                                                x-model="addModeratorUsername"
+                                                placeholder="User ID to add..."
+                                                class="flex-1 px-3 py-1.5 bg-dark-700 border border-dark-600 rounded text-white text-sm placeholder-dark-500 focus:outline-none focus:border-blue-500"
+                                            />
+                                            <button
+                                                type="submit"
+                                                :disabled="!addModeratorUsername.trim()"
+                                                class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded disabled:opacity-50"
+                                            >
+                                                Add
+                                            </button>
+                                        </form>
+                                        <template x-if="addModeratorError">
+                                            <p class="text-red-400 text-xs mb-2" x-text="addModeratorError"></p>
+                                        </template>
+                                        <!-- Moderators list -->
+                                        <div class="space-y-2 max-h-32 overflow-y-auto">
+                                            <template x-if="moderatorsLoading">
+                                                <div class="flex items-center justify-center py-2">
+                                                    <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                                                </div>
+                                            </template>
+                                            <template x-if="!moderatorsLoading && moderators.length === 0">
+                                                <p class="text-dark-400 text-xs text-center py-2">No moderators yet</p>
+                                            </template>
+                                            <template x-for="mod in moderators" :key="mod.id">
+                                                <div class="flex items-center justify-between py-1">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="text-sm text-white" x-text="mod.username"></span>
+                                                        <span class="text-xs text-dark-500" x-text="mod.permissions.join(', ')"></span>
+                                                    </div>
+                                                    <button
+                                                        @click="removeModerator(selectedStream.slug, mod.user_id)"
+                                                        class="text-dark-500 hover:text-red-400 p-1"
+                                                        title="Remove moderator"
+                                                    >
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+
                                 <!-- Messages Area -->
-                                <div class="h-64 overflow-y-auto p-4 space-y-2 flex flex-col-reverse" id="chat-messages">
+                                <div
+                                    class="h-80 overflow-y-auto p-4 space-y-2 scroll-smooth"
+                                    id="chat-messages"
+                                    x-ref="chatMessages"
+                                    @scroll="if ($el.scrollTop < $el.scrollHeight - $el.clientHeight - 100) autoScroll = false"
+                                >
+                                    <!-- Load more button -->
+                                    <template x-if="hasMoreMessages && !messagesLoading">
+                                        <button
+                                            @click="loadMoreMessages(selectedStream.slug)"
+                                            class="w-full py-2 text-sm text-blue-400 hover:text-blue-300"
+                                        >
+                                            Load older messages
+                                        </button>
+                                    </template>
+
                                     <template x-if="messagesLoading && messages.length === 0">
                                         <div class="flex items-center justify-center py-8">
                                             <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
@@ -361,46 +531,81 @@
 
                                     <template x-if="!messagesLoading && messages.length === 0">
                                         <div class="text-dark-400 text-center py-8">
-                                            No messages yet
+                                            No messages yet. Be the first to say something!
                                         </div>
                                     </template>
 
-                                    <template x-for="msg in messages" :key="msg.id">
-                                        <div class="group flex items-start gap-2"
-                                             :class="{ 'opacity-50': msg.deleted_at }">
+                                    <!-- Messages (reverse order for newest at bottom) -->
+                                    <template x-for="msg in [...messages].reverse()" :key="msg.id">
+                                        <div
+                                            class="group flex items-start gap-2 hover:bg-dark-800/50 rounded px-2 py-1 -mx-2 relative"
+                                            :class="{ 'opacity-50': msg.deleted_at }"
+                                        >
                                             <div class="flex-1 min-w-0">
-                                                <div class="flex items-center gap-2 text-sm">
-                                                    <span class="font-medium text-blue-400" x-text="msg.username || 'Anonymous'"></span>
+                                                <div class="flex items-center gap-1.5 text-sm flex-wrap">
+                                                    <!-- User badges -->
+                                                    <template x-if="msg.user_id === chatUserId && isOwner">
+                                                        <span class="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded" title="Broadcaster">OWNER</span>
+                                                    </template>
+                                                    <template x-if="msg.user_id !== chatUserId && isUserModerator(msg.user_id)">
+                                                        <span class="px-1 py-0.5 bg-green-900/50 text-green-400 text-xs rounded" title="Moderator">MOD</span>
+                                                    </template>
+                                                    <!-- Username -->
+                                                    <span
+                                                        class="font-medium cursor-pointer hover:underline"
+                                                        :class="msg.user_id === chatUserId ? 'text-purple-400' : 'text-blue-400'"
+                                                        x-text="msg.username || 'Anonymous'"
+                                                        @click="(isModerator || isOwner) && msg.user_id !== chatUserId && showUserActions(msg.id)"
+                                                    ></span>
+                                                    <!-- Timestamp -->
                                                     <span class="text-dark-500 text-xs" x-text="formatTimestamp(msg.created_at)"></span>
                                                 </div>
                                                 <template x-if="msg.deleted_at">
-                                                    <p class="text-dark-500 text-sm italic">Message deleted</p>
+                                                    <p class="text-dark-500 text-sm italic">Message deleted by <span x-text="msg.deleted_by_username || 'moderator'"></span></p>
                                                 </template>
                                                 <template x-if="!msg.deleted_at">
                                                     <p class="text-white text-sm break-words" x-text="msg.content"></p>
                                                 </template>
                                             </div>
-                                            <template x-if="!msg.deleted_at && (isModerator || isOwner)">
-                                                <button
-                                                    @click="deleteMessage(selectedStream.slug, msg.id)"
-                                                    class="opacity-0 group-hover:opacity-100 text-dark-500 hover:text-red-400 transition-opacity p-1"
-                                                    title="Delete message"
-                                                >
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                    </svg>
-                                                </button>
+                                            <!-- Moderator actions -->
+                                            <template x-if="!msg.deleted_at && (isModerator || isOwner) && msg.user_id !== chatUserId">
+                                                <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button
+                                                        @click="deleteMessage(selectedStream.slug, msg.id)"
+                                                        class="text-dark-500 hover:text-red-400 p-1"
+                                                        title="Delete message"
+                                                    >
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
                                             </template>
                                         </div>
                                     </template>
                                 </div>
+
+                                <!-- Scroll to bottom button -->
+                                <template x-if="!autoScroll && messages.length > 0">
+                                    <div class="absolute bottom-20 left-1/2 -translate-x-1/2">
+                                        <button
+                                            @click="autoScroll = true; scrollToBottom()"
+                                            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-full shadow-lg flex items-center gap-1"
+                                        >
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                                            </svg>
+                                            New messages
+                                        </button>
+                                    </div>
+                                </template>
 
                                 <!-- Message Input -->
                                 <div class="p-4 border-t border-dark-800">
                                     <template x-if="wsError">
                                         <div class="mb-2 text-red-400 text-sm" x-text="wsError"></div>
                                     </template>
-                                    <form @submit.prevent="sendMessage(selectedStream.slug)" class="flex gap-2">
+                                    <form @submit.prevent="sendMessage(selectedStream.slug); if(autoScroll) $nextTick(() => scrollToBottom())" class="flex gap-2">
                                         <input
                                             type="text"
                                             x-model="messageInput"
@@ -422,6 +627,11 @@
                                             </template>
                                         </button>
                                     </form>
+                                    <div class="flex items-center justify-between mt-2 text-xs text-dark-500">
+                                        <span x-show="chatSettings?.chat_slow_mode_seconds > 0">Slow mode: <span x-text="chatSettings.chat_slow_mode_seconds"></span>s between messages</span>
+                                        <span x-show="!chatSettings?.chat_slow_mode_seconds"></span>
+                                        <span x-text="messageInput.length + '/500'"></span>
+                                    </div>
                                 </div>
                             </div>
                         </template>

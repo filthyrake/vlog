@@ -41,6 +41,14 @@ export interface ChatState {
   // Moderators
   moderators: StreamModerator[];
   moderatorsLoading: boolean;
+
+  // UI State (Phase 2B-2)
+  showSettingsPanel: boolean;
+  showModeratorsPanel: boolean;
+  autoScroll: boolean;
+  userActionMenuId: number | null;  // Message ID for action menu
+  addModeratorUsername: string;
+  addModeratorError: string | null;
 }
 
 export interface ChatActions {
@@ -63,9 +71,18 @@ export interface ChatActions {
   addModerator(streamSlug: string, userId: string, permissions?: string[]): Promise<void>;
   removeModerator(streamSlug: string, userId: string): Promise<void>;
 
+  // UI Actions (Phase 2B-2)
+  toggleSettingsPanel(): void;
+  toggleModeratorsPanel(): void;
+  toggleAutoScroll(): void;
+  showUserActions(messageId: number): void;
+  hideUserActions(): void;
+  scrollToBottom(): void;
+
   // Utilities
   formatTimestamp(timestamp: string): string;
   canSendMessages(): boolean;
+  isUserModerator(userId: string | null): boolean;
 }
 
 export type ChatStore = ChatState & ChatActions;
@@ -100,6 +117,14 @@ export function createChatStore(): ChatStore {
 
     moderators: [],
     moderatorsLoading: false,
+
+    // UI State (Phase 2B-2)
+    showSettingsPanel: false,
+    showModeratorsPanel: false,
+    autoScroll: true,
+    userActionMenuId: null,
+    addModeratorUsername: '',
+    addModeratorError: null,
 
     // ==========================================================================
     // WebSocket
@@ -455,6 +480,71 @@ export function createChatStore(): ChatStore {
       if (!this.chatSettings?.chat_enabled) return false;
       if (!this.wsConnected) return false;
       return true;
+    },
+
+    /**
+     * Check if a user is a moderator for this stream
+     */
+    isUserModerator(userId: string | null): boolean {
+      if (!userId) return false;
+      return this.moderators.some(m => m.user_id === userId);
+    },
+
+    // ==========================================================================
+    // UI Actions (Phase 2B-2)
+    // ==========================================================================
+
+    /**
+     * Toggle settings panel visibility
+     */
+    toggleSettingsPanel(): void {
+      this.showSettingsPanel = !this.showSettingsPanel;
+      this.showModeratorsPanel = false;  // Close other panel
+    },
+
+    /**
+     * Toggle moderators panel visibility
+     */
+    toggleModeratorsPanel(): void {
+      this.showModeratorsPanel = !this.showModeratorsPanel;
+      this.showSettingsPanel = false;  // Close other panel
+      if (this.showModeratorsPanel && currentStreamSlug) {
+        this.loadModerators(currentStreamSlug);
+      }
+    },
+
+    /**
+     * Toggle auto-scroll
+     */
+    toggleAutoScroll(): void {
+      this.autoScroll = !this.autoScroll;
+      if (this.autoScroll) {
+        this.scrollToBottom();
+      }
+    },
+
+    /**
+     * Show user actions menu for a message
+     */
+    showUserActions(messageId: number): void {
+      this.userActionMenuId = messageId;
+    },
+
+    /**
+     * Hide user actions menu
+     */
+    hideUserActions(): void {
+      this.userActionMenuId = null;
+    },
+
+    /**
+     * Scroll chat to bottom
+     */
+    scrollToBottom(): void {
+      const chatContainer = document.getElementById('chat-messages');
+      if (chatContainer) {
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+      }
     },
   };
 }
