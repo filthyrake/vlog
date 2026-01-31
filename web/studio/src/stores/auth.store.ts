@@ -75,7 +75,9 @@ export function createAuthStore(): AuthStore {
         return true;
       } catch (e) {
         console.error('Auth check failed:', e);
-        return true;
+        this.authError = 'Failed to check authentication: ' + (e instanceof Error ? e.message : String(e));
+        this.showAuthModal = true;
+        return false;
       }
     },
 

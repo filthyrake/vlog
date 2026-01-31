@@ -15,6 +15,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request
 from slowapi import Limiter
 from slugify import slugify
@@ -135,7 +136,7 @@ def stream_to_response(stream: dict) -> StudioStreamResponse:
         try:
             qualities = json.loads(stream["qualities"])
         except json.JSONDecodeError:
-            pass
+            logger.warning(f"Failed to parse qualities JSON for stream {stream.get('id')}")
 
     return StudioStreamResponse(
         id=stream["id"],
@@ -194,7 +195,7 @@ async def list_streams(
         query = query.where(live_streams.c.status == status)
 
     # Count total
-    count_query = query.with_only_columns(database.func.count())
+    count_query = query.with_only_columns(sa.func.count())
     total = await database.fetch_val(count_query) or 0
 
     # Fetch page
@@ -343,13 +344,13 @@ async def update_stream(
 
     stream = await verify_stream_access(slug, user)
 
-    # Build update values
+    # Build update values - use model_fields_set to distinguish "not provided" vs "explicitly null"
     update_values = {}
     if data.title is not None:
         update_values["title"] = data.title
     if data.description is not None:
         update_values["description"] = data.description
-    if data.category_id is not None:
+    if "category_id" in data.model_fields_set:
         update_values["category_id"] = data.category_id
     if data.dvr_enabled is not None:
         update_values["dvr_enabled"] = data.dvr_enabled

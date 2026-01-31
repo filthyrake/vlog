@@ -6,6 +6,7 @@
 import { studioApi, connectStreamMetrics } from '@/api/endpoints/studio';
 import type { SSEConnection } from '@/api/endpoints/studio';
 import type { Stream, StreamMetrics, StreamCreateRequest, StreamUpdateRequest } from '@/api/types';
+import { formatBitrate as sharedFormatBitrate, formatTimeSince as sharedFormatTimeSince } from '@/utils/formatters';
 
 export interface StudioState {
   // Streams
@@ -418,33 +419,17 @@ export function createStudioStore(): StudioStore {
     },
 
     /**
-     * Format bitrate
+     * Format bitrate - delegates to shared formatter
      */
     formatBitrate(kbps: number | null): string {
-      if (!kbps) return '-';
-      if (kbps >= 1000) {
-        return `${(kbps / 1000).toFixed(1)} Mbps`;
-      }
-      return `${kbps} kbps`;
+      return sharedFormatBitrate(kbps);
     },
 
     /**
-     * Format time since
+     * Format time since - delegates to shared formatter
      */
     formatTimeSince(timestamp: string | null): string {
-      if (!timestamp) return 'Never';
-
-      const date = new Date(timestamp);
-      const now = new Date();
-      const diffMs = now.getTime() - date.getTime();
-      const diffSec = Math.floor(diffMs / 1000);
-      const diffMin = Math.floor(diffSec / 60);
-      const diffHour = Math.floor(diffMin / 60);
-
-      if (diffSec < 60) return `${diffSec}s ago`;
-      if (diffMin < 60) return `${diffMin}m ago`;
-      if (diffHour < 24) return `${diffHour}h ago`;
-      return date.toLocaleDateString();
+      return sharedFormatTimeSince(timestamp);
     },
 
     /**

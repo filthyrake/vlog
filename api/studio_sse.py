@@ -20,12 +20,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Set
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, HTTPException, Request
 from slowapi import Limiter
 from sse_starlette.sse import EventSourceResponse
 
 from api.audit import AuditAction, log_audit
-from api.auth.middleware import require_auth, SESSION_COOKIE_NAME
+from api.auth.middleware import SESSION_COOKIE_NAME
 from api.auth.permissions import Permission, Role, has_permission
 from api.auth.sessions import validate_session_token
 from api.common import get_real_ip, get_request_id
@@ -217,15 +217,18 @@ async def stream_events(
 
                 # Listen for metrics with timeout for heartbeat
                 try:
-                    async for message in subscriber.listen():
-                        if message.get("type") == "metrics":
-                            yield {
-                                "event": "metrics",
-                                "data": json.dumps(message),
-                            }
-                        break  # Process one message then check session
+                    # Get next message with timeout
+                    message = await asyncio.wait_for(
+                        subscriber.get_message(),
+                        timeout=SSE_HEARTBEAT_SECONDS,
+                    )
+                    if message and message.get("type") == "metrics":
+                        yield {
+                            "event": "metrics",
+                            "data": json.dumps(message),
+                        }
                 except asyncio.TimeoutError:
-                    # Send heartbeat
+                    # Send heartbeat on timeout
                     yield {
                         "event": "heartbeat",
                         "data": json.dumps({"timestamp": now.isoformat()}),

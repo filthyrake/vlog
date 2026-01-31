@@ -9,7 +9,7 @@ Related Issue: #524
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from api.database import database, live_stream_segments, live_streams
@@ -49,7 +49,7 @@ async def compute_and_publish_metrics(stream_id: int) -> bool:
         try:
             qualities = json.loads(stream["qualities"])
         except json.JSONDecodeError:
-            pass
+            logger.warning(f"Failed to parse qualities JSON for stream {stream_id}")
 
     # Compute bitrate estimate from recent segments
     bitrate_kbps = await estimate_bitrate(stream_id)
@@ -100,11 +100,16 @@ async def estimate_bitrate(stream_id: int, window_seconds: int = BITRATE_WINDOW_
         AND received_at >= :window_start
     """
 
+    # Calculate window start time
+    window_start = now - timedelta(seconds=window_seconds)
+    # Remove timezone for database compatibility if needed
+    window_start_db = window_start.replace(tzinfo=None) if window_start.tzinfo else window_start
+
     result = await database.fetch_one(
         query,
         {
             "stream_id": stream_id,
-            "window_start": now.replace(tzinfo=None) if now.tzinfo else now,
+            "window_start": window_start_db,
         },
     )
 
@@ -158,7 +163,7 @@ async def get_stream_metrics(stream_id: int) -> Optional[dict]:
         try:
             qualities = json.loads(stream["qualities"])
         except json.JSONDecodeError:
-            pass
+            logger.warning(f"Failed to parse qualities JSON for stream {stream_id}")
 
     # Compute bitrate
     bitrate_kbps = await estimate_bitrate(stream_id)

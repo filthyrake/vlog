@@ -1246,18 +1246,22 @@ else:
 
 app.mount("/static", StaticFiles(directory=str(ADMIN_SRC_DIR / "static")), name="static")
 
-# Serve studio web files
-# Use dist/ for production (built files), source for development
+# Serve studio web files (requires built dist/ directory)
+# For development, run: cd web/studio && npm run build
 STUDIO_SRC_DIR = Path(__file__).parent.parent / "web" / "studio"
 STUDIO_DIST_DIR = STUDIO_SRC_DIR / "dist"
 
-# Check if dist exists (production build), otherwise fall back to source
+# Studio requires built assets - check and mount if available
 if STUDIO_DIST_DIR.exists():
     STUDIO_WEB_DIR = STUDIO_DIST_DIR
     # Mount the studio assets directory for bundled JS/CSS
     app.mount("/studio/assets", StaticFiles(directory=str(STUDIO_DIST_DIR / "assets")), name="studio-assets")
 else:
-    STUDIO_WEB_DIR = STUDIO_SRC_DIR
+    # Studio not built - will return 404, log warning at startup
+    STUDIO_WEB_DIR = None
+    logger.warning(
+        "Studio dist/ not found. Run 'cd web/studio && npm install && npm run build' to enable /studio"
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1270,6 +1274,11 @@ async def admin_home():
 @app.get("/studio/", response_class=HTMLResponse)
 async def studio_home():
     """Serve the studio broadcaster dashboard."""
+    if STUDIO_WEB_DIR is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Studio not available. Run 'cd web/studio && npm install && npm run build' to enable."},
+        )
     return FileResponse(STUDIO_WEB_DIR / "index.html")
 
 

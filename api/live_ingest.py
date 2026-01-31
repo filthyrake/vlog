@@ -492,12 +492,15 @@ async def put_media_segment(
                 # Log but don't fail the upload if playlist update fails
                 logger.warning(f"Failed to update playlists for {slug}/{quality}: {playlist_error}")
 
-            # Publish metrics for studio dashboard SSE (non-blocking)
-            try:
-                await compute_and_publish_metrics(stream_id)
-            except Exception as metrics_error:
-                # Log but don't fail the upload if metrics publishing fails
-                logger.debug(f"Failed to publish metrics for {slug}: {metrics_error}")
+            # Publish metrics for studio dashboard SSE (non-blocking background task)
+            async def _publish_metrics() -> None:
+                try:
+                    await compute_and_publish_metrics(stream_id)
+                except Exception as metrics_error:
+                    # Log but don't fail the upload if metrics publishing fails
+                    logger.debug(f"Failed to publish metrics for {slug}: {metrics_error}")
+
+            asyncio.create_task(_publish_metrics())
 
     except Exception as e:
         # Clean up orphaned file if DB operations failed after file write

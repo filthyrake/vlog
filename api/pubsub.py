@@ -354,6 +354,33 @@ class Subscriber:
             logger.warning(f"Pub/Sub listen error: {e}")
             raise
 
+    async def get_message(self) -> Optional[Dict[str, Any]]:
+        """
+        Get a single message from subscribed channels.
+
+        Returns:
+            Parsed message dict, or None if no message available
+        """
+        if not self._pubsub:
+            return None
+
+        try:
+            message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if message and message.get("type") in ("message", "pmessage"):
+                try:
+                    data = json.loads(message.get("data", "{}"))
+                    return {
+                        "channel": message.get("channel", ""),
+                        "pattern": message.get("pattern"),
+                        **data,
+                    }
+                except json.JSONDecodeError:
+                    logger.debug(f"Invalid JSON in pub/sub message: {message}")
+            return None
+        except Exception as e:
+            logger.warning(f"Pub/Sub get_message error: {e}")
+            return None
+
     async def close(self) -> None:
         """Close the subscription and clean up."""
         if self._pubsub:
