@@ -333,3 +333,82 @@ export interface WSConnectedMessage extends WSServerMessage {
   is_owner: boolean;
   settings: ChatSettings;
 }
+
+// =============================================================================
+// Stream Moderation Types (Issue #530 - Phase 2C)
+// =============================================================================
+
+export type BanType = 'timeout' | 'permanent';
+export type FilterAction = 'delete' | 'timeout' | 'warn';
+
+export interface StreamBan {
+  id: number;
+  stream_id: number;
+  user_id: string;
+  username: string | null;
+  ban_type: BanType;
+  duration_seconds: number | null;
+  reason: string | null;
+  banned_by_id: string | null;
+  banned_by_username: string | null;
+  created_at: string;
+  expires_at: string | null;
+  unbanned_at: string | null;
+  is_active: boolean;
+}
+
+export interface StreamBanListResponse {
+  bans: StreamBan[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface StreamBanCreateRequest {
+  user_id: string;
+  ban_type: BanType;
+  duration_seconds?: number;
+  reason?: string;
+}
+
+export interface WordFilter {
+  id: number;
+  stream_id: number;
+  pattern: string;
+  is_regex: boolean;
+  action: FilterAction;
+  timeout_seconds: number | null;
+  created_at: string;
+  created_by_id: string | null;
+  created_by_username: string | null;
+}
+
+export interface WordFilterListResponse {
+  filters: WordFilter[];
+  total: number;
+}
+
+export interface WordFilterCreateRequest {
+  pattern: string;
+  is_regex?: boolean;
+  action?: FilterAction;
+  timeout_seconds?: number;
+}
+
+export interface ModerationLog {
+  id: number;
+  stream_id: number;
+  moderator_id: string | null;
+  moderator_username: string | null;
+  action: string;
+  target_user_id: string | null;
+  target_username: string | null;
+  target_message_id: number | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface ModerationLogListResponse {
+  logs: ModerationLog[];
+  total: number;
+  has_more: boolean;
+}

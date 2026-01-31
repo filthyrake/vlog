@@ -545,3 +545,144 @@ class WSConnectedMessage(BaseModel):
     is_moderator: bool
     is_owner: bool
     settings: ChatSettingsResponse
+
+
+# =============================================================================
+# Stream Moderation Schemas (Issue #530 - Phase 2C)
+# =============================================================================
+
+
+class BanType(str, Enum):
+    """Types of user bans."""
+
+    TIMEOUT = "timeout"
+    PERMANENT = "permanent"
+
+
+class FilterAction(str, Enum):
+    """Actions for word filter matches."""
+
+    DELETE = "delete"
+    TIMEOUT = "timeout"
+    WARN = "warn"
+
+
+class StreamBanResponse(BaseModel):
+    """Response for a stream ban."""
+
+    id: int
+    stream_id: int
+    user_id: str
+    username: Optional[str] = None
+    ban_type: BanType
+    duration_seconds: Optional[int] = None
+    reason: Optional[str] = None
+    banned_by_id: Optional[str] = None
+    banned_by_username: Optional[str] = None
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    unbanned_at: Optional[datetime] = None
+    is_active: bool  # Computed: unbanned_at is None AND (expires_at is None OR expires_at > now)
+
+
+class StreamBanListResponse(BaseModel):
+    """Response for listing stream bans."""
+
+    bans: List[StreamBanResponse]
+    total: int
+    has_more: bool
+
+
+class StreamBanCreate(BaseModel):
+    """Request to ban or timeout a user."""
+
+    user_id: str = Field(..., min_length=1)
+    ban_type: BanType = BanType.TIMEOUT
+    duration_seconds: Optional[int] = Field(None, ge=1, le=2592000)  # Max 30 days
+    reason: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("duration_seconds")
+    @classmethod
+    def validate_duration(cls, v, info):
+        # duration_seconds required for timeouts
+        if info.data.get("ban_type") == BanType.TIMEOUT and v is None:
+            raise ValueError("duration_seconds required for timeout")
+        return v
+
+
+class WordFilterResponse(BaseModel):
+    """Response for a word filter."""
+
+    id: int
+    stream_id: int
+    pattern: str
+    is_regex: bool
+    action: FilterAction
+    timeout_seconds: Optional[int] = None
+    created_at: datetime
+    created_by_id: Optional[str] = None
+    created_by_username: Optional[str] = None
+
+
+class WordFilterListResponse(BaseModel):
+    """Response for listing word filters."""
+
+    filters: List[WordFilterResponse]
+    total: int
+
+
+class WordFilterCreate(BaseModel):
+    """Request to create a word filter."""
+
+    pattern: str = Field(..., min_length=1, max_length=100)  # Max 100 chars (ReDoS protection)
+    is_regex: bool = False
+    action: FilterAction = FilterAction.DELETE
+    timeout_seconds: Optional[int] = Field(None, ge=1, le=86400)  # Max 24 hours
+
+    @field_validator("pattern")
+    @classmethod
+    def validate_pattern(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Pattern cannot be empty")
+        return v
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def validate_timeout(cls, v, info):
+        # timeout_seconds required if action is timeout
+        if info.data.get("action") == FilterAction.TIMEOUT and v is None:
+            raise ValueError("timeout_seconds required for timeout action")
+        return v
+
+
+class WordFilterUpdate(BaseModel):
+    """Request to update a word filter."""
+
+    pattern: Optional[str] = Field(None, min_length=1, max_length=100)
+    is_regex: Optional[bool] = None
+    action: Optional[FilterAction] = None
+    timeout_seconds: Optional[int] = Field(None, ge=1, le=86400)
+
+
+class ModerationLogResponse(BaseModel):
+    """Response for a moderation log entry."""
+
+    id: int
+    stream_id: int
+    moderator_id: Optional[str] = None
+    moderator_username: Optional[str] = None
+    action: str
+    target_user_id: Optional[str] = None
+    target_username: Optional[str] = None
+    target_message_id: Optional[int] = None
+    details: Optional[dict] = None
+    created_at: datetime
+
+
+class ModerationLogListResponse(BaseModel):
+    """Response for listing moderation logs."""
+
+    logs: List[ModerationLogResponse]
+    total: int
+    has_more: bool

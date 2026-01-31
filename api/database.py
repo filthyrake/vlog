@@ -1180,6 +1180,101 @@ stream_moderators = sa.Table(
     sa.Index("ix_stream_moderators_stream", "stream_id"),
 )
 
+# Stream bans (timeouts and permanent bans)
+#
+# No unique constraint on (stream_id, user_id) to allow tracking ban history.
+# Active bans are identified by: unbanned_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
+stream_bans = sa.Table(
+    "stream_bans",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("ban_type", sa.String(20), nullable=False),  # 'timeout' or 'permanent'
+    sa.Column("duration_seconds", sa.Integer, nullable=True),  # For timeouts
+    sa.Column("reason", sa.Text, nullable=True),
+    sa.Column(
+        "banned_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("unbanned_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "unbanned_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_stream_bans_stream_user", "stream_id", "user_id"),
+    sa.Index("ix_stream_bans_expires", "expires_at"),
+)
+
+# Stream word filters for automated moderation
+#
+# Pattern max length 100 chars for ReDoS protection.
+# Use RE2 library for regex matching (linear time guarantee).
+stream_word_filters = sa.Table(
+    "stream_word_filters",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("pattern", sa.String(100), nullable=False),  # Max 100 chars (ReDoS protection)
+    sa.Column("is_regex", sa.Boolean, default=False),
+    sa.Column("action", sa.String(20), default="delete"),  # 'delete', 'timeout', 'warn'
+    sa.Column("timeout_seconds", sa.Integer, nullable=True),  # If action is 'timeout'
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column(
+        "created_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_stream_word_filters_stream", "stream_id"),
+)
+
+# Moderation action logs for audit trail
+moderation_logs = sa.Table(
+    "moderation_logs",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "moderator_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("action", sa.String(50), nullable=False),  # e.g., 'timeout', 'ban', 'unban', 'delete_message'
+    sa.Column("target_user_id", sa.String(36), nullable=True),
+    sa.Column("target_message_id", sa.Integer, nullable=True),
+    sa.Column("details", sa.Text, nullable=True),  # JSON stored as text
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Index("ix_moderation_logs_stream_created", "stream_id", "created_at"),
+)
+
 
 # =============================================================================
 # User Authentication Tables (Issue #200)

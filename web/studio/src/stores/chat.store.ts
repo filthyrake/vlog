@@ -4,6 +4,7 @@
  */
 
 import { chatApi } from '@/api/endpoints/chat';
+import { moderationApi } from '@/api/endpoints/moderation';
 import { ChatWebSocket, createChatWebSocket } from '@/api/websocket';
 import type {
   ChatMessage,
@@ -49,6 +50,10 @@ export interface ChatState {
   userActionMenuId: number | null;  // Message ID for action menu
   addModeratorUsername: string;
   addModeratorError: string | null;
+
+  // Moderation (Phase 2C)
+  timeoutInProgress: boolean;
+  timeoutError: string | null;
 }
 
 export interface ChatActions {
@@ -78,6 +83,10 @@ export interface ChatActions {
   showUserActions(messageId: number): void;
   hideUserActions(): void;
   scrollToBottom(): void;
+
+  // Moderation (Phase 2C)
+  timeoutUser(streamSlug: string, userId: string, durationSeconds: number, reason?: string): Promise<void>;
+  banUser(streamSlug: string, userId: string, reason?: string): Promise<void>;
 
   // Utilities
   formatTimestamp(timestamp: string): string;
@@ -125,6 +134,10 @@ export function createChatStore(): ChatStore {
     userActionMenuId: null,
     addModeratorUsername: '',
     addModeratorError: null,
+
+    // Moderation (Phase 2C)
+    timeoutInProgress: false,
+    timeoutError: null,
 
     // ==========================================================================
     // WebSocket
@@ -544,6 +557,64 @@ export function createChatStore(): ChatStore {
       const chatContainer = document.getElementById('chat-messages');
       if (chatContainer) {
         chatContainer.scrollTop = chatContainer.scrollHeight;
+      }
+    },
+
+    // ==========================================================================
+    // Moderation (Phase 2C)
+    // ==========================================================================
+
+    /**
+     * Timeout a user (temporary ban)
+     */
+    async timeoutUser(
+      streamSlug: string,
+      userId: string,
+      durationSeconds: number,
+      reason?: string
+    ): Promise<void> {
+      this.timeoutInProgress = true;
+      this.timeoutError = null;
+
+      try {
+        await moderationApi.createBan(streamSlug, {
+          user_id: userId,
+          ban_type: 'timeout',
+          duration_seconds: durationSeconds,
+          reason,
+        });
+        this.hideUserActions();
+      } catch (e) {
+        this.timeoutError = e instanceof Error ? e.message : 'Failed to timeout user';
+        throw e;
+      } finally {
+        this.timeoutInProgress = false;
+      }
+    },
+
+    /**
+     * Permanently ban a user
+     */
+    async banUser(
+      streamSlug: string,
+      userId: string,
+      reason?: string
+    ): Promise<void> {
+      this.timeoutInProgress = true;
+      this.timeoutError = null;
+
+      try {
+        await moderationApi.createBan(streamSlug, {
+          user_id: userId,
+          ban_type: 'permanent',
+          reason,
+        });
+        this.hideUserActions();
+      } catch (e) {
+        this.timeoutError = e instanceof Error ? e.message : 'Failed to ban user';
+        throw e;
+      } finally {
+        this.timeoutInProgress = false;
       }
     },
   };
