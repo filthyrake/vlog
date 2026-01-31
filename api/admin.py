@@ -1246,40 +1246,11 @@ else:
 
 app.mount("/static", StaticFiles(directory=str(ADMIN_SRC_DIR / "static")), name="static")
 
-# Serve studio web files (requires built dist/ directory)
-# For development, run: cd web/studio && npm run build
-STUDIO_SRC_DIR = Path(__file__).parent.parent / "web" / "studio"
-STUDIO_DIST_DIR = STUDIO_SRC_DIR / "dist"
-
-# Studio requires built assets - check and mount if available
-if STUDIO_DIST_DIR.exists():
-    STUDIO_WEB_DIR = STUDIO_DIST_DIR
-    # Mount the studio assets directory for bundled JS/CSS
-    app.mount("/studio/assets", StaticFiles(directory=str(STUDIO_DIST_DIR / "assets")), name="studio-assets")
-else:
-    # Studio not built - will return 404, log warning at startup
-    STUDIO_WEB_DIR = None
-    logger.warning(
-        "Studio dist/ not found. Run 'cd web/studio && npm install && npm run build' to enable /studio"
-    )
-
 
 @app.get("/", response_class=HTMLResponse)
 async def admin_home():
     """Serve the admin page."""
     return FileResponse(WEB_DIR / "index.html")
-
-
-@app.get("/studio", response_class=HTMLResponse)
-@app.get("/studio/", response_class=HTMLResponse)
-async def studio_home():
-    """Serve the studio broadcaster dashboard."""
-    if STUDIO_WEB_DIR is None:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Studio not available. Run 'cd web/studio && npm install && npm run build' to enable."},
-        )
-    return FileResponse(STUDIO_WEB_DIR / "index.html")
 
 
 @app.get("/health")
@@ -11836,17 +11807,6 @@ logger.info("Mounted user authentication routers")
 
 
 # =============================================================================
-# Studio/Broadcaster Dashboard Routers (Issue #524)
-# =============================================================================
-
-from api import studio, studio_sse
-
-# Include studio module routers - these have their own /api/v1/studio prefix
-app.include_router(studio.router)
-app.include_router(studio_sse.router)
-logger.info("Mounted studio dashboard routers")
-
-
 # =============================================================================
 # API Router Mounting (Issue #218)
 # Mount versioned routers and configure OpenAPI documentation

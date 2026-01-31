@@ -698,11 +698,38 @@ if LIVE_ENABLED:
 WEB_DIR = Path(__file__).parent.parent / "web" / "public"
 app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
+# Serve studio web files (broadcaster dashboard)
+# Requires built dist/ directory - run: cd web/studio && npm install && npm run build
+STUDIO_SRC_DIR = Path(__file__).parent.parent / "web" / "studio"
+STUDIO_DIST_DIR = STUDIO_SRC_DIR / "dist"
+
+if STUDIO_DIST_DIR.exists():
+    STUDIO_WEB_DIR = STUDIO_DIST_DIR
+    app.mount("/studio/assets", StaticFiles(directory=str(STUDIO_DIST_DIR / "assets")), name="studio-assets")
+    logger.info("Mounted studio dashboard at /studio")
+else:
+    STUDIO_WEB_DIR = None
+    logger.warning(
+        "Studio dist/ not found. Run 'cd web/studio && npm install && npm run build' to enable /studio"
+    )
+
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
     """Serve the main page."""
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/studio", response_class=HTMLResponse)
+@app.get("/studio/", response_class=HTMLResponse)
+async def studio_home():
+    """Serve the studio broadcaster dashboard."""
+    if STUDIO_WEB_DIR is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Studio not available. Run 'cd web/studio && npm install && npm run build' to enable."},
+        )
+    return FileResponse(STUDIO_WEB_DIR / "index.html")
 
 
 @app.get("/health")
@@ -4314,6 +4341,14 @@ logger.info("Mounted API v1 at /api/v1")
 if API_INCLUDE_LEGACY_ROUTES:
     app.include_router(v1_router, prefix="/api", include_in_schema=False)
     logger.info("Mounted legacy routes at /api (aliased to v1)")
+
+# Include studio module routers for broadcaster dashboard
+# These have their own /api/v1/studio prefix
+from api import studio, studio_sse
+
+app.include_router(studio.router)
+app.include_router(studio_sse.router)
+logger.info("Mounted studio dashboard routers at /api/v1/studio")
 
 
 # Configure custom OpenAPI schema
