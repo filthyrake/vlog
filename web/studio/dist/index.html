@@ -6,8 +6,8 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; form-action 'self'; object-src 'none'; base-uri 'self';">
     <title>VLog Studio - Broadcaster Dashboard</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
-  <script type="module" crossorigin src="/studio/assets/main.DwSoC27z.js"></script>
-  <link rel="modulepreload" crossorigin href="/studio/assets/studio.Bn3VSNRy.js">
+  <script type="module" crossorigin src="/studio/assets/main.B6DeC_2s.js"></script>
+  <link rel="modulepreload" crossorigin href="/studio/assets/studio.CmrWepXc.js">
   <link rel="stylesheet" crossorigin href="/studio/assets/studio.CouzqBCk.css">
 </head>
 <body class="bg-dark-950 text-dark-100 min-h-screen" x-data="studio()" x-init="init()" x-cloak>
@@ -86,6 +86,14 @@
                                     &larr; Back to Streams
                                 </button>
                             </template>
+                            <template x-if="view === 'vod-detail' && selectedVOD">
+                                <button
+                                    @click="goToVODs()"
+                                    class="text-dark-400 hover:text-white transition-colors"
+                                >
+                                    &larr; Back to VODs
+                                </button>
+                            </template>
                         </div>
                         <div class="flex items-center gap-4">
                             <span class="text-dark-400" x-text="currentUser?.display_name || currentUser?.username"></span>
@@ -99,6 +107,28 @@
                     </div>
                 </div>
             </header>
+
+            <!-- Navigation Tabs -->
+            <nav class="bg-dark-900 border-b border-dark-800">
+                <div class="max-w-7xl mx-auto px-4">
+                    <div class="flex gap-6">
+                        <button
+                            @click="goToList()"
+                            class="py-4 text-sm font-medium border-b-2 transition-colors"
+                            :class="view === 'list' || view === 'detail' ? 'text-blue-400 border-blue-400' : 'text-dark-400 border-transparent hover:text-white'"
+                        >
+                            Streams
+                        </button>
+                        <button
+                            @click="goToVODs()"
+                            class="py-4 text-sm font-medium border-b-2 transition-colors"
+                            :class="view === 'vods' || view === 'vod-detail' ? 'text-blue-400 border-blue-400' : 'text-dark-400 border-transparent hover:text-white'"
+                        >
+                            VODs
+                        </button>
+                    </div>
+                </div>
+            </nav>
 
             <!-- Content -->
             <main class="flex-1">
@@ -300,6 +330,539 @@
                                 </template>
                             </div>
                         </div>
+
+                        <!-- Chat Panel (Issue #530 - Phase 2B-2) -->
+                        <template x-if="selectedStream.status === 'live' || selectedStream.status === 'idle'">
+                            <div class="mt-6 bg-dark-900 border border-dark-800 rounded-lg overflow-hidden"
+                                 x-init="connectChat(selectedStream.slug); loadMessages(selectedStream.slug); loadModerators(selectedStream.slug)"
+                                 @click.away="hideUserActions()">
+                                <!-- Chat Header -->
+                                <div class="p-4 border-b border-dark-800 flex items-center justify-between">
+                                    <h3 class="text-lg font-semibold text-white flex items-center gap-2">
+                                        Chat
+                                        <span x-show="wsConnected" class="w-2 h-2 bg-green-500 rounded-full" title="Connected"></span>
+                                        <span x-show="!wsConnected && wsReconnecting" class="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" title="Reconnecting"></span>
+                                        <span x-show="!wsConnected && !wsReconnecting" class="w-2 h-2 bg-red-500 rounded-full" title="Disconnected"></span>
+                                    </h3>
+                                    <div class="flex items-center gap-2">
+                                        <span x-show="chatSettings?.chat_slow_mode_seconds > 0" class="px-2 py-0.5 bg-yellow-900/30 text-yellow-400 text-xs rounded" title="Slow mode enabled">
+                                            <span x-text="chatSettings.chat_slow_mode_seconds + 's'"></span>
+                                        </span>
+                                        <span x-show="chatSettings && !chatSettings.chat_enabled" class="px-2 py-0.5 bg-red-900/30 text-red-400 text-xs rounded">
+                                            Disabled
+                                        </span>
+                                        <!-- Settings button (owner only) -->
+                                        <template x-if="isOwner">
+                                            <button
+                                                @click="toggleSettingsPanel()"
+                                                class="p-1.5 text-dark-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                                                :class="{ 'bg-dark-700 text-white': showSettingsPanel }"
+                                                title="Chat Settings"
+                                            >
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                </svg>
+                                            </button>
+                                        </template>
+                                        <!-- Moderators button (owner only) -->
+                                        <template x-if="isOwner">
+                                            <button
+                                                @click="toggleModeratorsPanel()"
+                                                class="p-1.5 text-dark-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                                                :class="{ 'bg-dark-700 text-white': showModeratorsPanel }"
+                                                title="Manage Moderators"
+                                            >
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                                                </svg>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <!-- Settings Panel (collapsible) -->
+                                <template x-if="showSettingsPanel && isOwner">
+                                    <div class="p-4 bg-dark-800/50 border-b border-dark-800 space-y-4">
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Chat Enabled</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_enabled: !chatSettings?.chat_enabled })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_enabled ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_enabled ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Slow Mode (seconds)</span>
+                                            <select
+                                                @change="updateSettings(selectedStream.slug, { chat_slow_mode_seconds: parseInt($event.target.value) })"
+                                                class="px-2 py-1 bg-dark-700 border border-dark-600 rounded text-white text-sm"
+                                            >
+                                                <option value="0" :selected="chatSettings?.chat_slow_mode_seconds === 0">Off</option>
+                                                <option value="3" :selected="chatSettings?.chat_slow_mode_seconds === 3">3s</option>
+                                                <option value="5" :selected="chatSettings?.chat_slow_mode_seconds === 5">5s</option>
+                                                <option value="10" :selected="chatSettings?.chat_slow_mode_seconds === 10">10s</option>
+                                                <option value="30" :selected="chatSettings?.chat_slow_mode_seconds === 30">30s</option>
+                                                <option value="60" :selected="chatSettings?.chat_slow_mode_seconds === 60">60s</option>
+                                            </select>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Subscriber Only</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_subscriber_only: !chatSettings?.chat_subscriber_only })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_subscriber_only ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_subscriber_only ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Follower Only</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_follower_only: !chatSettings?.chat_follower_only })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_follower_only ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_follower_only ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Emote Only</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_emote_only: !chatSettings?.chat_emote_only })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_emote_only ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_emote_only ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-sm text-dark-300">Allow Links</span>
+                                            <button
+                                                @click="updateSettings(selectedStream.slug, { chat_links_allowed: !chatSettings?.chat_links_allowed })"
+                                                class="relative w-10 h-5 rounded-full transition-colors"
+                                                :class="chatSettings?.chat_links_allowed ? 'bg-green-600' : 'bg-dark-600'"
+                                            >
+                                                <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform" :class="chatSettings?.chat_links_allowed ? 'translate-x-5' : ''"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <!-- Moderators Panel (collapsible) -->
+                                <template x-if="showModeratorsPanel && isOwner">
+                                    <div class="p-4 bg-dark-800/50 border-b border-dark-800">
+                                        <div class="flex items-center justify-between mb-3">
+                                            <h4 class="text-sm font-medium text-white">Moderators</h4>
+                                            <span class="text-xs text-dark-400" x-text="moderators.length + ' total'"></span>
+                                        </div>
+                                        <!-- Add moderator form -->
+                                        <form @submit.prevent="async () => { try { await addModerator(selectedStream.slug, addModeratorUsername); addModeratorUsername = ''; addModeratorError = null; } catch(e) { addModeratorError = e.message; } }" class="flex gap-2 mb-3">
+                                            <input
+                                                type="text"
+                                                x-model="addModeratorUsername"
+                                                placeholder="User ID to add..."
+                                                class="flex-1 px-3 py-1.5 bg-dark-700 border border-dark-600 rounded text-white text-sm placeholder-dark-500 focus:outline-none focus:border-blue-500"
+                                            />
+                                            <button
+                                                type="submit"
+                                                :disabled="!addModeratorUsername.trim()"
+                                                class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded disabled:opacity-50"
+                                            >
+                                                Add
+                                            </button>
+                                        </form>
+                                        <template x-if="addModeratorError">
+                                            <p class="text-red-400 text-xs mb-2" x-text="addModeratorError"></p>
+                                        </template>
+                                        <!-- Moderators list -->
+                                        <div class="space-y-2 max-h-32 overflow-y-auto">
+                                            <template x-if="moderatorsLoading">
+                                                <div class="flex items-center justify-center py-2">
+                                                    <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                                                </div>
+                                            </template>
+                                            <template x-if="!moderatorsLoading && moderators.length === 0">
+                                                <p class="text-dark-400 text-xs text-center py-2">No moderators yet</p>
+                                            </template>
+                                            <template x-for="mod in moderators" :key="mod.id">
+                                                <div class="flex items-center justify-between py-1">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="text-sm text-white" x-text="mod.username"></span>
+                                                        <span class="text-xs text-dark-500" x-text="mod.permissions.join(', ')"></span>
+                                                    </div>
+                                                    <button
+                                                        @click="removeModerator(selectedStream.slug, mod.user_id)"
+                                                        class="text-dark-500 hover:text-red-400 p-1"
+                                                        title="Remove moderator"
+                                                    >
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <!-- Messages Area -->
+                                <div
+                                    class="h-80 overflow-y-auto p-4 space-y-2 scroll-smooth"
+                                    id="chat-messages"
+                                    x-ref="chatMessages"
+                                    @scroll="if ($el.scrollTop < $el.scrollHeight - $el.clientHeight - 100) autoScroll = false"
+                                >
+                                    <!-- Load more button -->
+                                    <template x-if="hasMoreMessages && !messagesLoading">
+                                        <button
+                                            @click="loadMoreMessages(selectedStream.slug)"
+                                            class="w-full py-2 text-sm text-blue-400 hover:text-blue-300"
+                                        >
+                                            Load older messages
+                                        </button>
+                                    </template>
+
+                                    <template x-if="messagesLoading && messages.length === 0">
+                                        <div class="flex items-center justify-center py-8">
+                                            <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                                        </div>
+                                    </template>
+
+                                    <template x-if="!messagesLoading && messages.length === 0">
+                                        <div class="text-dark-400 text-center py-8">
+                                            No messages yet. Be the first to say something!
+                                        </div>
+                                    </template>
+
+                                    <!-- Messages (reverse order for newest at bottom) -->
+                                    <template x-for="msg in [...messages].reverse()" :key="msg.id">
+                                        <div
+                                            class="group flex items-start gap-2 hover:bg-dark-800/50 rounded px-2 py-1 -mx-2 relative"
+                                            :class="{ 'opacity-50': msg.deleted_at }"
+                                        >
+                                            <div class="flex-1 min-w-0">
+                                                <div class="flex items-center gap-1.5 text-sm flex-wrap">
+                                                    <!-- User badges -->
+                                                    <template x-if="msg.user_id === chatUserId && isOwner">
+                                                        <span class="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded" title="Broadcaster">OWNER</span>
+                                                    </template>
+                                                    <template x-if="msg.user_id !== chatUserId && isUserModerator(msg.user_id)">
+                                                        <span class="px-1 py-0.5 bg-green-900/50 text-green-400 text-xs rounded" title="Moderator">MOD</span>
+                                                    </template>
+                                                    <!-- Username -->
+                                                    <span
+                                                        class="font-medium cursor-pointer hover:underline"
+                                                        :class="msg.user_id === chatUserId ? 'text-purple-400' : 'text-blue-400'"
+                                                        x-text="msg.username || 'Anonymous'"
+                                                        @click="(isModerator || isOwner) && msg.user_id !== chatUserId && showUserActions(msg.id)"
+                                                    ></span>
+                                                    <!-- Timestamp -->
+                                                    <span class="text-dark-500 text-xs" x-text="formatTimestamp(msg.created_at)"></span>
+                                                </div>
+                                                <template x-if="msg.deleted_at">
+                                                    <p class="text-dark-500 text-sm italic">Message deleted by <span x-text="msg.deleted_by_username || 'moderator'"></span></p>
+                                                </template>
+                                                <template x-if="!msg.deleted_at">
+                                                    <p class="text-white text-sm break-words" x-text="msg.content"></p>
+                                                </template>
+                                            </div>
+                                            <!-- Moderator actions -->
+                                            <template x-if="!msg.deleted_at && (isModerator || isOwner) && msg.user_id !== chatUserId">
+                                                <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button
+                                                        @click="deleteMessage(selectedStream.slug, msg.id)"
+                                                        class="text-dark-500 hover:text-red-400 p-1"
+                                                        title="Delete message"
+                                                    >
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <!-- Scroll to bottom button -->
+                                <template x-if="!autoScroll && messages.length > 0">
+                                    <div class="absolute bottom-20 left-1/2 -translate-x-1/2">
+                                        <button
+                                            @click="autoScroll = true; scrollToBottom()"
+                                            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-full shadow-lg flex items-center gap-1"
+                                        >
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                                            </svg>
+                                            New messages
+                                        </button>
+                                    </div>
+                                </template>
+
+                                <!-- Message Input -->
+                                <div class="p-4 border-t border-dark-800">
+                                    <template x-if="wsError">
+                                        <div class="mb-2 text-red-400 text-sm" x-text="wsError"></div>
+                                    </template>
+                                    <form @submit.prevent="sendMessage(selectedStream.slug); if(autoScroll) $nextTick(() => scrollToBottom())" class="flex gap-2">
+                                        <input
+                                            type="text"
+                                            x-model="messageInput"
+                                            :disabled="!canSendMessages() || sendingMessage"
+                                            placeholder="Type a message..."
+                                            maxlength="500"
+                                            class="flex-1 px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg text-white placeholder-dark-500 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                                        />
+                                        <button
+                                            type="submit"
+                                            :disabled="!canSendMessages() || sendingMessage || !messageInput.trim()"
+                                            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            <template x-if="sendingMessage">
+                                                <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                                            </template>
+                                            <template x-if="!sendingMessage">
+                                                Send
+                                            </template>
+                                        </button>
+                                    </form>
+                                    <div class="flex items-center justify-between mt-2 text-xs text-dark-500">
+                                        <span x-show="chatSettings?.chat_slow_mode_seconds > 0">Slow mode: <span x-text="chatSettings.chat_slow_mode_seconds"></span>s between messages</span>
+                                        <span x-show="!chatSettings?.chat_slow_mode_seconds"></span>
+                                        <span x-text="messageInput.length + '/500'"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <!-- VOD List View -->
+                <template x-if="view === 'vods'">
+                    <div class="max-w-7xl mx-auto px-4 py-8">
+                        <div class="flex items-center justify-between mb-8">
+                            <h2 class="text-xl font-semibold text-white">My VODs</h2>
+                            <div class="flex items-center gap-4">
+                                <select
+                                    x-model="vodStatusFilter"
+                                    @change="loadVODs(1)"
+                                    class="px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                                >
+                                    <option value="">All Status</option>
+                                    <option value="ready">Ready</option>
+                                    <option value="processing">Processing</option>
+                                    <option value="pending">Pending</option>
+                                    <option value="failed">Failed</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Loading state -->
+                        <template x-if="vodLoading && vods.length === 0">
+                            <div class="text-center py-12 text-dark-400">Loading VODs...</div>
+                        </template>
+
+                        <!-- Empty state -->
+                        <template x-if="!vodLoading && vods.length === 0">
+                            <div class="text-center py-12">
+                                <p class="text-dark-400 mb-4">No VODs found.</p>
+                                <p class="text-dark-500 text-sm">VODs are automatically created when you end a stream with auto-record enabled.</p>
+                            </div>
+                        </template>
+
+                        <!-- VOD grid -->
+                        <template x-if="vods.length > 0">
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                <template x-for="vod in vods" :key="vod.id">
+                                    <div
+                                        @click="goToVODDetail(vod.slug)"
+                                        class="bg-dark-900 border border-dark-800 rounded-lg overflow-hidden cursor-pointer hover:border-dark-700 transition-colors"
+                                    >
+                                        <!-- Thumbnail -->
+                                        <div class="aspect-video bg-dark-800 relative">
+                                            <template x-if="vod.thumbnail_url">
+                                                <img :src="vod.thumbnail_url" class="w-full h-full object-cover" alt="VOD thumbnail">
+                                            </template>
+                                            <template x-if="!vod.thumbnail_url">
+                                                <div class="w-full h-full flex items-center justify-center text-dark-500">
+                                                    No thumbnail
+                                                </div>
+                                            </template>
+                                            <!-- Duration badge -->
+                                            <div class="absolute bottom-2 right-2 px-2 py-1 bg-black/80 text-white text-xs rounded">
+                                                <span x-text="formatDuration(vod.duration)"></span>
+                                            </div>
+                                        </div>
+                                        <!-- Info -->
+                                        <div class="p-4">
+                                            <div class="flex items-start justify-between mb-2">
+                                                <h3 class="font-semibold text-white line-clamp-1" x-text="vod.title"></h3>
+                                                <span
+                                                    class="px-2 py-0.5 text-xs font-medium rounded ml-2 flex-shrink-0"
+                                                    :class="{
+                                                        'bg-green-900/30 text-green-400': vod.status === 'ready',
+                                                        'bg-blue-900/30 text-blue-400': vod.status === 'processing',
+                                                        'bg-yellow-900/30 text-yellow-400': vod.status === 'pending',
+                                                        'bg-red-900/30 text-red-400': vod.status === 'failed'
+                                                    }"
+                                                    x-text="vod.status"
+                                                ></span>
+                                            </div>
+                                            <p class="text-dark-400 text-sm line-clamp-2" x-text="vod.description || 'No description'"></p>
+                                            <template x-if="vod.stream_title">
+                                                <p class="text-dark-500 text-xs mt-2">From: <span x-text="vod.stream_title"></span></p>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+
+                        <!-- Pagination -->
+                        <template x-if="vodHasMore">
+                            <div class="mt-8 text-center">
+                                <button
+                                    @click="loadVODs(vodPage + 1)"
+                                    class="px-6 py-2 bg-dark-800 hover:bg-dark-700 text-white rounded-lg transition-colors"
+                                    :disabled="vodLoading"
+                                >
+                                    Load More
+                                </button>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <!-- VOD Detail View -->
+                <template x-if="view === 'vod-detail' && selectedVOD">
+                    <div class="max-w-7xl mx-auto px-4 py-8">
+                        <!-- VOD Header -->
+                        <div class="bg-dark-900 border border-dark-800 rounded-lg p-6 mb-6">
+                            <div class="flex items-start gap-6">
+                                <!-- Thumbnail -->
+                                <div class="w-64 flex-shrink-0">
+                                    <div class="aspect-video bg-dark-800 rounded-lg overflow-hidden relative">
+                                        <template x-if="selectedVOD.thumbnail_url">
+                                            <img :src="selectedVOD.thumbnail_url" class="w-full h-full object-cover" alt="VOD thumbnail">
+                                        </template>
+                                        <template x-if="!selectedVOD.thumbnail_url">
+                                            <div class="w-full h-full flex items-center justify-center text-dark-500">
+                                                No thumbnail
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <!-- Thumbnail upload -->
+                                    <label class="mt-2 block">
+                                        <input
+                                            type="file"
+                                            accept="image/jpeg,image/png"
+                                            class="hidden"
+                                            @change="$event.target.files && $event.target.files.length && uploadVODThumbnail(selectedVOD.slug, $event.target.files[0])"
+                                            :disabled="vodThumbnailUploading"
+                                        >
+                                        <span class="block w-full py-2 text-center text-sm text-dark-400 hover:text-white cursor-pointer transition-colors">
+                                            <span x-show="!vodThumbnailUploading">Change Thumbnail</span>
+                                            <span x-show="vodThumbnailUploading">Uploading...</span>
+                                        </span>
+                                    </label>
+                                    <template x-if="vodThumbnailError">
+                                        <p class="text-red-400 text-xs mt-1" x-text="vodThumbnailError"></p>
+                                    </template>
+                                </div>
+                                <!-- Info -->
+                                <div class="flex-1">
+                                    <div class="flex items-start justify-between mb-2">
+                                        <h2 class="text-2xl font-bold text-white" x-text="selectedVOD.title"></h2>
+                                        <span
+                                            class="px-3 py-1 text-sm font-medium rounded ml-4"
+                                            :class="{
+                                                'bg-green-900/30 text-green-400': selectedVOD.status === 'ready',
+                                                'bg-blue-900/30 text-blue-400': selectedVOD.status === 'processing',
+                                                'bg-yellow-900/30 text-yellow-400': selectedVOD.status === 'pending',
+                                                'bg-red-900/30 text-red-400': selectedVOD.status === 'failed'
+                                            }"
+                                            x-text="selectedVOD.status.toUpperCase()"
+                                        ></span>
+                                    </div>
+                                    <p class="text-dark-400 mb-4" x-text="selectedVOD.description || 'No description'"></p>
+                                    <div class="flex items-center gap-6 text-sm text-dark-500">
+                                        <span x-text="formatDuration(selectedVOD.duration)"></span>
+                                        <span x-text="selectedVOD.source_width + 'x' + selectedVOD.source_height"></span>
+                                        <template x-if="selectedVOD.stream_title">
+                                            <span>From: <span x-text="selectedVOD.stream_title"></span></span>
+                                        </template>
+                                    </div>
+                                    <!-- Actions -->
+                                    <div class="flex items-center gap-3 mt-6">
+                                        <button
+                                            @click="openVODEditModal(selectedVOD)"
+                                            class="px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg transition-colors"
+                                        >
+                                            Edit
+                                        </button>
+                                        <button
+                                            @click="downloadVOD(selectedVOD.slug)"
+                                            class="px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg transition-colors"
+                                            :disabled="vodDownloading || selectedVOD.status !== 'ready'"
+                                            :class="{'opacity-50 cursor-not-allowed': selectedVOD.status !== 'ready'}"
+                                        >
+                                            <span x-show="!vodDownloading">Download</span>
+                                            <span x-show="vodDownloading">Preparing...</span>
+                                        </button>
+                                        <button
+                                            @click="openVODDeleteModal()"
+                                            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Analytics -->
+                        <template x-if="vodAnalytics">
+                            <div class="bg-dark-900 border border-dark-800 rounded-lg p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4">Analytics</h3>
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                                    <div class="bg-dark-800 rounded-lg p-4">
+                                        <div class="text-dark-400 text-sm mb-1">Total Views</div>
+                                        <div class="text-2xl font-bold text-white" x-text="vodAnalytics.total_views"></div>
+                                    </div>
+                                    <div class="bg-dark-800 rounded-lg p-4">
+                                        <div class="text-dark-400 text-sm mb-1">Unique Viewers</div>
+                                        <div class="text-2xl font-bold text-white" x-text="vodAnalytics.unique_viewers"></div>
+                                    </div>
+                                    <div class="bg-dark-800 rounded-lg p-4">
+                                        <div class="text-dark-400 text-sm mb-1">Avg. Watch Time</div>
+                                        <div class="text-2xl font-bold text-white" x-text="formatDuration(vodAnalytics.average_watch_time_seconds)"></div>
+                                    </div>
+                                    <div class="bg-dark-800 rounded-lg p-4">
+                                        <div class="text-dark-400 text-sm mb-1">Completion Rate</div>
+                                        <div class="text-2xl font-bold text-white" x-text="vodAnalytics.completion_rate + '%'"></div>
+                                    </div>
+                                </div>
+
+                                <!-- View history chart placeholder -->
+                                <template x-if="vodAnalytics.view_history && vodAnalytics.view_history.length > 0">
+                                    <div>
+                                        <h4 class="text-sm font-medium text-dark-400 mb-3">Views (Last 30 Days)</h4>
+                                        <div class="flex items-end gap-1 h-24">
+                                            <template x-for="day in vodAnalytics.view_history" :key="day.date">
+                                                <div
+                                                    class="flex-1 bg-blue-600 rounded-t"
+                                                    :style="'height: ' + Math.max(4, (day.views / (Math.max(...vodAnalytics.view_history.map(d => d.views)) || 1)) * 100) + '%'"
+                                                    :title="day.date + ': ' + day.views + ' views'"
+                                                ></div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
                     </div>
                 </template>
             </main>
@@ -499,6 +1062,91 @@
                     >
                         <span x-show="!endLoading">End Stream</span>
                         <span x-show="endLoading">Ending...</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- VOD Edit Modal -->
+    <template x-if="showVODEditModal && selectedVOD">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" @keydown.escape.window="closeVODEditModal()">
+            <div class="bg-dark-900 rounded-lg p-8 w-full max-w-lg border border-dark-700">
+                <h2 class="text-xl font-bold text-white mb-6">Edit VOD</h2>
+
+                <form @submit.prevent="updateVOD(selectedVOD.slug, { title: vodEditTitle, description: vodEditDescription, category_id: vodEditCategoryId })">
+                    <div class="mb-4">
+                        <label class="block text-dark-300 mb-2">Title *</label>
+                        <input
+                            type="text"
+                            x-model="vodEditTitle"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                            placeholder="Enter VOD title"
+                            required
+                        >
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="block text-dark-300 mb-2">Description</label>
+                        <textarea
+                            x-model="vodEditDescription"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-white focus:outline-none focus:border-blue-500 h-24 resize-none"
+                            placeholder="Enter VOD description (optional)"
+                        ></textarea>
+                    </div>
+
+                    <template x-if="vodEditError">
+                        <div class="mb-4 p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm" x-text="vodEditError"></div>
+                    </template>
+
+                    <div class="flex gap-3 justify-end">
+                        <button
+                            type="button"
+                            @click="closeVODEditModal()"
+                            class="px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                            :disabled="vodEditLoading"
+                        >
+                            <span x-show="!vodEditLoading">Save Changes</span>
+                            <span x-show="vodEditLoading">Saving...</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </template>
+
+    <!-- VOD Delete Modal -->
+    <template x-if="showVODDeleteModal && selectedVOD">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" @keydown.escape.window="closeVODDeleteModal()">
+            <div class="bg-dark-900 rounded-lg p-8 w-full max-w-md border border-dark-700">
+                <h2 class="text-xl font-bold text-white mb-4">Delete VOD?</h2>
+                <p class="text-dark-400 mb-2">
+                    Are you sure you want to delete "<span class="text-white" x-text="selectedVOD.title"></span>"?
+                </p>
+                <p class="text-dark-500 text-sm mb-6">
+                    The VOD will be moved to trash and can be restored by an administrator if needed.
+                </p>
+
+                <div class="flex gap-3 justify-end">
+                    <button
+                        @click="closeVODDeleteModal()"
+                        class="px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg transition-colors"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        @click="deleteVOD(selectedVOD.slug).then(() => goToVODs())"
+                        class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors"
+                        :disabled="vodDeleteLoading"
+                    >
+                        <span x-show="!vodDeleteLoading">Delete</span>
+                        <span x-show="vodDeleteLoading">Deleting...</span>
                     </button>
                 </div>
             </div>

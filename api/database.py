@@ -1036,11 +1036,32 @@ live_streams = sa.Table(
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Chat settings (Issue #530) - on live_streams since 1:1 relationship
+    sa.Column("chat_enabled", sa.Boolean, default=True),
+    sa.Column("chat_slow_mode_seconds", sa.Integer, default=0),
+    sa.Column("chat_subscriber_only", sa.Boolean, default=False),
+    sa.Column("chat_follower_only", sa.Boolean, default=False),
+    sa.Column("chat_follower_min_minutes", sa.Integer, default=0),
+    sa.Column("chat_emote_only", sa.Boolean, default=False),
+    sa.Column("chat_links_allowed", sa.Boolean, default=True),
+    # Additional stream controls (Issue #530 - Phase 2E)
+    sa.Column("stream_delay_seconds", sa.Integer, default=0),  # Artificial delay for privacy
+    sa.Column(
+        "quality_preset",
+        sa.String(20),
+        sa.CheckConstraint(
+            "quality_preset IN ('auto', 'low', 'medium', 'high', 'source')",
+            name="ck_live_streams_quality_preset",
+        ),
+        default="auto",
+    ),
+    sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=True),  # Scheduled start time
     sa.Index("ix_live_streams_slug", "slug"),
     sa.Index("ix_live_streams_status", "status"),
     sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
     sa.Index("ix_live_streams_created_at", "created_at"),
     sa.Index("ix_live_streams_owner_id", "owner_id"),
+    sa.Index("ix_live_streams_scheduled_at", "scheduled_at"),
 )
 
 # Live stream segment tracking for DVR and VOD recording
@@ -1083,6 +1104,238 @@ live_stream_segments = sa.Table(
     sa.Index("ix_live_segments_stream_quality_seq", "stream_id", "quality", "sequence_number"),
     sa.Index("ix_live_segments_received_at", "received_at"),
     sa.Index("ix_live_segments_cleanup", "stream_id", "received_at"),
+)
+
+
+# =============================================================================
+# Live Chat Tables (Issue #530)
+# Real-time chat for live streams with moderation support
+# =============================================================================
+
+# Chat messages for live streams
+#
+# SOFT DELETE:
+# ------------
+# - Uses deleted_at timestamp pattern (per Gafton's review)
+# - deleted_by_id tracks who deleted the message (moderator/broadcaster)
+#
+# VOD SYNC:
+# ---------
+# - stream_offset_ms enables chat replay alongside VOD playback (per Ada)
+# - Calculated from stream start time when message is created
+chat_messages = sa.Table(
+    "chat_messages",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,  # Allow system messages
+    ),
+    sa.Column("content", sa.String(500), nullable=False),  # 500 char max (Gafton)
+    sa.Column("stream_offset_ms", sa.Integer, nullable=True),  # VOD replay sync
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    sa.Column(
+        "deleted_by_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    # Indexes per Gafton's review
+    sa.Index("ix_chat_messages_stream_created", "stream_id", "created_at"),
+    sa.Index("ix_chat_messages_user", "user_id"),
+    sa.Index("ix_chat_messages_stream_offset", "stream_id", "stream_offset_ms"),
+)
+
+# Stream moderators with granular permissions
+#
+# PERMISSIONS:
+# ------------
+# - delete_message: Can delete chat messages
+# - timeout: Can timeout users (temporary ban)
+# - ban: Can permanently ban users from stream
+# - slow_mode: Can enable/disable slow mode
+# - Stored as JSON array for flexibility (per Ada)
+stream_moderators = sa.Table(
+    "stream_moderators",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # JSON array of permissions: ["delete_message", "timeout", "ban", "slow_mode"]
+    sa.Column("permissions", sa.Text, default='["delete_message", "timeout"]'),
+    sa.Column(
+        "granted_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("granted_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("stream_id", "user_id", name="uq_stream_moderators_stream_user"),
+    sa.Index("ix_stream_moderators_stream", "stream_id"),
+)
+
+# Stream bans (timeouts and permanent bans)
+#
+# No unique constraint on (stream_id, user_id) to allow tracking ban history.
+# Active bans are identified by: unbanned_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
+stream_bans = sa.Table(
+    "stream_bans",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("ban_type", sa.String(20), nullable=False),  # 'timeout' or 'permanent'
+    sa.Column("duration_seconds", sa.Integer, nullable=True),  # For timeouts
+    sa.Column("reason", sa.Text, nullable=True),
+    sa.Column(
+        "banned_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("unbanned_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "unbanned_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_stream_bans_stream_user", "stream_id", "user_id"),
+    sa.Index("ix_stream_bans_expires", "expires_at"),
+)
+
+# Stream word filters for automated moderation
+#
+# Pattern max length 100 chars for ReDoS protection.
+# Use RE2 library for regex matching (linear time guarantee).
+stream_word_filters = sa.Table(
+    "stream_word_filters",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("pattern", sa.String(100), nullable=False),  # Max 100 chars (ReDoS protection)
+    sa.Column("is_regex", sa.Boolean, default=False),
+    sa.Column("action", sa.String(20), default="delete"),  # 'delete', 'timeout', 'warn'
+    sa.Column("timeout_seconds", sa.Integer, nullable=True),  # If action is 'timeout'
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column(
+        "created_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_stream_word_filters_stream", "stream_id"),
+)
+
+# Moderation action logs for audit trail
+moderation_logs = sa.Table(
+    "moderation_logs",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "moderator_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("action", sa.String(50), nullable=False),  # e.g., 'timeout', 'ban', 'unban', 'delete_message'
+    sa.Column("target_user_id", sa.String(36), nullable=True),
+    sa.Column("target_message_id", sa.Integer, nullable=True),
+    sa.Column("details", sa.Text, nullable=True),  # JSON stored as text
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Index("ix_moderation_logs_stream_created", "stream_id", "created_at"),
+)
+
+
+# =============================================================================
+# Stream Analytics Tables (Issue #530 - Phase 2D)
+# Analytics for live streaming with viewer counts and aggregated summaries
+# =============================================================================
+
+# stream_viewer_counts: Historical viewer count snapshots during live streams
+# Typically recorded every minute during a stream for time-series analytics
+stream_viewer_counts = sa.Table(
+    "stream_viewer_counts",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("viewer_count", sa.Integer, nullable=False),
+    sa.Column("recorded_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Index("ix_stream_viewer_counts_stream_time", "stream_id", "recorded_at"),
+)
+
+# stream_analytics_summary: Pre-computed analytics summaries for ended streams
+# Updated via background task when stream ends or on-demand recomputation
+stream_analytics_summary = sa.Table(
+    "stream_analytics_summary",
+    metadata,
+    # Use stream_id as primary key (1:1 with live_streams)
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Viewer metrics
+    sa.Column("peak_viewers", sa.Integer, default=0, nullable=False),
+    sa.Column("average_viewers", sa.Float, default=0, nullable=False),
+    sa.Column("total_unique_viewers", sa.Integer, default=0, nullable=False),
+    # Chat metrics
+    sa.Column("total_chat_messages", sa.Integer, default=0, nullable=False),
+    # Watch time metrics
+    sa.Column("total_watch_minutes", sa.Float, default=0, nullable=False),
+    sa.Column("average_watch_time_seconds", sa.Float, default=0, nullable=False),
+    # Stream duration
+    sa.Column("stream_duration_seconds", sa.Integer, default=0, nullable=False),
+    # When analytics were last computed
+    sa.Column("computed_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 

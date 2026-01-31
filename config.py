@@ -858,6 +858,38 @@ LIVE_ALLOWED_QUALITIES = frozenset({"2160p", "1440p", "1080p", "720p", "480p", "
 # The actual ingest happens via HTTP segment push, but users may use RTMP re-streaming
 LIVE_RTMP_INGEST_URL = os.getenv("VLOG_LIVE_RTMP_INGEST_URL", "rtmp://localhost/live")
 
+# =============================================================================
+# WebSocket Configuration (Issue #530)
+# Chat and real-time features use WebSocket connections
+# =============================================================================
+
+# Maximum WebSocket connections per stream (chat viewers)
+WS_MAX_CONNECTIONS_PER_STREAM = get_int_env("VLOG_WS_MAX_CONNECTIONS_PER_STREAM", 100, min_val=10)
+
+# Maximum WebSocket connections globally across all streams
+WS_MAX_CONNECTIONS_GLOBAL = get_int_env("VLOG_WS_MAX_CONNECTIONS_GLOBAL", 5000, min_val=100)
+
+# Maximum WebSocket connections per user per stream (multi-tab support)
+WS_MAX_CONNECTIONS_PER_USER_PER_STREAM = get_int_env("VLOG_WS_MAX_CONNECTIONS_PER_USER_PER_STREAM", 3, min_val=1)
+
+# WebSocket heartbeat/ping interval in seconds
+WS_HEARTBEAT_INTERVAL = get_int_env("VLOG_WS_HEARTBEAT_INTERVAL", 30, min_val=10, max_val=120)
+
+# Session revalidation interval in seconds (matches SSE pattern)
+WS_SESSION_REVALIDATION_INTERVAL = get_int_env("VLOG_WS_SESSION_REVALIDATION_INTERVAL", 300, min_val=60)
+
+# WebSocket connection timeout in seconds (close idle connections)
+WS_CONNECTION_TIMEOUT = get_int_env("VLOG_WS_CONNECTION_TIMEOUT", 3600, min_val=60)  # 1 hour default
+
+# WebSocket allowed origins for Origin header validation
+# Uses CORS_ALLOWED_ORIGINS by default, or set this for WebSocket-specific origins
+# SECURITY: Origin validation prevents cross-site WebSocket hijacking (CSWSH)
+_ws_origins_env = os.getenv("VLOG_WS_ALLOWED_ORIGINS", "")
+WS_ALLOWED_ORIGINS = [origin.strip() for origin in _ws_origins_env.split(",") if origin.strip()]
+if not WS_ALLOWED_ORIGINS:
+    # Fall back to CORS origins if WS origins not explicitly set
+    WS_ALLOWED_ORIGINS = CORS_ALLOWED_ORIGINS.copy() if CORS_ALLOWED_ORIGINS else []
+
 # Ensure live storage directory exists (skip in test/CI environments)
 if not os.environ.get("VLOG_TEST_MODE"):
     try:
