@@ -853,6 +853,11 @@ LIVE_HLS_PLAYLIST_LENGTH = get_int_env("VLOG_LIVE_HLS_PLAYLIST_LENGTH", 5, min_v
 # Allowed quality names for live streams
 LIVE_ALLOWED_QUALITIES = frozenset({"2160p", "1440p", "1080p", "720p", "480p", "360p"})
 
+# RTMP ingest URL for display in studio dashboard (Issue #524)
+# This is the base URL shown to users for OBS/FFmpeg configuration
+# The actual ingest happens via HTTP segment push, but users may use RTMP re-streaming
+LIVE_RTMP_INGEST_URL = os.getenv("VLOG_LIVE_RTMP_INGEST_URL", "rtmp://localhost/live")
+
 # Ensure live storage directory exists (skip in test/CI environments)
 if not os.environ.get("VLOG_TEST_MODE"):
     try:

@@ -33,6 +33,7 @@ from api.common import get_real_ip
 from api.database import live_stream_segments, live_streams
 from api.db_retry import db_execute_with_retry
 from api.live_auth import verify_stream_key
+from api.live_metrics import compute_and_publish_metrics
 from api.live_playlist import update_master_playlist, update_variant_playlist
 from api.live_schemas import IngestStatusResponse, SegmentUploadResponse
 
@@ -490,6 +491,16 @@ async def put_media_segment(
             except Exception as playlist_error:
                 # Log but don't fail the upload if playlist update fails
                 logger.warning(f"Failed to update playlists for {slug}/{quality}: {playlist_error}")
+
+            # Publish metrics for studio dashboard SSE (non-blocking background task)
+            async def _publish_metrics() -> None:
+                try:
+                    await compute_and_publish_metrics(stream_id)
+                except Exception as metrics_error:
+                    # Log but don't fail the upload if metrics publishing fails
+                    logger.debug(f"Failed to publish metrics for {slug}: {metrics_error}")
+
+            asyncio.create_task(_publish_metrics())
 
     except Exception as e:
         # Clean up orphaned file if DB operations failed after file write

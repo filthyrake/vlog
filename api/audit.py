@@ -116,6 +116,13 @@ class AuditAction(str, Enum):
     BACKUP_DELETE = "backup_delete"
     BACKUP_VERIFY = "backup_verify"
 
+    # Studio/broadcaster dashboard actions (Issue #524)
+    STREAM_CREATE = "stream_create"
+    STREAM_UPDATE = "stream_update"
+    STREAM_END = "stream_end"
+    STREAM_KEY_REGENERATE = "stream_key_regenerate"
+    STUDIO_SSE_CONNECT = "studio_sse_connect"
+
 
 class AuditLogger:
     """

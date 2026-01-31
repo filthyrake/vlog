@@ -354,6 +354,33 @@ class Subscriber:
             logger.warning(f"Pub/Sub listen error: {e}")
             raise
 
+    async def get_message(self) -> Optional[Dict[str, Any]]:
+        """
+        Get a single message from subscribed channels.
+
+        Returns:
+            Parsed message dict, or None if no message available
+        """
+        if not self._pubsub:
+            return None
+
+        try:
+            message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if message and message.get("type") in ("message", "pmessage"):
+                try:
+                    data = json.loads(message.get("data", "{}"))
+                    return {
+                        "channel": message.get("channel", ""),
+                        "pattern": message.get("pattern"),
+                        **data,
+                    }
+                except json.JSONDecodeError:
+                    logger.debug(f"Invalid JSON in pub/sub message: {message}")
+            return None
+        except Exception as e:
+            logger.warning(f"Pub/Sub get_message error: {e}")
+            return None
+
     async def close(self) -> None:
         """Close the subscription and clean up."""
         if self._pubsub:
@@ -486,6 +513,71 @@ async def publish_worker_command(
     except Exception as e:
         logger.warning(f"Failed to publish worker command: {e}")
         return False
+
+
+async def publish_stream_metrics(
+    stream_id: int,
+    stream_slug: str,
+    status: str,
+    segment_count: int,
+    qualities: List[str],
+    bitrate_kbps: Optional[int] = None,
+    last_segment_at: Optional[str] = None,
+) -> bool:
+    """
+    Publish stream metrics for studio dashboard SSE.
+
+    Args:
+        stream_id: Stream ID
+        stream_slug: Stream slug
+        status: Current stream status (idle, live, ending, ended)
+        segment_count: Total segment count
+        qualities: List of active qualities
+        bitrate_kbps: Estimated bitrate in kbps
+        last_segment_at: ISO timestamp of last segment
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "metrics",
+        "stream_id": stream_id,
+        "stream_slug": stream_slug,
+        "status": status,
+        "segment_count": segment_count,
+        "qualities": qualities,
+        "bitrate_kbps": bitrate_kbps,
+        "last_segment_at": last_segment_at,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        payload = json.dumps(message)
+        # Publish to stream-specific channel for studio dashboard
+        await redis.publish(channel_name("live", f"{stream_id}:metrics"), payload)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish stream metrics: {e}")
+        return False
+
+
+async def subscribe_to_stream_metrics(stream_id: int) -> Subscriber:
+    """
+    Create a subscriber for stream metrics updates.
+
+    Args:
+        stream_id: The stream ID to subscribe to
+
+    Returns:
+        Configured Subscriber instance
+    """
+    subscriber = Subscriber()
+    await subscriber.subscribe(channel_name("live", f"{stream_id}:metrics"))
+    return subscriber
 
 
 async def request_worker_response(
