@@ -320,10 +320,12 @@ async def send_chat_message(
     if not sanitized_content.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty after sanitization")
 
+    # Get current time for timestamp and offset calculation
+    now = datetime.now(timezone.utc)
+
     # Calculate stream offset if stream is live
     stream_offset_ms = None
     if stream["status"] == "live" and stream["started_at"]:
-        now = datetime.now(timezone.utc)
         started = stream["started_at"]
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
@@ -335,7 +337,7 @@ async def send_chat_message(
         user_id=user["id"],
         content=sanitized_content,
         stream_offset_ms=stream_offset_ms,
-        created_at=datetime.now(timezone.utc),
+        created_at=now,
     )
     result = await db_execute_with_retry(insert_query)
     message_id = result.lastrowid
@@ -352,6 +354,10 @@ async def send_chat_message(
         .where(chat_messages.c.id == message_id)
     )
 
+    # Check if user is a moderator for this stream
+    mod_perms = await get_moderator_permissions(stream["id"], user)
+    is_moderator = mod_perms is not None
+
     # Publish to Redis for WebSocket subscribers
     await publish_chat_message(
         stream_id=stream["id"],
@@ -362,7 +368,7 @@ async def send_chat_message(
         content=sanitized_content,
         timestamp=now.isoformat(),
         user_role=user.get("role"),
-        is_moderator=await is_stream_moderator(stream["id"], user["id"]),
+        is_moderator=is_moderator,
         is_broadcaster=(stream["owner_id"] == user["id"]),
     )
 

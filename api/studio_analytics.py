@@ -11,8 +11,6 @@ Related Issue: #530 (Phase 2D)
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
-
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter

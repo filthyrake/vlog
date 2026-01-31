@@ -17,7 +17,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import bleach
-import sqlalchemy as sa
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.audit import AuditAction, log_audit
@@ -28,11 +27,9 @@ from api.db_retry import db_execute_with_retry, fetch_one_with_retry
 from api.live_schemas import ChatSettingsResponse, WSMessageType
 from api.pubsub import subscribe_to_stream_chat
 from api.websocket_manager import (
-    WebSocketManager,
     ManagedWebSocketConnection,
     ConnectionLimitError,
     OriginValidationError,
-    AuthenticationError,
     authenticate_websocket,
     get_client_ip,
     websocket_manager,
@@ -334,6 +331,7 @@ async def pubsub_listener(
                 logger.debug(f"Error forwarding pubsub message: {e}")
                 break
     except asyncio.CancelledError:
+        # Expected during normal shutdown (e.g., WebSocket disconnect or server shutdown)
         pass
     except Exception as e:
         logger.warning(f"Pubsub listener error for stream {stream_id}: {e}")
@@ -491,4 +489,5 @@ async def chat_websocket(websocket: WebSocket, slug: str):
             try:
                 await pubsub_task
             except asyncio.CancelledError:
+                # Expected when cancelling the pubsub task during cleanup
                 pass

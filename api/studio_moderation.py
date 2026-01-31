@@ -42,7 +42,6 @@ from api.live_schemas import (
     WordFilterResponse,
     WordFilterListResponse,
     WordFilterCreate,
-    WordFilterUpdate,
     ModerationLogResponse,
     ModerationLogListResponse,
 )

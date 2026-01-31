@@ -758,7 +758,7 @@
                                             type="file"
                                             accept="image/jpeg,image/png"
                                             class="hidden"
-                                            @change="uploadVODThumbnail(selectedVOD.slug, $event.target.files[0])"
+                                            @change="$event.target.files && $event.target.files.length && uploadVODThumbnail(selectedVOD.slug, $event.target.files[0])"
                                             :disabled="vodThumbnailUploading"
                                         >
                                         <span class="block w-full py-2 text-center text-sm text-dark-400 hover:text-white cursor-pointer transition-colors">

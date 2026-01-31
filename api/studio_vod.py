@@ -12,7 +12,6 @@ Related Issue: #530
 
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import sqlalchemy as sa

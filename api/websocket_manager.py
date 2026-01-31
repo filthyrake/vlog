@@ -25,7 +25,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Callable, Dict, Optional, Set
+from typing import AsyncIterator, Callable, Dict, Optional, Set
 from urllib.parse import urlparse
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -36,7 +36,6 @@ from api.auth.sessions import validate_session_token
 from config import (
     CORS_ALLOWED_ORIGINS,
     WS_ALLOWED_ORIGINS,
-    WS_CONNECTION_TIMEOUT,
     WS_HEARTBEAT_INTERVAL,
     WS_MAX_CONNECTIONS_GLOBAL,
     WS_MAX_CONNECTIONS_PER_STREAM,
@@ -579,6 +578,7 @@ class ManagedWebSocketConnection:
             try:
                 await self._heartbeat_task
             except asyncio.CancelledError:
+                # Expected when cancelling the heartbeat task during cleanup
                 pass
 
         if self._session_check_task:
@@ -586,6 +586,7 @@ class ManagedWebSocketConnection:
             try:
                 await self._session_check_task
             except asyncio.CancelledError:
+                # Expected when cancelling the session check task during cleanup
                 pass
 
         # Unregister connection
@@ -606,6 +607,7 @@ class ManagedWebSocketConnection:
                     logger.debug(f"Heartbeat failed for {self.connection_id}: {e}")
                     break
         except asyncio.CancelledError:
+            # Expected during normal shutdown or connection cleanup
             pass
 
     async def _session_check_loop(self) -> None:
@@ -633,6 +635,7 @@ class ManagedWebSocketConnection:
                 except Exception as e:
                     logger.warning(f"Session check failed for {self.connection_id}: {e}")
         except asyncio.CancelledError:
+            # Expected during normal shutdown or connection cleanup
             pass
 
     async def receive_json(self) -> Optional[dict]:
