@@ -320,8 +320,10 @@ async def pubsub_listener(
 
     This handles messages sent via REST API or from other server instances.
     """
+    subscriber = None
     try:
-        async for message in subscribe_to_stream_chat(stream_id):
+        subscriber = await subscribe_to_stream_chat(stream_id)
+        async for message in subscriber.listen():
             if stop_event.is_set():
                 break
 
@@ -335,6 +337,9 @@ async def pubsub_listener(
         pass
     except Exception as e:
         logger.warning(f"Pubsub listener error for stream {stream_id}: {e}")
+    finally:
+        if subscriber:
+            await subscriber.close()
 
 
 @router.websocket("/{slug}/chat")

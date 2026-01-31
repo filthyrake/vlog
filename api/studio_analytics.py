@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
 
 from api.auth.middleware import require_auth
-from api.auth.permissions import Permission, has_permission
+from api.auth.permissions import Permission, Role, has_permission
 from api.common import get_real_ip, get_request_id, require_valid_slug
 from api.database import (
     database,
@@ -86,8 +86,9 @@ async def verify_stream_analytics_access(stream_slug: str, user: dict) -> dict:
     stream_dict = dict(stream._mapping)
 
     # Check access: owner or admin
+    role = Role(user["role"])
     if stream_dict["owner_id"] != user["id"] and not has_permission(
-        user, Permission.ADMIN_MANAGE_USERS
+        role, Permission.LIVE_STREAM_MANAGE
     ):
         raise HTTPException(status_code=404, detail="Stream not found")
 

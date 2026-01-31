@@ -398,9 +398,10 @@ async def create_ban(
         action=ban_data.ban_type.value,
         target_user_id=ban_data.user_id,
         target_username=target_user["username"],
+        moderator_id=user["id"],
+        moderator_username=user.get("username", ""),
         duration_seconds=ban_data.duration_seconds,
         reason=ban_data.reason,
-        moderator_username=user.get("username"),
     )
 
     # Close user's WebSocket connections
@@ -502,8 +503,9 @@ async def unban_user(
         stream_id=stream["id"],
         action="unban",
         target_user_id=ban["user_id"],
-        target_username=target_user["username"] if target_user else None,
-        moderator_username=user.get("username"),
+        target_username=target_user["username"] if target_user else "",
+        moderator_id=user["id"],
+        moderator_username=user.get("username", ""),
     )
 
     return {"unbanned": True, "ban_id": ban_id}

@@ -358,8 +358,12 @@ async def send_chat_message(
         message_id=message_id,
         user_id=user["id"],
         username=user.get("username", ""),
+        display_name=user.get("display_name"),
         content=sanitized_content,
-        stream_offset_ms=stream_offset_ms,
+        timestamp=now.isoformat(),
+        user_role=user.get("role"),
+        is_moderator=await is_stream_moderator(stream["id"], user["id"]),
+        is_broadcaster=(stream["owner_id"] == user["id"]),
     )
 
     return ChatMessageResponse(
@@ -572,6 +576,8 @@ async def update_chat_settings(
             "chat_emote_only": response.chat_emote_only,
             "chat_links_allowed": response.chat_links_allowed,
         },
+        updated_by_id=user["id"],
+        updated_by_username=user.get("username", ""),
     )
 
     return response
