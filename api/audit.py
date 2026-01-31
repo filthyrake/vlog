@@ -123,6 +123,26 @@ class AuditAction(str, Enum):
     STREAM_KEY_REGENERATE = "stream_key_regenerate"
     STUDIO_SSE_CONNECT = "studio_sse_connect"
 
+    # WebSocket infrastructure actions (Issue #530)
+    WEBSOCKET_CONNECT = "websocket_connect"
+    WEBSOCKET_AUTH_FAILURE = "websocket_auth_failure"
+
+    # Studio VOD management actions (Issue #530)
+    VOD_UPDATE = "vod_update"
+    VOD_DELETE = "vod_delete"
+    VOD_THUMBNAIL_UPLOAD = "vod_thumbnail_upload"
+
+    # Studio chat and moderation actions (Issue #530)
+    CHAT_MESSAGE_DELETE = "chat_message_delete"
+    CHAT_USER_TIMEOUT = "chat_user_timeout"
+    CHAT_USER_BAN = "chat_user_ban"
+    CHAT_USER_UNBAN = "chat_user_unban"
+    CHAT_SETTINGS_UPDATE = "chat_settings_update"
+    STREAM_MODERATOR_ADD = "stream_moderator_add"
+    STREAM_MODERATOR_REMOVE = "stream_moderator_remove"
+    STREAM_FILTER_ADD = "stream_filter_add"
+    STREAM_FILTER_REMOVE = "stream_filter_remove"
+
 
 class AuditLogger:
     """

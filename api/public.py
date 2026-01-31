@@ -4344,10 +4344,13 @@ if API_INCLUDE_LEGACY_ROUTES:
 
 # Include studio module routers for broadcaster dashboard
 # These have their own /api/v1/studio prefix
-from api import studio, studio_sse
+from api import studio, studio_sse, studio_vod, studio_chat, studio_chat_ws
 
 app.include_router(studio.router)
 app.include_router(studio_sse.router)
+app.include_router(studio_vod.router)
+app.include_router(studio_chat.router)
+app.include_router(studio_chat_ws.router)
 logger.info("Mounted studio dashboard routers at /api/v1/studio")
 
 

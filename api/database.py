@@ -1036,6 +1036,14 @@ live_streams = sa.Table(
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    # Chat settings (Issue #530) - on live_streams since 1:1 relationship
+    sa.Column("chat_enabled", sa.Boolean, default=True),
+    sa.Column("chat_slow_mode_seconds", sa.Integer, default=0),
+    sa.Column("chat_subscriber_only", sa.Boolean, default=False),
+    sa.Column("chat_follower_only", sa.Boolean, default=False),
+    sa.Column("chat_follower_min_minutes", sa.Integer, default=0),
+    sa.Column("chat_emote_only", sa.Boolean, default=False),
+    sa.Column("chat_links_allowed", sa.Boolean, default=True),
     sa.Index("ix_live_streams_slug", "slug"),
     sa.Index("ix_live_streams_status", "status"),
     sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
@@ -1083,6 +1091,93 @@ live_stream_segments = sa.Table(
     sa.Index("ix_live_segments_stream_quality_seq", "stream_id", "quality", "sequence_number"),
     sa.Index("ix_live_segments_received_at", "received_at"),
     sa.Index("ix_live_segments_cleanup", "stream_id", "received_at"),
+)
+
+
+# =============================================================================
+# Live Chat Tables (Issue #530)
+# Real-time chat for live streams with moderation support
+# =============================================================================
+
+# Chat messages for live streams
+#
+# SOFT DELETE:
+# ------------
+# - Uses deleted_at timestamp pattern (per Gafton's review)
+# - deleted_by_id tracks who deleted the message (moderator/broadcaster)
+#
+# VOD SYNC:
+# ---------
+# - stream_offset_ms enables chat replay alongside VOD playback (per Ada)
+# - Calculated from stream start time when message is created
+chat_messages = sa.Table(
+    "chat_messages",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,  # Allow system messages
+    ),
+    sa.Column("content", sa.String(500), nullable=False),  # 500 char max (Gafton)
+    sa.Column("stream_offset_ms", sa.Integer, nullable=True),  # VOD replay sync
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    sa.Column(
+        "deleted_by_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    # Indexes per Gafton's review
+    sa.Index("ix_chat_messages_stream_created", "stream_id", "created_at"),
+    sa.Index("ix_chat_messages_user", "user_id"),
+    sa.Index("ix_chat_messages_stream_offset", "stream_id", "stream_offset_ms"),
+)
+
+# Stream moderators with granular permissions
+#
+# PERMISSIONS:
+# ------------
+# - delete_message: Can delete chat messages
+# - timeout: Can timeout users (temporary ban)
+# - ban: Can permanently ban users from stream
+# - slow_mode: Can enable/disable slow mode
+# - Stored as JSON array for flexibility (per Ada)
+stream_moderators = sa.Table(
+    "stream_moderators",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # JSON array of permissions: ["delete_message", "timeout", "ban", "slow_mode"]
+    sa.Column("permissions", sa.Text, default='["delete_message", "timeout"]'),
+    sa.Column(
+        "granted_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("granted_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("stream_id", "user_id", name="uq_stream_moderators_stream_user"),
+    sa.Index("ix_stream_moderators_stream", "stream_id"),
 )
 
 

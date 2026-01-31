@@ -5,6 +5,8 @@ Provides publish methods for:
 - Transcoding progress updates
 - Worker status changes
 - Job completion/failure notifications
+- Live stream metrics
+- Chat messages and moderation events
 
 Channels:
 - vlog:progress:{video_id} - Per-video progress updates
@@ -12,6 +14,9 @@ Channels:
 - vlog:workers:status - Worker status changes
 - vlog:jobs:completed - Job completion notifications
 - vlog:jobs:failed - Job failure notifications
+- vlog:live:{stream_id}:metrics - Stream metrics for studio dashboard
+- vlog:chat:{stream_id}:messages - Chat messages (Issue #530)
+- vlog:chat:{stream_id}:moderation - Moderation events (Issue #530)
 """
 
 import asyncio
@@ -657,3 +662,225 @@ async def request_worker_response(
                 await pubsub.close()
             except Exception:
                 pass  # Ignore cleanup errors
+
+
+# =============================================================================
+# Chat Pub/Sub (Issue #530)
+# =============================================================================
+
+
+async def publish_chat_message(
+    stream_id: int,
+    message_id: int,
+    user_id: str,
+    username: str,
+    display_name: Optional[str],
+    content: str,
+    timestamp: str,
+    user_role: Optional[str] = None,
+    is_moderator: bool = False,
+    is_broadcaster: bool = False,
+) -> bool:
+    """
+    Publish a chat message to stream subscribers.
+
+    Args:
+        stream_id: Stream the message was sent to
+        message_id: Database ID of the message
+        user_id: User who sent the message
+        username: Username of the sender
+        display_name: Display name of the sender
+        content: Sanitized message content
+        timestamp: ISO timestamp
+        user_role: User's role (admin, editor, viewer)
+        is_moderator: Whether user is a stream moderator
+        is_broadcaster: Whether user is the stream owner
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "message",
+        "id": message_id,
+        "stream_id": stream_id,
+        "user": {
+            "id": user_id,
+            "username": username,
+            "display_name": display_name,
+            "role": user_role,
+            "is_moderator": is_moderator,
+            "is_broadcaster": is_broadcaster,
+        },
+        "content": content,
+        "timestamp": timestamp,
+    }
+
+    try:
+        payload = json.dumps(message)
+        await redis.publish(channel_name("chat", f"{stream_id}:messages"), payload)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish chat message: {e}")
+        return False
+
+
+async def publish_chat_message_deleted(
+    stream_id: int,
+    message_id: int,
+    deleted_by_id: str,
+    deleted_by_username: str,
+) -> bool:
+    """
+    Publish a message deletion event.
+
+    Args:
+        stream_id: Stream ID
+        message_id: ID of deleted message
+        deleted_by_id: User ID who deleted the message
+        deleted_by_username: Username who deleted the message
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "deleted",
+        "message_id": message_id,
+        "stream_id": stream_id,
+        "deleted_by": {
+            "id": deleted_by_id,
+            "username": deleted_by_username,
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        payload = json.dumps(message)
+        await redis.publish(channel_name("chat", f"{stream_id}:moderation"), payload)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish message deletion: {e}")
+        return False
+
+
+async def publish_chat_user_action(
+    stream_id: int,
+    action: str,  # "timeout", "ban", "unban"
+    target_user_id: str,
+    target_username: str,
+    moderator_id: str,
+    moderator_username: str,
+    duration_seconds: Optional[int] = None,
+    reason: Optional[str] = None,
+) -> bool:
+    """
+    Publish a user moderation action (timeout, ban, unban).
+
+    Args:
+        stream_id: Stream ID
+        action: Action type (timeout, ban, unban)
+        target_user_id: User being acted upon
+        target_username: Username being acted upon
+        moderator_id: User performing the action
+        moderator_username: Username performing the action
+        duration_seconds: Duration for timeouts
+        reason: Optional reason for the action
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "user_action",
+        "action": action,
+        "stream_id": stream_id,
+        "target": {
+            "id": target_user_id,
+            "username": target_username,
+        },
+        "moderator": {
+            "id": moderator_id,
+            "username": moderator_username,
+        },
+        "duration_seconds": duration_seconds,
+        "reason": reason,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        payload = json.dumps(message)
+        await redis.publish(channel_name("chat", f"{stream_id}:moderation"), payload)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish user action: {e}")
+        return False
+
+
+async def publish_chat_settings_updated(
+    stream_id: int,
+    settings: Dict[str, Any],
+    updated_by_id: str,
+    updated_by_username: str,
+) -> bool:
+    """
+    Publish chat settings update.
+
+    Args:
+        stream_id: Stream ID
+        settings: Updated settings dict
+        updated_by_id: User who updated settings
+        updated_by_username: Username who updated settings
+
+    Returns:
+        True if published successfully
+    """
+    redis = await get_redis()
+    if not redis:
+        return False
+
+    message = {
+        "type": "settings_updated",
+        "stream_id": stream_id,
+        "settings": settings,
+        "updated_by": {
+            "id": updated_by_id,
+            "username": updated_by_username,
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        payload = json.dumps(message)
+        await redis.publish(channel_name("chat", f"{stream_id}:moderation"), payload)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish settings update: {e}")
+        return False
+
+
+async def subscribe_to_stream_chat(stream_id: int) -> Subscriber:
+    """
+    Create a subscriber for stream chat messages and moderation events.
+
+    Args:
+        stream_id: The stream ID to subscribe to
+
+    Returns:
+        Configured Subscriber instance
+    """
+    subscriber = Subscriber()
+    await subscriber.subscribe(
+        channel_name("chat", f"{stream_id}:messages"),
+        channel_name("chat", f"{stream_id}:moderation"),
+    )
+    return subscriber
