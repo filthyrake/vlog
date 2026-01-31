@@ -22,6 +22,16 @@ class LiveStreamStatus(str, Enum):
     ENDED = "ended"
 
 
+class QualityPreset(str, Enum):
+    """Quality preset for stream transcoding (Issue #530 - Phase 2E)."""
+
+    AUTO = "auto"  # Let the system choose based on input
+    LOW = "low"  # 480p only
+    MEDIUM = "medium"  # Up to 720p
+    HIGH = "high"  # Up to 1080p
+    SOURCE = "source"  # Pass through original quality
+
+
 # =============================================================================
 # Admin API Schemas
 # =============================================================================
@@ -190,6 +200,10 @@ class StudioStreamResponse(BaseModel):
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     last_segment_at: Optional[datetime] = None
+    # Additional controls (Phase 2E)
+    stream_delay_seconds: int = 0
+    quality_preset: QualityPreset = QualityPreset.AUTO
+    scheduled_at: Optional[datetime] = None
 
 
 class StudioStreamListResponse(BaseModel):
@@ -211,6 +225,10 @@ class StudioStreamCreate(BaseModel):
     dvr_enabled: bool = Field(default=True)
     dvr_window_seconds: int = Field(default=7200, ge=60, le=86400)
     auto_record_vod: bool = Field(default=True)
+    # Additional controls (Phase 2E)
+    stream_delay_seconds: int = Field(default=0, ge=0, le=900)  # Max 15 minutes
+    quality_preset: QualityPreset = QualityPreset.AUTO
+    scheduled_at: Optional[datetime] = None
 
     @field_validator("title")
     @classmethod
@@ -230,6 +248,10 @@ class StudioStreamUpdate(BaseModel):
     dvr_enabled: Optional[bool] = None
     dvr_window_seconds: Optional[int] = Field(None, ge=60, le=86400)
     auto_record_vod: Optional[bool] = None
+    # Additional controls (Phase 2E)
+    stream_delay_seconds: Optional[int] = Field(None, ge=0, le=900)  # Max 15 minutes
+    quality_preset: Optional[QualityPreset] = None
+    scheduled_at: Optional[datetime] = None
 
     @field_validator("title")
     @classmethod
@@ -257,6 +279,10 @@ class StudioStreamCreatedResponse(BaseModel):
     auto_record_vod: bool
     created_at: datetime
     warning: str = "Save this key now. It will not be shown again."
+    # Additional controls (Phase 2E)
+    stream_delay_seconds: int = 0
+    quality_preset: QualityPreset = QualityPreset.AUTO
+    scheduled_at: Optional[datetime] = None
 
 
 class StudioStreamKeyResponse(BaseModel):

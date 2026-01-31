@@ -7,6 +7,7 @@
 // =============================================================================
 
 export type StreamStatus = 'idle' | 'live' | 'ending' | 'ended';
+export type QualityPreset = 'auto' | 'low' | 'medium' | 'high' | 'source';
 
 export interface Stream {
   id: number;
@@ -25,6 +26,10 @@ export interface Stream {
   started_at: string | null;
   ended_at: string | null;
   last_segment_at: string | null;
+  // Additional controls (Phase 2E)
+  stream_delay_seconds: number;
+  quality_preset: QualityPreset;
+  scheduled_at: string | null;
 }
 
 export interface StreamListResponse {
@@ -42,6 +47,10 @@ export interface StreamCreateRequest {
   dvr_enabled?: boolean;
   dvr_window_seconds?: number;
   auto_record_vod?: boolean;
+  // Additional controls (Phase 2E)
+  stream_delay_seconds?: number;
+  quality_preset?: QualityPreset;
+  scheduled_at?: string;
 }
 
 export interface StreamUpdateRequest {
@@ -51,6 +60,10 @@ export interface StreamUpdateRequest {
   dvr_enabled?: boolean;
   dvr_window_seconds?: number;
   auto_record_vod?: boolean;
+  // Additional controls (Phase 2E)
+  stream_delay_seconds?: number;
+  quality_preset?: QualityPreset;
+  scheduled_at?: string | null;
 }
 
 export interface StreamCreatedResponse extends Stream {

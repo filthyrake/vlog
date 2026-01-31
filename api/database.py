@@ -1044,11 +1044,24 @@ live_streams = sa.Table(
     sa.Column("chat_follower_min_minutes", sa.Integer, default=0),
     sa.Column("chat_emote_only", sa.Boolean, default=False),
     sa.Column("chat_links_allowed", sa.Boolean, default=True),
+    # Additional stream controls (Issue #530 - Phase 2E)
+    sa.Column("stream_delay_seconds", sa.Integer, default=0),  # Artificial delay for privacy
+    sa.Column(
+        "quality_preset",
+        sa.String(20),
+        sa.CheckConstraint(
+            "quality_preset IN ('auto', 'low', 'medium', 'high', 'source')",
+            name="ck_live_streams_quality_preset",
+        ),
+        default="auto",
+    ),
+    sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=True),  # Scheduled start time
     sa.Index("ix_live_streams_slug", "slug"),
     sa.Index("ix_live_streams_status", "status"),
     sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
     sa.Index("ix_live_streams_created_at", "created_at"),
     sa.Index("ix_live_streams_owner_id", "owner_id"),
+    sa.Index("ix_live_streams_scheduled_at", "scheduled_at"),
 )
 
 # Live stream segment tracking for DVR and VOD recording
