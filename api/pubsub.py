@@ -25,6 +25,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
+from api.live_schemas import WSMessageType
 from api.redis_client import get_redis
 from config import REDIS_PUBSUB_PREFIX
 
@@ -704,7 +705,7 @@ async def publish_chat_message(
         return False
 
     message = {
-        "type": "message",
+        "type": WSMessageType.CHAT_MESSAGE.value,
         "id": message_id,
         "stream_id": stream_id,
         "user": {
@@ -751,7 +752,7 @@ async def publish_chat_message_deleted(
         return False
 
     message = {
-        "type": "deleted",
+        "type": WSMessageType.MESSAGE_DELETED.value,
         "message_id": message_id,
         "stream_id": stream_id,
         "deleted_by": {
@@ -800,8 +801,16 @@ async def publish_chat_user_action(
     if not redis:
         return False
 
+    # Map action to WSMessageType
+    action_types = {
+        "timeout": WSMessageType.USER_TIMEOUT.value,
+        "ban": WSMessageType.USER_BAN.value,
+        "unban": WSMessageType.USER_UNBAN.value,
+    }
+    msg_type = action_types.get(action, action)
+
     message = {
-        "type": "user_action",
+        "type": msg_type,
         "action": action,
         "stream_id": stream_id,
         "target": {
@@ -849,7 +858,7 @@ async def publish_chat_settings_updated(
         return False
 
     message = {
-        "type": "settings_updated",
+        "type": WSMessageType.SETTINGS_UPDATED.value,
         "stream_id": stream_id,
         "settings": settings,
         "updated_by": {

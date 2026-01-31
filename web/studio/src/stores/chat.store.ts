@@ -488,10 +488,10 @@ export function createChatStore(): ChatStore {
 
     /**
      * Check if user can send messages
+     * Note: REST fallback is available when WebSocket is disconnected
      */
     canSendMessages(): boolean {
       if (!this.chatSettings?.chat_enabled) return false;
-      if (!this.wsConnected) return false;
       return true;
     },
 

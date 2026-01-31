@@ -356,7 +356,7 @@ async def send_chat_message(
 
     # Check if user is a moderator for this stream
     mod_perms = await get_moderator_permissions(stream["id"], user)
-    is_moderator = mod_perms is not None
+    is_moderator = bool(mod_perms)
 
     # Publish to Redis for WebSocket subscribers
     await publish_chat_message(

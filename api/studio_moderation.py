@@ -232,14 +232,18 @@ async def list_bans(
 
     stream = await verify_stream_access(slug, user)
 
-    # Build query
+    # Build query with JOINs for both banned user and moderator who banned
+    banned_by_users = users.alias("banned_by_users")
     query = (
         sa.select(
             stream_bans,
             users.c.username.label("username"),
+            banned_by_users.c.username.label("banned_by_username"),
         )
         .select_from(
-            stream_bans.outerjoin(users, stream_bans.c.user_id == users.c.id)
+            stream_bans
+            .outerjoin(users, stream_bans.c.user_id == users.c.id)
+            .outerjoin(banned_by_users, stream_bans.c.banned_by == banned_by_users.c.id)
         )
         .where(stream_bans.c.stream_id == stream["id"])
         .order_by(stream_bans.c.created_at.desc())
@@ -249,21 +253,13 @@ async def list_bans(
 
     bans = await fetch_all_with_retry(query)
 
-    # Get banned_by usernames
+    # Build response objects
     ban_responses = []
     for ban in bans:
         is_active = is_ban_active(dict(ban))
 
         if active_only and not is_active:
             continue
-
-        banned_by_username = None
-        if ban["banned_by"]:
-            banner = await fetch_one_with_retry(
-                users.select().where(users.c.id == ban["banned_by"])
-            )
-            if banner:
-                banned_by_username = banner["username"]
 
         ban_responses.append(
             StreamBanResponse(
@@ -275,7 +271,7 @@ async def list_bans(
                 duration_seconds=ban["duration_seconds"],
                 reason=ban["reason"],
                 banned_by_id=ban["banned_by"],
-                banned_by_username=banned_by_username,
+                banned_by_username=ban["banned_by_username"],
                 created_at=ban["created_at"],
                 expires_at=ban["expires_at"],
                 unbanned_at=ban["unbanned_at"],

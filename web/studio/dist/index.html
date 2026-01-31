@@ -6,8 +6,8 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; form-action 'self'; object-src 'none'; base-uri 'self';">
     <title>VLog Studio - Broadcaster Dashboard</title>
     <link rel="stylesheet" href="/static/vendor/tailwind.css">
-  <script type="module" crossorigin src="/studio/assets/main.8aJgAZfF.js"></script>
-  <link rel="modulepreload" crossorigin href="/studio/assets/studio.DpYenzbc.js">
+  <script type="module" crossorigin src="/studio/assets/main.B6DeC_2s.js"></script>
+  <link rel="modulepreload" crossorigin href="/studio/assets/studio.CmrWepXc.js">
   <link rel="stylesheet" crossorigin href="/studio/assets/studio.CouzqBCk.css">
 </head>
 <body class="bg-dark-950 text-dark-100 min-h-screen" x-data="studio()" x-init="init()" x-cloak>
@@ -760,7 +760,7 @@
                                             type="file"
                                             accept="image/jpeg,image/png"
                                             class="hidden"
-                                            @change="uploadVODThumbnail(selectedVOD.slug, $event.target.files[0])"
+                                            @change="$event.target.files && $event.target.files.length && uploadVODThumbnail(selectedVOD.slug, $event.target.files[0])"
                                             :disabled="vodThumbnailUploading"
                                         >
                                         <span class="block w-full py-2 text-center text-sm text-dark-400 hover:text-white cursor-pointer transition-colors">
@@ -854,7 +854,7 @@
                                             <template x-for="day in vodAnalytics.view_history" :key="day.date">
                                                 <div
                                                     class="flex-1 bg-blue-600 rounded-t"
-                                                    :style="'height: ' + Math.max(4, (day.views / Math.max(...vodAnalytics.view_history.map(d => d.views))) * 100) + '%'"
+                                                    :style="'height: ' + Math.max(4, (day.views / (Math.max(...vodAnalytics.view_history.map(d => d.views)) || 1)) * 100) + '%'"
                                                     :title="day.date + ': ' + day.views + ' views'"
                                                 ></div>
                                             </template>

@@ -852,7 +852,7 @@
                                             <template x-for="day in vodAnalytics.view_history" :key="day.date">
                                                 <div
                                                     class="flex-1 bg-blue-600 rounded-t"
-                                                    :style="'height: ' + Math.max(4, (day.views / Math.max(...vodAnalytics.view_history.map(d => d.views))) * 100) + '%'"
+                                                    :style="'height: ' + Math.max(4, (day.views / (Math.max(...vodAnalytics.view_history.map(d => d.views)) || 1)) * 100) + '%'"
                                                     :title="day.date + ': ' + day.views + ' views'"
                                                 ></div>
                                             </template>
