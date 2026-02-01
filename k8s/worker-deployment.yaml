@@ -5,7 +5,7 @@
 # 1. Build and push worker image to your registry:
 #    docker build -f Dockerfile.worker-cpu-only -t your-registry/vlog-worker:v1.0.0 .
 #    docker push your-registry/vlog-worker:v1.0.0
-# 2. Update the image reference below to match your version tag
+# 2. Update the image reference below to match your registry and version tag
 # 3. Create the secret with your API key (see secret.yaml)
 # 4. Update the ConfigMap with your API URL (see configmap.yaml)
 
@@ -18,8 +18,26 @@ metadata:
     app.kubernetes.io/name: vlog
     app.kubernetes.io/component: worker
 spec:
-  # Number of worker replicas - adjust based on workload
+  # ===========================================================================
+  # REPLICA SCALING GUIDANCE
+  # ===========================================================================
+  # Each worker processes one video at a time. Scale based on:
+  #   - Expected upload volume (videos per day)
+  #   - Average video length and target quality count
+  #   - Acceptable queue wait time
+  #
+  # Rough guidelines:
+  #   1-2 replicas: Personal/small team use (<10 videos/day)
+  #   3-5 replicas: Medium workload (10-50 videos/day)
+  #   5-10 replicas: High volume (50-200 videos/day)
+  #
+  # Monitor the transcoding queue depth via /api/workers/active-jobs and
+  # Prometheus metrics to right-size your deployment.
+  #
+  # Note: More replicas = more concurrent transcoding = higher CPU/memory usage
+  # Ensure your cluster has sufficient resources before scaling up.
   replicas: 2
+
   selector:
     matchLabels:
       app.kubernetes.io/name: vlog
@@ -30,19 +48,42 @@ spec:
         app.kubernetes.io/name: vlog
         app.kubernetes.io/component: worker
     spec:
-      # Security context for the pod
+      # =========================================================================
+      # SECURITY CONTEXT
+      # =========================================================================
+      # Pod-level security settings applied to all containers.
+      #
+      # runAsUser/fsGroup 1000: Standard non-root user ID used in the container
+      # image. This matches the 'vlog' user created in Dockerfile.worker-cpu-only.
+      # Using a non-root user is a security best practice that limits the impact
+      # of container escape vulnerabilities.
+      #
+      # If your storage requires a different UID/GID (e.g., NFS with specific
+      # permissions), update these values to match.
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: 1000    # UID of 'vlog' user in container image
+        fsGroup: 1000      # GID for volume mounts - allows write access
         seccompProfile:
           type: RuntimeDefault
 
       containers:
       - name: worker
-        # Update this to your container registry and version tag
-        # IMPORTANT: Always use specific version tags, never use 'latest'
-        image: vlog-worker:v1.0.0
+        # =========================================================================
+        # CONTAINER IMAGE - REQUIRED CONFIGURATION
+        # =========================================================================
+        # Update this to your container registry and version tag.
+        #
+        # Examples:
+        #   Docker Hub:      docker.io/youruser/vlog-worker:v1.0.0
+        #   GitHub Registry: ghcr.io/yourorg/vlog-worker:v1.0.0
+        #   AWS ECR:         123456789.dkr.ecr.us-east-1.amazonaws.com/vlog-worker:v1.0.0
+        #   Private:         registry.yourdomain.com/vlog-worker:v1.0.0
+        #
+        # IMPORTANT: Always use specific version tags (e.g., v1.0.0), never use
+        # 'latest' in production. This ensures reproducible deployments and makes
+        # rollbacks possible.
+        image: vlog-worker:v1.0.0  # <-- CHANGE to your-registry/vlog-worker:v1.0.0
         imagePullPolicy: IfNotPresent
 
         # Load environment from ConfigMap and Secret
@@ -52,15 +93,26 @@ spec:
         - secretRef:
             name: vlog-worker-credentials
 
-        # Resource limits for video transcoding
-        # FFmpeg is CPU-intensive; adjust based on your node capacity
+        # =========================================================================
+        # RESOURCE LIMITS
+        # =========================================================================
+        # FFmpeg transcoding is CPU-intensive. Adjust based on your node capacity
+        # and desired transcoding speed.
+        #
+        # requests: Minimum guaranteed resources (affects scheduling)
+        # limits: Maximum allowed resources (prevents runaway processes)
+        #
+        # Higher CPU limits = faster transcoding but fewer workers per node
+        # Memory requirements depend on video resolution and codec:
+        #   - 720p/1080p: 2-4GB typically sufficient
+        #   - 4K: May need 6-8GB for complex encodes
         resources:
           requests:
             memory: "2Gi"
-            cpu: "1000m"
+            cpu: "1000m"    # 1 CPU core minimum
           limits:
             memory: "8Gi"
-            cpu: "4000m"
+            cpu: "4000m"    # 4 CPU cores maximum
 
         # Mount emptyDir for transcoding workspace
         volumeMounts:
@@ -89,31 +141,62 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 3
 
-        # Security context for container
+        # =========================================================================
+        # CONTAINER SECURITY CONTEXT
+        # =========================================================================
         securityContext:
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false  # FFmpeg needs to write temp files
+          # readOnlyRootFilesystem is FALSE because FFmpeg requires write access
+          # to create temporary files during transcoding. The emptyDir volume at
+          # /tmp/vlog-worker provides isolated writable storage for this purpose.
+          # This is a necessary trade-off for video transcoding workloads.
+          readOnlyRootFilesystem: false
           capabilities:
             drop:
-            - ALL
+            - ALL    # Drop all capabilities - workers don't need any
 
       # Volumes
       volumes:
       - name: work-dir
         emptyDir:
-          # Size limit for transcoding workspace
-          # Should be large enough for source + HLS output
+          # =========================================================================
+          # WORK DIRECTORY SIZE LIMIT
+          # =========================================================================
+          # Size limit for transcoding workspace. Should accommodate:
+          #   - Downloaded source video (largest expected upload)
+          #   - Generated HLS segments for all quality levels
+          #   - Temporary encoding buffers
+          #
+          # Rule of thumb: 2-3x the size of your largest expected video file
+          # Example: If max upload is 20GB, set to 50Gi
+          #
+          # If exceeded, the pod will be evicted. Monitor disk usage if you
+          # see unexpected pod evictions.
           sizeLimit: 50Gi
 
-      # Grace period for job completion on shutdown
-      # Workers finish current job before terminating
+      # =========================================================================
+      # TERMINATION GRACE PERIOD
+      # =========================================================================
+      # Time allowed for workers to finish current job before forced termination.
+      # Set this higher than your longest expected transcode time.
+      #
+      # 300 seconds (5 minutes) is usually sufficient for most videos.
+      # Increase for very long videos or if using many quality levels.
       terminationGracePeriodSeconds: 300
 
       # Restart policy
       restartPolicy: Always
 
-      # Optional: Node affinity for dedicated transcoding nodes
-      # Uncomment and customize if you have dedicated nodes
+      # =========================================================================
+      # OPTIONAL: Node Affinity for Dedicated Transcoding Nodes
+      # =========================================================================
+      # Uncomment and customize if you have dedicated high-CPU nodes for
+      # transcoding. This keeps transcoding workloads separate from other
+      # services and ensures consistent performance.
+      #
+      # First, label your nodes:
+      #   kubectl label nodes <node-name> node-type=transcoding
+      #
       # affinity:
       #   nodeAffinity:
       #     requiredDuringSchedulingIgnoredDuringExecution:
@@ -124,7 +207,15 @@ spec:
       #           values:
       #           - transcoding
 
-      # Optional: Tolerations for dedicated nodes
+      # =========================================================================
+      # OPTIONAL: Tolerations for Dedicated Nodes
+      # =========================================================================
+      # If your transcoding nodes have taints to prevent other workloads,
+      # add matching tolerations here.
+      #
+      # First, taint your nodes:
+      #   kubectl taint nodes <node-name> dedicated=transcoding:NoSchedule
+      #
       # tolerations:
       # - key: "dedicated"
       #   operator: "Equal"
