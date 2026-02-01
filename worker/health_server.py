@@ -156,26 +156,9 @@ class HealthServer:
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             # Client disconnected - no need to send error response
             pass
-        except ValueError as e:
-            # Malformed request (e.g., too many headers)
-            logger.debug(f"Health check request error: {e}")
-            try:
-                error_response = (
-                    "HTTP/1.1 400 Bad Request\r\n"
-                    "Content-Type: application/json\r\n"
-                    "Content-Length: 26\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"
-                    '{"error": "bad request"}'
-                )
-                writer.write(error_response.encode())
-                await asyncio.wait_for(
-                    writer.drain(), timeout=self.RESPONSE_WRITE_TIMEOUT
-                )
-            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
-                pass  # Client disconnected or timed out during error response
         except (OSError, UnicodeDecodeError) as e:
             # Network errors or malformed request encoding
+            # Note: UnicodeDecodeError must be caught before ValueError (it's a subclass)
             logger.debug(f"Health check request error: {type(e).__name__}: {e}")
             # Return 500 if we can still write to the connection
             try:
@@ -186,6 +169,25 @@ class HealthServer:
                     "Connection: close\r\n"
                     "\r\n"
                     '{"error": "server error"}'
+                )
+                writer.write(error_response.encode())
+                await asyncio.wait_for(
+                    writer.drain(), timeout=self.RESPONSE_WRITE_TIMEOUT
+                )
+            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
+                pass  # Client disconnected or timed out during error response
+        except ValueError as e:
+            # Malformed request (e.g., too many headers)
+            logger.debug(f"Health check request error: {e}")
+            try:
+                bad_request_body = '{"error": "bad request"}'
+                error_response = (
+                    "HTTP/1.1 400 Bad Request\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(bad_request_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    f"{bad_request_body}"
                 )
                 writer.write(error_response.encode())
                 await asyncio.wait_for(
