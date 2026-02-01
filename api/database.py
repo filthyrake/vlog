@@ -361,10 +361,10 @@ transcoding_jobs = sa.Table(
 #
 # STATUS LIFECYCLE:
 # -----------------
-# pending -> in_progress -> uploading -> completed (success path)
+# pending -> in_progress -> uploading -> uploaded -> completed (success path)
 # pending -> in_progress -> failed (error during encode)
 # pending -> skipped (quality higher than source resolution)
-#
+# Note: "uploaded" represents all segments uploaded but before finalization.
 # FIELD SEMANTICS:
 # ----------------
 # - quality: One of "2160p", "1080p", "720p", "480p", "360p", "original"
