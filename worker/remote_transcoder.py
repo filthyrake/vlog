@@ -1543,6 +1543,9 @@ async def worker_loop():
         HEALTH_SERVER.set_heartbeat_status(True)
     except WorkerAPIError as e:
         logger.error(f"Failed to connect to Worker API: {e.message}")
+        # Clean up health server before exiting to prevent orphaned process
+        if HEALTH_SERVER:
+            await HEALTH_SERVER.stop()
         sys.exit(1)
 
     # Create worker state for tracking job status
