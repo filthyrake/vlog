@@ -22,7 +22,7 @@ from slowapi import Limiter
 from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth
 from api.auth.permissions import Permission, Role, has_permission
-from api.common import get_real_ip, get_request_id, require_valid_slug
+from api.common import ensure_utc, get_real_ip, get_request_id, require_valid_slug, verify_stream_access
 from api.database import (
     database,
     live_streams,
@@ -100,27 +100,6 @@ def validate_regex_pattern(pattern: str) -> bool:
         return True
     except re.error:
         return False
-
-
-async def verify_stream_access(slug: str, user: dict) -> dict:
-    """Verify user has access to a stream."""
-    require_valid_slug(slug, "stream")
-
-    stream = await fetch_one_with_retry(
-        live_streams.select().where(live_streams.c.slug == slug)
-    )
-
-    if not stream:
-        raise HTTPException(status_code=404, detail="Stream not found")
-
-    role = Role(user["role"])
-    is_owner = stream["owner_id"] == user["id"]
-    has_manage_any = has_permission(role, Permission.LIVE_STREAM_MANAGE)
-
-    if not is_owner and not has_manage_any:
-        raise HTTPException(status_code=404, detail="Stream not found")
-
-    return dict(stream)
 
 
 async def verify_stream_moderator(stream_id: int, user: dict, required_permission: str) -> bool:
@@ -205,9 +184,7 @@ def is_ban_active(ban: dict) -> bool:
     if ban["unbanned_at"]:
         return False
     if ban["expires_at"]:
-        expires = ban["expires_at"]
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
+        expires = ensure_utc(ban["expires_at"])
         return expires > datetime.now(timezone.utc)
     return True  # Permanent ban with no unban
 

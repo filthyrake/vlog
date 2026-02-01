@@ -23,7 +23,13 @@ from slowapi import Limiter
 from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth
 from api.auth.permissions import Permission, Role, has_permission
-from api.common import get_real_ip, get_request_id, require_valid_slug
+from api.common import (
+    calculate_stream_offset_ms,
+    get_real_ip,
+    get_request_id,
+    require_valid_slug,
+    verify_stream_access,
+)
 from api.database import database, live_streams, chat_messages, stream_moderators, users
 from api.db_retry import db_execute_with_retry, fetch_one_with_retry, fetch_all_with_retry
 from api.live_schemas import (
@@ -72,32 +78,6 @@ def sanitize_message(content: str) -> str:
     Strips all HTML tags and escapes special characters.
     """
     return bleach.clean(content, tags=ALLOWED_HTML_TAGS, strip=True)
-
-
-async def verify_stream_access(slug: str, user: dict) -> dict:
-    """
-    Verify user has access to a stream (ownership or admin permission).
-
-    Returns the stream record if access is granted.
-    """
-    require_valid_slug(slug, "stream")
-
-    stream = await fetch_one_with_retry(
-        live_streams.select().where(live_streams.c.slug == slug)
-    )
-
-    if not stream:
-        raise HTTPException(status_code=404, detail="Stream not found")
-
-    # Owner check OR admin permission
-    role = Role(user["role"])
-    is_owner = stream["owner_id"] == user["id"]
-    has_manage_any = has_permission(role, Permission.LIVE_STREAM_MANAGE)
-
-    if not is_owner and not has_manage_any:
-        raise HTTPException(status_code=404, detail="Stream not found")
-
-    return dict(stream)
 
 
 async def verify_stream_moderator(stream_id: int, user: dict) -> bool:
@@ -323,13 +303,10 @@ async def send_chat_message(
     # Get current time for timestamp and offset calculation
     now = datetime.now(timezone.utc)
 
-    # Calculate stream offset if stream is live
+    # Calculate stream offset if stream is live (for VOD sync)
     stream_offset_ms = None
-    if stream["status"] == "live" and stream["started_at"]:
-        started = stream["started_at"]
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        stream_offset_ms = int((now - started).total_seconds() * 1000)
+    if stream["status"] == "live":
+        stream_offset_ms = calculate_stream_offset_ms(stream["started_at"], now)
 
     # Insert message (use RETURNING for PostgreSQL compatibility)
     insert_query = (

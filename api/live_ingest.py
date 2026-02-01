@@ -192,19 +192,21 @@ async def write_segment_atomic(dest_path: Path, data: bytes) -> None:
     await loop.run_in_executor(_io_executor, _write)
 
 
-def prepare_stream_update_values(stream: dict, quality: str, now: datetime) -> dict:
+def build_segment_received_update(stream: dict, quality: str, now: datetime) -> dict:
     """
-    Prepare update values for stream record based on current state.
+    Build database update values for stream after receiving a segment.
 
-    This function uses the already-fetched stream data to avoid an extra query.
+    Handles status transitions (idle/ending → live), quality tracking,
+    segment counting, and timestamp updates. Uses the already-fetched
+    stream data to avoid an extra query.
 
     Args:
         stream: Stream record dict from verify_stream_key
-        quality: Quality being uploaded
+        quality: Quality level of received segment
         now: Current timestamp
 
     Returns:
-        Dict of values to update on the stream record
+        Dict of column updates for the database
     """
     update_values = {
         "last_segment_at": now,
@@ -475,7 +477,7 @@ async def put_media_segment(
         # Update stream in single query (combines count, status, qualities, timestamp)
         # Only increment count if segment wasn't a duplicate
         if not segment_is_duplicate:
-            update_values = prepare_stream_update_values(stream, quality, now)
+            update_values = build_segment_received_update(stream, quality, now)
             await db_execute_with_retry(
                 live_streams.update()
                 .where(live_streams.c.id == stream_id)

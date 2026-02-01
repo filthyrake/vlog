@@ -22,7 +22,9 @@ from starlette.responses import Response
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-from api.database import database
+from api.auth.permissions import Permission, Role, has_permission
+from api.database import database, live_streams
+from api.db_retry import fetch_one_with_retry
 from api.logging_config import (
     clear_request_context,
     sanitize_user_agent,
@@ -110,6 +112,45 @@ def require_valid_slug(slug: str, resource_type: str = "resource") -> None:
         )
 
 
+async def verify_stream_access(slug: str, user: dict) -> dict:
+    """
+    Verify user has access to a stream (ownership or admin permission).
+
+    This is a shared utility to avoid duplicating stream access logic across
+    studio modules. Uses a 404 response for unauthorized access to prevent
+    enumeration attacks.
+
+    Args:
+        slug: Stream slug to verify access for
+        user: User dict from authenticated session
+
+    Returns:
+        Stream record as dict if access is granted
+
+    Raises:
+        HTTPException: 400 if slug format is invalid
+        HTTPException: 404 if stream not found or user doesn't have access
+    """
+    require_valid_slug(slug, "stream")
+
+    stream = await fetch_one_with_retry(
+        live_streams.select().where(live_streams.c.slug == slug)
+    )
+
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Owner check OR admin permission
+    role = Role(user["role"])
+    is_owner = stream["owner_id"] == user["id"]
+    has_manage_any = has_permission(role, Permission.LIVE_STREAM_MANAGE)
+
+    if not is_owner and not has_manage_any:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    return dict(stream)
+
+
 # Cache for storage health status to avoid hammering storage on every request
 _storage_health_cache = {
     "healthy": True,
@@ -180,6 +221,30 @@ def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
         return dt.replace(tzinfo=timezone.utc)
     # Convert timezone-aware datetimes to UTC
     return dt.astimezone(timezone.utc)
+
+
+def calculate_stream_offset_ms(
+    stream_started_at: Optional[datetime],
+    current_time: datetime
+) -> Optional[int]:
+    """
+    Calculate milliseconds elapsed since stream start.
+
+    Handles timezone normalization for naive datetimes (assumes UTC).
+    Returns None if stream_started_at is None.
+
+    Args:
+        stream_started_at: When the stream started (may be timezone-naive)
+        current_time: Current timestamp (should be timezone-aware UTC)
+
+    Returns:
+        Milliseconds since stream start, or None if stream_started_at is None
+    """
+    if stream_started_at is None:
+        return None
+
+    started = ensure_utc(stream_started_at)
+    return int((current_time - started).total_seconds() * 1000)
 
 
 def get_real_ip(request: Request) -> str:
