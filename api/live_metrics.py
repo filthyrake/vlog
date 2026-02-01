@@ -24,10 +24,25 @@ BITRATE_WINDOW_SECONDS = 30
 # Cache TTL for bitrate estimates (seconds) - prevents query amplification
 BITRATE_CACHE_TTL_SECONDS = 3.0
 
+# Maximum cache size to prevent unbounded memory growth (Issue #553)
+BITRATE_CACHE_MAX_SIZE = 1000
+
+# Number of sharded locks to reduce contention (Issue #545)
+# Using 16 shards allows ~16x more concurrent access
+BITRATE_CACHE_SHARD_COUNT = 16
+
 # Simple in-memory cache for bitrate estimates
 # Format: {stream_id: (bitrate_kbps, expiry_time)}
 _bitrate_cache: Dict[int, Tuple[Optional[int], float]] = {}
-_cache_lock = asyncio.Lock()
+
+# Sharded locks to reduce contention under high load (Issue #545)
+# Each shard handles stream_ids where hash(stream_id) % SHARD_COUNT == shard_index
+_cache_locks = [asyncio.Lock() for _ in range(BITRATE_CACHE_SHARD_COUNT)]
+
+
+def _get_cache_lock(stream_id: int) -> asyncio.Lock:
+    """Get the appropriate sharded lock for a stream_id."""
+    return _cache_locks[stream_id % BITRATE_CACHE_SHARD_COUNT]
 
 
 async def compute_and_publish_metrics(stream_id: int) -> bool:
@@ -100,9 +115,10 @@ async def estimate_bitrate(stream_id: int, window_seconds: int = BITRATE_WINDOW_
     """
     import time
     current_time = time.monotonic()
+    cache_lock = _get_cache_lock(stream_id)
 
-    # Check cache first (with lock to prevent race conditions)
-    async with _cache_lock:
+    # Check cache first (with sharded lock to reduce contention - Issue #545)
+    async with cache_lock:
         if stream_id in _bitrate_cache:
             cached_value, expiry_time = _bitrate_cache[stream_id]
             if current_time < expiry_time:
@@ -111,20 +127,56 @@ async def estimate_bitrate(stream_id: int, window_seconds: int = BITRATE_WINDOW_
     # Cache miss or expired - compute fresh value
     bitrate_kbps = await _compute_bitrate_uncached(stream_id, window_seconds)
 
-    # Update cache
-    async with _cache_lock:
+    # Update cache (with sharded lock)
+    async with cache_lock:
         _bitrate_cache[stream_id] = (bitrate_kbps, current_time + BITRATE_CACHE_TTL_SECONDS)
 
-        # Clean up old cache entries periodically (every 100 entries)
-        if len(_bitrate_cache) > 100:
-            expired_keys = [
-                k for k, (_, expiry) in _bitrate_cache.items()
-                if current_time >= expiry
-            ]
-            for k in expired_keys:
-                del _bitrate_cache[k]
+    # Enforce cache size limit (Issue #553)
+    # Use a separate check to avoid holding lock during eviction scan
+    if len(_bitrate_cache) > BITRATE_CACHE_MAX_SIZE:
+        await _enforce_cache_size_limit(current_time)
 
     return bitrate_kbps
+
+
+async def _enforce_cache_size_limit(current_time: float) -> None:
+    """
+    Enforce the cache size limit by evicting expired and oldest entries.
+
+    This is called without holding any lock to minimize contention.
+    Uses a simple global lock for the eviction operation itself.
+    """
+    # Quick check without lock - if we're under limit, skip
+    if len(_bitrate_cache) <= BITRATE_CACHE_MAX_SIZE:
+        return
+
+    # Acquire all locks to safely modify cache during eviction
+    # This is rare (only when cache exceeds max size) so acceptable
+    for lock in _cache_locks:
+        await lock.acquire()
+
+    try:
+        # First, remove expired entries
+        expired_keys = [
+            k for k, (_, expiry) in _bitrate_cache.items()
+            if current_time >= expiry
+        ]
+        for k in expired_keys:
+            del _bitrate_cache[k]
+
+        # If still over limit, evict oldest entries by expiry time
+        if len(_bitrate_cache) > BITRATE_CACHE_MAX_SIZE:
+            items = sorted(_bitrate_cache.items(), key=lambda x: x[1][1])
+            evict_count = len(_bitrate_cache) - BITRATE_CACHE_MAX_SIZE
+            for k, _ in items[:evict_count]:
+                del _bitrate_cache[k]
+            logger.warning(
+                f"Bitrate cache exceeded max size ({BITRATE_CACHE_MAX_SIZE}), "
+                f"evicted {evict_count + len(expired_keys)} entries"
+            )
+    finally:
+        for lock in _cache_locks:
+            lock.release()
 
 
 async def _compute_bitrate_uncached(stream_id: int, window_seconds: int) -> Optional[int]:

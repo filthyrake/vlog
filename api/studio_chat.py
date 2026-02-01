@@ -214,7 +214,8 @@ async def list_chat_messages(
 
     stream = await verify_stream_access(slug, user)
 
-    # Build query
+    # Build query - fetch limit+1 to determine has_more efficiently (Issue #546)
+    effective_limit = min(limit, 100)
     query = (
         sa.select(
             chat_messages,
@@ -226,7 +227,7 @@ async def list_chat_messages(
         .where(chat_messages.c.stream_id == stream["id"])
         .where(chat_messages.c.deleted_at.is_(None))  # Exclude deleted messages
         .order_by(chat_messages.c.id.desc())
-        .limit(min(limit, 100))  # Cap at 100
+        .limit(effective_limit + 1)  # Fetch one extra to detect has_more
     )
 
     if before_id:
@@ -234,18 +235,10 @@ async def list_chat_messages(
 
     messages = await fetch_all_with_retry(query)
 
-    # Get total count (for has_more)
-    count_query = (
-        sa.select(sa.func.count())
-        .select_from(chat_messages)
-        .where(chat_messages.c.stream_id == stream["id"])
-        .where(chat_messages.c.deleted_at.is_(None))
-    )
-    if before_id:
-        count_query = count_query.where(chat_messages.c.id < before_id)
-
-    total = await fetch_one_with_retry(count_query)
-    total_count = total[0] if total else 0
+    # Determine has_more by checking if we got more than the limit
+    has_more = len(messages) > effective_limit
+    if has_more:
+        messages = messages[:effective_limit]  # Return only requested amount
 
     return ChatMessageListResponse(
         messages=[
@@ -260,8 +253,8 @@ async def list_chat_messages(
             )
             for msg in messages
         ],
-        total=total_count,
-        has_more=len(messages) == min(limit, 100),
+        total=len(messages),  # Count of returned messages
+        has_more=has_more,
         before_id=messages[-1]["id"] if messages else None,
     )
 

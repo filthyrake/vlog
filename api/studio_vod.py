@@ -226,34 +226,19 @@ async def list_vods(
     if status and status in ("pending", "processing", "ready", "failed"):
         query = query.where(videos.c.status == status)
 
-    # Count total
-    count_query = (
-        sa.select(sa.func.count())
-        .select_from(
-            videos.outerjoin(
-                live_streams,
-                live_streams.c.vod_video_id == videos.c.id
-            )
-        )
-        .where(videos.c.deleted_at.is_(None))
+    # Add window function for total count (Issue #544)
+    # This computes total in a single query, avoiding a separate COUNT query
+    query = query.add_columns(
+        sa.func.count().over().label("total_count")
     )
-    if not has_manage_any:
-        count_query = count_query.where(
-            sa.or_(
-                videos.c.owner_id == user["id"],
-                live_streams.c.owner_id == user["id"],
-            )
-        )
-    if status and status in ("pending", "processing", "ready", "failed"):
-        count_query = count_query.where(videos.c.status == status)
 
-    total = await database.fetch_val(count_query) or 0
-
-    # Fetch page
+    # Fetch page with total count included
     query = query.order_by(videos.c.created_at.desc())
     query = query.offset(offset).limit(page_size)
     rows = await fetch_all_with_retry(query)
 
+    # Extract total from first row (all rows have same total_count)
+    total = rows[0]["total_count"] if rows else 0
     vods = [vod_to_response(dict(row)) for row in rows]
 
     return StudioVODListResponse(
