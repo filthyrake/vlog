@@ -10,18 +10,24 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 from api.database import database
+from api.logging_config import (
+    clear_request_context,
+    sanitize_user_agent,
+    set_request_context,
+)
 from config import (
     STORAGE_CHECK_TIMEOUT,
     TRUSTED_PROXIES,
@@ -67,6 +73,41 @@ def validate_slug(slug: str) -> bool:
         return False
     # Check against allowed pattern
     return bool(SLUG_PATTERN.match(slug))
+
+
+def require_valid_slug(slug: str, resource_type: str = "resource") -> None:
+    """
+    Validate slug or raise HTTPException with 400 status.
+
+    Security: Prevents path traversal attacks by ensuring slug contains
+    only safe characters (lowercase alphanumeric with hyphens).
+
+    Note: This function intentionally duplicates validate_slug() logic to provide
+    specific error messages for each failure case (missing, path traversal, format).
+    This improves API usability by helping clients understand exactly what's wrong.
+
+    Args:
+        slug: The slug string to validate
+        resource_type: Type of resource for error message (e.g., "video", "category")
+
+    Raises:
+        HTTPException: 400 error if slug is invalid
+    """
+    if not slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing {resource_type} slug"
+        )
+    if '..' in slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {resource_type} slug: path traversal not allowed"
+        )
+    if not SLUG_PATTERN.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {resource_type} slug: must be lowercase alphanumeric with hyphens"
+        )
 
 
 # Cache for storage health status to avoid hammering storage on every request
@@ -174,9 +215,13 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     - Correlating logs across multiple services
     - Tracing requests through the entire request lifecycle
     - Debugging production issues by filtering logs by request ID
+    - Automatic inclusion of request context in structured JSON logs (Issue #208)
     """
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Defensive: clear any leaked context from previous request
+        clear_request_context()
+
         # Use existing request ID from header, or generate a new one
         request_id = request.headers.get("X-Request-ID")
         if request_id:
@@ -191,12 +236,24 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         # Store in request state for access by handlers
         request.state.request_id = request_id
 
-        response = await call_next(request)
+        # Set logging context for structured logs (Issue #208)
+        # User-Agent is sanitized to prevent log injection attacks
+        set_request_context(
+            request_id=request_id,
+            client_ip=get_real_ip(request),
+            user_agent=sanitize_user_agent(request.headers.get("user-agent", "")),
+        )
 
-        # Include request ID in response for client correlation
-        response.headers["X-Request-ID"] = request_id
+        try:
+            response = await call_next(request)
 
-        return response
+            # Include request ID in response for client correlation
+            response.headers["X-Request-ID"] = request_id
+
+            return response
+        finally:
+            # Always cleanup context, even on exception (per Margo's review)
+            clear_request_context()
 
 
 def get_request_id(request: Request) -> Optional[str]:
@@ -211,10 +268,11 @@ def get_request_id(request: Request) -> Optional[str]:
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all responses."""
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         response = await call_next(request)
-        # Prevent clickjacking
-        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        # Prevent clickjacking (skip for embed pages - they use CSP frame-ancestors)
+        if not request.url.path.startswith("/embed/"):
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
         # Prevent MIME-type sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
         # XSS protection for legacy browsers

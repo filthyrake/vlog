@@ -44,6 +44,8 @@ export interface Video {
   is_featured?: boolean; // Issue #413 Phase 3
   featured_at?: string;  // Issue #413 Phase 3
   sprite_sheet_status?: SpriteSheetStatus; // Issue #413 Phase 7B
+  comments_enabled?: boolean | null;  // Issue #213: null = inherit from global
+  ratings_enabled?: boolean | null;   // Issue #213: null = inherit from global
 }
 
 export interface VideoProgress {
@@ -257,15 +259,169 @@ export interface CustomField {
 export interface AuthCheckResponse {
   auth_required: boolean;
   authenticated: boolean;
+  user?: CurrentUser;
+  auth_mode?: 'legacy' | 'user';
+  oidc_enabled?: boolean;
+  oidc_provider_name?: string;
 }
 
 export interface AuthLoginResponse {
   success: boolean;
   message?: string;
+  user?: CurrentUser;
 }
 
 export interface CsrfTokenResponse {
   csrf_token: string;
+}
+
+// =============================================================================
+// User Types
+// =============================================================================
+
+export type UserRole = 'admin' | 'editor' | 'viewer';
+export type UserStatus = 'active' | 'disabled' | 'pending';
+
+export interface CurrentUser {
+  id: string;
+  username: string;
+  email: string;
+  display_name?: string;
+  avatar_url?: string;
+  role: UserRole;
+  permissions: string[];
+}
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  display_name?: string;
+  avatar_url?: string;
+  role: UserRole;
+  status: UserStatus;
+  email_verified: boolean;
+  created_at: string;
+  updated_at?: string;
+  last_login_at?: string;
+}
+
+export interface UserListResponse {
+  users: User[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  email: string;
+  password?: string;
+  display_name?: string;
+  role: UserRole;
+}
+
+export interface UpdateUserRequest {
+  username?: string;
+  email?: string;
+  display_name?: string;
+  avatar_url?: string;
+  role?: UserRole;
+  status?: UserStatus;
+}
+
+export interface UpdateProfileRequest {
+  display_name?: string;
+  avatar_url?: string;
+}
+
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+// =============================================================================
+// Session Types
+// =============================================================================
+
+export interface UserSession {
+  id: string;
+  ip_address?: string;
+  user_agent?: string;
+  created_at: string;
+  expires_at: string;
+  is_current: boolean;
+}
+
+export interface SessionListResponse {
+  sessions: UserSession[];
+  total: number;
+}
+
+// =============================================================================
+// API Key Types
+// =============================================================================
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  expires_at?: string;
+  last_used_at?: string;
+  created_at: string;
+}
+
+export interface CreateApiKeyRequest {
+  name: string;
+  expires_in_days?: number;
+}
+
+export interface CreateApiKeyResponse {
+  id: string;
+  name: string;
+  key: string;  // Only returned on creation
+  key_prefix: string;
+  expires_at?: string;
+  created_at: string;
+}
+
+export interface ApiKeyListResponse {
+  keys: ApiKey[];
+  total: number;
+}
+
+// =============================================================================
+// Invite Types
+// =============================================================================
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: UserRole;
+  expires_at: string;
+  created_at: string;
+  used_at?: string;
+}
+
+export interface CreateInviteRequest {
+  email: string;
+  role: UserRole;
+  expires_in_days?: number;
+}
+
+export interface CreateInviteResponse {
+  id: string;
+  email: string;
+  role: UserRole;
+  token: string;
+  invite_url: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface InviteListResponse {
+  invites: Invite[];
+  total: number;
 }
 
 // =============================================================================

@@ -197,6 +197,51 @@ function watchPage() {
         // Precomputed arrays for skeleton loaders (Alpine CSP)
         _skeletonArray6: [1, 2, 3, 4, 5, 6],
 
+        // Up Next / Autoplay state (Issue #211)
+        playbackConfig: null,
+        nextVideo: null,
+        upNextCountdown: 0,
+        _upNextCountdownInterval: null,
+        _nextVideoAbortController: null,
+        _showUpNext: false,
+        _autoplayEnabled: true, // User preference (stored in localStorage)
+        // Precomputed Up Next display values for Alpine CSP
+        _nextVideoTitle: '',
+        _nextVideoThumbnail: '',
+        _nextVideoDuration: '',
+        _nextVideoHref: '',
+        _upNextCountdownText: '',
+
+        // Comments & Ratings state (Issue #213)
+        socialStatus: {
+            comments_enabled: false,
+            ratings_enabled: false,
+            ratings_type: 'stars' // 'stars' or 'thumbs'
+        },
+        // Authentication state
+        isLoggedIn: false,
+        currentUser: null,
+        // Ratings state
+        userRating: null,
+        ratingAggregates: {
+            average: null,
+            count: 0,
+            likes_count: 0,
+            dislikes_count: 0,
+            distribution: {}
+        },
+        submittingRating: false,
+        // Comments state
+        comments: [],
+        loadingComments: false,
+        loadingMoreComments: false,
+        commentsNextCursor: null,
+        newComment: '',
+        submittingComment: false,
+        replyingTo: null,
+        replyContent: '',
+        submittingReply: false,
+
         async loadDisplayConfig() {
             try {
                 const res = await VLogUtils.fetchWithTimeout('/api/config/display', {}, 5000);
@@ -372,6 +417,7 @@ function watchPage() {
             this.loadWatermarkConfig();
             this.loadDisplayConfig();
             this.loadDownloadConfig();  // Issue #202
+            this.loadPlaybackConfig();  // Issue #211
 
             const slug = window.location.pathname.split('/').pop();
             if (!slug || !SLUG_PATTERN.test(slug)) {
@@ -408,9 +454,351 @@ function watchPage() {
 
                 // Load related videos (non-blocking, don't wait)
                 this.loadRelatedVideos(slug);
+
+                // Load next video for Up Next / autoplay (Issue #211)
+                this.loadNextVideo(slug);
+
+                // Load social features (Issue #213)
+                this.loadAuthState();
+                this.loadSocialStatus(slug);
             } catch (e) {
                 this.error = e.message;
                 this.loading = false;
+            }
+        },
+
+        // Issue #213: Load authentication state
+        async loadAuthState() {
+            try {
+                const res = await VLogUtils.fetchWithTimeout('/api/v1/users/me', {
+                    credentials: 'include'
+                }, 5000);
+                if (res.ok) {
+                    this.currentUser = await res.json();
+                    this.isLoggedIn = true;
+                    debugLog('User authenticated:', this.currentUser.username);
+                }
+            } catch (e) {
+                // Not logged in or error - silent fail
+                debugLog('Not authenticated');
+            }
+        },
+
+        // Issue #213: Load social status for the video
+        async loadSocialStatus(slug) {
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/social`,
+                    { credentials: 'include' },
+                    5000
+                );
+                if (res.ok) {
+                    const data = await res.json();
+                    this.socialStatus = {
+                        comments_enabled: data.comments_enabled,
+                        ratings_enabled: data.ratings_enabled,
+                        ratings_type: data.ratings_type || 'stars'
+                    };
+                    debugLog('Social status:', this.socialStatus);
+
+                    // Load ratings and comments if enabled
+                    if (this.socialStatus.ratings_enabled) {
+                        this.loadRatings(slug);
+                    }
+                    if (this.socialStatus.comments_enabled) {
+                        this.loadComments(slug);
+                    }
+                }
+            } catch (e) {
+                debugLog('Failed to load social status:', e);
+            }
+        },
+
+        // Issue #213: Load ratings for the video
+        async loadRatings(slug) {
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/rating`,
+                    { credentials: 'include' },
+                    5000
+                );
+                if (res.ok) {
+                    const data = await res.json();
+                    this.ratingAggregates = {
+                        average: data.average,
+                        count: data.count || 0,
+                        likes_count: data.likes_count || 0,
+                        dislikes_count: data.dislikes_count || 0,
+                        distribution: data.distribution || {}
+                    };
+                    this.userRating = data.user_rating;
+                    debugLog('Ratings loaded:', this.ratingAggregates, 'User rating:', this.userRating);
+                }
+            } catch (e) {
+                debugLog('Failed to load ratings:', e);
+            }
+        },
+
+        // Issue #213: Submit a rating
+        async submitRating(value) {
+            if (!this.isLoggedIn || this.submittingRating) return;
+
+            const slug = this._videoSlug;
+            if (!slug) return;
+
+            // If clicking the same rating, remove it
+            const isRemoving = this.userRating === value;
+
+            this.submittingRating = true;
+            try {
+                if (isRemoving) {
+                    // Remove rating
+                    const res = await VLogUtils.fetchWithTimeout(
+                        `/api/videos/${encodeURIComponent(slug)}/rating`,
+                        {
+                            method: 'DELETE',
+                            credentials: 'include'
+                        },
+                        5000
+                    );
+                    if (res.ok) {
+                        this.userRating = null;
+                        // Reload ratings to get updated aggregates
+                        await this.loadRatings(slug);
+                    }
+                } else {
+                    // Submit rating
+                    const res = await VLogUtils.fetchWithTimeout(
+                        `/api/videos/${encodeURIComponent(slug)}/rating`,
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({ rating_value: value })
+                        },
+                        5000
+                    );
+                    if (res.ok) {
+                        this.userRating = value;
+                        // Reload ratings to get updated aggregates
+                        await this.loadRatings(slug);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to submit rating:', e);
+            } finally {
+                this.submittingRating = false;
+            }
+        },
+
+        // Issue #213: Load comments for the video
+        async loadComments(slug, cursor = null) {
+            if (!slug) return;
+
+            if (cursor) {
+                this.loadingMoreComments = true;
+            } else {
+                this.loadingComments = true;
+                this.comments = [];
+            }
+
+            try {
+                let url = `/api/videos/${encodeURIComponent(slug)}/comments?limit=20`;
+                if (cursor) {
+                    url += `&cursor=${encodeURIComponent(cursor)}`;
+                }
+
+                const res = await VLogUtils.fetchWithTimeout(url, { credentials: 'include' }, 5000);
+                if (res.ok) {
+                    const data = await res.json();
+                    const newComments = this.flattenComments(data.comments || []);
+
+                    if (cursor) {
+                        this.comments = [...this.comments, ...newComments];
+                    } else {
+                        this.comments = newComments;
+                    }
+                    this.commentsNextCursor = data.next_cursor;
+                    debugLog('Comments loaded:', this.comments.length);
+                }
+            } catch (e) {
+                console.error('Failed to load comments:', e);
+            } finally {
+                this.loadingComments = false;
+                this.loadingMoreComments = false;
+            }
+        },
+
+        // Flatten nested comments into a single array with depth info
+        flattenComments(comments, depth = 1) {
+            const result = [];
+            for (const comment of comments) {
+                result.push({ ...comment, depth });
+                if (comment.replies && comment.replies.length > 0) {
+                    result.push(...this.flattenComments(comment.replies, depth + 1));
+                }
+            }
+            return result;
+        },
+
+        // Load more comments
+        loadMoreComments() {
+            if (this.commentsNextCursor) {
+                this.loadComments(this._videoSlug, this.commentsNextCursor);
+            }
+        },
+
+        // Issue #213: Submit a new comment
+        async submitComment() {
+            if (!this.isLoggedIn || this.submittingComment || !this.newComment.trim()) return;
+
+            const slug = this._videoSlug;
+            if (!slug) return;
+
+            this.submittingComment = true;
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/comments`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ content: this.newComment.trim() })
+                    },
+                    5000
+                );
+                if (res.ok) {
+                    const newComment = await res.json();
+                    // Add to beginning of list
+                    this.comments.unshift({ ...newComment, depth: 1 });
+                    this.newComment = '';
+                    debugLog('Comment posted');
+                } else {
+                    const error = await res.json();
+                    console.error('Failed to post comment:', error.detail);
+                }
+            } catch (e) {
+                console.error('Failed to post comment:', e);
+            } finally {
+                this.submittingComment = false;
+            }
+        },
+
+        // Start replying to a comment
+        startReply(comment) {
+            this.replyingTo = comment.id;
+            this.replyContent = '';
+            this.$nextTick(() => {
+                const input = this.$refs.replyInput;
+                if (input) input.focus();
+            });
+        },
+
+        // Cancel reply
+        cancelReply() {
+            this.replyingTo = null;
+            this.replyContent = '';
+        },
+
+        // Issue #213: Submit a reply
+        async submitReply(parentComment) {
+            if (!this.isLoggedIn || this.submittingReply || !this.replyContent.trim()) return;
+
+            const slug = this._videoSlug;
+            if (!slug) return;
+
+            this.submittingReply = true;
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/comments`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            content: this.replyContent.trim(),
+                            parent_id: parentComment.id
+                        })
+                    },
+                    5000
+                );
+                if (res.ok) {
+                    const newReply = await res.json();
+                    // Insert reply after parent comment
+                    const parentIndex = this.comments.findIndex(c => c.id === parentComment.id);
+                    if (parentIndex !== -1) {
+                        const newDepth = Math.min((parentComment.depth || 1) + 1, 5);
+                        this.comments.splice(parentIndex + 1, 0, { ...newReply, depth: newDepth });
+                    }
+                    this.cancelReply();
+                    debugLog('Reply posted');
+                } else {
+                    const error = await res.json();
+                    console.error('Failed to post reply:', error.detail);
+                }
+            } catch (e) {
+                console.error('Failed to post reply:', e);
+            } finally {
+                this.submittingReply = false;
+            }
+        },
+
+        // Issue #213: Delete a comment
+        async deleteComment(commentId) {
+            if (!this.isLoggedIn) return;
+
+            if (!confirm('Are you sure you want to delete this comment?')) return;
+
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/comments/${commentId}`,
+                    {
+                        method: 'DELETE',
+                        credentials: 'include'
+                    },
+                    5000
+                );
+                if (res.ok) {
+                    // Remove from list
+                    this.comments = this.comments.filter(c => c.id !== commentId);
+                    debugLog('Comment deleted');
+                }
+            } catch (e) {
+                console.error('Failed to delete comment:', e);
+            }
+        },
+
+        // Format comment date
+        formatCommentDate(dateStr) {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffSecs = Math.floor(diffMs / 1000);
+            const diffMins = Math.floor(diffSecs / 60);
+            const diffHours = Math.floor(diffMins / 60);
+            const diffDays = Math.floor(diffHours / 24);
+
+            if (diffSecs < 60) return 'just now';
+            if (diffMins < 60) return `${diffMins}m ago`;
+            if (diffHours < 24) return `${diffHours}h ago`;
+            if (diffDays < 7) return `${diffDays}d ago`;
+            return date.toLocaleDateString();
+        },
+
+        // Format video timestamp (seconds to mm:ss)
+        formatTimestamp(seconds) {
+            if (seconds == null) return '';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        },
+
+        // Seek video to timestamp
+        seekToTimestamp(seconds) {
+            if (this.player && seconds != null) {
+                this.player.currentTime = seconds;
+                this.player.play();
             }
         },
 
@@ -480,6 +868,202 @@ function watchPage() {
             } catch (e) {
                 // Downloads are optional, fail silently
                 debugLog('Failed to load download config:', e);
+            }
+        },
+
+        // Issue #211: Load playback configuration (autoplay/up-next settings)
+        async loadPlaybackConfig() {
+            try {
+                const res = await VLogUtils.fetchWithTimeout('/api/config/playback', {}, 5000);
+                if (res.ok) {
+                    this.playbackConfig = await res.json();
+                    debugLog('Playback config loaded:', this.playbackConfig);
+                }
+            } catch (e) {
+                // Use defaults on error
+                debugLog('Failed to load playback config, using defaults:', e);
+                this.playbackConfig = {
+                    autoplay_enabled: true,
+                    upnext_enabled: true,
+                    autoplay_countdown_seconds: 10
+                };
+            }
+
+            // Load user's autoplay preference from localStorage
+            this._autoplayEnabled = VLogUtils.preferences.get('autoplay', true);
+        },
+
+        // Issue #211: Load next video for autoplay
+        async loadNextVideo(slug) {
+            if (!slug) return;
+
+            // Cancel any in-flight request
+            if (this._nextVideoAbortController) {
+                this._nextVideoAbortController.abort();
+            }
+            this._nextVideoAbortController = new AbortController();
+
+            try {
+                const res = await VLogUtils.fetchWithTimeout(
+                    `/api/videos/${encodeURIComponent(slug)}/next`,
+                    { signal: this._nextVideoAbortController.signal },
+                    5000
+                );
+
+                if (!res.ok) {
+                    debugLog('No next video available');
+                    this.nextVideo = null;
+                    return;
+                }
+
+                // Guard JSON parsing
+                let data;
+                try {
+                    data = await res.json();
+                } catch (parseError) {
+                    debugLog('Invalid JSON response for next video');
+                    return;
+                }
+
+                if (!data) {
+                    this.nextVideo = null;
+                    return;
+                }
+
+                // Validate slug before using it to construct URLs (defense-in-depth)
+                const slug = typeof data.slug === 'string' ? data.slug : '';
+                if (!SLUG_PATTERN.test(slug)) {
+                    debugLog('Invalid next video slug received:', data.slug);
+                    this.nextVideo = null;
+                    return;
+                }
+
+                // Enrich with display values
+                this.nextVideo = {
+                    ...data,
+                    _href: '/watch/' + encodeURIComponent(slug),
+                    _duration: VLogUtils.formatDuration(data.duration)
+                };
+                this.updateNextVideoDisplayFlags();
+                debugLog('Next video loaded:', this.nextVideo.title);
+            } catch (e) {
+                // Handle abort separately (including Safari quirks)
+                if (e.name === 'AbortError' || this._nextVideoAbortController?.signal?.aborted) {
+                    return;
+                }
+                debugLog('Failed to load next video:', e);
+                this.nextVideo = null;
+            }
+        },
+
+        // Update precomputed next video display values for Alpine CSP
+        updateNextVideoDisplayFlags() {
+            if (this.nextVideo) {
+                this._nextVideoTitle = this.nextVideo.title || '';
+                this._nextVideoThumbnail = this.nextVideo.thumbnail_url || '';
+                this._nextVideoDuration = this.nextVideo._duration || '';
+                this._nextVideoHref = this.nextVideo._href || '';
+            } else {
+                this._nextVideoTitle = '';
+                this._nextVideoThumbnail = '';
+                this._nextVideoDuration = '';
+                this._nextVideoHref = '';
+            }
+        },
+
+        // Issue #211: Check if autoplay should be enabled
+        shouldAutoplay() {
+            // Global setting must be enabled
+            if (!this.playbackConfig?.autoplay_enabled) return false;
+            if (!this.playbackConfig?.upnext_enabled) return false;
+            // User preference must be enabled
+            if (!this._autoplayEnabled) return false;
+            // Must have a next video
+            if (!this.nextVideo) return false;
+            return true;
+        },
+
+        // Issue #211: Start the Up Next countdown
+        startUpNextCountdown() {
+            if (!this.shouldAutoplay()) {
+                debugLog('Autoplay disabled or no next video');
+                return;
+            }
+
+            // Clear any existing countdown first (e.g., if video 'ended' fires multiple times)
+            this.cancelUpNextCountdown();
+
+            const countdownSeconds = this.playbackConfig?.autoplay_countdown_seconds || 10;
+            this.upNextCountdown = countdownSeconds;
+            this._upNextCountdownText = countdownSeconds.toString();
+            this._showUpNext = true;
+            debugLog('Starting Up Next countdown:', countdownSeconds, 'seconds');
+
+            // Focus the cancel button for keyboard accessibility
+            this.$nextTick(() => {
+                const cancelBtn = this.$el.querySelector('.upnext-btn--cancel');
+                if (cancelBtn) cancelBtn.focus();
+            });
+
+            // Start countdown interval
+            this._upNextCountdownInterval = setInterval(() => {
+                this.upNextCountdown--;
+                this._upNextCountdownText = this.upNextCountdown.toString();
+
+                if (this.upNextCountdown <= 0) {
+                    this.navigateToNextVideo();
+                }
+            }, 1000);
+        },
+
+        // Issue #211: Cancel the Up Next countdown
+        cancelUpNextCountdown() {
+            if (this._upNextCountdownInterval) {
+                clearInterval(this._upNextCountdownInterval);
+                this._upNextCountdownInterval = null;
+            }
+            this._showUpNext = false;
+            this.upNextCountdown = 0;
+            debugLog('Up Next countdown cancelled');
+        },
+
+        // Issue #211: Navigate to the next video
+        navigateToNextVideo() {
+            this.cancelUpNextCountdown();
+
+            // Validate URL before navigation (defense in depth)
+            if (!this.nextVideo?._href || typeof this.nextVideo._href !== 'string') {
+                debugLog('Cannot navigate to next video: invalid URL');
+                return;
+            }
+
+            // Verify URL is a valid internal path
+            if (!this.nextVideo._href.startsWith('/watch/')) {
+                debugLog('Cannot navigate to next video: unexpected URL format');
+                return;
+            }
+
+            debugLog('Navigating to next video:', this.nextVideo.title);
+            window.location.href = this.nextVideo._href;
+        },
+
+        // Issue #211: Toggle autoplay preference
+        toggleAutoplay() {
+            const newValue = !this._autoplayEnabled;
+
+            try {
+                VLogUtils.preferences.set('autoplay', newValue);
+                this._autoplayEnabled = newValue;
+                debugLog('Autoplay preference set to:', this._autoplayEnabled);
+            } catch (e) {
+                // localStorage quota exceeded or unavailable - log but don't crash
+                console.warn('Failed to save autoplay preference:', e.name);
+                // Don't update state if save failed - keep UI consistent with storage
+            }
+
+            // If we just disabled autoplay and countdown is running, cancel it
+            if (!this._autoplayEnabled && this._showUpNext) {
+                this.cancelUpNextCountdown();
             }
         },
 
@@ -673,6 +1257,9 @@ function watchPage() {
                         console.warn('Failed to clear watch history:', e);
                     }
                 }
+
+                // Issue #211: Start Up Next countdown when video ends
+                this.startUpNextCountdown();
             });
 
             // Handle page unload
@@ -681,6 +1268,10 @@ function watchPage() {
                 // Clean up save interval
                 if (this._watchSaveInterval) {
                     clearInterval(this._watchSaveInterval);
+                }
+                // Clean up Up Next countdown (Issue #211)
+                if (this._upNextCountdownInterval) {
+                    clearInterval(this._upNextCountdownInterval);
                 }
                 if (this.playerControls) {
                     this.playerControls.destroy();

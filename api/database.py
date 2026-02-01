@@ -1,9 +1,12 @@
+import logging
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from databases import Database
 
 from config import DATABASE_URL
+
+logger = logging.getLogger(__name__)
 
 # Create database instance - works with PostgreSQL or SQLite
 # PostgreSQL is the default and recommended database
@@ -21,6 +24,26 @@ async def configure_database():
     pass
 
 
+# Video categories for content organization
+#
+# PURPOSE:
+# --------
+# Categories provide a primary organizational hierarchy for videos.
+# Each video can belong to at most one category. For finer-grained
+# tagging, see the `tags` and `video_tags` tables.
+#
+# FIELD SEMANTICS:
+# ----------------
+# - name: Human-readable display name (e.g., "Gaming", "Tutorials")
+# - slug: URL-safe identifier used in routes (e.g., "/categories/gaming")
+#   → Unique constraint ensures no duplicate slugs
+# - description: Optional rich text description shown on category pages
+#
+# USAGE:
+# ------
+# - Videos reference categories via nullable FK (videos.category_id)
+# - Category deletion does NOT cascade to videos (FK uses SET NULL)
+# - Admin UI allows creating/editing categories and assigning videos
 categories = sa.Table(
     "categories",
     metadata,
@@ -31,6 +54,39 @@ categories = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
 )
 
+# Core video metadata table
+#
+# PURPOSE:
+# --------
+# Stores all video metadata including transcoding status, thumbnails,
+# streaming format, analytics aggregates, and social engagement settings.
+# Actual video files are stored on the filesystem (NAS) with paths derived
+# from the video slug.
+#
+# LIFECYCLE:
+# ----------
+# 1. Upload: Video created with status='pending', file saved to uploads dir
+# 2. Processing: Worker claims job, status='processing', transcoding begins
+# 3. Ready: Transcoding complete, status='ready', HLS files in videos dir
+# 4. Failed: Transcoding error, status='failed', error_message populated
+#
+# SOFT DELETE:
+# ------------
+# - deleted_at: When set, video is hidden from public listings but preserved
+# - Files moved to archive directory for ARCHIVE_RETENTION_DAYS (default 30)
+# - Background job permanently deletes after retention period expires
+#
+# INDEXES:
+# --------
+# - ix_videos_status: Filter by transcoding status
+# - ix_videos_category_id: List videos by category
+# - ix_videos_created_at: Sort by upload date (descending for recent)
+# - ix_videos_published_at: Filter/sort published videos
+# - ix_videos_deleted_at: Filter soft-deleted videos (NULL = not deleted)
+# - ix_videos_streaming_format: Filter by HLS/CMAF format
+# - ix_videos_owner_id: Filter by video owner (multi-user support)
+#
+# See: docs/TRANSCODING_ARCHITECTURE.md for transcoding workflow details
 videos = sa.Table(
     "videos",
     metadata,
@@ -94,6 +150,25 @@ videos = sa.Table(
     sa.Column("sprite_sheet_tile_size", sa.Integer, nullable=True),  # Grid size (e.g., 10 for 10x10)
     sa.Column("sprite_sheet_frame_width", sa.Integer, nullable=True),  # Width of each frame
     sa.Column("sprite_sheet_frame_height", sa.Integer, nullable=True),  # Height of each frame
+    # Video ownership for multi-user auth (Issue #200)
+    # Nullable for backward compatibility - existing videos assigned to first admin during migration
+    sa.Column(
+        "owner_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Comments and ratings settings (Issue #213)
+    # NULL = inherit from global settings, true/false = per-video override
+    sa.Column("comments_enabled", sa.Boolean, nullable=True),
+    sa.Column("ratings_enabled", sa.Boolean, nullable=True),
+    # Denormalized aggregates for comments/ratings (updated via triggers)
+    sa.Column("comment_count", sa.Integer, default=0),
+    sa.Column("rating_avg", sa.Numeric(3, 2), nullable=True),
+    sa.Column("rating_count", sa.Integer, default=0),
+    sa.Column("rating_distribution", sa.Text, default="{}"),  # JSON: {"1": 5, "2": 3, ...}
+    sa.Column("likes_count", sa.Integer, default=0),  # For thumbs up/down mode
+    sa.Column("dislikes_count", sa.Integer, default=0),  # For thumbs up/down mode
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),
@@ -101,9 +176,34 @@ videos = sa.Table(
     sa.Index("ix_videos_deleted_at", "deleted_at"),
     sa.Index("ix_videos_streaming_format", "streaming_format"),
     sa.Index("ix_videos_sprite_sheet_status", "sprite_sheet_status"),
+    sa.Index("ix_videos_owner_id", "owner_id"),
 )
 
 # Available quality variants for each video
+#
+# PURPOSE:
+# --------
+# Tracks which quality levels (2160p, 1080p, 720p, etc.) are available
+# for each video. Only qualities at or below the source resolution are
+# generated (e.g., a 1080p source won't have 1440p or 2160p variants).
+#
+# FIELD SEMANTICS:
+# ----------------
+# - quality: Named preset ("2160p", "1080p", "720p", "480p", "360p", "original")
+#   → "original" is the untranscoded source file (if preserved)
+# - width/height: Actual dimensions after encoding (may differ from preset target)
+# - bitrate: Actual video bitrate in kbps (from ffprobe after encoding)
+#
+# RELATIONSHIP:
+# -------------
+# - One video has many quality variants (1:N relationship)
+# - CASCADE delete: removing a video removes all its quality records
+#
+# USAGE:
+# ------
+# - Public API uses this to show available quality options in player
+# - Adaptive bitrate streaming (ABR) uses this for quality ladder
+# - Admin can see which qualities are ready vs pending
 video_qualities = sa.Table(
     "video_qualities",
     metadata,
@@ -123,7 +223,27 @@ video_qualities = sa.Table(
     sa.Index("ix_video_qualities_video_id", "video_id"),
 )
 
-# Analytics: unique viewers (cookie-based)
+# Analytics: unique viewers (cookie-based session tracking)
+#
+# PURPOSE:
+# --------
+# Tracks unique visitors using anonymous session cookies. Each viewer
+# gets a persistent session_id stored in a cookie, allowing us to count
+# unique viewers without storing PII.
+#
+# FIELD SEMANTICS:
+# ----------------
+# - session_id: 64-char hex string from secure random generation
+#   → Stored in HTTP-only cookie on client (prevents JS access)
+#   → Used as foreign key for playback_sessions
+# - first_seen: When this viewer first visited the platform
+# - last_seen: Updated on each new playback session
+#
+# PRIVACY:
+# --------
+# - No PII stored (no IP addresses, user agents, etc.)
+# - Session can be linked to user_id via playback_sessions if logged in
+# - Cookie is same-site to prevent cross-site tracking
 viewers = sa.Table(
     "viewers",
     metadata,
@@ -133,7 +253,33 @@ viewers = sa.Table(
     sa.Column("last_seen", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
 )
 
-# Analytics: playback sessions
+# Analytics: playback sessions for watch time and completion tracking
+#
+# PURPOSE:
+# --------
+# Tracks individual video viewing sessions including watch duration,
+# completion status, and quality preferences. Used for engagement
+# analytics and "resume playback" features.
+#
+# SESSION LIFECYCLE:
+# ------------------
+# 1. Start: Created when video player initializes (session_token generated)
+# 2. Progress: duration_watched and max_position updated as user watches
+# 3. End: ended_at set when session closes (tab close, navigate away)
+#
+# FIELD SEMANTICS:
+# ----------------
+# - session_token: Unique identifier for this playback instance
+# - duration_watched: Total seconds actually watched (excludes paused time)
+# - max_position: Furthest timestamp reached (for resume playback)
+# - quality_used: Primary quality level used during session (may change)
+# - completed: True if user watched >= 90% of video duration
+#
+# INDEXES:
+# --------
+# - ix_playback_sessions_video_id: Aggregate stats per video
+# - ix_playback_sessions_viewer_id: User watch history
+# - ix_playback_sessions_started_at: Time-series analytics
 playback_sessions = sa.Table(
     "playback_sessions",
     metadata,
@@ -205,7 +351,31 @@ transcoding_jobs = sa.Table(
     sa.Index("ix_transcoding_jobs_claim_expires", "claim_expires_at"),
 )
 
-# Per-quality progress tracking
+# Per-quality progress tracking for transcoding jobs
+#
+# PURPOSE:
+# --------
+# Tracks encoding progress for each quality variant independently.
+# Enables granular progress display (e.g., "720p: 45%, 1080p: 20%")
+# and supports resuming transcodes that failed partway through.
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> in_progress -> uploading -> uploaded -> completed (success path)
+# pending -> in_progress -> failed (error during encode)
+# pending -> skipped (quality higher than source resolution)
+# Note: "uploaded" represents all segments uploaded but before finalization.
+# FIELD SEMANTICS:
+# ----------------
+# - quality: One of "2160p", "1080p", "720p", "480p", "360p", "original"
+# - segments_total: Total HLS segments expected for this quality
+# - segments_completed: Segments successfully encoded so far
+# - progress_percent: Overall progress 0-100 (derived from segments)
+#
+# CONSTRAINTS:
+# ------------
+# - uq_job_quality: Each job can only have one record per quality level
+# - CASCADE delete: Removing the job removes all quality progress records
 quality_progress = sa.Table(
     "quality_progress",
     metadata,
@@ -247,7 +417,32 @@ quality_progress = sa.Table(
     sa.UniqueConstraint("job_id", "quality", name="uq_job_quality"),
 )
 
-# Transcription tracking
+# Transcription tracking for automatic caption generation
+#
+# PURPOSE:
+# --------
+# Tracks Whisper-based speech-to-text transcription jobs. Each video
+# can have at most one transcription. Generates WebVTT captions for
+# the video player and full-text transcript for search/accessibility.
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> processing -> completed (success)
+# pending -> processing -> failed (Whisper error)
+#
+# FIELD SEMANTICS:
+# ----------------
+# - language: Detected or user-specified language code (e.g., "en", "es")
+# - duration_seconds: How long the transcription process took
+# - transcript_text: Full plain-text transcript (for search indexing)
+# - vtt_path: Path to WebVTT file relative to video storage
+# - word_count: Total words in transcript (for stats)
+#
+# CONFIGURATION:
+# --------------
+# - Model: VLOG_WHISPER_MODEL (tiny, base, small, medium, large-v3)
+# - Compute: VLOG_TRANSCRIPTION_COMPUTE_TYPE (float16, int8)
+# - Auto-transcribe: VLOG_TRANSCRIPTION_ON_UPLOAD (default: true)
 transcriptions = sa.Table(
     "transcriptions",
     metadata,
@@ -419,8 +614,18 @@ worker_api_keys = sa.Table(
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    # Rotation tracking (Issue #226): self-referential FK to track key rotation chain
+    # NULL = original key, otherwise points to the previous key that was rotated
+    sa.Column(
+        "rotated_from",
+        sa.Integer,
+        sa.ForeignKey("worker_api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Index("ix_worker_api_keys_key_prefix", "key_prefix"),
     sa.Index("ix_worker_api_keys_worker_id", "worker_id"),
+    sa.Index("ix_worker_api_keys_rotated_from", "rotated_from"),
+    sa.Index("ix_worker_api_keys_expires_at", "expires_at"),
 )
 
 # Deployment events for worker management (Issue #410)
@@ -458,6 +663,24 @@ deployment_events = sa.Table(
 )
 
 # Tags for granular content organization
+#
+# PURPOSE:
+# --------
+# Provides flexible tagging for videos beyond the single-category hierarchy.
+# Videos can have multiple tags (many-to-many via video_tags table).
+# Useful for cross-cutting concerns like "tutorial", "beginner", "live-stream".
+#
+# FIELD SEMANTICS:
+# ----------------
+# - name: Display name shown in UI (e.g., "Getting Started")
+# - slug: URL-safe identifier for routes/API (e.g., "getting-started")
+#   → Unique constraint prevents duplicate tags
+#
+# USAGE:
+# ------
+# - Tags are global (not scoped to categories)
+# - Admin creates tags, then assigns to videos via video_tags junction
+# - Public API supports filtering videos by tag slug
 tags = sa.Table(
     "tags",
     metadata,
@@ -469,6 +692,22 @@ tags = sa.Table(
 )
 
 # Many-to-many relationship between videos and tags
+#
+# PURPOSE:
+# --------
+# Junction table linking videos to tags. Allows each video to have
+# multiple tags and each tag to be applied to multiple videos.
+#
+# CASCADE BEHAVIOR:
+# -----------------
+# - Deleting a video removes all its tag associations
+# - Deleting a tag removes all video associations for that tag
+# - Neither action deletes the other entity (just the relationship)
+#
+# INDEXES:
+# --------
+# - ix_video_tags_video_id: Efficiently find all tags for a video
+# - ix_video_tags_tag_id: Efficiently find all videos with a tag
 video_tags = sa.Table(
     "video_tags",
     metadata,
@@ -926,6 +1165,851 @@ webhook_deliveries = sa.Table(
     sa.Index("ix_webhook_deliveries_status_next_retry", "status", "next_retry_at"),
 )
 
+# Live streaming via HTTP segment push
+#
+# STREAM STATES:
+# --------------
+# - idle: Stream created but not yet started (no segments received)
+# - live: Actively receiving segments
+# - ending: No segments received for threshold period (grace period)
+# - ended: Stream explicitly ended or stale timeout exceeded
+#
+# ARCHITECTURE:
+# -------------
+# - Client (FFmpeg) encodes locally into HLS/CMAF segments
+# - Client pushes segments to VLog API via HTTP PUT
+# - VLog stores segments, writes playlists to disk on each segment
+# - Viewers watch via standard HLS playback (static file serving)
+# - On stream end, segments become a VOD recording
+#
+# AUTH:
+# -----
+# - Stream keys follow worker API key pattern (argon2id hashed)
+# - Keys are prefixed with "sk_live_" for easy identification
+# - Prefix lookup for fast authentication
+#
+# See: https://github.com/filthyrake/vlog/issues/XXX
+live_streams = sa.Table(
+    "live_streams",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("title", sa.String(255), nullable=False),
+    sa.Column("slug", sa.String(255), unique=True, nullable=False),
+    sa.Column("description", sa.Text, default=""),
+    # Auth (argon2id hashed like worker API keys)
+    sa.Column("stream_key_hash", sa.Text, nullable=False),
+    sa.Column("stream_key_prefix", sa.String(8), nullable=False),
+    sa.Column("hash_version", sa.Integer, nullable=False, server_default="2"),
+    # Status
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('idle', 'live', 'ending', 'ended')",
+            name="ck_live_streams_status",
+        ),
+        default="idle",
+    ),
+    sa.Column("qualities", sa.Text, nullable=True),  # JSON: ["720p", "480p"]
+    # Timestamps
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_segment_at", sa.DateTime(timezone=True), nullable=True),
+    # Metrics
+    sa.Column("segment_count", sa.Integer, default=0),
+    # DVR/VOD
+    sa.Column("dvr_enabled", sa.Boolean, default=True),
+    sa.Column("dvr_window_seconds", sa.Integer, default=7200),  # 2 hours
+    sa.Column("auto_record_vod", sa.Boolean, default=True),
+    sa.Column(
+        "vod_video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column(
+        "category_id",
+        sa.Integer,
+        sa.ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Stream ownership for multi-user auth (Issue #524)
+    # Nullable for backward compatibility - existing streams assigned to first admin during migration
+    sa.Column(
+        "owner_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    # Chat settings (Issue #530) - on live_streams since 1:1 relationship
+    sa.Column("chat_enabled", sa.Boolean, default=True),
+    sa.Column("chat_slow_mode_seconds", sa.Integer, default=0),
+    sa.Column("chat_subscriber_only", sa.Boolean, default=False),
+    sa.Column("chat_follower_only", sa.Boolean, default=False),
+    sa.Column("chat_follower_min_minutes", sa.Integer, default=0),
+    sa.Column("chat_emote_only", sa.Boolean, default=False),
+    sa.Column("chat_links_allowed", sa.Boolean, default=True),
+    # Additional stream controls (Issue #530 - Phase 2E)
+    sa.Column("stream_delay_seconds", sa.Integer, default=0),  # Artificial delay for privacy
+    sa.Column(
+        "quality_preset",
+        sa.String(20),
+        sa.CheckConstraint(
+            "quality_preset IN ('auto', 'low', 'medium', 'high', 'source')",
+            name="ck_live_streams_quality_preset",
+        ),
+        default="auto",
+    ),
+    sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=True),  # Scheduled start time
+    sa.Index("ix_live_streams_slug", "slug"),
+    sa.Index("ix_live_streams_status", "status"),
+    sa.Index("ix_live_streams_stream_key_prefix", "stream_key_prefix"),
+    sa.Index("ix_live_streams_created_at", "created_at"),
+    sa.Index("ix_live_streams_owner_id", "owner_id"),
+    sa.Index("ix_live_streams_scheduled_at", "scheduled_at"),
+)
+
+# Live stream segment tracking for DVR and VOD recording
+#
+# SEGMENT SEMANTICS:
+# ------------------
+# - Each segment is a single HLS/CMAF fragment
+# - Segments are stored on disk at: live/{slug}/{quality}/seg_{sequence}.m4s
+# - Init segments stored at: live/{slug}/{quality}/init.mp4
+# - Playlists generated dynamically from database records
+#
+# DVR CLEANUP:
+# ------------
+# - Background task deletes segments older than dvr_window_seconds
+# - Batched DELETEs (10 at a time) to reduce lock contention
+# - Async file deletion to avoid blocking segment uploads
+#
+# VOD RECORDING:
+# --------------
+# - On stream end, segments are hardlinked to videos directory
+# - Fallback to copy if hardlinks fail (different filesystems)
+live_stream_segments = sa.Table(
+    "live_stream_segments",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("quality", sa.String(10), nullable=False),
+    sa.Column("filename", sa.String(255), nullable=False),
+    sa.Column("sequence_number", sa.Integer, nullable=False),
+    sa.Column("duration_ms", sa.Integer, nullable=True),
+    sa.Column("size_bytes", sa.Integer, nullable=False),
+    sa.Column("received_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("stream_id", "quality", "sequence_number", name="uq_live_segment_stream_quality_seq"),
+    # Critical indexes for performance (from Brendan's review)
+    sa.Index("ix_live_segments_stream_quality_seq", "stream_id", "quality", "sequence_number"),
+    sa.Index("ix_live_segments_received_at", "received_at"),
+    sa.Index("ix_live_segments_cleanup", "stream_id", "received_at"),
+)
+
+
+# =============================================================================
+# Live Chat Tables (Issue #530)
+# Real-time chat for live streams with moderation support
+# =============================================================================
+
+# Chat messages for live streams
+#
+# SOFT DELETE:
+# ------------
+# - Uses deleted_at timestamp pattern (per Gafton's review)
+# - deleted_by_id tracks who deleted the message (moderator/broadcaster)
+#
+# VOD SYNC:
+# ---------
+# - stream_offset_ms enables chat replay alongside VOD playback (per Ada)
+# - Calculated from stream start time when message is created
+chat_messages = sa.Table(
+    "chat_messages",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,  # Allow system messages
+    ),
+    sa.Column("content", sa.String(500), nullable=False),  # 500 char max (Gafton)
+    sa.Column("stream_offset_ms", sa.Integer, nullable=True),  # VOD replay sync
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    sa.Column(
+        "deleted_by_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    # Indexes per Gafton's review
+    sa.Index("ix_chat_messages_stream_created", "stream_id", "created_at"),
+    sa.Index("ix_chat_messages_user", "user_id"),
+    sa.Index("ix_chat_messages_stream_offset", "stream_id", "stream_offset_ms"),
+)
+
+# Stream moderators with granular permissions
+#
+# PERMISSIONS:
+# ------------
+# - delete_message: Can delete chat messages
+# - timeout: Can timeout users (temporary ban)
+# - ban: Can permanently ban users from stream
+# - slow_mode: Can enable/disable slow mode
+# - Stored as JSON array for flexibility (per Ada)
+stream_moderators = sa.Table(
+    "stream_moderators",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # JSON array of permissions: ["delete_message", "timeout", "ban", "slow_mode"]
+    sa.Column("permissions", sa.Text, default='["delete_message", "timeout"]'),
+    sa.Column(
+        "granted_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("granted_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.UniqueConstraint("stream_id", "user_id", name="uq_stream_moderators_stream_user"),
+    sa.Index("ix_stream_moderators_stream", "stream_id"),
+)
+
+# Stream bans (timeouts and permanent bans)
+#
+# No unique constraint on (stream_id, user_id) to allow tracking ban history.
+# Active bans are identified by: unbanned_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
+stream_bans = sa.Table(
+    "stream_bans",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("ban_type", sa.String(20), nullable=False),  # 'timeout' or 'permanent'
+    sa.Column("duration_seconds", sa.Integer, nullable=True),  # For timeouts
+    sa.Column("reason", sa.Text, nullable=True),
+    sa.Column(
+        "banned_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("unbanned_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "unbanned_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_stream_bans_stream_user", "stream_id", "user_id"),
+    sa.Index("ix_stream_bans_expires", "expires_at"),
+)
+
+# Stream word filters for automated moderation
+#
+# Pattern max length 100 chars for ReDoS protection.
+# Use RE2 library for regex matching (linear time guarantee).
+stream_word_filters = sa.Table(
+    "stream_word_filters",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("pattern", sa.String(100), nullable=False),  # Max 100 chars (ReDoS protection)
+    sa.Column("is_regex", sa.Boolean, default=False),
+    sa.Column("action", sa.String(20), default="delete"),  # 'delete', 'timeout', 'warn'
+    sa.Column("timeout_seconds", sa.Integer, nullable=True),  # If action is 'timeout'
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Column(
+        "created_by",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Index("ix_stream_word_filters_stream", "stream_id"),
+)
+
+# Moderation action logs for audit trail
+moderation_logs = sa.Table(
+    "moderation_logs",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "moderator_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    sa.Column("action", sa.String(50), nullable=False),  # e.g., 'timeout', 'ban', 'unban', 'delete_message'
+    sa.Column("target_user_id", sa.String(36), nullable=True),
+    sa.Column("target_message_id", sa.Integer, nullable=True),
+    sa.Column("details", sa.Text, nullable=True),  # JSON stored as text
+    sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Index("ix_moderation_logs_stream_created", "stream_id", "created_at"),
+)
+
+
+# =============================================================================
+# Stream Analytics Tables (Issue #530 - Phase 2D)
+# Analytics for live streaming with viewer counts and aggregated summaries
+# =============================================================================
+
+# stream_viewer_counts: Historical viewer count snapshots during live streams
+# Typically recorded every minute during a stream for time-series analytics
+stream_viewer_counts = sa.Table(
+    "stream_viewer_counts",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("viewer_count", sa.Integer, nullable=False),
+    sa.Column("recorded_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    sa.Index("ix_stream_viewer_counts_stream_time", "stream_id", "recorded_at"),
+)
+
+# stream_analytics_summary: Pre-computed analytics summaries for ended streams
+# Updated via background task when stream ends or on-demand recomputation
+stream_analytics_summary = sa.Table(
+    "stream_analytics_summary",
+    metadata,
+    # Use stream_id as primary key (1:1 with live_streams)
+    sa.Column(
+        "stream_id",
+        sa.Integer,
+        sa.ForeignKey("live_streams.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Viewer metrics
+    sa.Column("peak_viewers", sa.Integer, default=0, nullable=False),
+    sa.Column("average_viewers", sa.Float, default=0, nullable=False),
+    sa.Column("total_unique_viewers", sa.Integer, default=0, nullable=False),
+    # Chat metrics
+    sa.Column("total_chat_messages", sa.Integer, default=0, nullable=False),
+    # Watch time metrics
+    sa.Column("total_watch_minutes", sa.Float, default=0, nullable=False),
+    sa.Column("average_watch_time_seconds", sa.Float, default=0, nullable=False),
+    # Stream duration
+    sa.Column("stream_duration_seconds", sa.Integer, default=0, nullable=False),
+    # When analytics were last computed
+    sa.Column("computed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+
+# =============================================================================
+# User Authentication Tables (Issue #200)
+# Multi-user authentication with session-based browser auth, API keys, and RBAC
+# =============================================================================
+
+# User accounts for multi-user authentication
+#
+# ROLES:
+# ------
+# - admin: Full system access + user management
+# - editor: Upload, edit/delete own videos, view own analytics
+# - viewer: Browse and watch videos (for private instances)
+#
+# STATUS:
+# -------
+# - active: Normal user access
+# - disabled: Account disabled by admin (cannot login)
+# - pending: Awaiting email verification or admin approval
+#
+# SECURITY:
+# ---------
+# - Passwords hashed with argon2id (same as worker API keys)
+# - Failed login tracking with lockout support
+# - Email verification support for self-registration
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+users = sa.Table(
+    "users",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("username", sa.String(100), unique=True, nullable=False),
+    sa.Column("email", sa.String(255), unique=True, nullable=False),
+    sa.Column("password_hash", sa.String(255), nullable=True),  # NULL for OIDC-only users
+    sa.Column("display_name", sa.String(100), nullable=True),
+    sa.Column("avatar_url", sa.String(500), nullable=True),
+    sa.Column(
+        "role",
+        sa.String(20),
+        sa.CheckConstraint("role IN ('admin', 'editor', 'viewer')", name="ck_users_role"),
+        default="viewer",
+        nullable=False,
+    ),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint("status IN ('active', 'disabled', 'pending')", name="ck_users_status"),
+        default="active",
+        nullable=False,
+    ),
+    sa.Column("email_verified", sa.Boolean, default=False, nullable=False),
+    sa.Column("failed_login_attempts", sa.Integer, default=0, nullable=False),
+    sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_by", sa.String(36), nullable=True),  # FK to users.id (nullable for first admin)
+    sa.Index("ix_users_username", "username"),
+    sa.Index("ix_users_email", "email"),
+    sa.Index("ix_users_role", "role"),
+    sa.Index("ix_users_status", "status"),
+    sa.Index("ix_users_created_at", "created_at"),
+)
+
+# User sessions for browser authentication (HTTP-only cookies)
+#
+# SESSION TOKENS:
+# ---------------
+# - session_token: Short-lived access token (default 24 hours)
+# - refresh_token: Long-lived token for session rotation (default 7 days)
+#
+# REFRESH TOKEN ROTATION:
+# -----------------------
+# - refresh_family_id: Groups related refresh tokens together
+# - refresh_generation: Incremented on each rotation
+# - Detects token theft: if a rotated token is reused, entire family is revoked
+#
+# SECURITY:
+# ---------
+# - All tokens stored as argon2id hashes
+# - IP and user-agent logged for audit
+# - Revocation support via revoked_at timestamp
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_sessions = sa.Table(
+    "user_sessions",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("token_prefix", sa.String(8), nullable=True),  # For indexed lookup
+    sa.Column("refresh_token_hash", sa.String(255), unique=True, nullable=True),
+    sa.Column("refresh_token_prefix", sa.String(8), nullable=True),  # For indexed lookup
+    sa.Column("refresh_family_id", sa.String(36), nullable=True),  # UUID for token family
+    sa.Column("refresh_generation", sa.Integer, default=0, nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("refresh_expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("ip_address", sa.String(45), nullable=True),  # IPv6 max length
+    sa.Column("user_agent", sa.String(512), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),  # Track session usage
+    sa.Index("ix_user_sessions_user_id", "user_id"),
+    sa.Index("ix_user_sessions_token_hash", "token_hash"),
+    sa.Index("ix_user_sessions_token_prefix", "token_prefix"),
+    sa.Index("ix_user_sessions_refresh_token_hash", "refresh_token_hash"),
+    sa.Index("ix_user_sessions_refresh_token_prefix", "refresh_token_prefix"),
+    sa.Index("ix_user_sessions_expires_at", "expires_at"),
+    sa.Index("ix_user_sessions_refresh_family_id", "refresh_family_id"),
+)
+
+# User API keys for programmatic access
+#
+# KEY LIFECYCLE:
+# -------------
+# 1. Generation: POST /api/v1/api-keys → generates 256-bit API key
+#    → Key shown once at creation, never retrievable again
+#    → Stored as argon2id hash
+# 2. Usage: Client includes key in X-API-Key header
+#    → Fast lookup via key_prefix (first 8 chars)
+# 3. Permissions: Inherited from user's role (no per-key overrides)
+# 4. Expiration: Optional expires_at timestamp
+# 5. Revocation: DELETE /api/v1/api-keys/{id} sets revoked_at
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_api_keys = sa.Table(
+    "user_api_keys",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("name", sa.String(100), nullable=False),
+    sa.Column("key_prefix", sa.String(8), nullable=False),  # First 8 chars for lookup
+    sa.Column("key_hash", sa.String(255), nullable=False),  # argon2id hash
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_user_api_keys_user_id", "user_id"),
+    sa.Index("ix_user_api_keys_key_prefix", "key_prefix"),
+)
+
+# OIDC connections for linking users to external identity providers
+#
+# Supports any OIDC-compliant provider:
+# - Keycloak, Authentik, Authelia, Zitadel
+# - Google, GitHub, Microsoft (if configured as OIDC)
+#
+# Users can have multiple OIDC connections (different providers)
+# OIDC-only users have NULL password_hash in users table
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+oidc_connections = sa.Table(
+    "oidc_connections",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("provider_user_id", sa.String(255), nullable=False),  # Subject claim from OIDC
+    sa.Column("provider_email", sa.String(255), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Index("ix_oidc_connections_user_id", "user_id"),
+    sa.Index("ix_oidc_connections_provider_user_id", "provider_user_id"),
+    sa.UniqueConstraint("provider_user_id", name="uq_oidc_connections_provider_user_id"),
+)
+
+# OIDC state tokens for CSRF and replay protection
+#
+# SECURITY:
+# ---------
+# - state: Random value sent to OIDC provider, returned in callback
+#   → CSRF protection: validates callback originated from our flow
+# - nonce: Random value included in ID token request
+#   → Replay protection: validates token is for this specific flow
+#
+# States are single-use and expire after 10 minutes
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+oidc_states = sa.Table(
+    "oidc_states",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("state", sa.String(64), unique=True, nullable=False),
+    sa.Column("nonce", sa.String(64), nullable=False),
+    sa.Column("redirect_uri", sa.String(500), nullable=True),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("ix_oidc_states_state", "state"),
+    sa.Index("ix_oidc_states_expires_at", "expires_at"),
+)
+
+# Password reset tokens
+#
+# SECURITY:
+# ---------
+# - Tokens are single-use (used_at set on use)
+# - Short expiry (default 1 hour)
+# - IP address logged for abuse detection
+# - Reset endpoint returns constant-time response to prevent user enumeration
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+password_reset_tokens = sa.Table(
+    "password_reset_tokens",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("ip_address", sa.String(45), nullable=True),  # For abuse detection
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Index("ix_password_reset_tokens_user_id", "user_id"),
+    sa.Index("ix_password_reset_tokens_token_hash", "token_hash"),
+    sa.Index("ix_password_reset_tokens_expires_at", "expires_at"),
+)
+
+# User invites for invite-only registration
+#
+# FLOW:
+# -----
+# 1. Admin creates invite: POST /api/v1/invites
+# 2. Email sent with invite link containing token
+# 3. User clicks link, creates account: POST /api/v1/invites/{token}/accept
+# 4. Invite marked as used, user created with specified role
+#
+# SECURITY:
+# ---------
+# - Tokens are single-use (used_at set on acceptance)
+# - Configurable expiry (default 7 days)
+# - Role pre-assigned by admin
+#
+# See: https://github.com/filthyrake/vlog/issues/200
+user_invites = sa.Table(
+    "user_invites",
+    metadata,
+    sa.Column("id", sa.String(36), primary_key=True),  # UUID
+    sa.Column("email", sa.String(255), nullable=False),
+    sa.Column(
+        "role",
+        sa.String(20),
+        sa.CheckConstraint("role IN ('admin', 'editor', 'viewer')", name="ck_user_invites_role"),
+        default="viewer",
+        nullable=False,
+    ),
+    sa.Column("token_hash", sa.String(255), unique=True, nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("used_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Index("ix_user_invites_email", "email"),
+    sa.Index("ix_user_invites_token_hash", "token_hash"),
+    sa.Index("ix_user_invites_expires_at", "expires_at"),
+)
+
+
+# =============================================================================
+# Comments and Ratings Tables (Issue #213)
+# Social engagement features with threading support and moderation
+# =============================================================================
+
+# Comments with ltree materialized path for efficient threading
+#
+# THREADING:
+# ----------
+# Uses PostgreSQL ltree extension for hierarchical queries.
+# - path: Materialized path like "1.5.23" (comment 23 is a reply to comment 5, which replies to 1)
+# - depth: 1 for root comments, max 5 for deep nesting
+# - parent_id: Direct parent reference for cascade deletes
+#
+# STATUS:
+# -------
+# - pending: Awaiting moderation (when comments_require_approval is enabled)
+# - approved: Visible to all users
+# - rejected: Hidden by moderator
+# - spam: Flagged as spam
+#
+# SOFT DELETE:
+# ------------
+# - deleted_at: When set, comment is hidden but preserved for audit
+# - Hard delete only via admin force-delete endpoint
+#
+# See: https://github.com/filthyrake/vlog/issues/213
+comments = sa.Table(
+    "comments",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Materialized path for threading (stored as text, handled as ltree in PostgreSQL)
+    # Example paths: "1" (root), "1.5" (reply to 1), "1.5.23" (reply to reply)
+    sa.Column("path", sa.Text, nullable=False),
+    sa.Column(
+        "depth",
+        sa.Integer,
+        sa.CheckConstraint("depth >= 1 AND depth <= 5", name="ck_comments_depth"),
+        nullable=False,
+        default=1,
+    ),
+    sa.Column(
+        "parent_id",
+        sa.Integer,
+        sa.ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    sa.Column("content", sa.Text, nullable=False),
+    # Video timestamp for "comment at X:XX" feature (millisecond precision)
+    sa.Column("video_timestamp", sa.Numeric(10, 3), nullable=True),
+    sa.Column(
+        "status",
+        sa.String(20),
+        sa.CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'spam')",
+            name="ck_comments_status",
+        ),
+        nullable=False,
+        default="approved",
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),  # Soft delete
+    # Note: GiST index on path is created in migration using raw SQL for ltree
+    sa.Index("ix_comments_video_id", "video_id"),
+    sa.Index("ix_comments_user_id", "user_id"),
+    sa.Index("ix_comments_parent_id", "parent_id"),
+    sa.Index("ix_comments_status", "status"),
+    sa.Index("ix_comments_created_at", "created_at"),
+)
+
+# Ratings with composite primary key (one rating per user per video)
+#
+# RATING VALUES:
+# --------------
+# For stars mode (rating_type = "stars"):
+# - rating_value: 1-5 (star count)
+#
+# For thumbs mode (rating_type = "thumbs"):
+# - rating_value: 1 (like) or -1 (dislike)
+#
+# Aggregates are maintained on videos table via triggers:
+# - rating_avg: Average of all rating_values
+# - rating_count: Total number of ratings
+# - rating_distribution: JSON object {"1": count, "2": count, ...}
+# - likes_count: Count of rating_value > 0 (for thumbs mode)
+# - dislikes_count: Count of rating_value < 0 (for thumbs mode)
+#
+# See: https://github.com/filthyrake/vlog/issues/213
+ratings = sa.Table(
+    "ratings",
+    metadata,
+    sa.Column(
+        "video_id",
+        sa.Integer,
+        sa.ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "user_id",
+        sa.String(36),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # Rating value: 1-5 for stars, 1 or -1 for thumbs
+    sa.Column("rating_value", sa.Integer, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.PrimaryKeyConstraint("video_id", "user_id"),
+    sa.Index("ix_ratings_video_id", "video_id"),
+    sa.Index("ix_ratings_user_id", "user_id"),
+)
+
+
+# =============================================================================
+# Backup and Restore Tables (Issue #216)
+# Comprehensive backup system with database, file, and S3 support
+# =============================================================================
+
+# Backup records for tracking backup operations
+#
+# BACKUP TYPES:
+# -------------
+# - full: Complete backup (database + optionally video files)
+# - database_only: Database dump only (fastest)
+# - incremental: Only new/changed files since last backup
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> backing_up_database -> backing_up_files -> uploading_s3 -> completed
+# pending -> backing_up_database -> failed (on error at any stage)
+#
+# STORAGE:
+# --------
+# - local_path: Path on local/NAS storage
+# - s3_location: S3 URI (s3://bucket/prefix/backup_id.tar.gz)
+#
+# MANIFEST:
+# ---------
+# - manifest_json: Cached manifest for quick access (full manifest stored in backup)
+# - Manifest includes checksums for integrity verification
+#
+# See: https://github.com/filthyrake/vlog/issues/216
+backups = sa.Table(
+    "backups",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("backup_id", sa.String(50), unique=True, nullable=False),  # backup_20260126_020000
+    sa.Column(
+        "backup_type",
+        sa.String(20),
+        sa.CheckConstraint(
+            "backup_type IN ('full', 'database_only', 'incremental')",
+            name="ck_backups_backup_type",
+        ),
+        nullable=False,
+    ),
+    sa.Column(
+        "status",
+        sa.String(30),
+        sa.CheckConstraint(
+            "status IN ('pending', 'backing_up_database', 'backing_up_files', "
+            "'uploading_s3', 'completed', 'failed')",
+            name="ck_backups_status",
+        ),
+        nullable=False,
+        default="pending",
+    ),
+    # Size and content statistics
+    sa.Column("size_bytes", sa.BigInteger, nullable=True),  # Total backup size
+    sa.Column("database_size_bytes", sa.BigInteger, nullable=True),  # DB dump size
+    sa.Column("files_size_bytes", sa.BigInteger, nullable=True),  # Video files size
+    sa.Column("video_count", sa.Integer, nullable=True),  # Number of videos backed up
+    sa.Column("file_count", sa.Integer, nullable=True),  # Number of files in backup
+    # Description and metadata
+    sa.Column("description", sa.Text, nullable=True),  # User-provided description
+    # Storage locations
+    sa.Column("local_path", sa.String(500), nullable=True),  # Local filesystem path
+    sa.Column("s3_location", sa.String(500), nullable=True),  # S3 URI
+    # Manifest (JSON for quick access, full manifest in backup archive)
+    sa.Column("manifest_json", sa.Text, nullable=True),  # JSON-encoded manifest
+    sa.Column("manifest_signature", sa.String(64), nullable=True),  # HMAC-SHA256 signature
+    # Timestamps
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    # Provenance
+    sa.Column("created_by", sa.String(100), nullable=True),  # User/system that created
+    # Error tracking
+    sa.Column("error_message", sa.Text, nullable=True),
+    # VLog version info (for compatibility checking during restore)
+    sa.Column("vlog_version", sa.String(50), nullable=True),
+    sa.Column("schema_version", sa.String(10), nullable=True),  # Migration version
+    sa.Column("database_type", sa.String(20), nullable=True),  # postgresql or sqlite
+    sa.Index("ix_backups_backup_id", "backup_id"),
+    sa.Index("ix_backups_status", "status"),
+    sa.Index("ix_backups_created_at", "created_at"),
+    sa.Index("ix_backups_backup_type", "backup_type"),
+)
+
 
 def create_tables():
     """
@@ -939,4 +2023,4 @@ def create_tables():
 
 if __name__ == "__main__":
     create_tables()
-    print("Database tables created successfully!")
+    logger.info("Database tables created successfully!")

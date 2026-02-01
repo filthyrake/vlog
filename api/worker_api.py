@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Optional
 
 import sqlalchemy as sa
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
@@ -102,6 +102,9 @@ from api.database import (
     workers,
 )
 from api.db_retry import DatabaseLockedError, execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
+from api.enums import ErrorLogging
+from api.errors import sanitize_error_message
+from api.logging_config import setup_logging
 from api.metrics import (
     STORAGE_VIDEOS_BYTES,
     TRANSCODING_JOBS_TOTAL,
@@ -109,19 +112,31 @@ from api.metrics import (
     get_metrics,
     sanitize_label,
 )
+from api.audit import AuditAction, log_audit
 from api.pubsub import Publisher
 from api.redis_client import get_redis
 from api.settings_service import get_setting as get_db_setting
 from api.webhook_service import trigger_webhook_event
-from api.worker_auth import get_key_prefix, hash_api_key, verify_worker_key
+from api.worker_auth import (
+    DEFAULT_EXPIRATION_DAYS,
+    bulk_revoke_expired_keys,
+    get_expiring_keys,
+    get_key_prefix,
+    hash_api_key,
+    rotate_worker_key,
+    verify_worker_key,
+)
 from api.worker_schemas import (
+    BulkRevokeResponse,
     ClaimJobResponse,
     CompleteJobRequest,
     CompleteJobResponse,
+    ExpiringKeysResponse,
     FailJobRequest,
     FailJobResponse,
     HeartbeatRequest,
     HeartbeatResponse,
+    KeyRotationResponse,
     ProgressUpdateRequest,
     ProgressUpdateResponse,
     SegmentFinalizeRequest,
@@ -136,6 +151,10 @@ from api.worker_schemas import (
     WorkerStatusResponse,
 )
 from config import (
+    API_INCLUDE_LEGACY_ROUTES,
+    API_VERSION,
+    OPENAPI_DESCRIPTION,
+    OPENAPI_TITLE,
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
@@ -161,6 +180,11 @@ from config import (
     WORKER_HEARTBEAT_INTERVAL,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
+
+from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
+
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+setup_logging()
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger("security.worker_auth")
@@ -989,6 +1013,14 @@ async def lifespan(app: FastAPI):
             "(or set VLOG_REDIS_URL which will be auto-detected)"
         )
 
+    # Issue #432: Warn about missing worker admin secret
+    if not WORKER_ADMIN_SECRET:
+        logger.warning(
+            "SECURITY: VLOG_WORKER_ADMIN_SECRET is not configured. "
+            "Worker management endpoints (register, list, revoke) will return 503. "
+            "Generate a secret: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+
     # Start background tasks
     stale_job_task = asyncio.create_task(check_stale_jobs())
     orphan_cleanup_task = asyncio.create_task(cleanup_orphaned_files())
@@ -1069,14 +1101,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="VLog Worker API",
-    description="API for distributed transcoding workers",
-    version="1.0.0",
+    title=f"{OPENAPI_TITLE} Worker",
+    description=f"{OPENAPI_DESCRIPTION} - Worker API for distributed transcoding",
+    version=API_VERSION,
     lifespan=lifespan,
 )
 
+# Create versioned API router for worker endpoints
+v1_router = APIRouter(tags=["Worker API v1"])
+
 # Request ID middleware for tracing
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(VersionHeaderMiddleware)
 
 # CORS - allow all origins since workers use API key auth (not cookies)
 # Note: allow_credentials must be False with wildcard origins per CORS spec
@@ -1103,7 +1139,7 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 # =============================================================================
 
 
-@app.post("/api/worker/register", response_model=WorkerRegisterResponse)
+@v1_router.post("/worker/register", response_model=WorkerRegisterResponse)
 @limiter.limit(RATE_LIMIT_WORKER_REGISTER)
 async def register_worker(
     request: Request,
@@ -1127,6 +1163,12 @@ async def register_worker(
     key_hash, hash_version = hash_api_key(api_key)  # Returns (hash, version) tuple
     key_prefix = get_key_prefix(api_key)
     now = datetime.now(timezone.utc)
+
+    # Calculate API key expiration based on settings (Issue #226)
+    expiration_days = await get_db_setting("workers.api_key_expiration_days", DEFAULT_EXPIRATION_DAYS)
+    key_expires_at = None
+    if expiration_days > 0:
+        key_expires_at = now + timedelta(days=expiration_days)
 
     worker_name = data.worker_name or f"worker-{worker_id[:8]}"
 
@@ -1165,6 +1207,7 @@ async def register_worker(
             )
 
             # Create API key record with argon2id hash (Issue #445)
+            # Includes expiration date based on settings (Issue #226)
             await database.execute(
                 worker_api_keys.insert().values(
                     worker_id=result["worker_db_id"],
@@ -1172,6 +1215,7 @@ async def register_worker(
                     hash_version=hash_version,
                     key_prefix=key_prefix,
                     created_at=now,
+                    expires_at=key_expires_at,
                 )
             )
 
@@ -1216,7 +1260,7 @@ async def register_worker(
 # =============================================================================
 
 
-@app.post("/api/worker/heartbeat", response_model=HeartbeatResponse)
+@v1_router.post("/worker/heartbeat", response_model=HeartbeatResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def worker_heartbeat(
     request: Request,
@@ -1371,7 +1415,7 @@ def worker_has_gpu(worker: dict) -> bool:
     return False
 
 
-@app.post("/api/worker/claim", response_model=ClaimJobResponse)
+@v1_router.post("/worker/claim", response_model=ClaimJobResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def claim_job(
     request: Request,
@@ -1744,7 +1788,7 @@ async def claim_job(
 # =============================================================================
 
 
-@app.post("/api/worker/{job_id}/progress", response_model=ProgressUpdateResponse)
+@v1_router.post("/worker/{job_id}/progress", response_model=ProgressUpdateResponse)
 @limiter.limit(RATE_LIMIT_WORKER_PROGRESS)
 async def update_progress(
     request: Request,
@@ -1861,7 +1905,7 @@ async def update_progress(
 # =============================================================================
 
 
-@app.post("/api/worker/{job_id}/complete", response_model=CompleteJobResponse)
+@v1_router.post("/worker/{job_id}/complete", response_model=CompleteJobResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def complete_job(
     request: Request,
@@ -2071,7 +2115,7 @@ async def complete_job(
 # =============================================================================
 
 
-@app.post("/api/worker/{job_id}/fail", response_model=FailJobResponse)
+@v1_router.post("/worker/{job_id}/fail", response_model=FailJobResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def fail_job(
     request: Request,
@@ -2190,7 +2234,7 @@ async def fail_job(
 # =============================================================================
 
 
-@app.get("/api/worker/source/{video_id}")
+@v1_router.get("/worker/source/{video_id}")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def download_source(
     request: Request,
@@ -2237,7 +2281,7 @@ async def download_source(
     )
 
 
-@app.post("/api/worker/upload/{video_id}/quality/{quality_name}", response_model=StatusResponse)
+@v1_router.post("/worker/upload/{video_id}/quality/{quality_name}", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_quality(
     request: Request,
@@ -2317,7 +2361,8 @@ async def upload_quality(
             max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"HLS quality upload validation error for video {video_id}: {e}")
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"quality_upload:{video_id}"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -2333,7 +2378,7 @@ async def upload_quality(
     return StatusResponse(status="ok", message=f"Quality {quality_name} uploaded successfully")
 
 
-@app.post("/api/worker/upload/{video_id}/finalize", response_model=StatusResponse)
+@v1_router.post("/worker/upload/{video_id}/finalize", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_finalize(
     request: Request,
@@ -2403,7 +2448,8 @@ async def upload_finalize(
             strict_filenames=("master.m3u8", "manifest.mpd", "thumbnail.jpg"),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"Finalize upload validation error for video {video_id}: {e}")
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"finalize_upload:{video_id}"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -2411,7 +2457,7 @@ async def upload_finalize(
     return StatusResponse(status="ok", message="Finalize files uploaded successfully")
 
 
-@app.post("/api/worker/upload/{video_id}", response_model=StatusResponse)
+@v1_router.post("/worker/upload/{video_id}", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_hls(
     request: Request,
@@ -2477,7 +2523,8 @@ async def upload_hls(
             max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"HLS upload validation error for video {video_id}: {e}")
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"hls_upload:{video_id}"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -2931,7 +2978,7 @@ async def finalize_segment_upload(
 # =============================================================================
 
 
-@app.get("/api/workers", response_model=WorkerListResponse)
+@v1_router.get("/workers", response_model=WorkerListResponse)
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def list_workers(
     request: Request,
@@ -3003,7 +3050,7 @@ async def list_workers(
     )
 
 
-@app.post("/api/workers/{worker_id}/revoke", response_model=StatusResponse)
+@v1_router.post("/workers/{worker_id}/revoke", response_model=StatusResponse)
 @limiter.limit(RATE_LIMIT_WORKER_REGISTER)
 async def revoke_worker(
     request: Request,
@@ -3036,7 +3083,177 @@ async def revoke_worker(
     return StatusResponse(status="ok", message=f"Worker {worker_id} has been revoked")
 
 
-@app.get("/api/health")
+# =============================================================================
+# API Key Rotation Endpoints (Issue #226)
+# =============================================================================
+
+
+@v1_router.post("/workers/{worker_id}/rotate", response_model=KeyRotationResponse)
+@limiter.limit("10/hour")  # Rate limit: 10 rotations per IP per hour (plus 5-min per-worker cooldown)
+async def rotate_worker_api_key(
+    request: Request,
+    worker_id: str,
+    revoke_old: bool = False,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    Rotate a worker's API key.
+
+    Creates a new API key and optionally revokes the old one immediately.
+    If not revoked immediately, the old key remains valid for the configured
+    overlap period (default: 2 hours).
+
+    Rate limit: 10 rotations per IP per hour, plus 5-minute per-worker cooldown between rotations.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+
+    Args:
+        worker_id: Worker UUID to rotate key for
+        revoke_old: If true, revoke old key immediately instead of after overlap
+
+    Returns:
+        KeyRotationResponse with new key and expiration info
+    """
+    # Find worker by UUID
+    worker = await database.fetch_one(workers.select().where(workers.c.worker_id == worker_id))
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    # Rotate the key (handles cooldown check internally)
+    new_api_key, new_expires_at, old_key_expires_at, overlap_hours = await rotate_worker_key(
+        worker_db_id=worker["id"],
+        worker_uuid=worker_id,
+        revoke_old=revoke_old,
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.WORKER_KEY_ROTATE,
+        client_ip=request.client.host if request.client else None,
+        resource_type="worker",
+        resource_id=worker_id,
+        resource_name=worker["worker_name"],
+        details={
+            "revoke_old": revoke_old,
+            "overlap_hours": overlap_hours,
+        },
+    )
+
+    return KeyRotationResponse(
+        status="ok",
+        new_api_key=new_api_key,
+        expires_at=new_expires_at,
+        old_key_expires_at=old_key_expires_at,
+        overlap_hours=overlap_hours,
+    )
+
+
+@v1_router.get("/workers/expiring-keys", response_model=ExpiringKeysResponse)
+@limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
+async def list_expiring_keys(
+    request: Request,
+    days: int = 14,
+    include_grace: bool = False,
+    page: int = 1,
+    per_page: int = 50,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    List API keys expiring within the specified number of days.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+
+    Args:
+        days: Number of days to look ahead (default: 14)
+        include_grace: Include keys in grace period (already expired but still valid)
+        page: Page number for pagination
+        per_page: Results per page (max 100)
+
+    Returns:
+        Paginated list of expiring keys with worker info
+    """
+    # Validate days parameter - return 400 for invalid values
+    if days < 1 or days > 365:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid 'days' parameter: {days}. Must be between 1 and 365.",
+        )
+
+    # Validate pagination (clamp to valid range)
+    if page < 1:
+        page = 1
+    if per_page < 1 or per_page > 100:
+        per_page = min(max(per_page, 1), 100)
+
+    keys, total_count = await get_expiring_keys(
+        days=days,
+        include_grace=include_grace,
+        page=page,
+        per_page=per_page,
+    )
+
+    return ExpiringKeysResponse(
+        keys=keys,
+        total_count=total_count,
+        page=page,
+        per_page=per_page,
+    )
+
+
+@v1_router.post("/workers/revoke-expired", response_model=BulkRevokeResponse)
+@limiter.limit("1/minute")  # Rate limit: 1 bulk revoke per minute
+async def revoke_expired_keys(
+    request: Request,
+    dry_run: bool = True,
+    include_grace_period: bool = False,
+    _admin: None = Depends(verify_admin_secret),
+):
+    """
+    Revoke all expired API keys in bulk.
+
+    By default, only revokes keys that are past the grace period.
+    Use include_grace_period=true to also revoke keys still in grace period.
+
+    IMPORTANT: Use dry_run=true first to preview what would be revoked.
+
+    Rate limit: 1 request per minute.
+
+    Requires X-Admin-Secret header with VLOG_WORKER_ADMIN_SECRET value.
+
+    Args:
+        dry_run: If true (default), only return count without actually revoking
+        include_grace_period: If true, also revoke keys still in grace period
+
+    Returns:
+        Count of revoked keys and list of affected worker IDs
+    """
+    revoked_count, affected_worker_ids = await bulk_revoke_expired_keys(
+        dry_run=dry_run,
+        include_grace_period=include_grace_period,
+    )
+
+    # Audit log (only if not dry run)
+    if not dry_run and revoked_count > 0:
+        log_audit(
+            AuditAction.WORKER_BULK_REVOKE,
+            client_ip=request.client.host if request.client else None,
+            resource_type="worker_api_keys",
+            details={
+                "revoked_count": revoked_count,
+                "include_grace_period": include_grace_period,
+                "affected_workers": len(affected_worker_ids),
+            },
+        )
+
+    return BulkRevokeResponse(
+        status="ok",
+        dry_run=dry_run,
+        revoked_count=revoked_count,
+        affected_worker_ids=affected_worker_ids,
+    )
+
+
+@v1_router.get("/health")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def health_check(request: Request):
     """
@@ -3119,7 +3336,7 @@ async def metrics_endpoint(request: Request):
 # =============================================================================
 
 
-@app.post("/api/reencode/claim")
+@v1_router.post("/reencode/claim")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def claim_reencode_job(
     request: Request,
@@ -3176,7 +3393,7 @@ async def claim_reencode_job(
     }
 
 
-@app.get("/api/reencode/{job_id}/download")
+@v1_router.get("/reencode/{job_id}/download")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def download_reencode_source(
     request: Request,
@@ -3246,10 +3463,11 @@ async def download_reencode_source(
         )
     except Exception as e:
         tmp_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Failed to package files: {e}")
+        logger.exception(f"Failed to package reencode files for job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"reencode_package:{job_id}"))
 
 
-@app.post("/api/reencode/{job_id}/upload")
+@v1_router.post("/reencode/{job_id}/upload")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def upload_reencode_result(
     request: Request,
@@ -3303,7 +3521,8 @@ async def upload_reencode_result(
                 max_single_file=MAX_HLS_SINGLE_FILE_SIZE,
             )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.warning(f"Reencode upload validation error for job {job_id}: {e}")
+            raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"reencode_upload:{job_id}"))
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -3345,10 +3564,11 @@ async def upload_reencode_result(
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        logger.exception(f"Reencode upload failed for job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"reencode_upload:{job_id}"))
 
 
-@app.patch("/api/reencode/{job_id}")
+@v1_router.patch("/reencode/{job_id}")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def update_reencode_job(
     request: Request,
@@ -3393,7 +3613,7 @@ async def update_reencode_job(
 # =============================================================================
 
 
-@app.get("/api/worker/{job_id}/verify-complete")
+@v1_router.get("/worker/{job_id}/verify-complete")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def verify_job_completion(
     request: Request,
@@ -3505,6 +3725,29 @@ async def verify_job_completion(
     )
 
     return result
+
+
+# =============================================================================
+# API Router Mounting (Issue #218)
+# Mount versioned routers and configure OpenAPI documentation
+# =============================================================================
+
+# Mount v1 router at /api/v1
+app.include_router(v1_router, prefix="/api/v1")
+logger.info("Mounted Worker API v1 at /api/v1")
+
+# Mount legacy routes at /api for backwards compatibility (if enabled)
+if API_INCLUDE_LEGACY_ROUTES:
+    app.include_router(v1_router, prefix="/api", include_in_schema=False)
+    logger.info("Mounted legacy worker routes at /api (aliased to v1)")
+
+
+# Configure custom OpenAPI schema
+def custom_openapi():
+    return configure_openapi_schema(app)
+
+
+app.openapi = custom_openapi
 
 
 if __name__ == "__main__":

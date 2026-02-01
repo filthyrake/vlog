@@ -28,6 +28,8 @@ export interface UploadActions {
   cancelUpload(): void;
   resetForm(): void;
   setFile(file: File): void;
+  // CSP-safe helper for handling dropzone file selection event
+  handleFilesSelected(event: CustomEvent): void;
 }
 
 export type UploadStore = UploadState & UploadActions;
@@ -136,6 +138,17 @@ export function createUploadStore(): UploadStore {
       // Auto-fill title from filename if empty
       if (!this.uploadTitle) {
         this.uploadTitle = file.name.replace(/\.[^/.]+$/, '');
+      }
+    },
+
+    /**
+     * CSP-safe handler for dropzone file selection event
+     * Replaces: if ($event.detail.files[0]?.file) setFile($event.detail.files[0].file)
+     */
+    handleFilesSelected(event: CustomEvent): void {
+      const files = event.detail && event.detail.files;
+      if (files && files[0] && files[0].file) {
+        this.setFile(files[0].file);
       }
     },
   };

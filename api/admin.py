@@ -17,10 +17,10 @@ from pathlib import Path
 
 # Note: IntegrityError handling is done via exception message inspection
 # to support both SQLite and PostgreSQL backends
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi import Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -49,21 +49,32 @@ from api.common import (
 )
 from api.database import (
     admin_sessions,
+    backups,
     categories,
     chapters,
+    comments,
     configure_database,
     create_tables,
     custom_field_definitions,
     database,
+    live_stream_segments,
+    live_streams,
+    oidc_states,
+    password_reset_tokens,
     playback_sessions,
     playlist_items,
     playlists,
     quality_progress,
+    ratings,
     reencode_queue,
     sprite_queue,
     tags,
     transcoding_jobs,
     transcriptions,
+    user_api_keys,
+    user_invites,
+    user_sessions,
+    users,
     video_custom_fields,
     video_qualities,
     video_tags,
@@ -73,6 +84,13 @@ from api.database import (
     worker_api_keys,
     workers,
 )
+
+# User authentication module (Issue #200)
+from api.auth import endpoints as auth_endpoints
+from api.auth import users as auth_users
+from api.auth import api_keys as auth_api_keys
+from api.auth import invite as auth_invite
+from api.auth import oidc as auth_oidc
 from api.db_retry import (
     DatabaseLockedError,
     db_execute_with_retry,
@@ -81,7 +99,7 @@ from api.db_retry import (
     fetch_one_with_retry,
     fetch_val_with_retry,
 )
-from api.enums import TranscriptionStatus, VideoStatus
+from api.enums import ErrorLogging, TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
 from api.metrics import (
@@ -93,7 +111,7 @@ from api.metrics import (
 )
 from api.pagination import encode_cursor, validate_cursor
 from api.partition_manager import ensure_partitions_exist, is_table_partitioned
-from api.public import get_video_url_prefix, get_watermark_settings
+from api.public import get_video_url_prefix, get_watermark_settings, reset_theme_settings_cache
 from api.pubsub import subscribe_to_progress, subscribe_to_workers
 from api.redis_client import is_redis_available
 from api.schemas import (
@@ -115,8 +133,20 @@ from api.schemas import (
     BulkRetranscodeResponse,
     BulkUpdateRequest,
     BulkUpdateResponse,
+    BackupCreateRequest,
+    BackupListResponse,
+    BackupResponse,
+    BackupRestoreRequest,
+    BackupRestoreResponse,
+    BackupVerifyResponse,
     CategoryCreate,
     CategoryResponse,
+    CommentListResponse,
+    CommentModerate,
+    CommentModerationQueueResponse,
+    CommentResponse,
+    CommentStatus,
+    CommentUserInfo,
     ChapterCreate,
     ChapterDetectionSource,
     ChapterListResponse,
@@ -205,16 +235,39 @@ from api.settings_service import (
     get_setting as get_db_setting,
 )
 from api.worker_auth import authenticate_api_key
+from api.live_auth import generate_stream_key, get_key_prefix, hash_stream_key, revoke_stream_key
+from api.live_schemas import (
+    LiveStreamCreate,
+    LiveStreamCreatedResponse,
+    LiveStreamKeyRegenerateResponse,
+    LiveStreamListResponse,
+    LiveStreamResponse,
+    LiveStreamStatus,
+    LiveStreamUpdate,
+)
+from api.logging_config import setup_logging
+from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 from config import (
+    API_INCLUDE_LEGACY_ROUTES,
+    API_VERSION,
+    OPENAPI_DESCRIPTION,
+    OPENAPI_TITLE,
     ADMIN_API_SECRET,
     ADMIN_CORS_ALLOWED_ORIGINS,
     ADMIN_PORT,
     ADMIN_SESSION_EXPIRY_HOURS,
     ANALYTICS_CACHE_ENABLED,
+    SESSION_SECRET_KEY,
     ANALYTICS_CACHE_STORAGE_URL,
     ANALYTICS_CACHE_TTL,
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
     ARCHIVE_DIR,
+    BACKUP_ENABLED,
+    BACKUP_PATH,
+    BACKUP_RESTORE_COOLDOWN_SECONDS,
+    BACKUP_S3_BUCKET,
+    BACKUP_SIGNING_KEY,
+    DATABASE_URL,
     JOB_QUEUE_MODE,
     MAX_THUMBNAIL_UPLOAD_SIZE,
     MAX_UPLOAD_SIZE,
@@ -239,8 +292,14 @@ from config import (
     VIDEOS_DIR,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
     check_deprecated_env_vars,
+    LIVE_ENABLED,
+    LIVE_STORAGE_PATH,
+    LIVE_MAX_CONCURRENT_STREAMS,
 )
 from worker.transcoder import generate_thumbnail, get_video_info
+
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +354,44 @@ CSRF_TOKEN_HEADER = "X-CSRF-Token"
 # Derive HMAC key from ADMIN_API_SECRET for additional security
 # Falls back to static key if ADMIN_API_SECRET not configured (though CSRF is skipped in that case)
 CSRF_HMAC_KEY = (ADMIN_API_SECRET or "vlog-csrf-fallback").encode()
+
+# Permanent cache for user existence (security: never revert once True)
+# This prevents race condition attacks during the setup->authenticated transition
+_users_exist_cache: Optional[bool] = None
+
+
+async def _check_users_exist() -> bool:
+    """
+    Check if any users exist in the database.
+
+    Security: Uses permanent positive caching - once users exist,
+    the result is cached forever for this process. This prevents
+    race condition attacks during the setup->authenticated transition.
+
+    On database errors, returns True (fail-closed: require authentication).
+    This prevents attackers from accessing setup endpoint during DB outages.
+    """
+    global _users_exist_cache
+
+    # Once users exist, cache permanently (never revert)
+    if _users_exist_cache is True:
+        return True
+
+    try:
+        # Use EXISTS for efficiency - stops at first row found
+        exists = await database.fetch_val("SELECT EXISTS(SELECT 1 FROM users LIMIT 1)")
+        if exists:
+            _users_exist_cache = True  # Permanent positive cache
+        return exists
+    except Exception as e:
+        # Fail closed: on DB error, require authentication (assume users exist)
+        # This prevents setup endpoint access during database outages
+        security_logger.error(
+            "Database error checking user existence - failing closed (requiring auth)",
+            extra={"event": "db_error", "error": str(e)},
+            exc_info=True,
+        )
+        return True
 
 
 def generate_csrf_token(session_token: str) -> str:
@@ -389,12 +486,78 @@ async def delete_admin_session(session_token: str) -> None:
 
 async def cleanup_expired_sessions() -> int:
     """
-    Delete expired sessions. Returns the number of sessions deleted.
-    Called periodically to clean up stale sessions.
+    Delete expired sessions and related auth tokens. Returns the total number of records deleted.
+    Called periodically to clean up stale authentication data.
+
+    Cleans up:
+    - Legacy admin_sessions (expired)
+    - User sessions (refresh token expired or revoked > 7 days ago)
+    - OIDC states (expired, unused)
+    - Password reset tokens (expired or used > 7 days ago)
     """
     now = datetime.now(timezone.utc)
+    total_deleted = 0
+    cutoff = now - timedelta(days=7)
+
+    # Clean up legacy admin sessions
     query = admin_sessions.delete().where(admin_sessions.c.expires_at < now)
-    return await database.execute(query)
+    result = await database.execute(query)
+    if result:
+        total_deleted += result
+
+    # Clean up user sessions (Issue #200)
+    # Delete sessions where:
+    # 1. Refresh token has expired (user can't renew session)
+    # 2. Session was revoked more than 7 days ago (audit trail retention)
+    try:
+        user_session_query = user_sessions.delete().where(
+            (user_sessions.c.refresh_expires_at < now)
+            | (
+                (user_sessions.c.revoked_at.isnot(None))
+                & (user_sessions.c.revoked_at < cutoff)
+            )
+        )
+        user_result = await database.execute(user_session_query)
+        if user_result:
+            total_deleted += user_result
+            logger.debug(f"Cleaned up {user_result} expired user sessions")
+    except Exception as e:
+        # Don't fail if user_sessions table doesn't exist yet (pre-migration)
+        logger.debug(f"User session cleanup skipped: {e}")
+
+    # Clean up expired OIDC states (Issue #200)
+    # These are single-use and should be deleted after expiry (10 minutes)
+    try:
+        oidc_states_query = oidc_states.delete().where(
+            oidc_states.c.expires_at < now
+        )
+        oidc_result = await database.execute(oidc_states_query)
+        if oidc_result:
+            total_deleted += oidc_result
+            logger.debug(f"Cleaned up {oidc_result} expired OIDC states")
+    except Exception as e:
+        logger.debug(f"OIDC states cleanup skipped: {e}")
+
+    # Clean up password reset tokens (Issue #200)
+    # Delete tokens where:
+    # 1. Token has expired
+    # 2. Token was used more than 7 days ago (audit trail retention)
+    try:
+        reset_tokens_query = password_reset_tokens.delete().where(
+            (password_reset_tokens.c.expires_at < now)
+            | (
+                (password_reset_tokens.c.used_at.isnot(None))
+                & (password_reset_tokens.c.used_at < cutoff)
+            )
+        )
+        reset_result = await database.execute(reset_tokens_query)
+        if reset_result:
+            total_deleted += reset_result
+            logger.debug(f"Cleaned up {reset_result} expired password reset tokens")
+    except Exception as e:
+        logger.debug(f"Password reset tokens cleanup skipped: {e}")
+
+    return total_deleted
 
 
 class AdminAuthMiddleware:
@@ -463,15 +626,63 @@ class AdminAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Skip auth for auth endpoints (login, logout, check, csrf-token)
-        if path.startswith("/api/auth/"):
+        # Skip auth for specific public auth endpoints only (not all /api/auth/*)
+        # This prevents bypass of authentication for sensitive endpoints like
+        # /api/auth/users, /api/auth/invites, /api/auth/api-keys
+        public_auth_endpoints = {
+            # Login and session endpoints
+            "/api/auth/login",
+            "/api/auth/check",
+            "/api/auth/csrf-token",
+            "/api/v1/auth/login",
+            "/api/v1/auth/check",
+            "/api/v1/auth/csrf-token",
+            # Password reset endpoints
+            "/api/auth/forgot-password",
+            "/api/auth/reset-password",
+            "/api/v1/auth/forgot-password",
+            "/api/v1/auth/reset-password",
+            # OIDC endpoints (must be public for SSO flows)
+            "/api/auth/oidc/status",
+            "/api/auth/oidc/authorize",
+            "/api/auth/oidc/callback",
+            "/api/v1/auth/oidc/status",
+            "/api/v1/auth/oidc/authorize",
+            "/api/v1/auth/oidc/callback",
+        }
+        # Normalize path (strip trailing slash) for consistent matching
+        normalized_path = path.rstrip("/")
+        if normalized_path in public_auth_endpoints:
             await self.app(scope, receive, send)
             return
 
-        # If ADMIN_API_SECRET is not configured, allow all requests (backwards compatible)
-        if not ADMIN_API_SECRET:
+        # Skip middleware for studio routes - they use user session auth (vlog_session)
+        # instead of admin session (vlog_admin_session) and handle their own CSRF
+        if path.startswith("/api/v1/studio"):
             await self.app(scope, receive, send)
             return
+
+        # Handle authentication when ADMIN_API_SECRET is not configured
+        # Issue #431: Require authentication by default instead of allowing all requests
+        if not ADMIN_API_SECRET:
+            if await _check_users_exist():
+                # Users exist - require session authentication (fall through to session check)
+                pass
+            else:
+                # No users exist - ONLY allow setup endpoint
+                # Use normalized_path for consistent matching (handles trailing slashes)
+                if normalized_path in {"/api/v1/auth/setup", "/api/auth/setup"}:
+                    await self.app(scope, receive, send)
+                    return
+                # Block all other endpoints until setup is complete
+                response = JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "Initial setup required. Visit /api/auth/setup to create an admin account."
+                    },
+                )
+                await response(scope, receive, send)
+                return
 
         # Extract client IP for logging
         client = scope.get("client")
@@ -481,28 +692,30 @@ class AdminAuthMiddleware:
         headers = dict(scope.get("headers", []))
 
         # Method 1: Check X-Admin-Secret header (for API clients/CLI)
+        # Only available when ADMIN_API_SECRET is configured
         # API clients using the secret header don't need CSRF protection
-        admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
-        if admin_secret:
-            if hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
-                # Header auth successful - no CSRF needed for API clients
-                security_logger.info(
-                    "Admin API auth successful via header",
-                    extra={"event": "auth_success", "method": "header", "path": path, "client_ip": client_ip},
-                )
-                await self.app(scope, receive, send)
-                return
-            else:
-                security_logger.warning(
-                    "Admin API auth failed: invalid secret header",
-                    extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
-                )
-                response = JSONResponse(
-                    status_code=403,
-                    content={"detail": "Invalid admin secret"},
-                )
-                await response(scope, receive, send)
-                return
+        if ADMIN_API_SECRET:
+            admin_secret = headers.get(b"x-admin-secret", b"").decode("utf-8", errors="ignore")
+            if admin_secret:
+                if hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
+                    # Header auth successful - no CSRF needed for API clients
+                    security_logger.info(
+                        "Admin API auth successful via header",
+                        extra={"event": "auth_success", "method": "header", "path": path, "client_ip": client_ip},
+                    )
+                    await self.app(scope, receive, send)
+                    return
+                else:
+                    security_logger.warning(
+                        "Admin API auth failed: invalid secret header",
+                        extra={"event": "auth_failure", "reason": "invalid_secret", "path": path, "client_ip": client_ip},
+                    )
+                    response = JSONResponse(
+                        status_code=403,
+                        content={"detail": "Invalid admin secret"},
+                    )
+                    await response(scope, receive, send)
+                    return
 
         # Method 2: Check session cookie (for browser UI)
         cookie_header = headers.get(b"cookie", b"")
@@ -837,14 +1050,14 @@ _session_cleanup_task: Optional[asyncio.Task] = None
 
 
 async def _periodic_session_cleanup():
-    """Background task to periodically clean up expired sessions."""
+    """Background task to periodically clean up expired sessions (admin and user)."""
     while True:
         try:
             # Run cleanup every hour
             await asyncio.sleep(3600)
             deleted = await cleanup_expired_sessions()
             if deleted:
-                logger.info(f"Cleaned up {deleted} expired admin sessions")
+                logger.info(f"Cleaned up {deleted} expired sessions")
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -859,6 +1072,14 @@ async def lifespan(app: FastAPI):
     # Check for deprecated environment variables and warn about migration
     check_deprecated_env_vars()
 
+    # Validate SESSION_SECRET_KEY is set (required for user authentication)
+    # This is a critical security requirement - without it, session tokens cannot be signed
+    if not SESSION_SECRET_KEY or len(SESSION_SECRET_KEY) < 32:
+        raise RuntimeError(
+            "VLOG_SESSION_SECRET_KEY is required and must be at least 32 characters. "
+            "Generate with: openssl rand -base64 32"
+        )
+
     # Warn about in-memory rate limiting limitations (security issue #446)
     if RATE_LIMIT_ENABLED and RATE_LIMIT_STORAGE_URL == "memory://":
         logger.warning(
@@ -871,6 +1092,17 @@ async def lifespan(app: FastAPI):
     create_tables()
     await database.connect()
     await configure_database()
+
+    # Issue #431: Check admin authentication status and log appropriate message
+    user_count = await database.fetch_val("SELECT COUNT(*) FROM users")
+    if not ADMIN_API_SECRET and user_count == 0:
+        logger.warning(
+            "SECURITY: Admin API requires initial setup. "
+            "API endpoints return 503 until an admin account is created via /api/auth/setup. "
+            "Public auth endpoints (login, OIDC, password reset) remain accessible."
+        )
+    elif not ADMIN_API_SECRET and user_count > 0:
+        logger.info(f"Admin API: User-based authentication active ({user_count} users)")
 
     # Initialize Prometheus metrics
     init_app_info()
@@ -904,7 +1136,7 @@ async def lifespan(app: FastAPI):
     # Clean up expired sessions on startup
     expired_count = await cleanup_expired_sessions()
     if expired_count:
-        logger.info(f"Cleaned up {expired_count} expired admin sessions on startup")
+        logger.info(f"Cleaned up {expired_count} expired sessions on startup")
 
     # Start background task for periodic session cleanup
     _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
@@ -917,6 +1149,13 @@ async def lifespan(app: FastAPI):
 
     await start_webhook_delivery_worker()
     logger.info("Webhook delivery worker started (with crash recovery)")
+
+    # Issue #433: Log CORS configuration for troubleshooting
+    if ADMIN_CORS_ALLOWED_ORIGINS:
+        logger.info(f"Admin API CORS: allowing origins {ADMIN_CORS_ALLOWED_ORIGINS}")
+    else:
+        logger.info("Admin API CORS: same-origin only (cross-origin requests blocked)")
+        logger.info("Set VLOG_ADMIN_CORS_ORIGINS if you access admin UI from a different host")
 
     yield
 
@@ -938,7 +1177,15 @@ async def lifespan(app: FastAPI):
     await database.disconnect()
 
 
-app = FastAPI(title="VLog Admin", description="Video management API", lifespan=lifespan)
+app = FastAPI(
+    title=f"{OPENAPI_TITLE} Admin",
+    description=f"{OPENAPI_DESCRIPTION} - Admin API",
+    version=API_VERSION,
+    lifespan=lifespan,
+)
+
+# Create versioned API router for admin endpoints
+v1_router = APIRouter(tags=["Admin API v1"])
 
 # Register rate limiter with the app
 app.state.limiter = limiter
@@ -958,16 +1205,20 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(VersionHeaderMiddleware)
 
 # Admin API authentication middleware (see AdminAuthMiddleware class)
 # Only active when VLOG_ADMIN_API_SECRET is configured
 app.add_middleware(AdminAuthMiddleware)
 
-# Allow CORS for admin UI (internal-only, not exposed externally)
+# CORS middleware - see VLOG_ADMIN_CORS_ORIGINS configuration
+# Defaults to same-origin only (Issue #433)
+_cors_has_origins = bool(ADMIN_CORS_ALLOWED_ORIGINS)
+_cors_uses_wildcard = "*" in ADMIN_CORS_ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ADMIN_CORS_ALLOWED_ORIGINS,
-    allow_credentials=True if ADMIN_CORS_ALLOWED_ORIGINS != ["*"] else False,
+    allow_credentials=_cors_has_origins and not _cors_uses_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Request-ID"],
@@ -1080,75 +1331,16 @@ async def metrics_endpoint(request: Request):
 
 
 # ============ Authentication ============
-# Server-side session management for secure browser authentication.
-# Fixes XSS vulnerability where admin secret was stored in sessionStorage.
-# See: https://github.com/filthyrake/vlog/issues/324
+# NOTE: Auth endpoints (/auth/login, /auth/logout, /auth/check) are now in api/auth/endpoints.py
+# The legacy admin secret auth has been replaced by user-based authentication.
+# See: https://github.com/filthyrake/vlog/issues/200
 
 
-@app.post("/api/auth/login")
-@limiter.limit("10/minute")
-async def auth_login(request: Request, response: Response):
+# Legacy logout kept for backward compatibility with old sessions
+@v1_router.post("/auth/legacy-logout")
+async def auth_legacy_logout(request: Request, response: Response):
     """
-    Authenticate with admin secret and create a session.
-
-    Validates the admin secret and creates a server-side session.
-    Sets an HTTP-only, Secure cookie for subsequent requests.
-
-    Request body: {"secret": "your-admin-secret"}
-    """
-    # If auth is not configured, sessions aren't needed
-    if not ADMIN_API_SECRET:
-        return {"authenticated": True, "message": "Authentication not required"}
-
-    try:
-        body = await request.json()
-        secret = body.get("secret", "")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid request body")
-
-    if not secret:
-        raise HTTPException(status_code=400, detail="Secret is required")
-
-    # Validate the secret
-    if not hmac.compare_digest(secret, ADMIN_API_SECRET):
-        client_ip = get_real_ip(request)
-        security_logger.warning(
-            "Admin login failed: invalid secret",
-            extra={"event": "login_failure", "client_ip": client_ip},
-        )
-        raise HTTPException(status_code=403, detail="Invalid admin secret")
-
-    # Create session
-    client_ip = get_real_ip(request)
-    user_agent = request.headers.get("user-agent", "")
-    session_token = await create_admin_session(ip_address=client_ip, user_agent=user_agent)
-
-    # Set HTTP-only cookie
-    # SameSite=Lax allows the cookie to be sent with top-level navigations
-    response.set_cookie(
-        key=ADMIN_SESSION_COOKIE,
-        value=session_token,
-        httponly=True,
-        secure=SECURE_COOKIES,
-        samesite="lax",
-        max_age=ADMIN_SESSION_EXPIRY_HOURS * 3600,
-        path="/",
-    )
-
-    security_logger.info(
-        "Admin login successful",
-        extra={"event": "login_success", "client_ip": client_ip},
-    )
-
-    return {"authenticated": True, "message": "Login successful"}
-
-
-@app.post("/api/auth/logout")
-async def auth_logout(request: Request, response: Response):
-    """
-    Log out and destroy the current session.
-
-    Deletes the server-side session and clears the cookie.
+    Log out legacy admin sessions (for backward compatibility).
     """
     # Get session token from cookie
     session_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
@@ -1173,34 +1365,10 @@ async def auth_logout(request: Request, response: Response):
     return {"authenticated": False, "message": "Logged out"}
 
 
-@app.get("/api/auth/check")
-async def auth_check(request: Request):
-    """
-    Check if the current session is authenticated.
-
-    Returns authentication status without requiring credentials.
-    Used by the UI to determine if login is needed.
-    """
-    # If auth is not configured, always authenticated
-    if not ADMIN_API_SECRET:
-        return {"authenticated": True, "auth_required": False}
-
-    # Check for X-Admin-Secret header (for API clients)
-    admin_secret = request.headers.get("x-admin-secret", "")
-    if admin_secret and hmac.compare_digest(admin_secret, ADMIN_API_SECRET):
-        return {"authenticated": True, "auth_required": True}
-
-    # Check session cookie
-    session_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
-    if session_token:
-        is_valid = await validate_session_token(session_token)
-        if is_valid:
-            return {"authenticated": True, "auth_required": True}
-
-    return {"authenticated": False, "auth_required": True}
+# NOTE: /auth/check endpoint is now in api/auth/endpoints.py
 
 
-@app.get("/api/auth/csrf-token")
+@v1_router.get("/auth/csrf-token")
 async def get_csrf_token(request: Request):
     """
     Get a CSRF token for the current session.
@@ -1233,7 +1401,7 @@ async def get_csrf_token(request: Request):
 # ============ Categories ============
 
 
-@app.get("/api/categories")
+@v1_router.get("/categories")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_categories(request: Request) -> List[CategoryResponse]:
     """List all categories."""
@@ -1259,7 +1427,7 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
     ]
 
 
-@app.post("/api/categories")
+@v1_router.post("/categories")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def create_category(request: Request, data: CategoryCreate) -> CategoryResponse:
     """Create a new category."""
@@ -1299,7 +1467,7 @@ async def create_category(request: Request, data: CategoryCreate) -> CategoryRes
     )
 
 
-@app.delete("/api/categories/{category_id}")
+@v1_router.delete("/categories/{category_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_category(request: Request, category_id: int):
     """Delete a category."""
@@ -1331,7 +1499,7 @@ async def delete_category(request: Request, category_id: int):
 # ============ Tags ============
 
 
-@app.get("/api/tags")
+@v1_router.get("/tags")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_tags(request: Request) -> List[TagResponse]:
     """List all tags with video counts (including non-ready videos for admin)."""
@@ -1357,7 +1525,7 @@ async def list_tags(request: Request) -> List[TagResponse]:
     ]
 
 
-@app.post("/api/tags")
+@v1_router.post("/tags")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def create_tag(request: Request, data: TagCreate) -> TagResponse:
     """Create a new tag."""
@@ -1395,7 +1563,7 @@ async def create_tag(request: Request, data: TagCreate) -> TagResponse:
     )
 
 
-@app.put("/api/tags/{tag_id}")
+@v1_router.put("/tags/{tag_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_tag(request: Request, tag_id: int, data: TagUpdate) -> TagResponse:
     """Update a tag name."""
@@ -1442,7 +1610,7 @@ async def update_tag(request: Request, tag_id: int, data: TagUpdate) -> TagRespo
     )
 
 
-@app.delete("/api/tags/{tag_id}")
+@v1_router.delete("/tags/{tag_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_tag(request: Request, tag_id: int):
     """Delete a tag. Videos with this tag will have it removed."""
@@ -1475,7 +1643,7 @@ async def delete_tag(request: Request, tag_id: int):
 # ============ Videos ============
 
 
-@app.get("/api/videos")
+@v1_router.get("/videos")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_all_videos(
     request: Request,
@@ -1598,7 +1766,7 @@ async def list_all_videos(
     )
 
 
-@app.get("/api/videos/archived")
+@v1_router.get("/videos/archived")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_archived_videos(
     request: Request,
@@ -1638,7 +1806,7 @@ async def list_archived_videos(
     }
 
 
-@app.get("/api/videos/{video_id}")
+@v1_router.get("/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video(request: Request, video_id: int) -> VideoResponse:
     """Get video details."""
@@ -1703,7 +1871,7 @@ async def get_video(request: Request, video_id: int) -> VideoResponse:
     )
 
 
-@app.post("/api/videos")
+@v1_router.post("/videos")
 @limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
 async def upload_video(
     request: Request,
@@ -1890,7 +2058,7 @@ async def upload_video(
     }
 
 
-@app.put("/api/videos/{video_id}")
+@v1_router.put("/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_video(
     request: Request,
@@ -1900,6 +2068,8 @@ async def update_video(
     category_id: Optional[int] = Form(None),
     published_at: Optional[str] = Form(None),
     is_featured: Optional[bool] = Form(None),  # Issue #413 Phase 3
+    comments_enabled: Optional[str] = Form(None),  # Issue #213: "true", "false", or "inherit"
+    ratings_enabled: Optional[str] = Form(None),  # Issue #213: "true", "false", or "inherit"
 ):
     """Update video metadata."""
     update_data = {}
@@ -1947,6 +2117,32 @@ async def update_video(
             # Clear featured_at when unfeaturing
             update_data["featured_at"] = None
 
+    # Issue #213: Per-video social settings (comments/ratings toggles)
+    # Values: "true" = enabled, "false" = disabled, "inherit" = use global setting (NULL)
+    if comments_enabled is not None:
+        if comments_enabled == "inherit":
+            update_data["comments_enabled"] = None
+        elif comments_enabled == "true":
+            update_data["comments_enabled"] = True
+        elif comments_enabled == "false":
+            update_data["comments_enabled"] = False
+        else:
+            raise HTTPException(
+                status_code=400, detail="comments_enabled must be 'true', 'false', or 'inherit'"
+            )
+
+    if ratings_enabled is not None:
+        if ratings_enabled == "inherit":
+            update_data["ratings_enabled"] = None
+        elif ratings_enabled == "true":
+            update_data["ratings_enabled"] = True
+        elif ratings_enabled == "false":
+            update_data["ratings_enabled"] = False
+        else:
+            raise HTTPException(
+                status_code=400, detail="ratings_enabled must be 'true', 'false', or 'inherit'"
+            )
+
     if update_data:
         await database.execute(videos.update().where(videos.c.id == video_id).values(**update_data))
 
@@ -1963,7 +2159,7 @@ async def update_video(
     return {"status": "ok"}
 
 
-@app.post("/api/videos/{video_id}/publish")
+@v1_router.post("/videos/{video_id}/publish")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def publish_video(request: Request, video_id: int):
     """Publish a video (make it visible on the public site)."""
@@ -1994,7 +2190,7 @@ async def publish_video(request: Request, video_id: int):
     return {"status": "ok", "published": True}
 
 
-@app.post("/api/videos/{video_id}/unpublish")
+@v1_router.post("/videos/{video_id}/unpublish")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def unpublish_video(request: Request, video_id: int):
     """Unpublish a video (hide it from the public site)."""
@@ -2023,7 +2219,7 @@ async def unpublish_video(request: Request, video_id: int):
     return {"status": "ok", "published": False}
 
 
-@app.get("/api/videos/{video_id}/tags")
+@v1_router.get("/videos/{video_id}/tags")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_tags(request: Request, video_id: int) -> List[VideoTagInfo]:
     """Get all tags for a video."""
@@ -2043,7 +2239,7 @@ async def get_video_tags(request: Request, video_id: int) -> List[VideoTagInfo]:
     return [VideoTagInfo(id=row["id"], name=row["name"], slug=row["slug"]) for row in rows]
 
 
-@app.put("/api/videos/{video_id}/tags")
+@v1_router.put("/videos/{video_id}/tags")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def set_video_tags(request: Request, video_id: int, data: VideoTagsUpdate) -> List[VideoTagInfo]:
     """Set tags for a video (replaces all existing tags)."""
@@ -2094,7 +2290,7 @@ async def set_video_tags(request: Request, video_id: int, data: VideoTagsUpdate)
     return [VideoTagInfo(id=row["id"], name=row["name"], slug=row["slug"]) for row in rows]
 
 
-@app.delete("/api/videos/{video_id}/tags/{tag_id}")
+@v1_router.delete("/videos/{video_id}/tags/{tag_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def remove_video_tag(request: Request, video_id: int, tag_id: int):
     """Remove a single tag from a video."""
@@ -2170,7 +2366,7 @@ def _cleanup_frames_directory(slug: str) -> None:
         shutil.rmtree(frames_dir)
 
 
-@app.get("/api/videos/{video_id}/thumbnail")
+@v1_router.get("/videos/{video_id}/thumbnail")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_thumbnail_info(request: Request, video_id: int) -> ThumbnailInfoResponse:
     """Get current thumbnail information for a video."""
@@ -2192,7 +2388,7 @@ async def get_thumbnail_info(request: Request, video_id: int) -> ThumbnailInfoRe
     )
 
 
-@app.post("/api/videos/{video_id}/thumbnail/frames")
+@v1_router.post("/videos/{video_id}/thumbnail/frames")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def generate_thumbnail_frames(request: Request, video_id: int) -> ThumbnailFramesResponse:
     """
@@ -2244,12 +2440,13 @@ async def generate_thumbnail_frames(request: Request, video_id: int) -> Thumbnai
     try:
         await asyncio.gather(*tasks)
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate frames: {str(e)}")
+        logger.exception(f"Failed to generate frames for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"frame_generation:{video_id}"))
 
     return ThumbnailFramesResponse(video_id=video_id, frames=frames)
 
 
-@app.post("/api/videos/{video_id}/thumbnail/upload")
+@v1_router.post("/videos/{video_id}/thumbnail/upload")
 @limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
 async def upload_custom_thumbnail(
     request: Request,
@@ -2328,7 +2525,8 @@ async def upload_custom_thumbnail(
 
         if process.returncode != 0:
             error_msg = stderr.decode("utf-8", errors="ignore")[:200]
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {error_msg}")
+            logger.warning(f"Image conversion failed for video {video_id}: {error_msg}")
+            raise HTTPException(status_code=400, detail="Invalid image file or unsupported format")
 
         # Update database
         await db_execute_with_retry(
@@ -2362,7 +2560,7 @@ async def upload_custom_thumbnail(
             temp_path.unlink()
 
 
-@app.post("/api/videos/{video_id}/thumbnail/select")
+@v1_router.post("/videos/{video_id}/thumbnail/select")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def select_thumbnail_frame(
     request: Request,
@@ -2402,7 +2600,8 @@ async def select_thumbnail_frame(
     try:
         await generate_thumbnail(source_path, thumbnail_path, timestamp=timestamp, timeout=30.0)
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+        logger.exception(f"Failed to generate thumbnail for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"thumbnail_select:{video_id}"))
 
     # Update database
     await db_execute_with_retry(
@@ -2433,7 +2632,7 @@ async def select_thumbnail_frame(
     )
 
 
-@app.post("/api/videos/{video_id}/thumbnail/revert")
+@v1_router.post("/videos/{video_id}/thumbnail/revert")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse:
     """
@@ -2468,7 +2667,8 @@ async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse
     try:
         await generate_thumbnail(source_path, thumbnail_path, timestamp=default_timestamp, timeout=30.0)
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+        logger.exception(f"Failed to revert thumbnail for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"thumbnail_revert:{video_id}"))
 
     # Update database
     await db_execute_with_retry(
@@ -2497,7 +2697,7 @@ async def revert_thumbnail(request: Request, video_id: int) -> ThumbnailResponse
     )
 
 
-@app.delete("/api/videos/{video_id}")
+@v1_router.delete("/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_video(
     request: Request,
@@ -2657,7 +2857,7 @@ async def delete_video(
 # ============ Bulk Operations ============
 
 
-@app.post("/api/videos/bulk/delete")
+@v1_router.post("/videos/bulk/delete")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkDeleteResponse:
     """
@@ -2791,7 +2991,7 @@ async def bulk_delete_videos(request: Request, data: BulkDeleteRequest) -> BulkD
     )
 
 
-@app.post("/api/videos/bulk/update")
+@v1_router.post("/videos/bulk/update")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkUpdateResponse:
     """
@@ -2880,7 +3080,7 @@ async def bulk_update_videos(request: Request, data: BulkUpdateRequest) -> BulkU
     )
 
 
-@app.post("/api/videos/bulk/retranscode")
+@v1_router.post("/videos/bulk/retranscode")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest) -> BulkRetranscodeResponse:
     """
@@ -2999,7 +3199,7 @@ async def bulk_retranscode_videos(request: Request, data: BulkRetranscodeRequest
     )
 
 
-@app.post("/api/videos/bulk/restore")
+@v1_router.post("/videos/bulk/restore")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> BulkRestoreResponse:
     """
@@ -3104,7 +3304,7 @@ async def bulk_restore_videos(request: Request, data: BulkRestoreRequest) -> Bul
     )
 
 
-@app.post("/api/videos/{video_id}/restore")
+@v1_router.post("/videos/{video_id}/restore")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def restore_video(request: Request, video_id: int):
     """Restore a soft-deleted video from archive."""
@@ -3189,7 +3389,7 @@ async def restore_video(request: Request, video_id: int):
     return {"status": "ok", "message": "Video restored from archive"}
 
 
-@app.post("/api/videos/{video_id}/retry")
+@v1_router.post("/videos/{video_id}/retry")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def retry_video(request: Request, video_id: int):
     """Retry processing a failed video."""
@@ -3234,7 +3434,7 @@ async def retry_video(request: Request, video_id: int):
     return {"status": "ok", "message": "Video queued for retry"}
 
 
-@app.post("/api/videos/{video_id}/re-upload")
+@v1_router.post("/videos/{video_id}/re-upload")
 @limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
 async def re_upload_video(
     request: Request,
@@ -3367,7 +3567,7 @@ async def re_upload_video(
     }
 
 
-@app.get("/api/videos/{video_id}/progress")
+@v1_router.get("/videos/{video_id}/progress")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_progress(request: Request, video_id: int) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
@@ -3426,7 +3626,7 @@ async def get_video_progress(request: Request, video_id: int) -> TranscodingProg
     )
 
 
-@app.get("/api/videos/{video_id}/qualities")
+@v1_router.get("/videos/{video_id}/qualities")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_qualities(request: Request, video_id: int) -> VideoQualitiesResponse:
     """Get available and existing qualities for a video."""
@@ -3465,7 +3665,7 @@ async def get_video_qualities(request: Request, video_id: int) -> VideoQualities
     )
 
 
-@app.post("/api/videos/{video_id}/retranscode")
+@v1_router.post("/videos/{video_id}/retranscode")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def retranscode_video(
     request: Request,
@@ -3565,7 +3765,7 @@ async def retranscode_video(
 # ============ Transcription ============
 
 
-@app.get("/api/videos/{video_id}/transcript")
+@v1_router.get("/videos/{video_id}/transcript")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_transcript(request: Request, video_id: int) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
@@ -3597,7 +3797,7 @@ async def get_video_transcript(request: Request, video_id: int) -> Transcription
     )
 
 
-@app.post("/api/videos/{video_id}/transcribe")
+@v1_router.post("/videos/{video_id}/transcribe")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def trigger_transcription(request: Request, video_id: int, data: TranscriptionTrigger = None):
     """Manually trigger transcription for a video."""
@@ -3669,7 +3869,7 @@ async def trigger_transcription(request: Request, video_id: int, data: Transcrip
     return {"status": "ok", "message": "Transcription queued"}
 
 
-@app.put("/api/videos/{video_id}/transcript")
+@v1_router.put("/videos/{video_id}/transcript")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_transcript(request: Request, video_id: int, data: TranscriptionUpdate):
     """Manually edit/correct transcript text and regenerate VTT."""
@@ -3709,7 +3909,7 @@ async def update_transcript(request: Request, video_id: int, data: Transcription
     return {"status": "ok", "message": "Transcript updated", "word_count": word_count}
 
 
-@app.delete("/api/videos/{video_id}/transcript")
+@v1_router.delete("/videos/{video_id}/transcript")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_transcript(request: Request, video_id: int):
     """Delete transcription and VTT file for a video."""
@@ -3748,7 +3948,7 @@ async def delete_transcript(request: Request, video_id: int):
 # ============ Analytics ============
 
 
-@app.get("/api/analytics/overview")
+@v1_router.get("/analytics/overview")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_overview(request: Request, response: Response) -> AnalyticsOverview:
     """Get global analytics overview."""
@@ -3859,7 +4059,7 @@ async def analytics_overview(request: Request, response: Response) -> AnalyticsO
     return AnalyticsOverview(**result_data)
 
 
-@app.get("/api/analytics/videos")
+@v1_router.get("/analytics/videos")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_videos(
     request: Request,
@@ -3971,7 +4171,7 @@ async def analytics_videos(
     return VideoAnalyticsListResponse(**result_data)
 
 
-@app.get("/api/analytics/videos/{video_id}")
+@v1_router.get("/analytics/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_video_detail(request: Request, response: Response, video_id: int) -> VideoAnalyticsDetail:
     """Get detailed analytics for a specific video."""
@@ -4083,7 +4283,7 @@ async def analytics_video_detail(request: Request, response: Response, video_id:
     return VideoAnalyticsDetail(**result_data)
 
 
-@app.get("/api/analytics/trends")
+@v1_router.get("/analytics/trends")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def analytics_trends(
     request: Request,
@@ -4157,7 +4357,7 @@ async def analytics_trends(
     return TrendsResponse(**result_data)
 
 
-@app.get("/api/videos/export")
+@v1_router.get("/videos/export")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def export_videos(
     request: Request,
@@ -4332,7 +4532,7 @@ def determine_worker_status(
     return "idle"
 
 
-@app.get("/api/workers")
+@v1_router.get("/workers")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
     """
@@ -4462,7 +4662,7 @@ async def list_workers_dashboard(request: Request) -> WorkerDashboardResponse:
     )
 
 
-@app.get("/api/workers/active-jobs")
+@v1_router.get("/workers/active-jobs")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_active_jobs(request: Request) -> ActiveJobsResponse:
     """
@@ -4560,7 +4760,7 @@ async def list_active_jobs(request: Request) -> ActiveJobsResponse:
     )
 
 
-@app.get("/api/workers/{worker_id}")
+@v1_router.get("/workers/{worker_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailResponse:
     """
@@ -4696,7 +4896,7 @@ async def get_worker_detail(request: Request, worker_id: str) -> WorkerDetailRes
     )
 
 
-@app.put("/api/workers/{worker_id}/disable")
+@v1_router.put("/workers/{worker_id}/disable")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def disable_worker(request: Request, worker_id: str):
     """
@@ -4752,7 +4952,7 @@ async def disable_worker(request: Request, worker_id: str):
     return {"status": "ok", "message": "Worker disabled"}
 
 
-@app.put("/api/workers/{worker_id}/enable")
+@v1_router.put("/workers/{worker_id}/enable")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def enable_worker(request: Request, worker_id: str):
     """
@@ -4782,7 +4982,7 @@ async def enable_worker(request: Request, worker_id: str):
     return {"status": "ok", "message": "Worker enabled"}
 
 
-@app.delete("/api/workers/{worker_id}")
+@v1_router.delete("/workers/{worker_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_worker(
     request: Request,
@@ -4861,7 +5061,7 @@ async def delete_worker(
 # ============ Worker Remote Control (Issue #410) ============
 
 
-@app.post("/api/admin/workers/{worker_id}/restart")
+@v1_router.post("/admin/workers/{worker_id}/restart")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def restart_worker(request: Request, worker_id: str):
     """
@@ -4916,7 +5116,7 @@ async def restart_worker(request: Request, worker_id: str):
     return {"status": "ok", "message": f"Restart command sent to worker {worker['worker_name'] or worker_id[:8]}"}
 
 
-@app.post("/api/admin/workers/{worker_id}/stop")
+@v1_router.post("/admin/workers/{worker_id}/stop")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def stop_worker(request: Request, worker_id: str):
     """
@@ -4971,7 +5171,7 @@ async def stop_worker(request: Request, worker_id: str):
     return {"status": "ok", "message": f"Stop command sent to worker {worker['worker_name'] or worker_id[:8]}"}
 
 
-@app.post("/api/admin/workers/restart-all")
+@v1_router.post("/admin/workers/restart-all")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def restart_all_workers(request: Request):
     """
@@ -5025,7 +5225,7 @@ async def restart_all_workers(request: Request):
     return {"status": "ok", "message": f"Restart command broadcast to {len(online_workers)} workers"}
 
 
-@app.post("/api/admin/workers/{worker_id}/update")
+@v1_router.post("/admin/workers/{worker_id}/update")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_worker(request: Request, worker_id: str):
     """
@@ -5087,7 +5287,7 @@ async def update_worker(request: Request, worker_id: str):
 # ============ Deployment Events (Issue #410 Phase 4) ============
 
 
-@app.get("/api/admin/deployments")
+@v1_router.get("/admin/deployments")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_deployment_events(
     request: Request,
@@ -5161,7 +5361,7 @@ async def _log_deployment_event(
     return result
 
 
-@app.get("/api/admin/workers/{worker_id}/logs")
+@v1_router.get("/admin/workers/{worker_id}/logs")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_worker_logs(
     request: Request,
@@ -5228,7 +5428,7 @@ async def get_worker_logs(
     }
 
 
-@app.get("/api/admin/workers/{worker_id}/metrics")
+@v1_router.get("/admin/workers/{worker_id}/metrics")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_worker_metrics(request: Request, worker_id: str):
     """
@@ -5288,7 +5488,7 @@ async def get_worker_metrics(request: Request, worker_id: str):
 # ============ Server-Sent Events (SSE) Endpoints ============
 
 
-@app.get("/api/events/progress")
+@v1_router.get("/events/progress")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def sse_progress(
     request: Request,
@@ -5396,7 +5596,7 @@ async def sse_progress(
     return EventSourceResponse(event_generator())
 
 
-@app.get("/api/events/workers")
+@v1_router.get("/events/workers")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def sse_workers(request: Request):
     """
@@ -5653,7 +5853,7 @@ async def _get_workers_state() -> dict:
 # ============================================================================
 
 
-@app.get("/api/settings/watermark")
+@v1_router.get("/settings/watermark")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_admin_watermark_settings(request: Request):
     """
@@ -5689,7 +5889,7 @@ async def get_admin_watermark_settings(request: Request):
     }
 
 
-@app.get("/api/settings/watermark/image")
+@v1_router.get("/settings/watermark/image")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_admin_watermark_image(request: Request):
     """Serve the watermark image for admin preview."""
@@ -5718,7 +5918,7 @@ async def get_admin_watermark_image(request: Request):
     return FileResponse(watermark_path, media_type=content_type)
 
 
-@app.post("/api/settings/watermark/upload")
+@v1_router.post("/settings/watermark/upload")
 @limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
 async def upload_watermark_image(
     request: Request,
@@ -5812,7 +6012,7 @@ async def upload_watermark_image(
         raise HTTPException(status_code=500, detail="Failed to save watermark image")
 
 
-@app.delete("/api/settings/watermark")
+@v1_router.delete("/settings/watermark")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_watermark_image(request: Request):
     """
@@ -5855,13 +6055,740 @@ async def delete_watermark_image(request: Request):
         raise HTTPException(status_code=500, detail="Failed to delete watermark image")
 
 
+# ============================================================================
+# Branding Settings Endpoints (Issue #214)
+# ============================================================================
+
+# Cached branding settings with lock for thread safety
+_cached_branding_settings: Optional[Dict[str, Any]] = None
+_cached_branding_settings_time: float = 0
+_BRANDING_SETTINGS_CACHE_TTL = 60  # seconds
+_branding_cache_lock = asyncio.Lock()
+
+
+def validate_safe_path(base: Path, user_path: str) -> Path:
+    """
+    Validate that a path stays within the base directory.
+
+    Args:
+        base: The base directory that the path must be contained within
+        user_path: The user-provided path component
+
+    Returns:
+        The validated, resolved path
+
+    Raises:
+        HTTPException: If path traversal is detected
+    """
+    if not user_path:
+        raise HTTPException(status_code=400, detail="Path cannot be empty")
+
+    # Check for obvious path traversal attempts
+    if ".." in user_path:
+        logger.warning(f"Path traversal attempt blocked: {user_path}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    try:
+        full_path = (base / user_path).resolve()
+        base_resolved = base.resolve()
+
+        # Verify the resolved path is within the base directory
+        full_path.relative_to(base_resolved)
+
+        return full_path
+    except (ValueError, OSError) as e:
+        logger.warning(f"Path validation failed for {user_path}: {e}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def sanitize_svg(content: bytes) -> bytes:
+    """
+    Sanitize SVG content by removing potentially dangerous elements and attributes.
+
+    Removes:
+    - <script> tags
+    - Event handler attributes (onclick, onload, onerror, etc.)
+    - javascript: URLs
+    - data: URLs (can contain scripts)
+    - <foreignObject> elements (can embed HTML)
+
+    Args:
+        content: Raw SVG file content
+
+    Returns:
+        Sanitized SVG content
+    """
+    try:
+        # Decode to string for regex processing
+        svg_str = content.decode("utf-8")
+
+        # Remove script tags and their content
+        svg_str = re.sub(r"<script[^>]*>.*?</script>", "", svg_str, flags=re.IGNORECASE | re.DOTALL)
+        svg_str = re.sub(r"<script[^>]*/>", "", svg_str, flags=re.IGNORECASE)
+
+        # Remove foreignObject elements (can embed arbitrary HTML)
+        svg_str = re.sub(r"<foreignObject[^>]*>.*?</foreignObject>", "", svg_str, flags=re.IGNORECASE | re.DOTALL)
+        svg_str = re.sub(r"<foreignObject[^>]*/>", "", svg_str, flags=re.IGNORECASE)
+
+        # Remove all event handler attributes (on*)
+        svg_str = re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', "", svg_str, flags=re.IGNORECASE)
+        svg_str = re.sub(r"\s+on\w+\s*=\s*[^\s>]+", "", svg_str, flags=re.IGNORECASE)
+
+        # Remove javascript: URLs
+        svg_str = re.sub(r'href\s*=\s*["\']javascript:[^"\']*["\']', 'href=""', svg_str, flags=re.IGNORECASE)
+        svg_str = re.sub(r"xlink:href\s*=\s*[\"']javascript:[^\"']*[\"']", 'xlink:href=""', svg_str, flags=re.IGNORECASE)
+
+        # Remove data: URLs (can contain embedded scripts)
+        svg_str = re.sub(r'href\s*=\s*["\']data:[^"\']*["\']', 'href=""', svg_str, flags=re.IGNORECASE)
+        svg_str = re.sub(r"xlink:href\s*=\s*[\"']data:[^\"']*[\"']", 'xlink:href=""', svg_str, flags=re.IGNORECASE)
+
+        # Remove set and animate elements that can modify attributes to dangerous values
+        svg_str = re.sub(r"<set[^>]*attributeName\s*=\s*[\"']on\w+[\"'][^>]*>", "", svg_str, flags=re.IGNORECASE)
+
+        return svg_str.encode("utf-8")
+    except UnicodeDecodeError:
+        # If we can't decode as UTF-8, reject the file
+        raise HTTPException(status_code=400, detail="Invalid SVG encoding")
+
+
+def sanitize_custom_css(css: str) -> str:
+    """
+    Sanitize custom CSS to only allow CSS variable declarations.
+
+    This prevents CSS injection attacks by restricting custom CSS to:
+    - CSS custom property (variable) declarations
+    - Only in :root or body selectors
+
+    Blocks:
+    - url() values (prevent data exfiltration)
+    - @import rules
+    - expression() (IE-specific)
+    - javascript: URLs
+    - Arbitrary selectors (only :root and body allowed)
+
+    Args:
+        css: The custom CSS string to sanitize
+
+    Returns:
+        Sanitized CSS containing only safe variable declarations
+    """
+    if not css or not css.strip():
+        return ""
+
+    # Remove comments (both block and potentially dangerous constructs)
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+
+    # Block dangerous patterns
+    dangerous_patterns = [
+        r"@import\b",  # @import rules
+        r"expression\s*\(",  # IE expression()
+        r"javascript\s*:",  # javascript: URLs
+        r"behavior\s*:",  # IE behavior
+        r"-moz-binding\s*:",  # Firefox XBL
+        r"url\s*\(\s*[\"']?data:",  # data: URLs in url()
+    ]
+
+    for pattern in dangerous_patterns:
+        if re.search(pattern, css, re.IGNORECASE):
+            logger.warning(f"Blocked dangerous CSS pattern: {pattern}")
+            raise HTTPException(
+                status_code=400,
+                detail="Custom CSS contains disallowed patterns. Only CSS variables are allowed.",
+            )
+
+    # Parse and extract only valid CSS variable declarations
+    # Match :root { --var: value; } or body { --var: value; } patterns
+    safe_vars = []
+
+    # Extract variable declarations from :root or body blocks
+    block_pattern = r"(?::root|body)\s*\{([^}]+)\}"
+    blocks = re.findall(block_pattern, css, re.IGNORECASE | re.DOTALL)
+
+    # Also handle bare variable declarations (without selector)
+    all_content = css
+    for block in blocks:
+        all_content += " " + block
+
+    # Extract individual variable declarations: --name: value;
+    var_pattern = r"(--[\w-]+)\s*:\s*([^;]+);"
+    for match in re.finditer(var_pattern, all_content):
+        var_name = match.group(1).strip()
+        var_value = match.group(2).strip()
+
+        # Validate variable name starts with --vlog- prefix (optional but recommended)
+        # For now, allow any --variable but block url() values
+        if re.search(r"url\s*\(", var_value, re.IGNORECASE):
+            logger.warning(f"Blocked url() in CSS variable: {var_name}")
+            continue
+
+        # Block expression/javascript in values
+        if re.search(r"expression\s*\(|javascript:", var_value, re.IGNORECASE):
+            logger.warning(f"Blocked dangerous value in CSS variable: {var_name}")
+            continue
+
+        safe_vars.append(f"  {var_name}: {var_value};")
+
+    if not safe_vars:
+        return ""
+
+    # Return sanitized CSS wrapped in :root
+    return ":root {\n" + "\n".join(safe_vars) + "\n}"
+
+
+def validate_footer_links(links: Any) -> list:
+    """
+    Validate and sanitize footer links to prevent XSS via javascript: URLs.
+
+    Args:
+        links: The footer links data (should be a list of {label, url} objects)
+
+    Returns:
+        Validated list of footer links
+
+    Raises:
+        HTTPException: If links contain invalid or dangerous URLs
+    """
+    if links is None:
+        return []
+
+    if not isinstance(links, list):
+        raise HTTPException(status_code=400, detail="Footer links must be a list")
+
+    validated = []
+    dangerous_protocols = ["javascript:", "data:", "vbscript:", "file:"]
+
+    for i, link in enumerate(links):
+        if not isinstance(link, dict):
+            raise HTTPException(status_code=400, detail=f"Footer link {i} must be an object")
+
+        label = link.get("label", "").strip()
+        url = link.get("url", "").strip()
+
+        if not label:
+            raise HTTPException(status_code=400, detail=f"Footer link {i} must have a label")
+
+        if not url:
+            raise HTTPException(status_code=400, detail=f"Footer link {i} must have a URL")
+
+        # Check for dangerous protocols
+        url_lower = url.lower().strip()
+        for protocol in dangerous_protocols:
+            if url_lower.startswith(protocol):
+                logger.warning(f"Blocked dangerous URL protocol in footer link: {url}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Footer link URLs cannot use {protocol} protocol",
+                )
+
+        # Allow http, https, mailto, tel, and relative URLs
+        if not (
+            url_lower.startswith("http://")
+            or url_lower.startswith("https://")
+            or url_lower.startswith("mailto:")
+            or url_lower.startswith("tel:")
+            or url_lower.startswith("/")
+            or url_lower.startswith("#")
+        ):
+            # If it doesn't start with a known safe protocol, assume it's a relative URL
+            # but still block anything that looks like a protocol
+            if ":" in url.split("/")[0]:
+                logger.warning(f"Blocked unknown protocol in footer link: {url}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Footer link URLs must use http, https, mailto, tel, or be relative paths",
+                )
+
+        validated.append({"label": label, "url": url})
+
+    return validated
+
+
+async def get_branding_settings() -> Dict[str, Any]:
+    """Get branding settings from database with caching and proper locking."""
+    import time
+
+    global _cached_branding_settings, _cached_branding_settings_time
+
+    now = time.time()
+
+    # Fast path: check cache without lock
+    if _cached_branding_settings and (now - _cached_branding_settings_time) < _BRANDING_SETTINGS_CACHE_TTL:
+        return _cached_branding_settings
+
+    # Slow path: acquire lock and refresh cache
+    async with _branding_cache_lock:
+        # Double-check after acquiring lock
+        now = time.time()
+        if _cached_branding_settings and (now - _cached_branding_settings_time) < _BRANDING_SETTINGS_CACHE_TTL:
+            return _cached_branding_settings
+
+        try:
+            from api.settings_service import get_settings_service
+
+            service = get_settings_service()
+
+            settings = {
+                "site_name": await service.get("branding.site_name", "VLog"),
+                "logo_path": await service.get("branding.logo_path", None),
+                "favicon_path": await service.get("branding.favicon_path", None),
+                "footer_text": await service.get("branding.footer_text", None),
+                "footer_links": await service.get("branding.footer_links", []),
+            }
+
+            _cached_branding_settings = settings
+            _cached_branding_settings_time = now
+
+        except Exception as e:
+            logger.debug(f"Failed to get branding settings from DB, using defaults: {e}")
+            _cached_branding_settings = {
+                "site_name": "VLog",
+                "logo_path": None,
+                "favicon_path": None,
+                "footer_text": None,
+                "footer_links": [],
+            }
+            _cached_branding_settings_time = now
+
+    return _cached_branding_settings
+
+
+@v1_router.get("/settings/branding")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_branding_settings(request: Request):
+    """
+    Get current branding configuration.
+
+    Returns the current branding settings from database.
+    """
+    settings = await get_branding_settings()
+
+    logo_exists = False
+    if settings["logo_path"]:
+        logo_file = NAS_STORAGE / settings["logo_path"]
+        logo_exists = logo_file.exists()
+
+    favicon_exists = False
+    if settings["favicon_path"]:
+        favicon_file = NAS_STORAGE / settings["favicon_path"]
+        favicon_exists = favicon_file.exists()
+
+    return {
+        "site_name": settings["site_name"],
+        "logo_path": settings["logo_path"],
+        "logo_exists": logo_exists,
+        "logo_url": "/api/v1/settings/branding/logo" if logo_exists else None,
+        "favicon_path": settings["favicon_path"],
+        "favicon_exists": favicon_exists,
+        "favicon_url": "/api/v1/settings/branding/favicon" if favicon_exists else None,
+        "footer_text": settings["footer_text"],
+        "footer_links": settings["footer_links"],
+    }
+
+
+@v1_router.get("/settings/branding/logo")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_logo_image(request: Request):
+    """Serve the logo image for admin preview."""
+    settings = await get_branding_settings()
+
+    if not settings["logo_path"]:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    # Validate path is within storage directory (prevent path traversal)
+    logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    ext = logo_path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        logo_path,
+        media_type=content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@v1_router.post("/settings/branding/logo/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_logo_image(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a new logo image.
+
+    Accepts: PNG, JPEG, WebP, SVG, GIF (max 10MB)
+    For best results, use a PNG or SVG with transparency.
+    SVG files are automatically sanitized to remove scripts.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"}
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported image format. Allowed: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_THUMBNAIL_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+        )
+
+    settings = await get_branding_settings()
+
+    # Always use correct extension for new uploads (fixes MIME type mismatch)
+    target_path = NAS_STORAGE / f"branding/logo{ext}"
+    old_logo_path = None
+    if settings["logo_path"]:
+        try:
+            old_logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
+        except HTTPException:
+            old_logo_path = None  # Invalid old path, ignore
+
+    # Ensure branding directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Validate target path is within storage
+    target_path = validate_safe_path(NAS_STORAGE, f"branding/logo{ext}")
+
+    temp_path = NAS_STORAGE / f"logo_temp_{uuid.uuid4()}{ext}"
+    try:
+        total_size = 0
+        chunks = []
+        while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+            total_size += len(chunk)
+            if total_size > MAX_THUMBNAIL_UPLOAD_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size: {MAX_THUMBNAIL_UPLOAD_SIZE // (1024 * 1024)}MB",
+                )
+            chunks.append(chunk)
+
+        content = b"".join(chunks)
+
+        # Sanitize SVG files to prevent XSS
+        if ext == ".svg":
+            content = sanitize_svg(content)
+
+        with open(temp_path, "wb") as f:
+            f.write(content)
+
+        shutil.move(str(temp_path), str(target_path))
+
+        # Delete old logo if it exists and is different
+        if old_logo_path and old_logo_path.exists() and old_logo_path != target_path:
+            try:
+                old_logo_path.unlink()
+            except OSError:
+                logger.warning(f"Failed to delete old logo: {old_logo_path}")
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=str(target_path.name),
+            details={"action": "logo_upload", "original_filename": file.filename, "size": total_size},
+        )
+
+        relative_path = str(target_path.relative_to(NAS_STORAGE))
+
+        # Update the setting in database
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.logo_path", relative_path, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {
+            "status": "ok",
+            "message": "Logo uploaded successfully",
+            "path": relative_path,
+            "size": total_size,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except (NameError, OSError):
+            pass  # temp_path not defined or cleanup failed
+        logger.error(f"Failed to upload logo: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save logo image")
+
+
+@v1_router.delete("/settings/branding/logo")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_logo_image(request: Request):
+    """Delete the current logo image."""
+    settings = await get_branding_settings()
+
+    if not settings["logo_path"]:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    # Validate path to prevent traversal attacks
+    logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    try:
+        logo_path.unlink()
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=settings["logo_path"],
+            details={"action": "logo_delete"},
+        )
+
+        # Clear the setting
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.logo_path", None, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {"status": "ok", "message": "Logo deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete logo: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete logo image")
+
+
+@v1_router.get("/settings/branding/favicon")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_admin_favicon(request: Request):
+    """Serve the favicon for admin preview."""
+    settings = await get_branding_settings()
+
+    if not settings["favicon_path"]:
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    # Validate path to prevent traversal attacks
+    favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    ext = favicon_path.suffix.lower()
+    content_types = {
+        ".ico": "image/x-icon",
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        favicon_path,
+        media_type=content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@v1_router.post("/settings/branding/favicon/upload")
+@limiter.limit(RATE_LIMIT_ADMIN_UPLOAD)
+async def upload_favicon(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a new favicon.
+
+    Accepts: ICO, PNG, SVG (max 1MB)
+    For best results, use a square image (32x32 or 64x64 for ICO, any size for SVG).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".ico", ".png", ".svg"}
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported favicon format. Allowed: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    max_favicon_size = 1 * 1024 * 1024  # 1MB
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > max_favicon_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {max_favicon_size // (1024 * 1024)}MB",
+        )
+
+    settings = await get_branding_settings()
+
+    # Delete old favicon if exists (with path validation)
+    if settings["favicon_path"]:
+        try:
+            old_favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
+            if old_favicon_path.exists():
+                old_favicon_path.unlink()
+        except HTTPException:
+            pass  # Old file doesn't exist or invalid path, continue with upload
+
+    # Validate and set target path
+    target_path = validate_safe_path(NAS_STORAGE, f"branding/favicon{ext}")
+
+    # Ensure branding directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_path = NAS_STORAGE / f"favicon_temp_{uuid.uuid4()}{ext}"
+    try:
+        total_size = 0
+        with open(temp_path, "wb") as f:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                total_size += len(chunk)
+                if total_size > max_favicon_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {max_favicon_size // (1024 * 1024)}MB",
+                    )
+                f.write(chunk)
+
+        # Sanitize SVG files to prevent XSS
+        if ext == ".svg":
+            content = temp_path.read_bytes()
+            content = sanitize_svg(content)
+            temp_path.write_bytes(content)
+
+        shutil.move(str(temp_path), str(target_path))
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=str(target_path.name),
+            details={"action": "favicon_upload", "original_filename": file.filename, "size": total_size},
+        )
+
+        relative_path = str(target_path.relative_to(NAS_STORAGE))
+
+        # Update the setting in database
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.favicon_path", relative_path, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {
+            "status": "ok",
+            "message": "Favicon uploaded successfully",
+            "path": relative_path,
+            "size": total_size,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except (NameError, OSError):
+            pass  # temp_path not defined or cleanup failed
+        logger.error(f"Failed to upload favicon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save favicon")
+
+
+@v1_router.delete("/settings/branding/favicon")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_favicon(request: Request):
+    """Delete the current favicon."""
+    settings = await get_branding_settings()
+
+    if not settings["favicon_path"]:
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    # Validate path to prevent traversal attacks
+    favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    try:
+        favicon_path.unlink()
+
+        log_audit(
+            AuditAction.SETTINGS_CHANGE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="branding",
+            resource_id=None,
+            resource_name=settings["favicon_path"],
+            details={"action": "favicon_delete"},
+        )
+
+        # Clear the setting
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+        await service.set("branding.favicon_path", None, updated_by="admin")
+
+        # Invalidate cache with lock
+        async with _branding_cache_lock:
+            global _cached_branding_settings
+            _cached_branding_settings = None
+        reset_theme_settings_cache()
+
+        return {"status": "ok", "message": "Favicon deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete favicon: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete favicon")
+
+
 # =============================================================================
 # Runtime Settings API (Database-backed configuration)
 # See: https://github.com/filthyrake/vlog/issues/400
 # =============================================================================
 
 
-@app.get("/api/settings")
+@v1_router.get("/settings")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_settings(request: Request) -> SettingsByCategoryResponse:
     """
@@ -5893,7 +6820,7 @@ async def list_settings(request: Request) -> SettingsByCategoryResponse:
     return SettingsByCategoryResponse(categories=categories_dict)
 
 
-@app.get("/api/settings/categories")
+@v1_router.get("/settings/categories")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_settings_categories(request: Request) -> List[str]:
     """
@@ -5906,7 +6833,7 @@ async def list_settings_categories(request: Request) -> List[str]:
     return await service.get_categories()
 
 
-@app.get("/api/settings/category/{category}")
+@v1_router.get("/settings/category/{category}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_settings_by_category(request: Request, category: str) -> SettingsCategoryResponse:
     """
@@ -5940,7 +6867,7 @@ async def get_settings_by_category(request: Request, category: str) -> SettingsC
     )
 
 
-@app.get("/api/settings/key/{key:path}")
+@v1_router.get("/settings/key/{key:path}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_setting(request: Request, key: str) -> SettingResponse:
     """
@@ -5966,7 +6893,7 @@ async def get_setting(request: Request, key: str) -> SettingResponse:
     )
 
 
-@app.put("/api/settings/key/{key:path}")
+@v1_router.put("/settings/key/{key:path}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_setting(request: Request, key: str, data: SettingUpdate) -> SettingResponse:
     """
@@ -5977,6 +6904,15 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
     If the setting doesn't exist but is in KNOWN_SETTINGS, it will be created.
     """
     from api.settings_service import KNOWN_SETTINGS
+
+    # Sanitize custom CSS to only allow CSS variable declarations (security)
+    if key == "theme.custom_css" and data.value:
+        if isinstance(data.value, str):
+            data.value = sanitize_custom_css(data.value)
+
+    # Validate footer links to prevent javascript: URLs (XSS prevention)
+    if key == "branding.footer_links":
+        data.value = validate_footer_links(data.value)
 
     service = get_settings_service()
 
@@ -6018,14 +6954,20 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
                 updated_by=existing.get("updated_by"),
             )
         except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.warning(f"Setting create failed for key {key}: {e}")
+            raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"setting_create:{key}"))
 
     try:
         await service.set(key, data.value, updated_by="admin")
     except SettingsValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"Settings validation error for key {key}: {e}")
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"setting_update:{key}"))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+
+    # Invalidate caches for branding/theme settings
+    if key.startswith("branding.") or key.startswith("theme.") or key.startswith("layout."):
+        reset_theme_settings_cache()
 
     # Audit log
     log_audit(
@@ -6052,7 +6994,7 @@ async def update_setting(request: Request, key: str, data: SettingUpdate) -> Set
     )
 
 
-@app.post("/api/settings")
+@v1_router.post("/settings")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def create_setting(request: Request, data: SettingCreate) -> SettingResponse:
     """
@@ -6079,10 +7021,12 @@ async def create_setting(request: Request, data: SettingCreate) -> SettingRespon
             updated_by="admin",
         )
     except SettingsValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"Settings validation error for key {data.key}: {e}")
+        raise HTTPException(status_code=400, detail=sanitize_error_message(str(e), logging_mode=ErrorLogging.SKIP_LOGGING, context=f"setting_create:{data.key}"))
     except UniqueConstraintError as e:
         # Race condition: another request created the setting between our check and insert
-        raise HTTPException(status_code=409, detail=str(e))
+        logger.warning(f"Unique constraint error creating setting {data.key}: {e}")
+        raise HTTPException(status_code=409, detail="Setting already exists")
 
     # Audit log
     log_audit(
@@ -6109,7 +7053,7 @@ async def create_setting(request: Request, data: SettingCreate) -> SettingRespon
     )
 
 
-@app.delete("/api/settings/key/{key:path}")
+@v1_router.delete("/settings/key/{key:path}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_setting(request: Request, key: str):
     """
@@ -6141,7 +7085,7 @@ async def delete_setting(request: Request, key: str):
     return {"status": "ok", "message": f"Setting deleted: {key}"}
 
 
-@app.post("/api/settings/export")
+@v1_router.post("/settings/export")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def export_settings(request: Request) -> SettingsExport:
     """
@@ -6176,7 +7120,7 @@ async def export_settings(request: Request) -> SettingsExport:
     )
 
 
-@app.post("/api/settings/import")
+@v1_router.post("/settings/import")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def import_settings(request: Request, data: SettingsImport):
     """
@@ -6238,7 +7182,7 @@ async def import_settings(request: Request, data: SettingsImport):
     }
 
 
-@app.post("/api/settings/invalidate-cache")
+@v1_router.post("/settings/invalidate-cache")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def invalidate_settings_cache(request: Request):
     """
@@ -6253,7 +7197,7 @@ async def invalidate_settings_cache(request: Request):
     return {"status": "ok", "message": "Settings cache invalidated"}
 
 
-@app.get("/api/settings/cache-stats")
+@v1_router.get("/settings/cache-stats")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_settings_cache_stats(request: Request):
     """
@@ -6265,7 +7209,7 @@ async def get_settings_cache_stats(request: Request):
     return service.get_cache_stats()
 
 
-@app.post("/api/settings/seed-from-env")
+@v1_router.post("/settings/seed-from-env")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def seed_settings_from_environment(request: Request):
     """
@@ -6294,7 +7238,7 @@ async def seed_settings_from_environment(request: Request):
 # =============================================================================
 
 
-@app.get("/api/reencode/status")
+@v1_router.get("/reencode/status")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_reencode_status(request: Request):
     """
@@ -6338,7 +7282,7 @@ async def get_reencode_status(request: Request):
     }
 
 
-@app.post("/api/reencode/queue")
+@v1_router.post("/reencode/queue")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def queue_videos_for_reencode(
     request: Request,
@@ -6406,7 +7350,7 @@ async def queue_videos_for_reencode(
     }
 
 
-@app.post("/api/reencode/queue-all")
+@v1_router.post("/reencode/queue-all")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def queue_all_legacy_videos(
     request: Request,
@@ -6466,7 +7410,7 @@ async def queue_all_legacy_videos(
     }
 
 
-@app.get("/api/reencode/jobs")
+@v1_router.get("/reencode/jobs")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_reencode_jobs(
     request: Request,
@@ -6538,7 +7482,7 @@ async def list_reencode_jobs(
     return {"jobs": jobs, "count": len(jobs), "total": total}
 
 
-@app.delete("/api/reencode/jobs/{job_id}")
+@v1_router.delete("/reencode/jobs/{job_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def cancel_reencode_job(request: Request, job_id: int):
     """
@@ -6565,7 +7509,7 @@ async def cancel_reencode_job(request: Request, job_id: int):
     return {"status": "ok", "message": f"Job {job_id} cancelled"}
 
 
-@app.post("/api/reencode/claim")
+@v1_router.post("/reencode/claim")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def claim_reencode_job(request: Request):
     """
@@ -6623,7 +7567,7 @@ async def claim_reencode_job(request: Request):
     }
 
 
-@app.patch("/api/reencode/{job_id}")
+@v1_router.patch("/reencode/{job_id}")
 @limiter.limit(RATE_LIMIT_WORKER_DEFAULT)
 async def update_reencode_job(
     request: Request,
@@ -6685,7 +7629,7 @@ async def update_reencode_job(
 # ============ Custom Fields ============
 
 
-@app.get("/api/custom-fields")
+@v1_router.get("/custom-fields")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_custom_fields(
     request: Request,
@@ -6772,7 +7716,7 @@ async def list_custom_fields(
     return CustomFieldListResponse(fields=fields, total_count=len(fields))
 
 
-@app.post("/api/custom-fields")
+@v1_router.post("/custom-fields")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def create_custom_field(
     request: Request,
@@ -6830,7 +7774,7 @@ async def create_custom_field(
             try:
                 re.compile(constraints_dict["pattern"])
             except re.error as e:
-                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {sanitize_error_message(str(e), context='regex_validation')}")
 
         constraints_json = json.dumps(constraints_dict)
 
@@ -6881,7 +7825,7 @@ async def create_custom_field(
     )
 
 
-@app.get("/api/custom-fields/{field_id}")
+@v1_router.get("/custom-fields/{field_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_custom_field(
     request: Request,
@@ -6943,7 +7887,7 @@ async def get_custom_field(
     )
 
 
-@app.put("/api/custom-fields/{field_id}")
+@v1_router.put("/custom-fields/{field_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_custom_field(
     request: Request,
@@ -7026,7 +7970,7 @@ async def update_custom_field(
             try:
                 re.compile(constraints_dict["pattern"])
             except re.error as e:
-                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {sanitize_error_message(str(e), context='regex_validation')}")
 
         update_values["constraints"] = json.dumps(constraints_dict)
 
@@ -7055,7 +7999,7 @@ async def update_custom_field(
     return await get_custom_field(request, field_id)
 
 
-@app.delete("/api/custom-fields/{field_id}")
+@v1_router.delete("/custom-fields/{field_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_custom_field(request: Request, field_id: int):
     """
@@ -7170,7 +8114,7 @@ def _validate_custom_field_value(field_type: str, value, options: list = None, c
     return value
 
 
-@app.get("/api/videos/{video_id}/custom-fields")
+@v1_router.get("/videos/{video_id}/custom-fields")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_custom_fields(
     request: Request,
@@ -7249,7 +8193,7 @@ async def get_video_custom_fields(
     return VideoCustomFieldsResponse(video_id=video_id, fields=fields)
 
 
-@app.put("/api/videos/{video_id}/custom-fields")
+@v1_router.put("/videos/{video_id}/custom-fields")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def set_video_custom_fields(
     request: Request,
@@ -7352,7 +8296,7 @@ async def set_video_custom_fields(
     return await get_video_custom_fields(request, video_id)
 
 
-@app.post("/api/videos/bulk/custom-fields")
+@v1_router.post("/videos/bulk/custom-fields")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def bulk_update_custom_fields(
     request: Request,
@@ -7390,7 +8334,7 @@ async def bulk_update_custom_fields(
                 constraints=constraints,
             )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid value for field '{field['name']}': {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid value for field '{field['name']}': {sanitize_error_message(str(e), context='custom_field_validation')}")
 
     # Get videos and validate they exist
     video_query = (
@@ -7531,7 +8475,7 @@ def _build_playlist_response(row: dict, video_count: int = 0, total_duration: fl
     )
 
 
-@app.get("/api/playlists")
+@v1_router.get("/playlists")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_playlists(
     request: Request,
@@ -7566,7 +8510,7 @@ async def list_playlists(
     return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
 
 
-@app.post("/api/playlists")
+@v1_router.post("/playlists")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def create_playlist(request: Request, data: PlaylistCreate) -> PlaylistResponse:
     """Create a new playlist."""
@@ -7623,7 +8567,7 @@ async def create_playlist(request: Request, data: PlaylistCreate) -> PlaylistRes
     )
 
 
-@app.get("/api/playlists/{playlist_id}")
+@v1_router.get("/playlists/{playlist_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_playlist(request: Request, playlist_id: int) -> PlaylistDetailResponse:
     """Get a playlist with its videos."""
@@ -7686,7 +8630,7 @@ async def get_playlist(request: Request, playlist_id: int) -> PlaylistDetailResp
     )
 
 
-@app.put("/api/playlists/{playlist_id}")
+@v1_router.put("/playlists/{playlist_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_playlist(request: Request, playlist_id: int, data: PlaylistUpdate) -> PlaylistResponse:
     """Update a playlist."""
@@ -7775,7 +8719,7 @@ async def update_playlist(request: Request, playlist_id: int, data: PlaylistUpda
     )
 
 
-@app.delete("/api/playlists/{playlist_id}")
+@v1_router.delete("/playlists/{playlist_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_playlist(request: Request, playlist_id: int):
     """Soft delete a playlist."""
@@ -7805,7 +8749,7 @@ async def delete_playlist(request: Request, playlist_id: int):
     return {"status": "ok"}
 
 
-@app.get("/api/playlists/{playlist_id}/videos")
+@v1_router.get("/playlists/{playlist_id}/videos")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_playlist_videos(request: Request, playlist_id: int) -> List[PlaylistVideoInfo]:
     """Get all videos in a playlist ordered by position."""
@@ -7842,7 +8786,7 @@ async def get_playlist_videos(request: Request, playlist_id: int) -> List[Playli
     ]
 
 
-@app.post("/api/playlists/{playlist_id}/videos")
+@v1_router.post("/playlists/{playlist_id}/videos")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def add_video_to_playlist(request: Request, playlist_id: int, data: AddVideoToPlaylistRequest):
     """Add a video to a playlist."""
@@ -7924,7 +8868,7 @@ async def add_video_to_playlist(request: Request, playlist_id: int, data: AddVid
     return {"status": "ok", "position": position}
 
 
-@app.delete("/api/playlists/{playlist_id}/videos/{video_id}")
+@v1_router.delete("/playlists/{playlist_id}/videos/{video_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def remove_video_from_playlist(request: Request, playlist_id: int, video_id: int):
     """Remove a video from a playlist."""
@@ -7982,7 +8926,7 @@ async def remove_video_from_playlist(request: Request, playlist_id: int, video_i
     return {"status": "ok"}
 
 
-@app.post("/api/playlists/{playlist_id}/reorder")
+@v1_router.post("/playlists/{playlist_id}/reorder")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def reorder_playlist(request: Request, playlist_id: int, data: ReorderPlaylistRequest):
     """Reorder videos in a playlist."""
@@ -8054,7 +8998,7 @@ async def reorder_playlist(request: Request, playlist_id: int, data: ReorderPlay
 # ============ Chapter Endpoints (Issue #413 Phase 7) ============
 
 
-@app.get("/api/videos/{video_id}/chapters")
+@v1_router.get("/videos/{video_id}/chapters")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_chapters(request: Request, video_id: int):
     """List all chapters for a video, ordered by position."""
@@ -8092,7 +9036,7 @@ async def list_chapters(request: Request, video_id: int):
     )
 
 
-@app.post("/api/videos/{video_id}/chapters")
+@v1_router.post("/videos/{video_id}/chapters")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
     """Create a new chapter for a video."""
@@ -8175,7 +9119,7 @@ async def create_chapter(request: Request, video_id: int, data: ChapterCreate):
     )
 
 
-@app.get("/api/videos/{video_id}/chapters/{chapter_id}")
+@v1_router.get("/videos/{video_id}/chapters/{chapter_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_chapter(request: Request, video_id: int, chapter_id: int):
     """Get a specific chapter."""
@@ -8198,7 +9142,7 @@ async def get_chapter(request: Request, video_id: int, chapter_id: int):
     )
 
 
-@app.put("/api/videos/{video_id}/chapters/{chapter_id}")
+@v1_router.put("/videos/{video_id}/chapters/{chapter_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_chapter(request: Request, video_id: int, chapter_id: int, data: ChapterUpdate):
     """Update an existing chapter."""
@@ -8261,7 +9205,7 @@ async def update_chapter(request: Request, video_id: int, chapter_id: int, data:
     )
 
 
-@app.delete("/api/videos/{video_id}/chapters/{chapter_id}")
+@v1_router.delete("/videos/{video_id}/chapters/{chapter_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_chapter(request: Request, video_id: int, chapter_id: int):
     """Delete a chapter and reorder remaining chapters."""
@@ -8311,7 +9255,7 @@ async def delete_chapter(request: Request, video_id: int, chapter_id: int):
     return {"status": "ok"}
 
 
-@app.post("/api/videos/{video_id}/chapters/reorder")
+@v1_router.post("/videos/{video_id}/chapters/reorder")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def reorder_chapters(request: Request, video_id: int, data: ReorderChaptersRequest):
     """Reorder chapters in a video."""
@@ -8388,7 +9332,7 @@ async def reorder_chapters(request: Request, video_id: int, data: ReorderChapter
     return {"status": "ok"}
 
 
-@app.post("/api/videos/{video_id}/chapters/auto-detect")
+@v1_router.post("/videos/{video_id}/chapters/auto-detect")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def auto_detect_chapters(
     request: Request, video_id: int, data: AutoDetectChaptersRequest
@@ -8622,7 +9566,7 @@ async def auto_detect_chapters(
 # =============================================================================
 
 
-@app.get("/api/sprites/status")
+@v1_router.get("/sprites/status")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_sprite_queue_status(request: Request) -> SpriteQueueStatusResponse:
     """
@@ -8656,7 +9600,7 @@ async def get_sprite_queue_status(request: Request) -> SpriteQueueStatusResponse
     return result
 
 
-@app.post("/api/videos/{video_id}/sprites/generate")
+@v1_router.post("/videos/{video_id}/sprites/generate")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def queue_sprite_generation(
     request: Request,
@@ -8731,7 +9675,7 @@ async def queue_sprite_generation(
     }
 
 
-@app.post("/api/sprites/queue-all")
+@v1_router.post("/sprites/queue-all")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def queue_all_for_sprites(
     request: Request,
@@ -8792,7 +9736,7 @@ async def queue_all_for_sprites(
     }
 
 
-@app.get("/api/sprites/jobs")
+@v1_router.get("/sprites/jobs")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_sprite_jobs(
     request: Request,
@@ -8867,7 +9811,7 @@ async def list_sprite_jobs(
     return SpriteQueueJobsResponse(jobs=jobs, count=len(jobs), total=total)
 
 
-@app.get("/api/videos/{video_id}/sprites")
+@v1_router.get("/videos/{video_id}/sprites")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_video_sprite_status(request: Request, video_id: int) -> SpriteStatusResponse:
     """
@@ -8892,7 +9836,7 @@ async def get_video_sprite_status(request: Request, video_id: int) -> SpriteStat
     )
 
 
-@app.delete("/api/sprites/jobs/{job_id}")
+@v1_router.delete("/sprites/jobs/{job_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def cancel_sprite_job(request: Request, job_id: int) -> dict:
     """
@@ -8931,7 +9875,7 @@ async def cancel_sprite_job(request: Request, job_id: int) -> dict:
 # =============================================================================
 
 
-@app.get("/api/admin/job-queue/dead-letter")
+@v1_router.get("/admin/job-queue/dead-letter")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_dead_letter_queue(
     request: Request,
@@ -9021,7 +9965,7 @@ async def get_dead_letter_queue(
         }
 
 
-@app.post("/api/admin/job-queue/dead-letter/{message_id}/reprocess")
+@v1_router.post("/admin/job-queue/dead-letter/{message_id}/reprocess")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def reprocess_dead_letter_job(
     request: Request,
@@ -9153,7 +10097,7 @@ async def reprocess_dead_letter_job(
         )
 
 
-@app.delete("/api/admin/job-queue/dead-letter/{message_id}")
+@v1_router.delete("/admin/job-queue/dead-letter/{message_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_dead_letter_entry(
     request: Request,
@@ -9202,7 +10146,7 @@ async def delete_dead_letter_entry(
         )
 
 
-@app.get("/api/admin/job-queue/stats")
+@v1_router.get("/admin/job-queue/stats")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_job_queue_stats(request: Request):
     """
@@ -9226,7 +10170,7 @@ async def get_job_queue_stats(request: Request):
 # ============ Webhook Management Endpoints (Issue #203) ============
 
 
-@app.get("/api/webhooks")
+@v1_router.get("/webhooks")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_webhooks(
     request: Request,
@@ -9287,7 +10231,7 @@ async def list_webhooks(
     return WebhookListResponse(webhooks=webhook_list, total_count=total_count)
 
 
-@app.get("/api/webhooks/stats")
+@v1_router.get("/webhooks/stats")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_webhook_stats(request: Request) -> WebhookStatsResponse:
     """
@@ -9336,7 +10280,7 @@ async def get_webhook_stats(request: Request) -> WebhookStatsResponse:
     )
 
 
-@app.post("/api/webhooks", status_code=201)
+@v1_router.post("/webhooks", status_code=201)
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def create_webhook(request: Request, data: WebhookCreate) -> WebhookResponse:
     """
@@ -9396,7 +10340,7 @@ async def create_webhook(request: Request, data: WebhookCreate) -> WebhookRespon
         )
 
 
-@app.get("/api/webhooks/{webhook_id}")
+@v1_router.get("/webhooks/{webhook_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_webhook(request: Request, webhook_id: int) -> WebhookResponse:
     """
@@ -9430,7 +10374,7 @@ async def get_webhook(request: Request, webhook_id: int) -> WebhookResponse:
     )
 
 
-@app.put("/api/webhooks/{webhook_id}")
+@v1_router.put("/webhooks/{webhook_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def update_webhook(request: Request, webhook_id: int, data: WebhookUpdate) -> WebhookResponse:
     """
@@ -9501,7 +10445,7 @@ async def update_webhook(request: Request, webhook_id: int, data: WebhookUpdate)
         )
 
 
-@app.delete("/api/webhooks/{webhook_id}")
+@v1_router.delete("/webhooks/{webhook_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def delete_webhook(request: Request, webhook_id: int):
     """
@@ -9536,7 +10480,7 @@ async def delete_webhook(request: Request, webhook_id: int):
         )
 
 
-@app.post("/api/webhooks/{webhook_id}/test")
+@v1_router.post("/webhooks/{webhook_id}/test")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def test_webhook(
     request: Request,
@@ -9567,7 +10511,7 @@ async def test_webhook(
     )
 
 
-@app.get("/api/webhooks/{webhook_id}/deliveries")
+@v1_router.get("/webhooks/{webhook_id}/deliveries")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def list_webhook_deliveries(
     request: Request,
@@ -9628,7 +10572,7 @@ async def list_webhook_deliveries(
     )
 
 
-@app.get("/api/webhooks/{webhook_id}/deliveries/{delivery_id}")
+@v1_router.get("/webhooks/{webhook_id}/deliveries/{delivery_id}")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def get_webhook_delivery(
     request: Request,
@@ -9672,7 +10616,7 @@ async def get_webhook_delivery(
     )
 
 
-@app.post("/api/webhooks/{webhook_id}/deliveries/{delivery_id}/retry")
+@v1_router.post("/webhooks/{webhook_id}/deliveries/{delivery_id}/retry")
 @limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
 async def retry_webhook_delivery(
     request: Request,
@@ -9725,6 +10669,1165 @@ async def retry_webhook_delivery(
             status_code=500,
             detail=sanitize_error_message(str(e), context="retry_delivery"),
         )
+
+
+# =============================================================================
+# Live Streaming Admin API
+# HTTP segment push for live streaming without RTMP/SRT servers
+# =============================================================================
+
+
+def _parse_qualities_json(qualities_str: Optional[str]) -> List[str]:
+    """Parse qualities JSON string to list."""
+    if not qualities_str:
+        return []
+    try:
+        return json.loads(qualities_str)
+    except json.JSONDecodeError:
+        return []
+
+
+def _build_live_stream_response(row: dict) -> LiveStreamResponse:
+    """Build LiveStreamResponse from database row."""
+    return LiveStreamResponse(
+        id=row["id"],
+        title=row["title"],
+        slug=row["slug"],
+        description=row["description"] or "",
+        status=LiveStreamStatus(row["status"]),
+        qualities=_parse_qualities_json(row["qualities"]),
+        category_id=row["category_id"],
+        dvr_enabled=row["dvr_enabled"],
+        dvr_window_seconds=row["dvr_window_seconds"],
+        auto_record_vod=row["auto_record_vod"],
+        segment_count=row["segment_count"],
+        vod_video_id=row["vod_video_id"],
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+        last_segment_at=row["last_segment_at"],
+    )
+
+
+@v1_router.get("/live/streams")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_live_streams(
+    request: Request,
+    status: Optional[str] = Query(None, description="Filter by status (idle, live, ending, ended)"),
+) -> LiveStreamListResponse:
+    """List all live streams."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    query = live_streams.select().order_by(live_streams.c.created_at.desc())
+
+    if status:
+        valid_statuses = ["idle", "live", "ending", "ended"]
+        if status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
+        query = query.where(live_streams.c.status == status)
+
+    rows = await fetch_all_with_retry(query)
+
+    return LiveStreamListResponse(
+        streams=[_build_live_stream_response(dict(row)) for row in rows],
+        total=len(rows),
+    )
+
+
+@v1_router.post("/live/streams", status_code=201)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_live_stream(request: Request, data: LiveStreamCreate) -> LiveStreamCreatedResponse:
+    """Create a new live stream. Returns the stream key (shown once)."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    # Check concurrent stream limit
+    active_count = await database.fetch_val(
+        sa.select(sa.func.count()).select_from(live_streams).where(
+            live_streams.c.status.in_(["idle", "live", "ending"])
+        )
+    )
+    if active_count >= LIVE_MAX_CONCURRENT_STREAMS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum concurrent streams ({LIVE_MAX_CONCURRENT_STREAMS}) reached",
+        )
+
+    # Generate slug
+    slug = slugify(data.title)
+
+    # Check for duplicate slug
+    existing = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if existing:
+        # Append random suffix
+        slug = f"{slug}-{secrets.token_hex(4)}"
+
+    # Generate stream key
+    stream_key = generate_stream_key()
+    key_hash = hash_stream_key(stream_key)
+    key_prefix = get_key_prefix(stream_key)
+
+    now = datetime.now(timezone.utc)
+
+    # Insert stream
+    query = live_streams.insert().values(
+        title=data.title,
+        slug=slug,
+        description=data.description,
+        stream_key_hash=key_hash,
+        stream_key_prefix=key_prefix,
+        hash_version=2,  # argon2id
+        status="idle",
+        category_id=data.category_id,
+        dvr_enabled=data.dvr_enabled,
+        dvr_window_seconds=data.dvr_window_seconds,
+        auto_record_vod=data.auto_record_vod,
+        created_at=now,
+    )
+    stream_id = await db_execute_with_retry(query)
+
+    # Create storage directory
+    stream_dir = LIVE_STORAGE_PATH / slug
+    try:
+        stream_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Failed to create live stream directory {stream_dir}: {e}")
+
+    # Audit log
+    log_audit(
+        AuditAction.CREATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=stream_id,
+        resource_name=slug,
+        details={"title": data.title},
+    )
+
+    return LiveStreamCreatedResponse(
+        id=stream_id,
+        title=data.title,
+        slug=slug,
+        description=data.description,
+        status=LiveStreamStatus.IDLE,
+        stream_key=stream_key,  # Only shown once
+        category_id=data.category_id,
+        dvr_enabled=data.dvr_enabled,
+        dvr_window_seconds=data.dvr_window_seconds,
+        auto_record_vod=data.auto_record_vod,
+        created_at=now,
+    )
+
+
+@v1_router.get("/live/streams/{slug}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_live_stream(request: Request, slug: str) -> LiveStreamResponse:
+    """Get details of a live stream."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    return _build_live_stream_response(dict(row))
+
+
+@v1_router.patch("/live/streams/{slug}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def update_live_stream(request: Request, slug: str, data: LiveStreamUpdate) -> LiveStreamResponse:
+    """Update a live stream."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Build update values
+    update_values = {}
+    if data.title is not None:
+        update_values["title"] = data.title
+    if data.description is not None:
+        update_values["description"] = data.description
+    if data.category_id is not None:
+        update_values["category_id"] = data.category_id
+    if data.dvr_enabled is not None:
+        update_values["dvr_enabled"] = data.dvr_enabled
+    if data.dvr_window_seconds is not None:
+        update_values["dvr_window_seconds"] = data.dvr_window_seconds
+    if data.auto_record_vod is not None:
+        update_values["auto_record_vod"] = data.auto_record_vod
+
+    if update_values:
+        await db_execute_with_retry(
+            live_streams.update().where(live_streams.c.slug == slug).values(**update_values)
+        )
+
+    # Fetch updated row
+    updated_row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=row["id"],
+        resource_name=slug,
+        details=update_values,
+    )
+
+    return _build_live_stream_response(dict(updated_row))
+
+
+@v1_router.post("/live/streams/{slug}/regenerate-key")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def regenerate_stream_key(request: Request, slug: str) -> LiveStreamKeyRegenerateResponse:
+    """Regenerate the stream key for a live stream."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Cannot regenerate key for live stream
+    if row["status"] == "live":
+        raise HTTPException(status_code=400, detail="Cannot regenerate key while stream is live")
+
+    # Generate new key
+    new_key = generate_stream_key()
+    new_hash = hash_stream_key(new_key)
+    new_prefix = get_key_prefix(new_key)
+
+    await db_execute_with_retry(
+        live_streams.update()
+        .where(live_streams.c.slug == slug)
+        .values(stream_key_hash=new_hash, stream_key_prefix=new_prefix)
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=row["id"],
+        resource_name=slug,
+        details={"action": "regenerate_key"},
+    )
+
+    return LiveStreamKeyRegenerateResponse(stream_key=new_key)
+
+
+@v1_router.post("/live/streams/{slug}/end")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def end_live_stream(request: Request, slug: str) -> LiveStreamResponse:
+    """End a live stream. This triggers VOD recording if enabled."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    if row["status"] == "ended":
+        raise HTTPException(status_code=400, detail="Stream has already ended")
+
+    # Revoke the stream key atomically
+    await revoke_stream_key(row["id"])
+
+    # Fetch updated row
+    updated_row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+
+    # Audit log
+    log_audit(
+        AuditAction.UPDATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=row["id"],
+        resource_name=slug,
+        details={"action": "end_stream"},
+    )
+
+    # Trigger VOD recording if auto_record_vod is enabled
+    if row["auto_record_vod"]:
+        from api.live_vod import trigger_vod_recording
+
+        def _log_vod_task_result(task: asyncio.Task) -> None:
+            """Log errors from fire-and-forget VOD recording task."""
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                logger.info(f"VOD recording task was cancelled for stream {slug}")
+                return
+            if exc is not None:
+                logger.error(f"VOD recording failed for stream {slug}: {exc}")
+
+        vod_task = asyncio.create_task(trigger_vod_recording(row["id"]))
+        vod_task.add_done_callback(_log_vod_task_result)
+        logger.info(f"Triggered VOD recording for stream {slug}")
+
+    return _build_live_stream_response(dict(updated_row))
+
+
+@v1_router.delete("/live/streams/{slug}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_live_stream(request: Request, slug: str):
+    """Delete a live stream and its segments."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(live_streams.select().where(live_streams.c.slug == slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    # Cannot delete live stream
+    if row["status"] == "live":
+        raise HTTPException(status_code=400, detail="Cannot delete while stream is live. End it first.")
+
+    stream_id = row["id"]
+
+    # Delete segments from database (CASCADE should handle this, but be explicit)
+    await db_execute_with_retry(
+        live_stream_segments.delete().where(live_stream_segments.c.stream_id == stream_id)
+    )
+
+    # Delete stream from database
+    await db_execute_with_retry(live_streams.delete().where(live_streams.c.id == stream_id))
+
+    # Delete storage directory
+    stream_dir = LIVE_STORAGE_PATH / slug
+    if stream_dir.exists():
+        try:
+            shutil.rmtree(stream_dir)
+        except OSError as e:
+            logger.error(f"Failed to delete live stream directory {stream_dir}: {e}")
+
+    # Audit log
+    log_audit(
+        AuditAction.DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="live_stream",
+        resource_id=stream_id,
+        resource_name=slug,
+    )
+
+    return {"status": "ok", "message": f"Stream '{slug}' deleted"}
+
+
+# =============================================================================
+# Comment Moderation Endpoints (Issue #213)
+# =============================================================================
+
+
+@v1_router.get("/comments")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_comments_moderation_queue(
+    request: Request,
+    status: Optional[str] = Query(None, description="Filter by status: pending, approved, rejected, spam"),
+    video_id: Optional[int] = Query(None, description="Filter by video ID"),
+    limit: int = Query(50, ge=1, le=100),
+    cursor: Optional[str] = Query(None),
+) -> CommentModerationQueueResponse:
+    """
+    Get comments for moderation (admin only).
+
+    Returns paginated list of comments, optionally filtered by status or video.
+    Default shows all non-deleted comments, ordered by newest first.
+    """
+    # Build base query
+    query = (
+        sa.select(
+            comments.c.id,
+            comments.c.video_id,
+            comments.c.user_id,
+            comments.c.content,
+            comments.c.status,
+            comments.c.video_timestamp,
+            comments.c.depth,
+            comments.c.path,
+            comments.c.parent_id,
+            comments.c.created_at,
+            comments.c.updated_at,
+            users.c.username,
+            users.c.display_name,
+            videos.c.title.label("video_title"),
+            videos.c.slug.label("video_slug"),
+        )
+        .select_from(
+            comments.join(users, comments.c.user_id == users.c.id)
+            .join(videos, comments.c.video_id == videos.c.id)
+        )
+        .where(comments.c.deleted_at.is_(None))
+        .order_by(comments.c.created_at.desc())
+    )
+
+    # Apply status filter
+    if status:
+        try:
+            status_enum = CommentStatus(status)
+            query = query.where(comments.c.status == status_enum.value)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Must be one of: pending, approved, rejected, spam"
+            )
+
+    # Apply video filter
+    if video_id:
+        query = query.where(comments.c.video_id == video_id)
+
+    # Apply cursor pagination
+    if cursor:
+        cursor_data = validate_cursor(cursor, ["created_at", "id"])
+        if cursor_data:
+            cursor_time = datetime.fromisoformat(cursor_data["created_at"])
+            cursor_id = int(cursor_data["id"])
+            query = query.where(
+                sa.or_(
+                    comments.c.created_at < cursor_time,
+                    sa.and_(
+                        comments.c.created_at == cursor_time,
+                        comments.c.id < cursor_id,
+                    ),
+                )
+            )
+
+    # Fetch limit + 1 to check if there are more
+    query = query.limit(limit + 1)
+    rows = await database.fetch_all(query)
+
+    # Determine if there's a next page
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+
+    # Build response
+    items = []
+    for row in rows:
+        items.append(
+            CommentResponse(
+                id=row["id"],
+                video_id=row["video_id"],
+                user=CommentUserInfo(
+                    id=row["user_id"],
+                    username=row["username"],
+                    display_name=row["display_name"],
+                ),
+                content=row["content"],
+                video_timestamp=float(row["video_timestamp"]) if row["video_timestamp"] else None,
+                status=row["status"],
+                depth=row["depth"],
+                parent_id=row["parent_id"],
+                path=row["path"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                is_edited=row["updated_at"] is not None,
+                reply_count=0,  # Not fetching reply counts in queue for performance
+            )
+        )
+
+    # Generate next cursor
+    next_cursor = None
+    if has_more and rows:
+        last_row = rows[-1]
+        next_cursor = encode_cursor({
+            "created_at": last_row["created_at"].isoformat(),
+            "id": str(last_row["id"]),
+        })
+
+    # Get total pending count for queue summary
+    pending_count_query = (
+        sa.select(sa.func.count())
+        .select_from(comments)
+        .where(comments.c.deleted_at.is_(None))
+        .where(comments.c.status == "pending")
+    )
+    pending_count = await database.fetch_val(pending_count_query)
+
+    return CommentModerationQueueResponse(
+        comments=items,
+        next_cursor=next_cursor,
+        total_pending=pending_count or 0,
+    )
+
+
+@v1_router.put("/comments/{comment_id}/moderate")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def moderate_comment(
+    request: Request,
+    comment_id: int,
+    body: CommentModerate,
+) -> CommentResponse:
+    """
+    Moderate a comment (admin only).
+
+    Changes comment status to approved, rejected, or spam.
+    Only admins with COMMENT_MODERATE permission can use this endpoint.
+    """
+    # Fetch the comment with user info
+    query = (
+        sa.select(
+            comments.c.id,
+            comments.c.video_id,
+            comments.c.user_id,
+            comments.c.content,
+            comments.c.status,
+            comments.c.video_timestamp,
+            comments.c.depth,
+            comments.c.path,
+            comments.c.parent_id,
+            comments.c.created_at,
+            comments.c.updated_at,
+            comments.c.deleted_at,
+            users.c.username,
+            users.c.display_name,
+        )
+        .select_from(comments.join(users, comments.c.user_id == users.c.id))
+        .where(comments.c.id == comment_id)
+    )
+    comment = await database.fetch_one(query)
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment["deleted_at"]:
+        raise HTTPException(status_code=400, detail="Cannot moderate a deleted comment")
+
+    # Update the comment status (don't set updated_at - that's only for content edits)
+    await database.execute(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(status=body.status.value)
+    )
+
+    # Get reply count
+    reply_count_query = (
+        sa.select(sa.func.count())
+        .select_from(comments)
+        .where(comments.c.parent_id == comment_id)
+        .where(comments.c.deleted_at.is_(None))
+    )
+    reply_count = await database.fetch_val(reply_count_query) or 0
+
+    # Audit log
+    log_audit(
+        AuditAction.COMMENT_MODERATE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="comment",
+        resource_id=comment_id,
+        details={"new_status": body.status.value, "reason": body.reason},
+    )
+
+    return CommentResponse(
+        id=comment["id"],
+        video_id=comment["video_id"],
+        user=CommentUserInfo(
+            id=comment["user_id"],
+            username=comment["username"],
+            display_name=comment["display_name"],
+        ),
+        content=comment["content"],
+        video_timestamp=float(comment["video_timestamp"]) if comment["video_timestamp"] else None,
+        status=body.status.value,
+        depth=comment["depth"],
+        parent_id=comment["parent_id"],
+        path=comment["path"],
+        created_at=comment["created_at"],
+        updated_at=comment["updated_at"],
+        is_edited=comment["updated_at"] is not None,
+        reply_count=reply_count,
+    )
+
+
+@v1_router.delete("/comments/{comment_id}/force")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def force_delete_comment(
+    request: Request,
+    comment_id: int,
+) -> dict:
+    """
+    Permanently delete a comment (admin only).
+
+    Unlike the public delete endpoint which soft-deletes, this permanently
+    removes the comment and all its replies from the database.
+    """
+    # Fetch the comment
+    comment = await database.fetch_one(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    # Delete all child comments first (by path prefix)
+    # Then delete the comment itself
+    # The ON DELETE CASCADE should handle this, but let's be explicit for audit purposes
+
+    # Get count of replies that will be deleted
+    if comment["path"]:
+        reply_count_query = (
+            sa.select(sa.func.count())
+            .select_from(comments)
+            .where(comments.c.path.op("<@")(comment["path"]))
+            .where(comments.c.id != comment_id)
+        )
+        reply_count = await database.fetch_val(reply_count_query) or 0
+    else:
+        reply_count = 0
+
+    # Delete the comment (CASCADE will delete replies due to foreign key)
+    await database.execute(
+        comments.delete().where(comments.c.id == comment_id)
+    )
+
+    # Update the video's comment count
+    await database.execute(
+        videos.update()
+        .where(videos.c.id == comment["video_id"])
+        .values(
+            comment_count=sa.func.greatest(
+                0,
+                videos.c.comment_count - 1 - reply_count
+            )
+        )
+    )
+
+    # Audit log
+    log_audit(
+        AuditAction.COMMENT_DELETE,
+        client_ip=get_real_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        resource_type="comment",
+        resource_id=comment_id,
+        details={"permanent": True, "replies_deleted": reply_count},
+    )
+
+    return {
+        "status": "ok",
+        "message": f"Comment {comment_id} permanently deleted",
+        "replies_deleted": reply_count,
+    }
+
+
+# =============================================================================
+# Backup and Restore Endpoints (Issue #216)
+# =============================================================================
+
+# Rate limiting key for restore operations (stored in settings table)
+RESTORE_RATE_LIMIT_KEY = "backup.last_restore_time"
+
+
+async def _get_last_restore_time() -> Optional[datetime]:
+    """
+    Get the last restore time from database settings.
+
+    Returns:
+        Last restore datetime or None if never restored
+    """
+    result = await fetch_one_with_retry(
+        settings.select().where(settings.c.key == RESTORE_RATE_LIMIT_KEY)
+    )
+    if result and result["value"]:
+        try:
+            return datetime.fromisoformat(result["value"].strip('"'))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+async def _set_last_restore_time(restore_time: datetime) -> None:
+    """
+    Set the last restore time in database settings.
+
+    Args:
+        restore_time: The time of the restore operation
+    """
+    value = restore_time.isoformat()
+
+    # Check if setting exists
+    existing = await fetch_one_with_retry(
+        settings.select().where(settings.c.key == RESTORE_RATE_LIMIT_KEY)
+    )
+
+    if existing:
+        # Update existing setting
+        await execute_with_retry(
+            settings.update()
+            .where(settings.c.key == RESTORE_RATE_LIMIT_KEY)
+            .values(value=value, updated_at=datetime.now(timezone.utc))
+        )
+    else:
+        # Insert new setting
+        await execute_with_retry(
+            settings.insert().values(
+                key=RESTORE_RATE_LIMIT_KEY,
+                value=value,
+                category="backup",
+                description="Last backup restore time (for rate limiting)",
+                value_type="string",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+
+
+@v1_router.post("/backups", response_model=BackupResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def create_backup(request: Request, data: BackupCreateRequest) -> BackupResponse:
+    """
+    Create a new backup.
+
+    Creates a backup of the database and optionally video files.
+    The backup runs in the background and status can be monitored via GET /backups/{backup_id}.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    from backup.service import BackupService
+    from backup.manifest import BackupType
+
+    # Map request type to BackupType
+    backup_type_map = {
+        "full": BackupType.FULL,
+        "database_only": BackupType.DATABASE_ONLY,
+        "incremental": BackupType.INCREMENTAL,
+    }
+    backup_type = backup_type_map.get(data.backup_type.value, BackupType.DATABASE_ONLY)
+
+    # Get username from session if available
+    created_by = "api"
+    session_token = request.cookies.get("vlog_admin_session")
+    if session_token:
+        session = await fetch_one_with_retry(
+            admin_sessions.select().where(admin_sessions.c.token == session_token)
+        )
+        if session:
+            user = await fetch_one_with_retry(
+                users.select().where(users.c.id == session["user_id"])
+            )
+            if user:
+                created_by = user["username"]
+
+    try:
+        service = BackupService(
+            database_url=DATABASE_URL,
+            videos_dir=VIDEOS_DIR,
+            backup_path=BACKUP_PATH,
+        )
+
+        result = await service.create_backup(
+            backup_type=backup_type,
+            include_videos=data.include_videos,
+            description=data.description,
+            upload_to_s3=data.upload_to_s3,
+            created_by=created_by,
+        )
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_CREATE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=result["backup_id"],
+            details={
+                "backup_type": data.backup_type.value,
+                "include_videos": data.include_videos,
+                "upload_to_s3": data.upload_to_s3,
+            },
+        )
+
+        # Fetch full backup record
+        backup = await fetch_one_with_retry(
+            backups.select().where(backups.c.backup_id == result["backup_id"])
+        )
+
+        return BackupResponse(
+            backup_id=backup["backup_id"],
+            backup_type=backup["backup_type"],
+            status=backup["status"],
+            size_bytes=backup["size_bytes"],
+            database_size_bytes=backup["database_size_bytes"],
+            files_size_bytes=backup["files_size_bytes"],
+            video_count=backup["video_count"],
+            file_count=backup["file_count"],
+            description=backup["description"],
+            local_path=backup["local_path"],
+            s3_location=backup["s3_location"],
+            created_at=backup["created_at"],
+            completed_at=backup["completed_at"],
+            created_by=backup["created_by"],
+            error_message=backup["error_message"],
+            vlog_version=backup["vlog_version"],
+            schema_version=backup["schema_version"],
+            database_type=backup["database_type"],
+        )
+
+    except Exception as e:
+        logger.error(f"Backup creation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Backup creation failed: {sanitize_error_message(str(e))}")
+
+
+@v1_router.get("/backups", response_model=BackupListResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def list_backups(
+    request: Request,
+    status: Optional[str] = Query(None, description="Filter by status"),
+    backup_type: Optional[str] = Query(None, description="Filter by backup type"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of backups to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+) -> BackupListResponse:
+    """
+    List all backups.
+
+    Returns a list of backups ordered by creation date (newest first).
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    query = backups.select().order_by(backups.c.created_at.desc())
+
+    # Apply filters
+    if status:
+        query = query.where(backups.c.status == status)
+    if backup_type:
+        query = query.where(backups.c.backup_type == backup_type)
+
+    # Get total count
+    count_query = sa.select(sa.func.count()).select_from(backups)
+    if status:
+        count_query = count_query.where(backups.c.status == status)
+    if backup_type:
+        count_query = count_query.where(backups.c.backup_type == backup_type)
+    total_count = await fetch_val_with_retry(count_query) or 0
+
+    # Apply pagination
+    query = query.limit(limit).offset(offset)
+    rows = await fetch_all_with_retry(query)
+
+    backup_list = [
+        BackupResponse(
+            backup_id=row["backup_id"],
+            backup_type=row["backup_type"],
+            status=row["status"],
+            size_bytes=row["size_bytes"],
+            database_size_bytes=row["database_size_bytes"],
+            files_size_bytes=row["files_size_bytes"],
+            video_count=row["video_count"],
+            file_count=row["file_count"],
+            description=row["description"],
+            local_path=row["local_path"],
+            s3_location=row["s3_location"],
+            created_at=row["created_at"],
+            completed_at=row["completed_at"],
+            created_by=row["created_by"],
+            error_message=row["error_message"],
+            vlog_version=row["vlog_version"],
+            schema_version=row["schema_version"],
+            database_type=row["database_type"],
+        )
+        for row in rows
+    ]
+
+    return BackupListResponse(backups=backup_list, total_count=total_count)
+
+
+@v1_router.get("/backups/{backup_id}", response_model=BackupResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def get_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID"),
+) -> BackupResponse:
+    """
+    Get backup details.
+
+    Returns detailed information about a specific backup.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    return BackupResponse(
+        backup_id=backup["backup_id"],
+        backup_type=backup["backup_type"],
+        status=backup["status"],
+        size_bytes=backup["size_bytes"],
+        database_size_bytes=backup["database_size_bytes"],
+        files_size_bytes=backup["files_size_bytes"],
+        video_count=backup["video_count"],
+        file_count=backup["file_count"],
+        description=backup["description"],
+        local_path=backup["local_path"],
+        s3_location=backup["s3_location"],
+        created_at=backup["created_at"],
+        completed_at=backup["completed_at"],
+        created_by=backup["created_by"],
+        error_message=backup["error_message"],
+        vlog_version=backup["vlog_version"],
+        schema_version=backup["schema_version"],
+        database_type=backup["database_type"],
+    )
+
+
+@v1_router.post("/backups/{backup_id}/restore", response_model=BackupRestoreResponse)
+@limiter.limit("1/hour")
+async def restore_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID to restore"),
+    data: BackupRestoreRequest = None,
+) -> BackupRestoreResponse:
+    """
+    Restore from a backup.
+
+    WARNING: This operation will replace the current database and optionally files.
+    A safety backup is created before restoration. Rate limited to 1 per hour.
+
+    Use dry_run=true to verify the backup without performing the actual restore.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    if data is None:
+        data = BackupRestoreRequest()
+
+    # Additional rate limiting check (cooldown) - uses database for multi-process safety
+    if not data.dry_run:
+        last_restore_time = await _get_last_restore_time()
+        if last_restore_time:
+            elapsed = (datetime.now(timezone.utc) - last_restore_time).total_seconds()
+            if elapsed < BACKUP_RESTORE_COOLDOWN_SECONDS:
+                remaining = int(BACKUP_RESTORE_COOLDOWN_SECONDS - elapsed)
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Restore rate limited. Please wait {remaining} seconds.",
+                    headers={"Retry-After": str(remaining)},
+                )
+
+    # Verify backup exists
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    if backup["status"] != "completed":
+        raise HTTPException(status_code=400, detail=f"Cannot restore from backup with status: {backup['status']}")
+
+    from backup.restore import RestoreService
+
+    try:
+        service = RestoreService(
+            database_url=DATABASE_URL,
+            videos_dir=VIDEOS_DIR,
+            backup_path=BACKUP_PATH,
+        )
+
+        result = await service.restore_backup(
+            backup_id=backup_id,
+            restore_type=data.restore_type,
+            dry_run=data.dry_run,
+            force=data.force,
+            signing_key=BACKUP_SIGNING_KEY or None,
+            accept_no_file_rollback=data.accept_no_file_rollback,
+        )
+
+        # Update last restore time in database if not a dry run (for rate limiting)
+        if not data.dry_run:
+            await _set_last_restore_time(datetime.now(timezone.utc))
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_RESTORE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=backup_id,
+            details={
+                "restore_type": data.restore_type,
+                "dry_run": data.dry_run,
+                "status": result["status"],
+            },
+        )
+
+        return BackupRestoreResponse(
+            backup_id=result["backup_id"],
+            restore_type=result["restore_type"],
+            dry_run=result["dry_run"],
+            status=result["status"],
+            message=result.get("message"),
+            restored_at=datetime.fromisoformat(result["restored_at"]) if result.get("restored_at") else None,
+        )
+
+    except Exception as e:
+        logger.error(f"Backup restore failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Restore failed: {sanitize_error_message(str(e))}")
+
+
+@v1_router.post("/backups/{backup_id}/verify", response_model=BackupVerifyResponse)
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def verify_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID to verify"),
+) -> BackupVerifyResponse:
+    """
+    Verify backup integrity.
+
+    Checks archive integrity, manifest signature, and file checksums.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    # Verify backup exists
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    from backup.verify import BackupVerifier
+
+    try:
+        verifier = BackupVerifier(backup_path=BACKUP_PATH)
+        result = await verifier.verify_backup(
+            backup_id=backup_id,
+            signing_key=BACKUP_SIGNING_KEY or None,
+            verify_files=True,
+        )
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_VERIFY,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=backup_id,
+            details={
+                "archive_valid": result["archive_valid"],
+                "manifest_valid": result["manifest_valid"],
+                "database_valid": result["database_valid"],
+                "errors": result.get("errors", []),
+            },
+        )
+
+        return BackupVerifyResponse(
+            backup_id=result["backup_id"],
+            archive_valid=result["archive_valid"],
+            manifest_valid=result["manifest_valid"],
+            signature_valid=result.get("signature_valid"),
+            database_valid=result["database_valid"],
+            files_valid=result.get("files_valid"),
+            errors=result.get("errors", []),
+        )
+
+    except Exception as e:
+        logger.error(f"Backup verification failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Verification failed: {sanitize_error_message(str(e))}")
+
+
+@v1_router.delete("/backups/{backup_id}")
+@limiter.limit(RATE_LIMIT_ADMIN_DEFAULT)
+async def delete_backup(
+    request: Request,
+    backup_id: str = FastAPIPath(..., description="Backup ID to delete"),
+    delete_from_s3: bool = Query(False, description="Also delete from S3"),
+) -> dict:
+    """
+    Delete a backup.
+
+    Removes the backup from the local filesystem and optionally from S3.
+    """
+    if not BACKUP_ENABLED:
+        raise HTTPException(status_code=403, detail="Backup functionality is disabled")
+
+    # Verify backup exists
+    backup = await fetch_one_with_retry(
+        backups.select().where(backups.c.backup_id == backup_id)
+    )
+
+    if not backup:
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    from backup.service import BackupService
+
+    try:
+        service = BackupService(
+            database_url=DATABASE_URL,
+            videos_dir=VIDEOS_DIR,
+            backup_path=BACKUP_PATH,
+        )
+
+        await service.delete_backup(backup_id, delete_remote=delete_from_s3)
+
+        # Audit log
+        log_audit(
+            AuditAction.BACKUP_DELETE,
+            client_ip=get_real_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            resource_type="backup",
+            resource_id=backup_id,
+            details={
+                "backup_type": backup["backup_type"],
+                "deleted_from_s3": delete_from_s3,
+            },
+        )
+
+        return {"status": "ok", "message": f"Backup {backup_id} deleted"}
+
+    except Exception as e:
+        logger.error(f"Backup deletion failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {sanitize_error_message(str(e))}")
+
+
+# =============================================================================
+# User Authentication Routers (Issue #200)
+# Mount auth routers before main v1_router mounting
+# =============================================================================
+
+# Include auth module routers in v1_router
+v1_router.include_router(auth_endpoints.router)
+v1_router.include_router(auth_users.router)
+v1_router.include_router(auth_api_keys.router)
+v1_router.include_router(auth_invite.router)
+v1_router.include_router(auth_oidc.router)
+logger.info("Mounted user authentication routers")
+
+
+# =============================================================================
+# =============================================================================
+# API Router Mounting (Issue #218)
+# Mount versioned routers and configure OpenAPI documentation
+# =============================================================================
+
+# Mount v1 router at /api/v1
+app.include_router(v1_router, prefix="/api/v1")
+logger.info("Mounted Admin API v1 at /api/v1")
+
+# Mount legacy routes at /api for backwards compatibility (if enabled)
+if API_INCLUDE_LEGACY_ROUTES:
+    app.include_router(v1_router, prefix="/api", include_in_schema=False)
+    logger.info("Mounted legacy admin routes at /api (aliased to v1)")
+
+
+# Configure custom OpenAPI schema
+def custom_openapi():
+    return configure_openapi_schema(app)
+
+
+app.openapi = custom_openapi
 
 
 if __name__ == "__main__":

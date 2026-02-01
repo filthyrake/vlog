@@ -90,6 +90,8 @@ from worker.hwaccel import (
     get_recommended_parallel_sessions,
 )
 
+logger = logging.getLogger(__name__)
+
 # Conditional import for filesystem watching
 if WORKER_USE_FILESYSTEM_WATCHER:
     try:
@@ -98,21 +100,24 @@ if WORKER_USE_FILESYSTEM_WATCHER:
 
         WATCHDOG_AVAILABLE = True
     except ImportError:
-        print("Warning: watchdog not installed. Falling back to polling mode.")
-        print("Install with: pip install watchdog")
+        logger.warning("watchdog not installed, falling back to polling mode. Install with: pip install watchdog")
         WATCHDOG_AVAILABLE = False
 else:
     WATCHDOG_AVAILABLE = False
 
-logger = logging.getLogger(__name__)
-
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 
-# Cached transcoding settings (refreshed periodically)
+# Cached transcoding settings
+#
+# Cache transcoding settings for 60 seconds to balance freshness with database load.
+# Rationale: Transcoding jobs can run for hours, so a 60-second TTL is very short
+# relative to job duration. This ensures settings changes (like HLS segment duration)
+# take effect within 1 minute while avoiding a database query on every transcode step.
+# The worker may process hundreds of segments per job, so caching is essential.
 _cached_transcoder_settings: Dict[str, Any] = {}
 _cached_transcoder_settings_time: float = 0
-_TRANSCODER_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+_TRANSCODER_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_transcoder_settings() -> Dict[str, Any]:
@@ -141,7 +146,7 @@ async def get_transcoder_settings() -> Dict[str, Any]:
     global _cached_transcoder_settings, _cached_transcoder_settings_time
 
     now = time.time()
-    if _cached_transcoder_settings and (now - _cached_transcoder_settings_time) < _TRANSCODER_SETTINGS_CACHE_TTL:
+    if _cached_transcoder_settings and (now - _cached_transcoder_settings_time) < _TRANSCODER_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_transcoder_settings
 
     try:
@@ -420,7 +425,7 @@ async def cleanup_ffmpeg_process(
         try:
             await asyncio.wait_for(target_subprocess.wait(), timeout=5)
         except asyncio.TimeoutError:
-            print(f"  WARNING: {logging_description} process did not terminate after kill")
+            logger.warning(f"{logging_description} process did not terminate after kill")
 
 
 async def run_ffmpeg_with_progress(
@@ -498,7 +503,7 @@ async def run_ffmpeg_with_progress(
         await asyncio.sleep(timeout)
         timed_out = True
         elapsed = asyncio.get_running_loop().time() - start_time
-        print(f"  TIMEOUT: {logging_description} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
+        logger.warning(f"{logging_description} exceeded {timeout:.0f}s limit (ran for {elapsed:.0f}s)")
         try:
             process.kill()
         except ProcessLookupError:
@@ -512,7 +517,7 @@ async def run_ffmpeg_with_progress(
         await drain_and_wait()
     except Exception as e:
         # Log unexpected exceptions before cleanup
-        print(f"  ERROR: Unexpected exception during {logging_description}: {e}")
+        logger.error(f"Unexpected exception during {logging_description}: {e}")
         raise
     finally:
         # Cancel the timeout task
@@ -531,7 +536,7 @@ async def run_ffmpeg_with_progress(
 
     if process.returncode != 0:
         error_msg = f"{logging_description} exited with code {process.returncode}"
-        print(f"  ERROR: {error_msg}")
+        logger.error(error_msg)
         return False, error_msg
 
     return True, None
@@ -540,7 +545,7 @@ async def run_ffmpeg_with_progress(
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
     sig_name = signal.strsignal(sig) if hasattr(signal, "strsignal") else str(sig)
-    print(f"\n{sig_name} received, finishing current job and shutting down gracefully...")
+    logger.info(f"{sig_name} received, finishing current job and shutting down gracefully...")
     state = get_worker_state()
     state.request_shutdown()
 
@@ -634,7 +639,7 @@ class UploadEventHandler(FileSystemEventHandler):
     def on_created(self, event):
         """Called when a file is created in the uploads directory."""
         if not event.is_directory and self._is_video_file(event.src_path):
-            print(f"  [watcher] New file detected: {Path(event.src_path).name}")
+            logger.debug(f"[watcher] New file detected: {Path(event.src_path).name}")
             self._schedule_trigger()
 
     def on_modified(self, event):
@@ -645,7 +650,7 @@ class UploadEventHandler(FileSystemEventHandler):
     def on_moved(self, event):
         """Called when a file is moved into the uploads directory."""
         if not event.is_directory and self._is_video_file(event.dest_path):
-            print(f"  [watcher] File moved in: {Path(event.dest_path).name}")
+            logger.debug(f"[watcher] File moved in: {Path(event.dest_path).name}")
             self._schedule_trigger()
 
     def cleanup(self):
@@ -680,11 +685,11 @@ def start_filesystem_watcher(
         observer = Observer()
         observer.schedule(handler, str(UPLOADS_DIR), recursive=False)
         observer.start()
-        print(f"  Filesystem watcher started on: {UPLOADS_DIR}")
+        logger.info(f"Filesystem watcher started on: {UPLOADS_DIR}")
         return observer
     except Exception as e:
-        print(f"  Warning: Failed to start filesystem watcher: {e}")
-        print("  Falling back to polling mode.")
+        logger.warning(f"Failed to start filesystem watcher: {e}")
+        logger.info("Falling back to polling mode.")
         return None
 
 
@@ -700,7 +705,7 @@ def stop_filesystem_watcher(observer: Optional[Observer]):
                     if hasattr(handler, "cleanup"):
                         handler.cleanup()
         except Exception as e:
-            print(f"  Warning: Error stopping filesystem watcher: {e}")
+            logger.warning(f"Error stopping filesystem watcher: {e}")
 
 
 async def get_video_info(input_path: Path, timeout: float = 30.0) -> dict:
@@ -956,7 +961,7 @@ async def is_hls_playlist_complete(playlist_path: Path) -> bool:
     is_valid, error = await validate_hls_playlist(playlist_path, PlaylistValidation.CHECK_SEGMENTS)
     if not is_valid and error:
         # Log validation failures for debugging
-        print(f"      Playlist validation failed: {error}")
+        logger.debug(f"Playlist validation failed: {error}")
     return is_valid
 
 
@@ -1039,9 +1044,9 @@ async def transcode_quality_with_progress(
 
     # Calculate timeout based on video duration and resolution
     timeout = calculate_ffmpeg_timeout(video_duration, height)
-    print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for {name}")
+    logger.debug(f"Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for {name}")
     if use_cmaf:
-        print("      Output format: CMAF (fMP4)")
+        logger.debug("Output format: CMAF (fMP4)")
 
     # Use hardware acceleration if GPU capabilities provided
     if gpu_caps is not None:
@@ -1057,7 +1062,7 @@ async def transcode_quality_with_progress(
         encoder_name = selection.encoder.name
         encoder_type = "GPU" if selection.encoder.is_hardware else "CPU"
         codec_name = codec_enum.value if codec_enum else "default"
-        print(f"      Using encoder: {encoder_name} ({encoder_type}, codec={codec_name})")
+        logger.debug(f"Using encoder: {encoder_name} ({encoder_type}, codec={codec_name})")
 
         if use_cmaf:
             # Create quality subdirectory for CMAF output
@@ -1186,7 +1191,7 @@ async def transcode_quality_with_progress(
     )
 
     if not success and error_msg:
-        print(f"  ERROR: Failed to transcode {name}: {error_msg}")
+        logger.error(f"Failed to transcode {name}: {error_msg}")
 
     return success, error_msg
 
@@ -1211,7 +1216,7 @@ async def create_original_quality(
     # Calculate timeout based on duration (remuxing is much faster than transcoding)
     timeout = calculate_ffmpeg_timeout(duration) / 3  # Remux is ~3x faster
     timeout = max(FFMPEG_TIMEOUT_MINIMUM, timeout)
-    print(f"      Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for remux")
+    logger.debug(f"Timeout set to {timeout:.0f}s ({timeout / 60:.1f} min) for remux")
 
     # Use copy codec to remux without re-encoding
     cmd = [
@@ -1247,7 +1252,7 @@ async def create_original_quality(
 
     if not success:
         if error_msg:
-            print(f"  ERROR: Failed to create original quality: {error_msg}")
+            logger.error(f"Failed to create original quality: {error_msg}")
         return False, error_msg, None
 
     # Get the actual bitrate from the source for master playlist
@@ -1497,7 +1502,7 @@ async def generate_dash_manifest(
 
     if not cmaf_qualities:
         # No CMAF qualities to include - skip manifest generation
-        print("    No CMAF qualities for DASH manifest, skipping...")
+        logger.debug("No CMAF qualities for DASH manifest, skipping...")
         return
 
     # Use provided duration, or calculate from first quality's playlist
@@ -2025,7 +2030,7 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
     """
     if state is None:
         state = get_worker_state()
-    print(f"Worker {state.worker_id[:8]} checking for interrupted jobs...")
+    logger.info(f"Worker {state.worker_id[:8]} checking for interrupted jobs...")
 
     # Get stale timeout from settings service
     settings = await get_transcoder_settings()
@@ -2056,11 +2061,11 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
         if not video:
             continue
 
-        print(f"  Found stale job for video '{video['slug']}' (attempt {job['attempt_number']})")
+        logger.info(f"Found stale job for video '{video['slug']}' (attempt {job['attempt_number']})")
 
         if job["attempt_number"] >= job["max_attempts"]:
             # Max retries exceeded - use transaction to ensure consistency
-            print("    Max retries exceeded, marking as failed")
+            logger.warning("Max retries exceeded, marking as failed")
             async with database.transaction():
                 await mark_job_failed(job["id"], "Max retry attempts exceeded", JobFailureMode.PERMANENT)
                 await database.execute(
@@ -2070,7 +2075,7 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
                 )
             # Clean up source file after permanent failure
             if cleanup_source_file(job["video_id"]):
-                print(f"    Cleaned up source file for video {job['video_id']}")
+                logger.debug(f"Cleaned up source file for video {job['video_id']}")
             # Send alert for max retries exceeded (fire-and-forget)
             send_alert_fire_and_forget(
                 alert_max_retries_exceeded(
@@ -2082,7 +2087,7 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             )
         else:
             # Reset for retry - use transaction to ensure consistency
-            print(f"    Resetting for retry (attempt {job['attempt_number'] + 1})")
+            logger.info(f"Resetting for retry (attempt {job['attempt_number'] + 1})")
             async with database.transaction():
                 await reset_job_for_retry(job["id"])
                 # Also reset the video status to pending so it gets picked up
@@ -2108,9 +2113,9 @@ async def recover_interrupted_jobs(state: Optional[WorkerState] = None):
             )
 
     if stale_jobs:
-        print(f"  Recovered {len(stale_jobs)} interrupted job(s)")
+        logger.info(f"Recovered {len(stale_jobs)} interrupted job(s)")
     else:
-        print("  No interrupted jobs found")
+        logger.debug("No interrupted jobs found")
 
 
 # ============================================================================
@@ -2137,7 +2142,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
     if state is None:
         state = get_worker_state()
 
-    print(f"Processing video: {video_slug} (id={video_id})")
+    logger.info(f"Processing video: {video_slug} (id={video_id})")
 
     # Validate slug to prevent path traversal attacks
     if not validate_slug(video_slug):
@@ -2151,7 +2156,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
     # Check for shutdown at the start
     if state.shutdown_requested:
-        print("  Shutdown requested, skipping this video")
+        logger.info("Shutdown requested, skipping this video")
         return False
 
     # Find the source file
@@ -2174,7 +2179,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
     # If no job exists, the upload is still in progress - skip and retry later
     job = await get_existing_job(video_id)
     if job is None:
-        print("  No transcoding job found - upload still in progress, will retry later")
+        logger.debug("No transcoding job found - upload still in progress, will retry later")
         return False
     job_id = job["id"]
 
@@ -2189,13 +2194,13 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # when jobs are created or claimed but not yet started
         if job["current_step"] in [None, "pending", "claimed", TranscodingStep.PROBE]:
             await update_job_step(job_id, TranscodingStep.PROBE)
-            print("  Step 1: Probing video info...")
+            logger.info("Step 1: Probing video info...")
 
             try:
                 info = await get_video_info(source_file)
             except Exception as e:
                 error_msg = f"Failed to probe video file: {e}"
-                print(f"  ERROR: {error_msg}")
+                logger.error(error_msg)
                 # Probe failures are typically unrecoverable (corrupted/unsupported file)
                 # Mark as final failure immediately
                 await mark_job_failed(job_id, error_msg, JobFailureMode.PERMANENT)
@@ -2206,7 +2211,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 )
                 return False
 
-            print(f"  Source: {info['width']}x{info['height']}, {info['duration']:.1f}s")
+            logger.info(f"Source: {info['width']}x{info['height']}, {info['duration']:.1f}s")
 
             # Update video metadata
             await database.execute(
@@ -2223,7 +2228,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
             # Check for shutdown after probe
             if state.shutdown_requested:
-                print("  Shutdown requested, resetting video to pending...")
+                logger.info("Shutdown requested, resetting video to pending...")
                 await reset_video_to_pending(video_id)
                 return False
         else:
@@ -2248,22 +2253,22 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
         if not thumb_path.exists():
             await update_job_step(job_id, TranscodingStep.THUMBNAIL)
-            print("  Step 2: Generating thumbnail...")
+            logger.info("Step 2: Generating thumbnail...")
             thumbnail_time = min(5.0, info["duration"] / 4)
             await generate_thumbnail(source_file, thumb_path, thumbnail_time)
             await checkpoint(job_id)
         elif job["current_step"] in [None, TranscodingStep.PROBE, TranscodingStep.THUMBNAIL]:
             # Thumbnail exists but we're at an early step - just checkpoint
             await update_job_step(job_id, TranscodingStep.THUMBNAIL)
-            print("  Step 2: Thumbnail already exists, skipping...")
+            logger.debug("Step 2: Thumbnail already exists, skipping...")
             await checkpoint(job_id)
         else:
             # Thumbnail exists and job is resuming from a later step
-            print("  Step 2: Thumbnail already exists, already past this step...")
+            logger.debug("Step 2: Thumbnail already exists, already past this step...")
 
         # Check for shutdown after thumbnail
         if state.shutdown_requested:
-            print("  Shutdown requested, resetting video to pending...")
+            logger.info("Shutdown requested, resetting video to pending...")
             await reset_video_to_pending(video_id)
             return False
 
@@ -2276,7 +2281,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         transcoder_settings = await get_transcoder_settings()
         streaming_format = transcoder_settings.get("streaming_format", "cmaf")
         streaming_codec = transcoder_settings.get("streaming_codec", "av1")
-        print(f"  Output format: {streaming_format}, codec: {streaming_codec}")
+        logger.info(f"Output format: {streaming_format}, codec: {streaming_codec}")
 
         qualities = get_applicable_qualities(info["height"])
         if not qualities:
@@ -2286,7 +2291,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         original_quality = {"name": "original", "height": info["height"], "bitrate": "0k", "audio_bitrate": "0k"}
         all_qualities_for_tracking = [original_quality] + qualities
 
-        print(f"  Step 3: Creating original + transcoding to: {[q['name'] for q in qualities]}")
+        logger.info(f"Step 3: Creating original + transcoding to: {[q['name'] for q in qualities]}")
 
         # Initialize quality progress records (including original)
         await init_quality_progress(job_id, all_qualities_for_tracking)
@@ -2303,7 +2308,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # ----------------------------------------------------------------
         original_status = await get_quality_status(job_id, "original")
         if original_status and original_status["status"] == QualityStatus.COMPLETED:
-            print("    original: Already completed, skipping...")
+            logger.debug("original: Already completed, skipping...")
             # Add to successful with source dimensions
             successful_qualities.append(
                 {
@@ -2315,7 +2320,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 }
             )
         elif await is_hls_playlist_complete(output_dir / "original.m3u8"):
-            print("    original: Found complete playlist, marking complete...")
+            logger.debug("original: Found complete playlist, marking complete...")
             await update_quality_status(job_id, "original", QualityStatus.COMPLETED)
             successful_qualities.append(
                 {
@@ -2327,7 +2332,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 }
             )
         else:
-            print("    original: Remuxing source to HLS (no re-encoding)...")
+            logger.info("original: Remuxing source to HLS (no re-encoding)...")
             await update_quality_status(job_id, "original", QualityStatus.IN_PROGRESS)
 
             async def original_progress_cb(progress: int):
@@ -2353,17 +2358,17 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             "is_original": True,
                         }
                     )
-                    print(f"    original: Done ({info['width']}x{info['height']})")
+                    logger.info(f"original: Done ({info['width']}x{info['height']})")
                 else:
                     error_msg = error_detail or "Remux failed"
                     await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
                     failed_qualities.append({"name": "original", "error": error_msg})
-                    print(f"    original: Failed - {truncate_error(error_msg, ERROR_SUMMARY_MAX_LENGTH)}")
+                    logger.error(f"original: Failed - {truncate_error(error_msg, ERROR_SUMMARY_MAX_LENGTH)}")
             except Exception as e:
                 error_msg = str(e)
                 await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
                 failed_qualities.append({"name": "original", "error": error_msg})
-                print(f"    original: Error - {e}")
+                logger.error(f"original: Error - {e}")
 
             await checkpoint(job_id)
 
@@ -2374,7 +2379,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # Get parallel encoding count based on GPU capabilities
         parallel_count = get_recommended_parallel_sessions(state.gpu_caps)
         if parallel_count > 1:
-            print(f"  Using parallel encoding: {parallel_count} qualities at a time")
+            logger.info(f"Using parallel encoding: {parallel_count} qualities at a time")
 
         # Group qualities into batches for parallel processing
         quality_batches = group_qualities_by_resolution(qualities, parallel_count)
@@ -2404,7 +2409,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             # Check if already completed
             status = await get_quality_status(job_id, quality_name)
             if status and status["status"] == QualityStatus.COMPLETED:
-                print(f"    {quality_name}: Already completed, skipping...")
+                logger.debug(f"{quality_name}: Already completed, skipping...")
                 # Get actual dimensions from existing segment
                 # CMAF uses init.mp4 for track info (m4s segments are fragmented)
                 if streaming_format == "cmaf":
@@ -2434,7 +2439,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             else:
                 playlist_path = output_dir / f"{quality_name}.m3u8"
             if await is_hls_playlist_complete(playlist_path):
-                print(f"    {quality_name}: Found complete playlist, marking complete...")
+                logger.debug(f"{quality_name}: Found complete playlist, marking complete...")
                 await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                 # Get actual dimensions from existing segment
                 # CMAF uses init.mp4 for track info (m4s segments are fragmented)
@@ -2460,7 +2465,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 )
 
             # Transcode this quality
-            print(f"    {quality_name}: Transcoding...")
+            logger.info(f"{quality_name}: Transcoding...")
             await update_quality_status(job_id, quality_name, QualityStatus.IN_PROGRESS)
 
             async def progress_cb(progress: int, q_name=quality_name):
@@ -2504,7 +2509,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                         if actual_width % 2 != 0:
                             actual_width += 1
                         actual_height = quality["height"]
-                    print(f"    {quality_name}: Done ({actual_width}x{actual_height})")
+                    logger.info(f"{quality_name}: Done ({actual_width}x{actual_height})")
                     return (
                         {
                             "name": quality_name,
@@ -2517,24 +2522,24 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 else:
                     error_msg = error_detail or "Transcoding process returned non-zero exit code"
                     await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
-                    print(f"    {quality_name}: Failed")
+                    logger.error(f"{quality_name}: Failed")
                     return (None, {"name": quality_name, "error": error_msg})
             except Exception as e:
                 error_msg = str(e)
                 await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
-                print(f"    {quality_name}: Error - {e}")
+                logger.error(f"{quality_name}: Error - {e}")
                 return (None, {"name": quality_name, "error": error_msg})
 
         # Process each batch of qualities
         for batch_idx, batch in enumerate(quality_batches):
             # Check for shutdown before processing each batch
             if state.shutdown_requested:
-                print("  Shutdown requested, resetting video to pending...")
+                logger.info("Shutdown requested, resetting video to pending...")
                 await reset_video_to_pending(video_id)
                 return False
 
             if len(batch) > 1:
-                print(f"  Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
+                logger.info(f"Processing batch {batch_idx + 1}/{len(quality_batches)}: {[q['name'] for q in batch]}")
 
             # Run batch in parallel
             tasks = [transcode_single_quality(q) for q in batch]
@@ -2547,7 +2552,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     error_msg = str(result)
                     await update_quality_status(job_id, quality["name"], QualityStatus.FAILED, error_msg)
                     failed_qualities.append({"name": quality["name"], "error": error_msg})
-                    print(f"    {quality['name']}: Unexpected error - {result}")
+                    logger.error(f"{quality['name']}: Unexpected error - {result}")
                 elif isinstance(result, tuple):
                     success_info, failure_info = result
                     if success_info is not None:
@@ -2583,8 +2588,8 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             if not incomplete_qualities:
                 break
 
-            print(
-                f"  Verification pass {verification_pass + 1}: Found {len(incomplete_qualities)} incomplete qualities"
+            logger.info(
+                f"Verification pass {verification_pass + 1}: Found {len(incomplete_qualities)} incomplete qualities"
             )
 
             for quality in incomplete_qualities:
@@ -2592,7 +2597,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
 
                 # Check for shutdown
                 if state.shutdown_requested:
-                    print("  Shutdown requested, resetting video to pending...")
+                    logger.info("Shutdown requested, resetting video to pending...")
                     await reset_video_to_pending(video_id)
                     return False
 
@@ -2604,7 +2609,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     playlist_path = output_dir / f"{quality_name}.m3u8"
 
                 if await is_hls_playlist_complete(playlist_path):
-                    print(f"    {quality_name}: Found complete playlist on disk, marking complete...")
+                    logger.debug(f"{quality_name}: Found complete playlist on disk, marking complete...")
                     await update_quality_status(job_id, quality_name, QualityStatus.COMPLETED)
                     # Add to successful qualities
                     if quality_name == "original":
@@ -2643,7 +2648,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     continue
 
                 # Need to transcode this quality
-                print(f"    {quality_name}: Re-processing...")
+                logger.info(f"{quality_name}: Re-processing...")
                 await update_quality_status(job_id, quality_name, QualityStatus.IN_PROGRESS)
 
                 try:
@@ -2663,12 +2668,12 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                                     "is_original": True,
                                 }
                             )
-                            print(f"    {quality_name}: Done")
+                            logger.info(f"{quality_name}: Done")
                         else:
                             error_msg = error_detail or "Remux failed"
                             await update_quality_status(job_id, "original", QualityStatus.FAILED, error_msg)
                             failed_qualities.append({"name": "original", "error": error_msg})
-                            print(f"    {quality_name}: Failed")
+                            logger.error(f"{quality_name}: Failed")
                     else:
                         success, error_detail = await transcode_quality_with_progress(
                             source_file,
@@ -2702,17 +2707,17 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                                     "bitrate": quality["bitrate"],
                                 }
                             )
-                            print(f"    {quality_name}: Done")
+                            logger.info(f"{quality_name}: Done")
                         else:
                             error_msg = error_detail or "Transcoding failed"
                             await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
                             failed_qualities.append({"name": quality_name, "error": error_msg})
-                            print(f"    {quality_name}: Failed")
+                            logger.error(f"{quality_name}: Failed")
                 except Exception as e:
                     error_msg = str(e)
                     await update_quality_status(job_id, quality_name, QualityStatus.FAILED, error_msg)
                     failed_qualities.append({"name": quality_name, "error": error_msg})
-                    print(f"    {quality_name}: Error - {e}")
+                    logger.error(f"{quality_name}: Error - {e}")
 
                 await checkpoint(job_id)
 
@@ -2723,21 +2728,21 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 [f"{q['name']}: {truncate_error(q['error'], ERROR_SUMMARY_MAX_LENGTH)}" for q in failed_qualities]
             )
             error_message = f"All {len(failed_qualities)} quality variant(s) failed. Details: {failed_summary}"
-            print(f"  FAILURE: {error_message}")
+            logger.error(error_message)
             raise RuntimeError(error_message)
         elif failed_qualities:
             # Partial success - some qualities failed
             completed = len(successful_qualities)
-            print(f"  WARNING: Partial transcoding success - {completed}/{total_qualities} quality variants completed")
-            print(f"  Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
+            logger.warning(f"Partial transcoding success - {completed}/{total_qualities} quality variants completed")
+            logger.warning(f"Failed variants: {', '.join([q['name'] for q in failed_qualities])}")
             for failed in failed_qualities:
-                print(f"    - {failed['name']}: {truncate_error(failed['error'], ERROR_DETAIL_MAX_LENGTH)}")
+                logger.warning(f"- {failed['name']}: {truncate_error(failed['error'], ERROR_DETAIL_MAX_LENGTH)}")
 
         # ----------------------------------------------------------------
         # Step 4: Generate master playlist
         # ----------------------------------------------------------------
         await update_job_step(job_id, TranscodingStep.MASTER_PLAYLIST)
-        print("  Step 4: Generating master playlist...")
+        logger.info("Step 4: Generating master playlist...")
 
         if streaming_format == "cmaf":
             # Use CMAF-specific master playlist generator
@@ -2754,14 +2759,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
             # Generate DASH manifest for CMAF streaming
             enable_dash = transcoder_settings.get("streaming_enable_dash", True)
             if enable_dash:
-                print("  Generating DASH manifest...")
+                logger.info("Generating DASH manifest...")
                 await generate_dash_manifest(output_dir, successful_qualities, codec=codec_enum)
 
                 # Validate DASH manifest was created (prevent missing manifest bug)
                 mpd_path = output_dir / "manifest.mpd"
                 if not mpd_path.exists():
                     raise RuntimeError("DASH manifest was not generated for CMAF streaming")
-                print(f"  DASH manifest created: {mpd_path}")
+                logger.info(f"DASH manifest created: {mpd_path}")
         else:
             await generate_master_playlist(output_dir, successful_qualities)
         await checkpoint(job_id)
@@ -2770,7 +2775,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         # Step 5: Finalize
         # ----------------------------------------------------------------
         await update_job_step(job_id, TranscodingStep.FINALIZE)
-        print("  Step 5: Finalizing...")
+        logger.info("Step 5: Finalizing...")
 
         # Save quality info to database
         for q in successful_qualities:
@@ -2838,14 +2843,14 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                             sprite_sheet_error=None,
                         )
                     )
-                    print(f"  Queued sprite sheet generation for video {video_id}")
+                    logger.info(f"Queued sprite sheet generation for video {video_id}")
             except Exception as sprite_err:
                 # Don't fail the transcode if sprite queueing fails
-                print(f"  Warning: Failed to queue sprite generation: {sprite_err}")
+                logger.warning(f"Failed to queue sprite generation: {sprite_err}")
 
         # NOTE: Source file is intentionally kept for potential future re-transcoding
         # (e.g., if new quality presets are added or original quality is needed)
-        print(f"  Done! Video is ready. Source file preserved at: {source_file}")
+        logger.info(f"Done! Video is ready. Source file preserved at: {source_file}")
 
         # Trigger webhook event for video.ready (Issue #203)
         try:
@@ -2862,12 +2867,12 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                 },
             )
         except Exception as webhook_err:
-            print(f"  Warning: Failed to trigger webhook for video.ready: {webhook_err}")
+            logger.warning(f"Failed to trigger webhook for video.ready: {webhook_err}")
 
         return True
 
     except Exception as e:
-        print(f"  Error: {e}")
+        logger.error(f"Error: {e}")
 
         # Check if we should retry
         job = await database.fetch_one(transcoding_jobs.select().where(transcoding_jobs.c.id == job_id))
@@ -2930,7 +2935,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
                     },
                 )
             except Exception as webhook_err:
-                print(f"  Warning: Failed to trigger webhook for video.failed: {webhook_err}")
+                logger.warning(f"Failed to trigger webhook for video.failed: {webhook_err}")
 
         return False
 
@@ -2977,7 +2982,7 @@ async def check_stale_jobs(worker_state: Optional[WorkerState] = None):
             continue
 
         if job["attempt_number"] >= job["max_attempts"]:
-            print(f"Stale job for '{video['slug']}' exceeded max retries, marking failed")
+            logger.warning(f"Stale job for '{video['slug']}' exceeded max retries, marking failed")
             async with database.transaction():
                 await mark_job_failed(job["id"], "Max retry attempts exceeded (stale)", JobFailureMode.PERMANENT)
                 await database.execute(
@@ -2987,7 +2992,7 @@ async def check_stale_jobs(worker_state: Optional[WorkerState] = None):
                 )
             # Clean up source file after permanent failure
             if cleanup_source_file(job["video_id"]):
-                print(f"  Cleaned up source file for video {job['video_id']}")
+                logger.debug(f"Cleaned up source file for video {job['video_id']}")
             # Send alert for max retries exceeded (fire-and-forget)
             send_alert_fire_and_forget(
                 alert_max_retries_exceeded(
@@ -2998,7 +3003,7 @@ async def check_stale_jobs(worker_state: Optional[WorkerState] = None):
                 )
             )
         else:
-            print(f"Found stale job for '{video['slug']}', resetting for retry")
+            logger.info(f"Found stale job for '{video['slug']}', resetting for retry")
             async with database.transaction():
                 await reset_job_for_retry(job["id"])
                 await database.execute(
@@ -3032,7 +3037,7 @@ async def cleanup_expired_archives():
     if not expired:
         return
 
-    print(f"Found {len(expired)} archived video(s) past retention period, cleaning up...")
+    logger.info(f"Found {len(expired)} archived video(s) past retention period, cleaning up...")
 
     for video in expired:
         video_id = video["id"]
@@ -3067,10 +3072,10 @@ async def cleanup_expired_archives():
                 if upload_file.exists():
                     upload_file.unlink()
 
-            print(f"  Permanently deleted expired archive: {slug}")
+            logger.info(f"Permanently deleted expired archive: {slug}")
 
         except Exception as e:
-            print(f"  Error cleaning up expired archive '{slug}': {e}")
+            logger.error(f"Error cleaning up expired archive '{slug}': {e}")
 
 
 async def worker_loop(state: Optional[WorkerState] = None):
@@ -3098,20 +3103,20 @@ async def worker_loop(state: Optional[WorkerState] = None):
 
     await database.connect()
     await configure_database()
-    print(f"Transcoding worker started (ID: {state.worker_id[:8]})")
+    logger.info(f"Transcoding worker started (ID: {state.worker_id[:8]})")
 
     # Detect GPU capabilities for hardware-accelerated encoding
     from worker.hwaccel import detect_gpu_capabilities
 
     state.gpu_caps = await detect_gpu_capabilities()
     if state.gpu_caps:
-        print(f"  GPU detected: {state.gpu_caps.device_name}")
-        print(f"    Type: {state.gpu_caps.hwaccel_type.value}")
+        logger.info(f"GPU detected: {state.gpu_caps.device_name}")
+        logger.info(f"Type: {state.gpu_caps.hwaccel_type.value}")
         encoders = [e.name for codec_encoders in state.gpu_caps.encoders.values() for e in codec_encoders]
-        print(f"    Encoders: {', '.join(encoders)}")
-        print(f"    Max sessions: {state.gpu_caps.max_concurrent_sessions}")
+        logger.info(f"Encoders: {', '.join(encoders)}")
+        logger.info(f"Max sessions: {state.gpu_caps.max_concurrent_sessions}")
     else:
-        print("  No GPU acceleration available, using CPU encoding")
+        logger.info("No GPU acceleration available, using CPU encoding")
 
     # Initialize the upload event for signaling between filesystem watcher and main loop
     loop = asyncio.get_running_loop()
@@ -3127,16 +3132,16 @@ async def worker_loop(state: Optional[WorkerState] = None):
     if WORKER_USE_FILESYSTEM_WATCHER and WATCHDOG_AVAILABLE:
         observer = start_filesystem_watcher(loop, state.new_upload_event, debounce_delay=debounce_delay)
         if observer:
-            print(f"  Mode: Event-driven (inotify) with {fallback_poll_interval}s fallback poll")
+            logger.info(f"Mode: Event-driven (inotify) with {fallback_poll_interval}s fallback poll")
         else:
-            print(f"  Mode: Polling every {fallback_poll_interval}s (watcher failed)")
+            logger.info(f"Mode: Polling every {fallback_poll_interval}s (watcher failed)")
     else:
         if not WORKER_USE_FILESYSTEM_WATCHER:
-            print(f"  Mode: Polling every {fallback_poll_interval}s (watcher disabled)")
+            logger.info(f"Mode: Polling every {fallback_poll_interval}s (watcher disabled)")
         else:
-            print(f"  Mode: Polling every {fallback_poll_interval}s (watchdog not available)")
+            logger.info(f"Mode: Polling every {fallback_poll_interval}s (watchdog not available)")
 
-    print("Watching for new videos...")
+    logger.info("Watching for new videos...")
 
     # Recover any interrupted jobs from previous crashes
     await recover_interrupted_jobs(state)
@@ -3171,15 +3176,15 @@ async def worker_loop(state: Optional[WorkerState] = None):
 
             for video in pending:
                 if state.shutdown_requested:
-                    print("Shutdown requested, stopping worker loop...")
+                    logger.info("Shutdown requested, stopping worker loop...")
                     break
                 result = await process_video_resumable(video["id"], video["slug"], state)
                 if result:
-                    print(f"Successfully completed: {video['slug']}")
+                    logger.info(f"Successfully completed: {video['slug']}")
                 elif state.shutdown_requested:
-                    print(f"Shutdown interrupted: {video['slug']}")
+                    logger.info(f"Shutdown interrupted: {video['slug']}")
                 else:
-                    print(f"Failed to process: {video['slug']}")
+                    logger.warning(f"Failed to process: {video['slug']}")
 
             # Periodic stale job check
             if (
@@ -3217,15 +3222,15 @@ async def worker_loop(state: Optional[WorkerState] = None):
                     await asyncio.sleep(poll_interval)
 
     except KeyboardInterrupt:
-        print("\nKeyboardInterrupt received.")
+        logger.info("KeyboardInterrupt received.")
     finally:
         # Stop filesystem watcher
         if observer is not None:
-            print("Stopping filesystem watcher...")
+            logger.info("Stopping filesystem watcher...")
             stop_filesystem_watcher(observer)
 
         # On shutdown, reset all state for jobs being processed by this worker
-        print("Cleaning up: resetting this worker's in-progress jobs...")
+        logger.info("Cleaning up: resetting this worker's in-progress jobs...")
         try:
             # Find incomplete jobs for this worker
             jobs_query = transcoding_jobs.select().where(
@@ -3263,9 +3268,9 @@ async def worker_loop(state: Optional[WorkerState] = None):
                 reset_count += 1
 
             if reset_count > 0:
-                print(f"Reset {reset_count} job(s) to pending state.")
+                logger.info(f"Reset {reset_count} job(s) to pending state.")
             else:
-                print("No jobs to reset.")
+                logger.debug("No jobs to reset.")
 
             # Send worker shutdown alert (fire-and-forget)
             send_alert_fire_and_forget(
@@ -3275,10 +3280,10 @@ async def worker_loop(state: Optional[WorkerState] = None):
                 )
             )
         except Exception as e:
-            print(f"Error during cleanup: {e}")
+            logger.error(f"Error during cleanup: {e}")
 
         await database.disconnect()
-        print("Worker stopped gracefully.")
+        logger.info("Worker stopped gracefully.")
 
 
 if __name__ == "__main__":

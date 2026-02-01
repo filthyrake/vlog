@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Tuple
 
 from api.enums import PlaylistValidation
 from api.job_queue import JobDispatch, JobQueue
+from api.logging_config import setup_logging
 
 # Import code version for compatibility checking
 from code_version import CODE_VERSION
@@ -87,6 +88,9 @@ if WORKER_STREAMING_UPLOAD:
     from worker.streaming_upload import (
         streaming_transcode_and_upload_quality,
     )
+
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -1539,6 +1543,9 @@ async def worker_loop():
         HEALTH_SERVER.set_heartbeat_status(True)
     except WorkerAPIError as e:
         logger.error(f"Failed to connect to Worker API: {e.message}")
+        # Clean up health server before exiting to prevent orphaned process
+        if HEALTH_SERVER:
+            await HEALTH_SERVER.stop()
         sys.exit(1)
 
     # Create worker state for tracking job status
@@ -1699,12 +1706,7 @@ async def worker_loop():
 
 def main():
     """Entry point for the remote transcoder."""
-    # Configure logging to output to stdout
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stdout,
-    )
+    # Logging is already configured at module load via setup_logging() (Issue #208)
     asyncio.run(worker_loop())
 
 

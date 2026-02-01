@@ -3,6 +3,7 @@
  *
  * A loading placeholder component with shimmer animation.
  * Used to indicate content is loading while preserving layout.
+ * Uses constructable stylesheets for CSP compliance.
  *
  * @example
  * <vlog-skeleton variant="text"></vlog-skeleton>
@@ -10,104 +11,110 @@
  * <vlog-skeleton variant="thumbnail" width="120px" height="68px"></vlog-skeleton>
  */
 
+// CSS extracted for constructable stylesheets (CSP-compliant)
+const styles = `
+  :host {
+    display: block;
+  }
+
+  :host([hidden]) {
+    display: none;
+  }
+
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--vlog-bg-tertiary, #1e293b) 25%,
+      var(--vlog-bg-secondary, #334155) 50%,
+      var(--vlog-bg-tertiary, #1e293b) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+    border-radius: var(--vlog-radius-md, 0.375rem);
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+
+  /* Variant styles */
+  .skeleton.variant-text {
+    height: 1em;
+    width: 100%;
+  }
+
+  .skeleton.variant-text-block {
+    height: 4em;
+    width: 100%;
+  }
+
+  .skeleton.variant-avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+  }
+
+  .skeleton.variant-avatar.size-sm {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .skeleton.variant-avatar.size-lg {
+    width: 3rem;
+    height: 3rem;
+  }
+
+  .skeleton.variant-card {
+    height: 8rem;
+    width: 100%;
+  }
+
+  .skeleton.variant-table-row {
+    height: 3rem;
+    width: 100%;
+  }
+
+  .skeleton.variant-thumbnail {
+    width: 120px;
+    height: 68px;
+    border-radius: var(--vlog-radius-lg, 0.5rem);
+  }
+
+  .skeleton.variant-button {
+    height: 2.25rem;
+    width: 6rem;
+    border-radius: var(--vlog-radius-md, 0.375rem);
+  }
+
+  /* Reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton {
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.5;
+      }
+    }
+  }
+`;
+
+// Create constructable stylesheet (CSP-compliant)
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(styles);
+
+// HTML template without styles (styles applied via adoptedStyleSheets)
 const template = document.createElement('template');
 template.innerHTML = `
-  <style>
-    :host {
-      display: block;
-    }
-
-    :host([hidden]) {
-      display: none;
-    }
-
-    .skeleton {
-      background: linear-gradient(
-        90deg,
-        var(--vlog-bg-tertiary, #1e293b) 25%,
-        var(--vlog-bg-secondary, #334155) 50%,
-        var(--vlog-bg-tertiary, #1e293b) 75%
-      );
-      background-size: 200% 100%;
-      animation: shimmer 1.5s ease-in-out infinite;
-      border-radius: var(--vlog-radius-md, 0.375rem);
-    }
-
-    @keyframes shimmer {
-      0% {
-        background-position: 200% 0;
-      }
-      100% {
-        background-position: -200% 0;
-      }
-    }
-
-    /* Variant styles */
-    .skeleton.variant-text {
-      height: 1em;
-      width: 100%;
-    }
-
-    .skeleton.variant-text-block {
-      height: 4em;
-      width: 100%;
-    }
-
-    .skeleton.variant-avatar {
-      width: 2.5rem;
-      height: 2.5rem;
-      border-radius: 50%;
-    }
-
-    .skeleton.variant-avatar.size-sm {
-      width: 2rem;
-      height: 2rem;
-    }
-
-    .skeleton.variant-avatar.size-lg {
-      width: 3rem;
-      height: 3rem;
-    }
-
-    .skeleton.variant-card {
-      height: 8rem;
-      width: 100%;
-    }
-
-    .skeleton.variant-table-row {
-      height: 3rem;
-      width: 100%;
-    }
-
-    .skeleton.variant-thumbnail {
-      width: 120px;
-      height: 68px;
-      border-radius: var(--vlog-radius-lg, 0.5rem);
-    }
-
-    .skeleton.variant-button {
-      height: 2.25rem;
-      width: 6rem;
-      border-radius: var(--vlog-radius-md, 0.375rem);
-    }
-
-    /* Reduced motion */
-    @media (prefers-reduced-motion: reduce) {
-      .skeleton {
-        animation: pulse 2s ease-in-out infinite;
-      }
-
-      @keyframes pulse {
-        0%, 100% {
-          opacity: 1;
-        }
-        50% {
-          opacity: 0.5;
-        }
-      }
-    }
-  </style>
-
   <div class="skeleton" part="skeleton" role="presentation" aria-hidden="true"></div>
 `;
 
@@ -118,13 +125,17 @@ export class VlogSkeleton extends HTMLElement {
   private skeleton!: HTMLDivElement;
 
   static get observedAttributes() {
-    return ['variant', 'size', 'width', 'height'];
+    return ['variant', 'size'];
   }
 
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+
+    // Use adoptedStyleSheets for CSP compliance
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
     this.shadowRoot!.appendChild(template.content.cloneNode(true));
+
     this.skeleton = this.shadowRoot!.querySelector('.skeleton')!;
   }
 
@@ -139,8 +150,6 @@ export class VlogSkeleton extends HTMLElement {
   private updateStyles() {
     const variant = this.getAttribute('variant') || 'text';
     const size = this.getAttribute('size') || 'md';
-    const width = this.getAttribute('width');
-    const height = this.getAttribute('height');
 
     // Clear existing classes
     this.skeleton.className = 'skeleton';
@@ -153,9 +162,8 @@ export class VlogSkeleton extends HTMLElement {
       this.skeleton.classList.add(`size-${size}`);
     }
 
-    // Apply custom dimensions (clear if attribute removed)
-    this.skeleton.style.width = width || '';
-    this.skeleton.style.height = height || '';
+    // Note: Custom width/height are not supported due to CSP restrictions
+    // Use CSS utility classes or custom CSS for custom dimensions
   }
 
   // Getters and setters

@@ -19,42 +19,95 @@
                 <div class="flex gap-4 items-center">
                     <button
                         @click="tab = 'videos'"
-                        :class="tab === 'videos' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('videos')"
                         class="font-medium"
                     >Videos</button>
                     <button
                         @click="tab = 'categories'"
-                        :class="tab === 'categories' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('categories')"
                         class="font-medium"
                     >Categories</button>
                     <button
                         @click="tab = 'playlists'"
-                        :class="tab === 'playlists' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('playlists')"
                         class="font-medium"
                     >Playlists</button>
                     <button
                         @click="tab = 'upload'"
-                        :class="tab === 'upload' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        :class="tabClass('upload')"
                         class="font-medium"
                     >Upload</button>
                     <button
-                        @click="tab = 'workers'; loadWorkers(); loadDeploymentHistory()"
-                        :class="tab === 'workers' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        @click="openWorkersTab()"
+                        :class="tabClass('workers')"
                         class="font-medium"
                     >Workers</button>
                     <button
-                        @click="tab = 'analytics'; loadAnalytics()"
-                        :class="tab === 'analytics' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        @click="openAnalyticsTab()"
+                        :class="tabClass('analytics')"
                         class="font-medium"
                     >Analytics</button>
                     <button
-                        @click="tab = 'settings'; loadWatermarkSettings(); loadAllSettings()"
-                        :class="tab === 'settings' ? 'text-blue-400' : 'text-dark-400 hover:text-white'"
+                        @click="openSettingsTab()"
+                        :class="tabClass('settings')"
                         class="font-medium"
                     >Settings</button>
-                    <!-- Logout button - only shown when auth is enabled and user is logged in -->
+                    <!-- Users tab - Admin only (user-based auth) -->
                     <button
-                        x-show="authRequired && isAuthenticated"
+                        x-show="authMode === 'user' && isAuthenticated && isAdmin()"
+                        x-cloak
+                        @click="openUsersTab()"
+                        :class="tabClass('users')"
+                        class="font-medium"
+                    >Users</button>
+
+                    <!-- User Dropdown (user-based auth) -->
+                    <template x-if="authMode === 'user' && isAuthenticated && currentUser">
+                        <div class="relative ml-4" x-data="{ userMenuOpen: false }">
+                            <button
+                                @click="userMenuOpen = !userMenuOpen"
+                                @click.outside="userMenuOpen = false"
+                                class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-dark-800 transition"
+                            >
+                                <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-sm font-medium">
+                                    <span x-text="currentUser.username.charAt(0).toUpperCase()"></span>
+                                </div>
+                                <span class="text-sm" x-text="currentUser.display_name || currentUser.username"></span>
+                                <svg class="w-4 h-4 text-dark-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </button>
+                            <div
+                                x-show="userMenuOpen"
+                                x-transition
+                                class="absolute right-0 mt-2 w-48 bg-dark-800 border border-dark-700 rounded-lg shadow-lg py-1 z-50"
+                            >
+                                <div class="px-4 py-2 border-b border-dark-700">
+                                    <p class="text-sm font-medium" x-text="currentUser.username"></p>
+                                    <p class="text-xs text-dark-400" x-text="currentUser.email"></p>
+                                    <span class="inline-block mt-1 px-2 py-0.5 text-xs rounded bg-blue-600/20 text-blue-400" x-text="currentUser.role"></span>
+                                </div>
+                                <button
+                                    @click="openProfileTab(); userMenuOpen = false"
+                                    class="w-full text-left px-4 py-2 text-sm hover:bg-dark-700 transition"
+                                >Profile & Settings</button>
+                                <button
+                                    @click="openChangePasswordModal(); userMenuOpen = false"
+                                    class="w-full text-left px-4 py-2 text-sm hover:bg-dark-700 transition"
+                                >Change Password</button>
+                                <div class="border-t border-dark-700 mt-1 pt-1">
+                                    <button
+                                        @click="logout(); userMenuOpen = false"
+                                        class="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-dark-700 transition"
+                                    >Sign Out</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Legacy Logout button (admin secret auth) -->
+                    <button
+                        x-show="authMode === 'legacy' && authRequired && isAuthenticated"
                         x-cloak
                         @click="logout()"
                         class="ml-4 px-3 py-1 text-sm text-dark-400 hover:text-red-400 border border-dark-700 hover:border-red-500 rounded transition"
@@ -77,7 +130,7 @@
                         <vlog-dropzone
                             accept="video/*"
                             max-size="53687091200"
-                            @files-selected="if ($event.detail.files[0]?.file) setFile($event.detail.files[0].file)"
+                            @files-selected="handleFilesSelected($event)"
                             @file-removed="uploadFile = null"
                             :disabled="uploading"
                         >
@@ -207,7 +260,7 @@
                     <vlog-button variant="primary" size="sm" @click="openBulkUpdateModal">Update</vlog-button>
                     <vlog-button variant="info" size="sm" @click="openBulkRetranscodeModal">Re-transcode</vlog-button>
                     <vlog-button variant="warning" size="sm" @click="openBulkCustomFieldsModal" x-show="customFields.length > 0">Custom Fields</vlog-button>
-                    <vlog-button variant="success" size="sm" @click="bulkRestoreVideos" x-show="selectedVideos.some(id => videos.find(v => v.id === id)?.deleted_at)">Restore</vlog-button>
+                    <vlog-button variant="success" size="sm" @click="bulkRestoreVideos" x-show="hasDeletedSelectedVideos(videos)">Restore</vlog-button>
                     <vlog-button variant="danger" size="sm" @click="openBulkDeleteModal">Delete</vlog-button>
                     <vlog-button variant="secondary" size="sm" @click="clearSelection">Clear</vlog-button>
                 </div>
@@ -251,7 +304,7 @@
                                             :src="video.thumbnail_url"
                                             :alt="'Thumbnail for ' + video.title"
                                             class="w-full h-full object-cover"
-                                            @error="$el.style.display='none'"
+                                            @error="$el.classList.add('vlog-img-error')"
                                         >
                                     </div>
                                 </td>
@@ -285,15 +338,15 @@
                                                     <div class="flex-1 bg-dark-700 rounded-full h-1.5">
                                                         <div
                                                             class="bg-yellow-500 h-1.5 rounded-full transition-all"
-                                                            :style="'width: ' + (progressData[video.id]?.progress_percent || 0) + '%'"
+                                                            :class="getWidthClass(getProgressPercent(video.id))"
                                                         ></div>
                                                     </div>
-                                                    <span class="text-dark-400 w-8" x-text="(progressData[video.id]?.progress_percent || 0) + '%'"></span>
+                                                    <span class="text-dark-400 w-8" x-text="getProgressPercent(video.id) + '%'"></span>
                                                 </div>
-                                                <div class="text-dark-300" x-text="progressData[video.id]?.current_step || ''"></div>
-                                                <template x-if="progressData[video.id]?.qualities?.length">
+                                                <div class="text-dark-300" x-text="getProgressStep(video.id)"></div>
+                                                <template x-if="hasProgressQualities(video.id)">
                                                     <div class="flex flex-wrap gap-1 mt-1">
-                                                        <template x-for="q in progressData[video.id].qualities" :key="q.name">
+                                                        <template x-for="q in getProgressQualities(video.id)" :key="q.name">
                                                             <span
                                                                 :class="{
                                                                     'bg-green-500/20 text-green-400': q.status === 'completed' || q.status === 'uploaded',
@@ -315,8 +368,8 @@
                                             <div class="text-xs text-dark-300 mt-1">Waiting for worker...</div>
                                         </template>
                                         <!-- Error message for failed -->
-                                        <template x-if="video.status === 'failed' && progressData[video.id]?.last_error">
-                                            <div class="text-xs text-red-400 mt-1 max-w-xs truncate" x-text="progressData[video.id].last_error"></div>
+                                        <template x-if="video.status === 'failed' && hasProgressError(video.id)">
+                                            <div class="text-xs text-red-400 mt-1 max-w-xs truncate" x-text="getProgressError(video.id)"></div>
                                         </template>
                                     </div>
                                 </td>
@@ -334,11 +387,11 @@
                                                 class="absolute left-0 mt-1 w-36 bg-dark-800 border border-dark-700 rounded-lg shadow-lg z-10"
                                             >
                                                 <button
-                                                    @click="retranscodeAll(video); open = false"
+                                                    @click="retranscodeAll(video)"
                                                     class="w-full text-left px-3 py-2 text-sm hover:bg-dark-700 rounded-t-lg"
                                                 >All Qualities</button>
                                                 <button
-                                                    @click="openRetranscodeModal(video); open = false"
+                                                    @click="openRetranscodeModal(video)"
                                                     class="w-full text-left px-3 py-2 text-sm hover:bg-dark-700 rounded-b-lg"
                                                 >Select Qualities...</button>
                                             </div>
@@ -362,8 +415,8 @@
                     <div class="flex items-center gap-4 p-4">
                         <vlog-skeleton variant="thumbnail"></vlog-skeleton>
                         <div class="flex-1 space-y-2">
-                            <vlog-skeleton variant="text" style="width: 60%"></vlog-skeleton>
-                            <vlog-skeleton variant="text" style="width: 40%"></vlog-skeleton>
+                            <vlog-skeleton variant="text" class="w-pct-60"></vlog-skeleton>
+                            <vlog-skeleton variant="text" class="w-pct-40"></vlog-skeleton>
                         </div>
                         <vlog-skeleton variant="button"></vlog-skeleton>
                     </div>
@@ -375,8 +428,8 @@
                 <template x-for="i in 3" :key="i">
                     <div class="bg-dark-900 rounded-xl p-4 space-y-3">
                         <vlog-skeleton variant="thumbnail" class="w-full aspect-video"></vlog-skeleton>
-                        <vlog-skeleton variant="text" style="width: 70%"></vlog-skeleton>
-                        <vlog-skeleton variant="text" style="width: 40%"></vlog-skeleton>
+                        <vlog-skeleton variant="text" class="w-pct-70"></vlog-skeleton>
+                        <vlog-skeleton variant="text" class="w-pct-40"></vlog-skeleton>
                     </div>
                 </template>
             </div>
@@ -610,7 +663,7 @@
                         <vlog-button variant="ghost" size="sm" @click="cancelPlaylistEdit">
                             <span>← Back</span>
                         </vlog-button>
-                        <h2 class="text-xl font-semibold" x-text="'Edit: ' + editingPlaylist?.title"></h2>
+                        <h2 class="text-xl font-semibold" x-text="'Edit: ' + getEditingPlaylistTitle()"></h2>
                     </div>
                     <vlog-button variant="primary" size="sm" @click="savePlaylistEdits" :disabled="playlistsLoading">
                         Save Changes
@@ -682,7 +735,7 @@
                         <vlog-card>
                             <span slot="header">
                                 <div class="flex justify-between items-center">
-                                    <span x-text="'Videos (' + (editingPlaylist?.videos?.length || 0) + ')'"></span>
+                                    <span x-text="'Videos (' + getEditingPlaylistVideoCount() + ')'"></span>
                                     <vlog-button variant="ghost" size="sm" @click="showAddVideoModal = true">
                                         + Add Video
                                     </vlog-button>
@@ -690,7 +743,7 @@
                             </span>
 
                             <div class="space-y-2">
-                                <template x-for="(video, index) in editingPlaylist?.videos" :key="video.id">
+                                <template x-for="(video, index) in getEditingPlaylistVideos()" :key="video.id">
                                     <div
                                         draggable="true"
                                         @dragstart="startDragVideo(video.id)"
@@ -706,7 +759,7 @@
                                                 :src="video.thumbnail_url"
                                                 :alt="'Thumbnail for ' + video.title"
                                                 class="w-full h-full object-cover"
-                                                @error="$el.style.display='none'"
+                                                @error="$el.classList.add('vlog-img-error')"
                                             >
                                         </div>
                                         <div class="flex-1 min-w-0">
@@ -724,7 +777,7 @@
                                     </div>
                                 </template>
                                 <vlog-empty-state
-                                    x-show="!editingPlaylist?.videos || editingPlaylist.videos.length === 0"
+                                    x-show="!hasEditingPlaylistVideos()"
                                     icon="video"
                                     title="No videos in this playlist"
                                     description="Add videos to get started."
@@ -772,7 +825,7 @@
                                                 :src="video.thumbnail_url"
                                                 :alt="'Thumbnail for ' + video.title"
                                                 class="w-full h-full object-cover"
-                                                @error="$el.style.display='none'"
+                                                @error="$el.classList.add('vlog-img-error')"
                                             >
                                         </div>
                                         <div class="flex-1 min-w-0">
@@ -809,7 +862,7 @@
             <div class="grid grid-cols-3 gap-4 mb-8">
                 <div class="bg-dark-900 rounded-xl p-6">
                     <div class="text-dark-400 text-sm mb-1">Total Views</div>
-                    <div class="text-2xl font-bold" x-text="analyticsOverview.total_views?.toLocaleString() || '0'"></div>
+                    <div class="text-2xl font-bold" x-text="getTotalViewsFormatted()"></div>
                 </div>
                 <div class="bg-dark-900 rounded-xl p-6">
                     <div class="text-dark-400 text-sm mb-1">Watch Time</div>
@@ -864,7 +917,7 @@
                                 <td class="px-4 py-3">
                                     <div class="flex items-center gap-3">
                                         <div class="w-16 aspect-video bg-dark-800 rounded overflow-hidden flex-shrink-0">
-                                            <img :src="video.thumbnail_url" :alt="'Thumbnail for ' + video.title" class="w-full h-full object-cover" @error="$el.style.display='none'">
+                                            <img :src="video.thumbnail_url" :alt="'Thumbnail for ' + video.title" class="w-full h-full object-cover" @error="$el.classList.add('vlog-img-error')">
                                         </div>
                                         <div class="font-medium truncate max-w-xs" x-text="video.title"></div>
                                     </div>
@@ -922,7 +975,7 @@
                             variant="ghost"
                             size="sm"
                             @click="restartAllWorkers"
-                            x-show="workersList.filter(w => w.status !== 'offline' && w.status !== 'disabled').length > 0"
+                            x-show="hasActiveWorkers()"
                             title="Restart all online workers (useful for deploying updates)"
                         >Restart All</vlog-button>
                         <vlog-button variant="ghost" size="sm" @click="loadWorkers">Refresh</vlog-button>
@@ -1076,7 +1129,7 @@
                                         <div class="flex-1 max-w-xs bg-dark-700 rounded-full h-1.5">
                                             <div
                                                 class="bg-green-500 h-1.5 rounded-full transition-all"
-                                                :style="'width: ' + (worker.current_progress || 0) + '%'"
+                                                :class="getWidthClass(worker.current_progress)"
                                             ></div>
                                         </div>
                                         <span class="text-dark-400 text-xs" x-text="(worker.current_progress || 0) + '%'"></span>
@@ -1137,12 +1190,11 @@
                                     </div>
                                     <div class="w-full bg-dark-700 rounded-full h-2">
                                         <div
-                                            :class="{
-                                                'bg-yellow-500': job.status === 'processing',
-                                                'bg-blue-500': job.status === 'pending'
-                                            }"
+                                            :class="[
+                                                getWidthClass(job.progress_percent),
+                                                job.status === 'processing' ? 'bg-yellow-500' : 'bg-blue-500'
+                                            ]"
                                             class="h-2 rounded-full transition-all"
-                                            :style="'width: ' + job.progress_percent + '%'"
                                         ></div>
                                     </div>
                                     <!-- Quality badges -->
@@ -1274,13 +1326,18 @@
                 <!-- Settings sub-tabs -->
                 <div class="flex gap-2 mb-6 flex-wrap">
                     <button
+                        @click="openBrandingSettings()"
+                        :class="settingsTabClass('branding')"
+                        class="px-4 py-2 rounded-lg font-medium transition text-sm"
+                    >Branding</button>
+                    <button
                         @click="settingsTab = 'watermark'"
-                        :class="settingsTab === 'watermark' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        :class="settingsTabClass('watermark')"
                         class="px-4 py-2 rounded-lg font-medium transition text-sm"
                     >Watermark</button>
                     <button
-                        @click="settingsTab = 'custom_fields'; loadCustomFields()"
-                        :class="settingsTab === 'custom_fields' ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
+                        @click="openCustomFieldsSettings()"
+                        :class="settingsTabClass('custom_fields')"
                         class="px-4 py-2 rounded-lg font-medium transition text-sm"
                     >Custom Fields</button>
                     <template x-for="category in settingsCategories" :key="category">
@@ -1288,7 +1345,7 @@
                             @click="settingsTab = category"
                             :class="settingsTab === category ? 'bg-blue-600 text-white' : 'bg-dark-800 text-dark-300 hover:bg-dark-700'"
                             class="px-4 py-2 rounded-lg font-medium transition text-sm capitalize"
-                            x-text="category.replace(/_/g, ' ')"
+                            x-text="formatCategoryName(category)"
                         ></button>
                     </template>
                 </div>
@@ -1302,6 +1359,178 @@
                     x-text="settingsMessage"
                     class="mb-4"
                 ></vlog-alert>
+
+                <!-- Branding Settings (Issue #214) -->
+                <div x-show="settingsTab === 'branding'" class="bg-dark-900 rounded-xl p-6">
+                    <h3 class="text-lg font-semibold mb-4">Branding</h3>
+                    <p class="text-dark-400 text-sm mb-6">
+                        Customize your site's identity with a custom logo, favicon, site name, and footer text.
+                    </p>
+
+                    <!-- Loading state -->
+                    <div x-show="brandingLoading" class="text-center py-8">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                    </div>
+
+                    <!-- Settings content -->
+                    <div x-show="!brandingLoading && hasBrandingSettings()" class="space-y-6">
+                        <!-- Site Name -->
+                        <div class="border-b border-dark-800 pb-6">
+                            <label for="site-name" class="font-medium mb-4 block">Site Name</label>
+                            <div class="flex gap-3">
+                                <input
+                                    id="site-name"
+                                    type="text"
+                                    x-model="brandingSiteName"
+                                    @input="brandingModified = true"
+                                    class="flex-1 px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder="My Video Site"
+                                    maxlength="100"
+                                >
+                                <button
+                                    @click="saveBrandingSiteName()"
+                                    :disabled="!brandingModified || brandingSaving"
+                                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 disabled:text-dark-300 rounded-lg font-medium transition"
+                                >Save</button>
+                            </div>
+                            <p class="text-dark-500 text-xs mt-2">Displayed in the header and page titles.</p>
+                        </div>
+
+                        <!-- Logo Section -->
+                        <div class="border-b border-dark-800 pb-6">
+                            <h4 class="font-medium mb-4">Logo</h4>
+
+                            <!-- Current logo preview -->
+                            <div x-show="getBrandingLogoExists()" class="mb-4">
+                                <div class="text-sm text-dark-400 mb-2">Current logo:</div>
+                                <div class="flex items-start gap-4">
+                                    <div class="bg-dark-800 p-4 rounded-lg inline-block">
+                                        <img :src="getBrandingLogoUrl()" class="max-h-16 max-w-48" alt="Current logo">
+                                    </div>
+                                    <div class="text-sm text-dark-400">
+                                        <div x-text="getBrandingLogoPath()"></div>
+                                        <button
+                                            @click="deleteLogo()"
+                                            class="text-red-400 hover:text-red-300 mt-2"
+                                            aria-label="Delete current logo image"
+                                        >Delete logo</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Upload new logo -->
+                            <div class="space-y-3">
+                                <label for="logo-upload" class="block text-sm text-dark-400">Upload new logo (PNG or SVG with transparency recommended)</label>
+                                <div class="flex gap-3">
+                                    <input
+                                        id="logo-upload"
+                                        type="file"
+                                        accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+                                        @change="logoFile = $event.target.files[0]"
+                                        class="flex-1 px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm"
+                                        :disabled="logoUploading"
+                                    >
+                                    <button
+                                        @click="uploadLogo()"
+                                        :disabled="!logoFile || logoUploading"
+                                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 disabled:text-dark-300 rounded-lg font-medium transition"
+                                    >
+                                        <span x-show="!logoUploading">Upload</span>
+                                        <span x-show="logoUploading">Uploading...</span>
+                                    </button>
+                                </div>
+                                <div x-show="logoUploading" class="w-full bg-dark-800 rounded-full h-2">
+                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(logoUploadProgress)"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Favicon Section -->
+                        <div class="border-b border-dark-800 pb-6">
+                            <h4 class="font-medium mb-4">Favicon</h4>
+
+                            <!-- Current favicon preview -->
+                            <div x-show="getBrandingFaviconExists()" class="mb-4">
+                                <div class="text-sm text-dark-400 mb-2">Current favicon:</div>
+                                <div class="flex items-start gap-4">
+                                    <div class="bg-dark-800 p-4 rounded-lg inline-block">
+                                        <img :src="getBrandingFaviconUrl()" class="w-8 h-8" alt="Current favicon">
+                                    </div>
+                                    <div class="text-sm text-dark-400">
+                                        <div x-text="getBrandingFaviconPath()"></div>
+                                        <button
+                                            @click="deleteFavicon()"
+                                            class="text-red-400 hover:text-red-300 mt-2"
+                                            aria-label="Delete current favicon"
+                                        >Delete favicon</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Upload new favicon -->
+                            <div class="space-y-3">
+                                <label for="favicon-upload" class="block text-sm text-dark-400">Upload new favicon (ICO, PNG, or SVG, max 1MB)</label>
+                                <div class="flex gap-3">
+                                    <input
+                                        id="favicon-upload"
+                                        type="file"
+                                        accept=".ico,image/png,image/svg+xml"
+                                        @change="faviconFile = $event.target.files[0]"
+                                        class="flex-1 px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm"
+                                        :disabled="faviconUploading"
+                                    >
+                                    <button
+                                        @click="uploadFavicon()"
+                                        :disabled="!faviconFile || faviconUploading"
+                                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 disabled:text-dark-300 rounded-lg font-medium transition"
+                                    >
+                                        <span x-show="!faviconUploading">Upload</span>
+                                        <span x-show="faviconUploading">Uploading...</span>
+                                    </button>
+                                </div>
+                                <div x-show="faviconUploading" class="w-full bg-dark-800 rounded-full h-2">
+                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(faviconUploadProgress)"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Footer Text -->
+                        <div>
+                            <label for="footer-text" class="font-medium mb-4 block">Footer Text</label>
+                            <div class="space-y-3">
+                                <input
+                                    id="footer-text"
+                                    type="text"
+                                    x-model="brandingFooterText"
+                                    @input="brandingFooterModified = true"
+                                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder="© My Company. All rights reserved."
+                                    maxlength="200"
+                                >
+                                <div class="flex justify-between items-center">
+                                    <p class="text-dark-500 text-xs">Custom copyright or footer text. Leave empty for default.</p>
+                                    <button
+                                        @click="saveBrandingFooterText()"
+                                        :disabled="!brandingFooterModified || brandingSaving"
+                                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-700 disabled:text-dark-300 rounded-lg font-medium transition text-sm"
+                                    >Save</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Message display -->
+                        <div x-show="brandingMessage" class="mt-4">
+                            <div :class="brandingError ? 'bg-red-900/20 border-red-800 text-red-400' : 'bg-green-900/20 border-green-800 text-green-400'" class="border rounded-lg px-4 py-3 text-sm">
+                                <span x-text="brandingMessage"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Not loaded state -->
+                    <div x-show="!brandingLoading && !hasBrandingSettings()" class="text-center py-8 text-dark-400">
+                        Failed to load branding settings. <button @click="loadBrandingSettings()" class="text-blue-400 hover:underline">Retry</button>
+                    </div>
+                </div>
 
                 <!-- Watermark Settings (special case with file upload) -->
                 <div x-show="settingsTab === 'watermark'" class="bg-dark-900 rounded-xl p-6">
@@ -1377,7 +1606,7 @@
                                 </div>
                                 <!-- Upload progress -->
                                 <div x-show="watermarkUploading" class="w-full bg-dark-800 rounded-full h-2">
-                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + watermarkUploadProgress + '%'"></div>
+                                    <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(watermarkUploadProgress)"></div>
                                 </div>
                             </div>
                         </div>
@@ -1458,10 +1687,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <!-- Fields List -->
                     <div x-show="!customFieldsLoading && customFields.length > 0" class="space-y-6">
                         <!-- Global Fields -->
-                        <div x-show="customFields.filter(f => !f.category_id).length > 0">
+                        <div x-show="hasGlobalCustomFields()">
                             <h4 class="text-sm font-medium text-dark-400 mb-3 uppercase tracking-wider">Global Fields</h4>
                             <div class="space-y-2">
-                                <template x-for="field in customFields.filter(f => !f.category_id)" :key="field.id">
+                                <template x-for="field in getGlobalCustomFields()" :key="field.id">
                                     <div class="flex items-center justify-between p-4 bg-dark-800 rounded-lg">
                                         <div class="flex-1">
                                             <div class="flex items-center gap-2">
@@ -1486,10 +1715,10 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
 
                         <!-- Category-specific Fields -->
                         <template x-for="cat in categories" :key="cat.id">
-                            <div x-show="customFields.filter(f => f.category_id === cat.id).length > 0">
+                            <div x-show="hasCategoryCustomFields(cat.id)">
                                 <h4 class="text-sm font-medium text-dark-400 mb-3 uppercase tracking-wider" x-text="cat.name + ' Fields'"></h4>
                                 <div class="space-y-2">
-                                    <template x-for="field in customFields.filter(f => f.category_id === cat.id)" :key="field.id">
+                                    <template x-for="field in getCategoryCustomFields(cat.id)" :key="field.id">
                                         <div class="flex items-center justify-between p-4 bg-dark-800 rounded-lg">
                                             <div class="flex-1">
                                                 <div class="flex items-center gap-2">
@@ -1612,7 +1841,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 <template x-for="category in settingsCategories" :key="category">
                     <div x-show="settingsTab === category" class="bg-dark-900 rounded-xl p-6">
                         <div class="flex items-center justify-between mb-6">
-                            <h3 class="text-lg font-semibold capitalize" x-text="category.replace(/_/g, ' ') + ' Settings'"></h3>
+                            <h3 class="text-lg font-semibold capitalize" x-text="formatCategoryTitle(category)"></h3>
                             <div class="flex gap-2">
                                 <vlog-button
                                     variant="secondary"
@@ -1646,7 +1875,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 <div class="p-4 bg-dark-800 rounded-lg">
                                     <div class="flex items-start justify-between gap-4">
                                         <div class="flex-1 min-w-0">
-                                            <label class="block font-medium mb-1" x-text="setting.key.split('.').pop().replace(/_/g, ' ')"></label>
+                                            <label class="block font-medium mb-1" x-text="formatSettingLabel(setting.key)"></label>
                                             <div class="text-sm text-dark-400 mb-3" x-text="setting.description || 'No description'"></div>
 
                                             <!-- Boolean toggle -->
@@ -1669,8 +1898,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     type="number"
                                                     :value="setting.value"
                                                     @input="setting.value = parseInt($event.target.value, 10); markSettingModified(category, setting.key, setting.value)"
-                                                    :min="setting.constraints?.min"
-                                                    :max="setting.constraints?.max"
+                                                    :min="getConstraint(setting, 'min')"
+                                                    :max="getConstraint(setting, 'max')"
                                                     class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
@@ -1682,8 +1911,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     step="0.01"
                                                     :value="setting.value"
                                                     @input="setting.value = parseFloat($event.target.value); markSettingModified(category, setting.key, setting.value)"
-                                                    :min="setting.constraints?.min"
-                                                    :max="setting.constraints?.max"
+                                                    :min="getConstraint(setting, 'min')"
+                                                    :max="getConstraint(setting, 'max')"
                                                     class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
@@ -1695,7 +1924,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     @change="setting.value = $event.target.value; markSettingModified(category, setting.key, setting.value)"
                                                     class="w-full max-w-xs px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
-                                                    <template x-for="opt in setting.constraints?.enum_values || []" :key="opt">
+                                                    <template x-for="opt in getEnumValues(setting)" :key="opt">
                                                         <option :value="opt" :selected="setting.value === opt" x-text="opt"></option>
                                                     </template>
                                                 </select>
@@ -1707,9 +1936,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                                     type="text"
                                                     :value="setting.value"
                                                     @input="setting.value = $event.target.value; markSettingModified(category, setting.key, setting.value)"
-                                                    :minlength="setting.constraints?.min_length"
-                                                    :maxlength="setting.constraints?.max_length"
-                                                    :pattern="setting.constraints?.pattern"
+                                                    :minlength="getConstraint(setting, 'min_length')"
+                                                    :maxlength="getConstraint(setting, 'max_length')"
+                                                    :pattern="getConstraint(setting, 'pattern')"
                                                     class="w-full max-w-md px-4 py-2 bg-dark-900 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
                                                 >
                                             </template>
@@ -1726,13 +1955,13 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
 
                                             <!-- Constraints info -->
                                             <div x-show="setting.constraints" class="mt-2 text-xs text-dark-300">
-                                                <span x-show="setting.constraints?.min !== undefined" x-text="'Min: ' + setting.constraints?.min + ' '"></span>
-                                                <span x-show="setting.constraints?.max !== undefined" x-text="'Max: ' + setting.constraints?.max"></span>
+                                                <span x-show="hasConstraint(setting, 'min')" x-text="'Min: ' + getConstraint(setting, 'min') + ' '"></span>
+                                                <span x-show="hasConstraint(setting, 'max')" x-text="'Max: ' + getConstraint(setting, 'max')"></span>
                                             </div>
                                         </div>
 
                                         <!-- Modified indicator -->
-                                        <div x-show="settingsModified[category]?.[setting.key] !== undefined" class="text-yellow-500" title="Modified">
+                                        <div x-show="isSettingModified(category, setting.key)" class="text-yellow-500" title="Modified">
                                             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                                                 <circle cx="10" cy="10" r="5"></circle>
                                             </svg>
@@ -1748,6 +1977,318 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 <div x-show="!settingsLoading && settingsCategories.length === 0 && settingsTab !== 'watermark'" class="bg-dark-900 rounded-xl p-6 text-center text-dark-400">
                     <p class="mb-4">No database settings configured yet.</p>
                     <p class="text-sm">Settings will appear here after running the migration and seeding default values.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Profile Tab (User-based auth only) -->
+        <template x-if="tab === 'profile' && authMode === 'user' && currentUser">
+            <div>
+                <div class="max-w-4xl">
+                    <h2 class="text-xl font-semibold mb-6">Your Profile</h2>
+
+                    <!-- Profile Info Card -->
+                    <div class="bg-dark-900 rounded-xl p-6 mb-6">
+                        <div class="flex items-start gap-6">
+                            <!-- Avatar -->
+                            <div class="w-20 h-20 bg-dark-700 rounded-full flex items-center justify-center text-3xl font-bold text-dark-400">
+                                <span x-text="currentUser.display_name && currentUser.display_name[0] ? currentUser.display_name[0].toUpperCase() : (currentUser.username && currentUser.username[0] ? currentUser.username[0].toUpperCase() : '?')"></span>
+                            </div>
+                            <div class="flex-1">
+                                <div class="flex items-center gap-3 mb-2">
+                                    <h3 class="text-lg font-semibold" x-text="currentUser.display_name || currentUser.username"></h3>
+                                    <span class="px-2 py-0.5 text-xs bg-blue-900/50 text-blue-400 rounded capitalize" x-text="currentUser.role"></span>
+                                </div>
+                                <div class="text-dark-400 text-sm space-y-1">
+                                    <p>Username: <span class="text-white" x-text="currentUser.username"></span></p>
+                                    <p>Email: <span class="text-white" x-text="currentUser.email"></span></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                <!-- Security Section -->
+                <div class="bg-dark-900 rounded-xl overflow-hidden mb-6">
+                    <div class="px-6 py-4 border-b border-dark-800">
+                        <h3 class="font-semibold">Security</h3>
+                    </div>
+                    <div class="p-6">
+                        <vlog-button variant="secondary" @click="openChangePasswordModal()">
+                            Change Password
+                        </vlog-button>
+                    </div>
+                </div>
+
+                <!-- Active Sessions Section -->
+                <div class="bg-dark-900 rounded-xl overflow-hidden mb-6">
+                    <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                        <h3 class="font-semibold">Active Sessions</h3>
+                        <vlog-button variant="ghost" size="sm" @click="loadSessions">Refresh</vlog-button>
+                    </div>
+
+                    <!-- Loading state -->
+                    <div x-show="sessionsLoading" class="p-6 text-center">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                    </div>
+
+                    <!-- Sessions list -->
+                    <div x-show="!sessionsLoading" class="divide-y divide-dark-800">
+                        <template x-for="session in sessions" :key="session.id">
+                            <div class="p-4 hover:bg-dark-800/50 flex items-center justify-between">
+                                <div>
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="font-medium" x-text="session.user_agent ? session.user_agent.split(' ')[0] : 'Unknown Browser'"></span>
+                                        <span x-show="session.is_current" class="px-2 py-0.5 text-xs bg-green-900/50 text-green-400 rounded">Current</span>
+                                    </div>
+                                    <div class="text-dark-400 text-sm">
+                                        <span x-text="session.ip_address"></span>
+                                        <span class="text-dark-600 mx-2">•</span>
+                                        <span x-text="VLogFormatters.formatRelativeTime(session.created_at)"></span>
+                                    </div>
+                                </div>
+                                <button
+                                    x-show="!session.is_current"
+                                    @click="revokeSession(session.id)"
+                                    class="text-red-400 hover:text-red-300 text-sm"
+                                >Revoke</button>
+                            </div>
+                        </template>
+                        <div x-show="sessions.length === 0" class="p-6 text-center text-dark-400">
+                            No active sessions found.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API Keys Section -->
+                <div class="bg-dark-900 rounded-xl overflow-hidden">
+                    <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                        <h3 class="font-semibold">API Keys</h3>
+                        <div class="flex gap-2">
+                            <vlog-button variant="ghost" size="sm" @click="loadApiKeys">Refresh</vlog-button>
+                            <vlog-button size="sm" @click="openCreateApiKeyModal()">Create Key</vlog-button>
+                        </div>
+                    </div>
+
+                    <!-- Loading state -->
+                    <div x-show="apiKeysLoading" class="p-6 text-center">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                    </div>
+
+                    <!-- API Keys list -->
+                    <div x-show="!apiKeysLoading" class="divide-y divide-dark-800">
+                        <template x-for="key in apiKeys" :key="key.id">
+                            <div class="p-4 hover:bg-dark-800/50 flex items-center justify-between">
+                                <div>
+                                    <div class="font-medium" x-text="key.name"></div>
+                                    <div class="text-dark-400 text-sm">
+                                        <span x-text="key.key_prefix + '...'"></span>
+                                        <span class="text-dark-600 mx-2">•</span>
+                                        <span>Created <span x-text="VLogFormatters.formatRelativeTime(key.created_at)"></span></span>
+                                        <template x-if="key.expires_at">
+                                            <span>
+                                                <span class="text-dark-600 mx-2">•</span>
+                                                Expires <span x-text="VLogFormatters.formatRelativeTime(key.expires_at)"></span>
+                                            </span>
+                                        </template>
+                                    </div>
+                                </div>
+                                <button
+                                    @click="revokeApiKey(key.id)"
+                                    class="text-red-400 hover:text-red-300 text-sm"
+                                >Revoke</button>
+                            </div>
+                        </template>
+                        <div x-show="apiKeys.length === 0" class="p-6 text-center text-dark-400">
+                            No API keys. Create one to access the API programmatically.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- Users Tab (Admin only, user-based auth) -->
+        <div x-show="tab === 'users' && authMode === 'user' && isAdmin()" x-cloak>
+            <div class="max-w-6xl">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-semibold">User Management</h2>
+                    <div class="flex gap-2">
+                        <vlog-button variant="secondary" @click="openCreateInviteModal()">Invite User</vlog-button>
+                        <vlog-button @click="openCreateUserModal()">Create User</vlog-button>
+                    </div>
+                </div>
+
+                <!-- Filters -->
+                <div class="bg-dark-900 rounded-xl p-4 mb-6">
+                    <div class="flex gap-4">
+                        <div class="flex-1">
+                            <input
+                                type="text"
+                                x-model="userSearch"
+                                @input.debounce.300ms="loadUsers()"
+                                placeholder="Search users..."
+                                class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                            >
+                        </div>
+                        <select
+                            x-model="userRoleFilter"
+                            @change="loadUsers()"
+                            class="px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 outline-none"
+                        >
+                            <option value="">All Roles</option>
+                            <option value="admin">Admin</option>
+                            <option value="editor">Editor</option>
+                            <option value="viewer">Viewer</option>
+                        </select>
+                        <select
+                            x-model="userStatusFilter"
+                            @change="loadUsers()"
+                            class="px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 outline-none"
+                        >
+                            <option value="">All Status</option>
+                            <option value="active">Active</option>
+                            <option value="disabled">Disabled</option>
+                            <option value="pending">Pending</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Users List -->
+                <div class="bg-dark-900 rounded-xl overflow-hidden mb-6">
+                    <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                        <h3 class="font-semibold">Users (<span x-text="usersTotal"></span>)</h3>
+                        <vlog-button variant="ghost" size="sm" @click="loadUsers">Refresh</vlog-button>
+                    </div>
+
+                    <!-- Loading state -->
+                    <div x-show="usersLoading && users.length === 0" class="p-6 text-center">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                    </div>
+
+                    <!-- Error state -->
+                    <div x-show="usersError" class="p-6 text-center text-red-400" x-text="usersError"></div>
+
+                    <!-- Users table -->
+                    <div x-show="!usersLoading || users.length > 0">
+                        <table class="w-full">
+                            <thead class="bg-dark-800">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-sm font-medium text-dark-400">User</th>
+                                    <th class="px-6 py-3 text-left text-sm font-medium text-dark-400">Role</th>
+                                    <th class="px-6 py-3 text-left text-sm font-medium text-dark-400">Status</th>
+                                    <th class="px-6 py-3 text-left text-sm font-medium text-dark-400">Last Login</th>
+                                    <th class="px-6 py-3 text-right text-sm font-medium text-dark-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-dark-800">
+                                <template x-for="user in users" :key="user.id">
+                                    <tr class="hover:bg-dark-800/50">
+                                        <td class="px-6 py-4">
+                                            <div class="flex items-center gap-3">
+                                                <div class="w-8 h-8 bg-dark-700 rounded-full flex items-center justify-center text-sm font-medium text-dark-400">
+                                                    <span x-text="user.display_name && user.display_name[0] ? user.display_name[0].toUpperCase() : (user.username && user.username[0] ? user.username[0].toUpperCase() : '')"></span>
+                                                </div>
+                                                <div>
+                                                    <div class="font-medium" x-text="user.display_name || user.username"></div>
+                                                    <div class="text-dark-400 text-sm" x-text="user.email"></div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <span
+                                                :class="{
+                                                    'bg-purple-900/50 text-purple-400': user.role === 'admin',
+                                                    'bg-blue-900/50 text-blue-400': user.role === 'editor',
+                                                    'bg-dark-700 text-dark-300': user.role === 'viewer'
+                                                }"
+                                                class="px-2 py-0.5 text-xs rounded capitalize"
+                                                x-text="user.role"
+                                            ></span>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <span
+                                                :class="{
+                                                    'text-green-400': user.status === 'active',
+                                                    'text-red-400': user.status === 'disabled',
+                                                    'text-yellow-400': user.status === 'pending'
+                                                }"
+                                                class="text-sm capitalize"
+                                                x-text="user.status"
+                                            ></span>
+                                        </td>
+                                        <td class="px-6 py-4 text-dark-400 text-sm">
+                                            <span x-text="user.last_login_at ? VLogFormatters.formatRelativeTime(user.last_login_at) : 'Never'"></span>
+                                        </td>
+                                        <td class="px-6 py-4 text-right">
+                                            <div class="flex justify-end gap-2">
+                                                <button
+                                                    @click="openEditUserModal(user)"
+                                                    class="text-blue-400 hover:text-blue-300 text-sm"
+                                                >Edit</button>
+                                                <button
+                                                    @click="forcePasswordReset(user.id)"
+                                                    class="text-yellow-400 hover:text-yellow-300 text-sm"
+                                                    x-show="!currentUser || user.id !== currentUser.id"
+                                                >Reset Password</button>
+                                                <button
+                                                    @click="deleteUser(user.id)"
+                                                    class="text-red-400 hover:text-red-300 text-sm"
+                                                    x-show="(!currentUser || user.id !== currentUser.id) && user.status !== 'disabled'"
+                                                >Disable</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+
+                        <!-- Load more -->
+                        <div x-show="users.length < usersTotal" class="p-4 text-center">
+                            <vlog-button variant="ghost" @click="loadMoreUsers" :loading="usersLoading">
+                                Load More
+                            </vlog-button>
+                        </div>
+
+                        <!-- Empty state -->
+                        <div x-show="users.length === 0 && !usersLoading" class="p-6 text-center text-dark-400">
+                            No users found.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Pending Invites Section -->
+                <div class="bg-dark-900 rounded-xl overflow-hidden">
+                    <div class="px-6 py-4 border-b border-dark-800 flex justify-between items-center">
+                        <h3 class="font-semibold">Pending Invites</h3>
+                        <vlog-button variant="ghost" size="sm" @click="loadInvites">Refresh</vlog-button>
+                    </div>
+
+                    <!-- Loading state -->
+                    <div x-show="invitesLoading" class="p-6 text-center">
+                        <div class="animate-spin rounded-full h-8 w-8 border-2 border-dark-700 border-t-blue-500 mx-auto"></div>
+                    </div>
+
+                    <!-- Invites list -->
+                    <div x-show="!invitesLoading" class="divide-y divide-dark-800">
+                        <template x-for="invite in invites" :key="invite.id">
+                            <div class="p-4 hover:bg-dark-800/50 flex items-center justify-between">
+                                <div>
+                                    <div class="font-medium" x-text="invite.email"></div>
+                                    <div class="text-dark-400 text-sm">
+                                        Role: <span class="capitalize" x-text="invite.role"></span>
+                                        <span class="text-dark-600 mx-2">•</span>
+                                        Expires <span x-text="VLogFormatters.formatRelativeTime(invite.expires_at)"></span>
+                                    </div>
+                                </div>
+                                <button
+                                    @click="revokeInvite(invite.id)"
+                                    class="text-red-400 hover:text-red-300 text-sm"
+                                >Revoke</button>
+                            </div>
+                        </template>
+                        <div x-show="invites.length === 0" class="p-6 text-center text-dark-400">
+                            No pending invites.
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1832,6 +2373,40 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     <span class="text-xs text-dark-400">(Displays in hero section on homepage)</span>
                 </div>
 
+                <!-- Social Features Section (Issue #213) -->
+                <div class="border-t border-dark-700 pt-4 mt-4">
+                    <h4 class="text-sm font-medium text-dark-400 mb-3">Social Features</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <!-- Comments Toggle -->
+                        <div>
+                            <label for="editCommentsEnabled" class="block text-sm font-medium mb-1">Comments</label>
+                            <select
+                                id="editCommentsEnabled"
+                                x-model="editCommentsEnabled"
+                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
+                            >
+                                <option value="inherit">Use Global Setting</option>
+                                <option value="true">Enabled</option>
+                                <option value="false">Disabled</option>
+                            </select>
+                        </div>
+                        <!-- Ratings Toggle -->
+                        <div>
+                            <label for="editRatingsEnabled" class="block text-sm font-medium mb-1">Ratings</label>
+                            <select
+                                id="editRatingsEnabled"
+                                x-model="editRatingsEnabled"
+                                class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
+                            >
+                                <option value="inherit">Use Global Setting</option>
+                                <option value="true">Enabled</option>
+                                <option value="false">Disabled</option>
+                            </select>
+                        </div>
+                    </div>
+                    <p class="text-xs text-dark-400 mt-2">Override global settings for this video, or use "Use Global Setting" to inherit</p>
+                </div>
+
                 <!-- Custom Fields Section -->
                 <template x-if="getApplicableCustomFields().length > 0">
                     <div class="border-t border-dark-700 pt-4 mt-4">
@@ -1852,9 +2427,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :value="editCustomFieldValues[field.id] || ''"
                                             @input="editCustomFieldValues[field.id] = $event.target.value"
                                             :required="field.required"
-                                            :minlength="field.constraints?.min_length"
-                                            :maxlength="field.constraints?.max_length"
-                                            :pattern="field.constraints?.pattern"
+                                            :minlength="getConstraint(field, 'min_length')"
+                                            :maxlength="getConstraint(field, 'max_length')"
+                                            :pattern="getConstraint(field, 'pattern')"
                                             class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
@@ -1863,12 +2438,12 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                     <template x-if="field.field_type === 'number'">
                                         <input
                                             type="number"
-                                            :value="editCustomFieldValues[field.id] ?? ''"
+                                            :value="editCustomFieldValues[field.id] || ''"
                                             @input="editCustomFieldValues[field.id] = $event.target.value ? parseFloat($event.target.value) : null"
                                             :required="field.required"
-                                            :min="field.constraints?.min"
-                                            :max="field.constraints?.max"
-                                            :step="field.constraints?.step || 'any'"
+                                            :min="getConstraint(field, 'min')"
+                                            :max="getConstraint(field, 'max')"
+                                            :step="getConstraint(field, 'step') || 'any'"
                                             class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
@@ -1880,8 +2455,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                             :value="editCustomFieldValues[field.id] || ''"
                                             @input="editCustomFieldValues[field.id] = $event.target.value"
                                             :required="field.required"
-                                            :min="field.constraints?.min_date"
-                                            :max="field.constraints?.max_date"
+                                            :min="getConstraint(field, 'min_date')"
+                                            :max="getConstraint(field, 'max_date')"
                                             class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500 text-sm"
                                         >
                                     </template>
@@ -2291,7 +2866,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                              :src="thumbnailVideoSlug ? '/videos/' + thumbnailVideoSlug + '/thumbnail.jpg?t=' + thumbnailCacheBust : ''"
                              :alt="'Current thumbnail for ' + thumbnailVideoTitle"
                              class="w-full h-full object-cover"
-                             @error="$el.style.display='none'">
+                             @error="$el.classList.add('vlog-img-error')">
                     </div>
                     <div class="text-sm text-dark-400">
                         <span>Source:</span>
@@ -2312,16 +2887,15 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         :loading="thumbnailLoading"
                     >Generate Frames</vlog-button>
                 </div>
-                <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
+                <div x-show="thumbnailFrames.length > 0" class="grid grid-cols-5 gap-2 grid-cols-5-minmax">
                     <template x-for="frame in thumbnailFrames" :key="frame.index">
                         <button
                             @click="selectThumbnailFrame(frame.timestamp)"
                             :disabled="thumbnailLoading"
-                            class="bg-dark-800 rounded overflow-hidden hover:ring-2 hover:ring-cyan-500 transition"
-                            style="min-width: 0;"
+                            class="bg-dark-800 rounded overflow-hidden hover:ring-2 hover:ring-cyan-500 transition min-w-0"
                         >
-                            <div style="position: relative; padding-bottom: 56.25%; overflow: hidden;">
-                                <img :src="frame.url + '?t=' + Date.now()" :alt="'Video frame at ' + formatDuration(frame.timestamp)" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;">
+                            <div class="aspect-16-9">
+                                <img :src="frame.url + '?t=' + Date.now()" :alt="'Video frame at ' + formatDuration(frame.timestamp)" class="aspect-content">
                             </div>
                             <div class="bg-black/70 text-xs text-center py-1" x-text="formatDuration(frame.timestamp)"></div>
                         </button>
@@ -2538,7 +3112,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 Only global fields are available for bulk updates.
             </p>
             <div class="space-y-4">
-                <template x-for="field in customFields.filter(f => f.category_id === null)" :key="field.id">
+                <template x-for="field in getNullCategoryCustomFields()" :key="field.id">
                     <div>
                         <label class="block text-sm font-medium mb-1">
                             <span x-text="field.name"></span>
@@ -2551,9 +3125,9 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 type="text"
                                 :value="bulkCustomFieldValues[field.id] || ''"
                                 @input="bulkCustomFieldValues[field.id] = $event.target.value"
-                                :minlength="field.constraints?.min_length"
-                                :maxlength="field.constraints?.max_length"
-                                :pattern="field.constraints?.pattern"
+                                :minlength="getConstraint(field, 'min_length')"
+                                :maxlength="getConstraint(field, 'max_length')"
+                                :pattern="getConstraint(field, 'pattern')"
                                 placeholder="Leave empty to skip"
                                 class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
                             >
@@ -2563,11 +3137,11 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         <template x-if="field.field_type === 'number'">
                             <input
                                 type="number"
-                                :value="bulkCustomFieldValues[field.id] ?? ''"
+                                :value="bulkCustomFieldValues[field.id] || ''"
                                 @input="bulkCustomFieldValues[field.id] = $event.target.value ? parseFloat($event.target.value) : null"
-                                :min="field.constraints?.min"
-                                :max="field.constraints?.max"
-                                :step="field.constraints?.step || 'any'"
+                                :min="getConstraint(field, 'min')"
+                                :max="getConstraint(field, 'max')"
+                                :step="getConstraint(field, 'step') || 'any'"
                                 placeholder="Leave empty to skip"
                                 class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
                             >
@@ -2579,8 +3153,8 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 type="date"
                                 :value="bulkCustomFieldValues[field.id] || ''"
                                 @input="bulkCustomFieldValues[field.id] = $event.target.value"
-                                :min="field.constraints?.min_date"
-                                :max="field.constraints?.max_date"
+                                :min="getConstraint(field, 'min_date')"
+                                :max="getConstraint(field, 'max_date')"
                                 class="w-full px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:border-purple-500 text-sm"
                             >
                         </template>
@@ -2630,7 +3204,7 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                 </template>
 
                 <vlog-empty-state
-                    x-show="customFields.filter(f => f.category_id === null).length === 0"
+                    x-show="!hasNullCategoryCustomFields()"
                     icon="settings"
                     title="No Custom Fields"
                     description="No global custom fields defined. Create custom fields in Settings first."
@@ -2648,15 +3222,157 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                     variant="primary"
                     full-width
                     @click="executeBulkCustomFields"
-                    :disabled="bulkOpLoading || customFields.filter(f => f.category_id === null).length === 0"
+                    :disabled="bulkOpLoading || !hasNullCategoryCustomFields()"
                     :loading="bulkOpLoading"
                 >Apply</vlog-button>
             </div>
         </div>
     </vlog-modal>
 
-    <!-- Auth Modal -->
-    <vlog-modal :open="showAuthModal" no-close size="sm">
+    <!-- Setup Wizard Modal (First-time setup) -->
+    <vlog-modal :open="showSetupWizard && needsSetup" no-close size="md">
+        <span slot="header">Welcome to VLog</span>
+        <div class="space-y-4">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <p class="text-dark-300">Create your admin account to get started.</p>
+            </div>
+            <form @submit.prevent="submitSetup" class="space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Username <span class="text-red-400">*</span></label>
+                        <input
+                            type="text"
+                            x-model="setupUsername"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="admin"
+                            required
+                            minlength="3"
+                            autocomplete="username"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Display Name</label>
+                        <input
+                            type="text"
+                            x-model="setupDisplayName"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="Admin User"
+                            autocomplete="name"
+                        >
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Email <span class="text-red-400">*</span></label>
+                    <input
+                        type="email"
+                        x-model="setupEmail"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        placeholder="admin@example.com"
+                        required
+                        autocomplete="email"
+                    >
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Password <span class="text-red-400">*</span></label>
+                        <input
+                            type="password"
+                            x-model="setupPassword"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="Min 12 characters"
+                            required
+                            minlength="12"
+                            autocomplete="new-password"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Confirm Password <span class="text-red-400">*</span></label>
+                        <input
+                            type="password"
+                            x-model="setupConfirmPassword"
+                            class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="Confirm password"
+                            required
+                            minlength="12"
+                            autocomplete="new-password"
+                        >
+                    </div>
+                </div>
+                <div x-show="setupError" class="text-red-400 text-sm" x-text="setupError"></div>
+                <vlog-button
+                    variant="primary"
+                    type="submit"
+                    full-width
+                    :disabled="setupLoading"
+                    :loading="setupLoading"
+                >Create Admin Account</vlog-button>
+            </form>
+            <p class="text-dark-400 text-xs text-center">This account will have full administrative access to VLog.</p>
+        </div>
+    </vlog-modal>
+
+    <!-- Auth Modal (User-based authentication) -->
+    <vlog-modal :open="showAuthModal && authMode === 'user' && !needsSetup" no-close size="sm">
+        <span slot="header">Sign In</span>
+        <div class="space-y-4">
+            <p class="text-dark-400">Sign in to access the admin panel.</p>
+            <form @submit.prevent="submitUserAuth" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium mb-2">Username or Email</label>
+                    <input
+                        type="text"
+                        x-model="loginUsername"
+                        x-ref="authInput"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
+                        placeholder="Enter username or email"
+                        required
+                        autocomplete="username"
+                    >
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Password</label>
+                    <input
+                        type="password"
+                        x-model="loginPassword"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
+                        placeholder="Enter password"
+                        required
+                        autocomplete="current-password"
+                    >
+                </div>
+                <div x-show="authError" class="text-red-400 text-sm" x-text="authError"></div>
+                <vlog-button
+                    variant="primary"
+                    type="submit"
+                    full-width
+                    :disabled="authLoading"
+                    :loading="authLoading"
+                >Sign In</vlog-button>
+            </form>
+            <div class="flex items-center justify-between text-sm">
+                <button @click="openForgotPasswordModal" class="text-blue-400 hover:text-blue-300">Forgot password?</button>
+            </div>
+            <template x-if="oidcEnabled">
+                <div class="pt-4 border-t border-dark-700">
+                    <vlog-button
+                        variant="secondary"
+                        full-width
+                        @click="startOidcLogin"
+                    >
+                        <span x-text="'Sign in with ' + oidcProviderName"></span>
+                    </vlog-button>
+                </div>
+            </template>
+        </div>
+    </vlog-modal>
+
+    <!-- Auth Modal (Legacy - admin secret) -->
+    <vlog-modal :open="showAuthModal && authMode === 'legacy'" no-close size="sm">
         <span slot="header">Authentication Required</span>
         <div class="space-y-4">
             <p class="text-dark-400">This Admin API requires authentication. Enter your admin secret to continue.</p>
@@ -2686,6 +3402,323 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
         </div>
     </vlog-modal>
 
+    <!-- Forgot Password Modal -->
+    <vlog-modal :open="showForgotPasswordModal" @close="closeForgotPasswordModal" size="sm">
+        <span slot="header">Reset Password</span>
+        <div class="space-y-4">
+            <template x-if="!forgotPasswordSent">
+                <div>
+                    <p class="text-dark-400 mb-4">Enter your email address and we'll send you a link to reset your password.</p>
+                    <form @submit.prevent="submitForgotPassword" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Email Address</label>
+                            <input
+                                type="email"
+                                x-model="forgotPasswordEmail"
+                                class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
+                                placeholder="Enter your email"
+                                required
+                            >
+                        </div>
+                        <div x-show="forgotPasswordError" class="text-red-400 text-sm" x-text="forgotPasswordError"></div>
+                        <vlog-button
+                            variant="primary"
+                            type="submit"
+                            full-width
+                            :disabled="forgotPasswordLoading"
+                            :loading="forgotPasswordLoading"
+                        >Send Reset Link</vlog-button>
+                    </form>
+                </div>
+            </template>
+            <template x-if="forgotPasswordSent">
+                <div class="text-center">
+                    <div class="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-8 h-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                    </div>
+                    <p class="text-dark-300">If an account exists for that email, you'll receive a password reset link shortly.</p>
+                    <vlog-button
+                        variant="secondary"
+                        class="mt-4"
+                        @click="closeForgotPasswordModal"
+                    >Close</vlog-button>
+                </div>
+            </template>
+        </div>
+    </vlog-modal>
+
+    <!-- Change Password Modal -->
+    <vlog-modal :open="showChangePasswordModal" @close="closeChangePasswordModal" size="sm">
+        <span slot="header">Change Password</span>
+        <div class="space-y-4">
+            <form @submit.prevent="submitChangePassword" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium mb-2">Current Password</label>
+                    <input
+                        type="password"
+                        x-model="currentPassword"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
+                        placeholder="Enter current password"
+                        required
+                        autocomplete="current-password"
+                    >
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">New Password</label>
+                    <input
+                        type="password"
+                        x-model="newPassword"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
+                        placeholder="Enter new password (min. 12 characters)"
+                        required
+                        minlength="12"
+                        autocomplete="new-password"
+                    >
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Confirm New Password</label>
+                    <input
+                        type="password"
+                        x-model="confirmPassword"
+                        class="w-full px-4 py-3 bg-dark-800 border border-dark-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-dark-900 focus:border-blue-500"
+                        placeholder="Confirm new password"
+                        required
+                        autocomplete="new-password"
+                    >
+                </div>
+                <div x-show="passwordError" class="text-red-400 text-sm" x-text="passwordError"></div>
+                <div class="flex gap-3">
+                    <vlog-button
+                        variant="secondary"
+                        type="button"
+                        @click="closeChangePasswordModal"
+                    >Cancel</vlog-button>
+                    <vlog-button
+                        variant="primary"
+                        type="submit"
+                        :disabled="passwordLoading"
+                        :loading="passwordLoading"
+                    >Change Password</vlog-button>
+                </div>
+            </form>
+        </div>
+    </vlog-modal>
+
+    <!-- Create/Edit User Modal (Admin only) -->
+    <vlog-modal :open="showUserModal" @close="closeUserModal" size="md">
+        <span slot="header" x-text="editingUser ? 'Edit User' : 'Create User'"></span>
+        <form @submit.prevent="saveUser" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium mb-2">Username <span class="text-red-400">*</span></label>
+                <input
+                    type="text"
+                    x-model="userForm.username"
+                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                    placeholder="Enter username"
+                    required
+                    pattern="[a-zA-Z0-9_-]+"
+                    minlength="3"
+                    maxlength="50"
+                >
+                <p class="text-xs text-dark-400 mt-1">Letters, numbers, underscores, and hyphens only</p>
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-2">Email <span class="text-red-400">*</span></label>
+                <input
+                    type="email"
+                    x-model="userForm.email"
+                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                    placeholder="user@example.com"
+                    required
+                >
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-2">Display Name</label>
+                <input
+                    type="text"
+                    x-model="userForm.display_name"
+                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                    placeholder="Display name (optional)"
+                    maxlength="100"
+                >
+            </div>
+            <div x-show="!editingUser">
+                <label class="block text-sm font-medium mb-2">Password <span class="text-red-400">*</span></label>
+                <input
+                    type="password"
+                    x-model="userForm.password"
+                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                    placeholder="Minimum 12 characters"
+                    :required="!editingUser"
+                    minlength="12"
+                    autocomplete="new-password"
+                >
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-2">Role <span class="text-red-400">*</span></label>
+                <select
+                    x-model="userForm.role"
+                    class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                    required
+                >
+                    <option value="viewer">Viewer - Browse and watch videos</option>
+                    <option value="editor">Editor - Upload and edit own videos</option>
+                    <option value="admin">Admin - Full access</option>
+                </select>
+            </div>
+            <div x-show="userFormError" class="text-red-400 text-sm" x-text="userFormError"></div>
+            <div class="flex gap-3 pt-2">
+                <vlog-button variant="secondary" type="button" full-width @click="closeUserModal">Cancel</vlog-button>
+                <vlog-button variant="primary" type="submit" full-width :disabled="userFormLoading" :loading="userFormLoading">
+                    <span x-text="editingUser ? 'Save Changes' : 'Create User'"></span>
+                </vlog-button>
+            </div>
+        </form>
+    </vlog-modal>
+
+    <!-- Create API Key Modal -->
+    <vlog-modal :open="showApiKeyModal" @close="closeApiKeyModal" size="sm">
+        <span slot="header">Create API Key</span>
+        <div class="space-y-4">
+            <!-- Show new key after creation -->
+            <template x-if="newApiKey">
+                <div class="space-y-4">
+                    <div class="p-4 bg-green-900/20 border border-green-800 rounded-lg">
+                        <p class="text-green-400 text-sm mb-2">API key created successfully!</p>
+                        <p class="text-dark-400 text-xs mb-3">Copy this key now. You won't be able to see it again.</p>
+                        <div class="flex gap-2">
+                            <input
+                                type="text"
+                                :value="newApiKey.key"
+                                readonly
+                                class="flex-1 px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm font-mono"
+                            >
+                            <vlog-button
+                                size="sm"
+                                @click="navigator.clipboard.writeText(newApiKey.key)"
+                            >Copy</vlog-button>
+                        </div>
+                    </div>
+                    <vlog-button variant="secondary" full-width @click="closeApiKeyModal">Done</vlog-button>
+                </div>
+            </template>
+
+            <!-- Create form -->
+            <template x-if="!newApiKey">
+                <form @submit.prevent="createApiKey" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Key Name <span class="text-red-400">*</span></label>
+                        <input
+                            type="text"
+                            x-model="apiKeyForm.name"
+                            class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                            placeholder="e.g., CI/CD Pipeline"
+                            required
+                            maxlength="100"
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Expiration</label>
+                        <select
+                            x-model="apiKeyForm.expires_in_days"
+                            class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        >
+                            <option :value="null">Never expires</option>
+                            <option :value="7">7 days</option>
+                            <option :value="30">30 days</option>
+                            <option :value="90">90 days</option>
+                            <option :value="365">1 year</option>
+                        </select>
+                    </div>
+                    <div x-show="apiKeyFormError" class="text-red-400 text-sm" x-text="apiKeyFormError"></div>
+                    <div class="flex gap-3 pt-2">
+                        <vlog-button variant="secondary" type="button" full-width @click="closeApiKeyModal">Cancel</vlog-button>
+                        <vlog-button variant="primary" type="submit" full-width :disabled="apiKeyFormLoading" :loading="apiKeyFormLoading">
+                            Create Key
+                        </vlog-button>
+                    </div>
+                </form>
+            </template>
+        </div>
+    </vlog-modal>
+
+    <!-- Create Invite Modal (Admin only) -->
+    <vlog-modal :open="showInviteModal" @close="closeInviteModal" size="sm">
+        <span slot="header">Invite User</span>
+        <div class="space-y-4">
+            <!-- Show invite link after creation -->
+            <template x-if="newInvite">
+                <div class="space-y-4">
+                    <div class="p-4 bg-green-900/20 border border-green-800 rounded-lg">
+                        <p class="text-green-400 text-sm mb-2">Invite created successfully!</p>
+                        <p class="text-dark-400 text-xs mb-3">Share this link with the user:</p>
+                        <div class="flex gap-2">
+                            <input
+                                type="text"
+                                :value="newInvite.invite_url"
+                                readonly
+                                class="flex-1 px-3 py-2 bg-dark-800 border border-dark-700 rounded-lg text-sm font-mono text-xs"
+                            >
+                            <vlog-button
+                                size="sm"
+                                @click="navigator.clipboard.writeText(newInvite.invite_url)"
+                            >Copy</vlog-button>
+                        </div>
+                    </div>
+                    <vlog-button variant="secondary" full-width @click="closeInviteModal">Done</vlog-button>
+                </div>
+            </template>
+
+            <!-- Create form -->
+            <template x-if="!newInvite">
+                <form @submit.prevent="createInvite" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Email <span class="text-red-400">*</span></label>
+                        <input
+                            type="email"
+                            x-model="inviteForm.email"
+                            class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                            placeholder="user@example.com"
+                            required
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Role</label>
+                        <select
+                            x-model="inviteForm.role"
+                            class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        >
+                            <option value="viewer">Viewer - Browse and watch videos</option>
+                            <option value="editor">Editor - Upload and edit own videos</option>
+                            <option value="admin">Admin - Full access</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Expires In</label>
+                        <select
+                            x-model="inviteForm.expires_in_days"
+                            class="w-full px-4 py-2 bg-dark-800 border border-dark-700 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        >
+                            <option :value="1">1 day</option>
+                            <option :value="3">3 days</option>
+                            <option :value="7">7 days</option>
+                            <option :value="14">14 days</option>
+                            <option :value="30">30 days</option>
+                        </select>
+                    </div>
+                    <div x-show="inviteFormError" class="text-red-400 text-sm" x-text="inviteFormError"></div>
+                    <div class="flex gap-3 pt-2">
+                        <vlog-button variant="secondary" type="button" full-width @click="closeInviteModal">Cancel</vlog-button>
+                        <vlog-button variant="primary" type="submit" full-width :disabled="inviteFormLoading" :loading="inviteFormLoading">
+                            Send Invite
+                        </vlog-button>
+                    </div>
+                </form>
+            </template>
+        </div>
+    </vlog-modal>
 
     <!-- Worker Logs Modal -->
     <vlog-modal :open="showLogsModal" @close="showLogsModal = false" size="lg">
@@ -2714,25 +3747,25 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                         <span class="ml-3 text-dark-400">Fetching metrics from worker...</span>
                     </div>
                 </template>
-                <template x-if="!metricsLoading && metricsData?.error">
+                <template x-if="!metricsLoading && hasMetricsError()">
                     <div class="text-red-400 text-center py-4" x-text="metricsData.error"></div>
                 </template>
-                <template x-if="!metricsLoading && metricsData && !metricsData?.error">
+                <template x-if="!metricsLoading && hasMetricsData() && !hasMetricsError()">
                     <div class="space-y-6">
                         <!-- Process Metrics -->
                         <div>
                             <h4 class="text-sm font-medium text-dark-400 mb-3">Process</h4>
                             <div class="grid grid-cols-3 gap-4">
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
-                                    <div class="text-2xl font-bold text-blue-400" x-text="(metricsData?.process?.cpu_percent || 0).toFixed(1) + '%'"></div>
+                                    <div class="text-2xl font-bold text-blue-400" x-text="getMetricsProcess('cpu_percent').toFixed(1) + '%'"></div>
                                     <div class="text-xs text-dark-300">CPU</div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
-                                    <div class="text-2xl font-bold text-purple-400" x-text="(metricsData?.process?.memory_rss_mb || 0).toFixed(0) + ' MB'"></div>
+                                    <div class="text-2xl font-bold text-purple-400" x-text="getMetricsProcess('memory_rss_mb').toFixed(0) + ' MB'"></div>
                                     <div class="text-xs text-dark-300">Memory</div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3 text-center">
-                                    <div class="text-2xl font-bold text-green-400" x-text="metricsData?.process?.threads || 0"></div>
+                                    <div class="text-2xl font-bold text-green-400" x-text="getMetricsProcess('threads')"></div>
                                     <div class="text-xs text-dark-300">Threads</div>
                                 </div>
                             </div>
@@ -2744,19 +3777,19 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                                 <div class="bg-dark-800 rounded-lg p-3">
                                     <div class="flex justify-between items-center mb-2">
                                         <span class="text-dark-400">CPU</span>
-                                        <span class="text-white" x-text="(metricsData?.system?.cpu_percent || 0).toFixed(1) + '%'"></span>
+                                        <span class="text-white" x-text="getMetricsSystem('cpu_percent').toFixed(1) + '%'"></span>
                                     </div>
                                     <div class="bg-dark-700 rounded-full h-2">
-                                        <div class="bg-blue-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.system?.cpu_percent || 0) + '%'"></div>
+                                        <div class="bg-blue-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsSystem('cpu_percent'))"></div>
                                     </div>
                                 </div>
                                 <div class="bg-dark-800 rounded-lg p-3">
                                     <div class="flex justify-between items-center mb-2">
                                         <span class="text-dark-400">Memory</span>
-                                        <span class="text-white" x-text="(metricsData?.system?.memory_percent || 0).toFixed(1) + '%'"></span>
+                                        <span class="text-white" x-text="getMetricsSystem('memory_percent').toFixed(1) + '%'"></span>
                                     </div>
                                     <div class="bg-dark-700 rounded-full h-2">
-                                        <div class="bg-purple-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.system?.memory_percent || 0) + '%'"></div>
+                                        <div class="bg-purple-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsSystem('memory_percent'))"></div>
                                     </div>
                                 </div>
                             </div>
@@ -2767,38 +3800,38 @@ VLOG_WATERMARK_PADDING=16  # pixels from edge</pre>
                             <div class="bg-dark-800 rounded-lg p-3">
                                 <div class="flex justify-between items-center mb-2">
                                     <span class="text-dark-400">Used</span>
-                                    <span class="text-white" x-text="(metricsData?.disk?.used_gb || 0).toFixed(1) + ' / ' + (metricsData?.disk?.total_gb || 0).toFixed(1) + ' GB'"></span>
+                                    <span class="text-white" x-text="getMetricsDisk('used_gb').toFixed(1) + ' / ' + getMetricsDisk('total_gb').toFixed(1) + ' GB'"></span>
                                 </div>
                                 <div class="bg-dark-700 rounded-full h-2">
-                                    <div class="bg-yellow-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.disk?.percent || 0) + '%'"></div>
+                                    <div class="bg-yellow-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsDisk('percent'))"></div>
                                 </div>
                             </div>
                         </div>
                         <!-- GPU Metrics (if available) -->
-                        <template x-if="metricsData?.gpu">
+                        <template x-if="hasMetricsGpu()">
                             <div>
                                 <h4 class="text-sm font-medium text-dark-400 mb-3">GPU</h4>
                                 <div class="grid grid-cols-2 gap-4">
                                     <div class="bg-dark-800 rounded-lg p-3">
                                         <div class="flex justify-between items-center mb-2">
                                             <span class="text-dark-400">GPU Utilization</span>
-                                            <span class="text-white" x-text="(metricsData?.gpu?.utilization_percent || 0).toFixed(0) + '%'"></span>
+                                            <span class="text-white" x-text="getMetricsGpu('utilization_percent').toFixed(0) + '%'"></span>
                                         </div>
                                         <div class="bg-dark-700 rounded-full h-2">
-                                            <div class="bg-green-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.gpu?.utilization_percent || 0) + '%'"></div>
+                                            <div class="bg-green-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsGpu('utilization_percent'))"></div>
                                         </div>
                                     </div>
                                     <div class="bg-dark-800 rounded-lg p-3">
                                         <div class="flex justify-between items-center mb-2">
                                             <span class="text-dark-400">VRAM</span>
-                                            <span class="text-white" x-text="(metricsData?.gpu?.memory_used_mb || 0).toFixed(0) + ' / ' + (metricsData?.gpu?.memory_total_mb || 0).toFixed(0) + ' MB'"></span>
+                                            <span class="text-white" x-text="getMetricsGpu('memory_used_mb').toFixed(0) + ' / ' + getMetricsGpu('memory_total_mb').toFixed(0) + ' MB'"></span>
                                         </div>
                                         <div class="bg-dark-700 rounded-full h-2">
-                                            <div class="bg-cyan-500 h-2 rounded-full transition-all" :style="'width: ' + (metricsData?.gpu?.memory_utilization_percent || 0) + '%'"></div>
+                                            <div class="bg-cyan-500 h-2 rounded-full transition-all" :class="getWidthClass(getMetricsGpu('memory_utilization_percent'))"></div>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="mt-2 text-sm text-dark-300 text-center" x-text="'Temperature: ' + (metricsData?.gpu?.temperature_c || 0) + '\u00B0C'"></div>
+                                <div class="mt-2 text-sm text-dark-300 text-center" x-text="'Temperature: ' + getMetricsGpu('temperature_c') + '\u00B0C'"></div>
                             </div>
                         </template>
                     </div>

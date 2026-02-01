@@ -63,6 +63,12 @@ export interface PlaylistsActions {
   dropVideo(targetVideoId: number): void;
   getFilteredVideosForAdd(): Video[];
   formatPlaylistDuration(seconds: number): string;
+
+  // CSP-safe helpers (Alpine.js CSP build doesn't support ?.)
+  getEditingPlaylistTitle(): string;
+  getEditingPlaylistVideoCount(): number;
+  getEditingPlaylistVideos(): PlaylistDetail['videos'];
+  hasEditingPlaylistVideos(): boolean;
 }
 
 export type PlaylistsStore = PlaylistsState & PlaylistsActions;
@@ -426,6 +432,26 @@ export function createPlaylistsStore(): PlaylistsStore {
         return `${hours}h ${minutes}m`;
       }
       return `${minutes}m`;
+    },
+
+    // ===========================================================================
+    // CSP-safe Helpers (Alpine.js CSP build doesn't support ?.)
+    // ===========================================================================
+
+    getEditingPlaylistTitle(): string {
+      return this.editingPlaylist ? this.editingPlaylist.title : '';
+    },
+
+    getEditingPlaylistVideoCount(): number {
+      return this.editingPlaylist && this.editingPlaylist.videos ? this.editingPlaylist.videos.length : 0;
+    },
+
+    getEditingPlaylistVideos(): PlaylistDetail['videos'] {
+      return this.editingPlaylist && this.editingPlaylist.videos ? this.editingPlaylist.videos : [];
+    },
+
+    hasEditingPlaylistVideos(): boolean {
+      return !!(this.editingPlaylist && this.editingPlaylist.videos && this.editingPlaylist.videos.length > 0);
     },
   };
 }

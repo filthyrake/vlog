@@ -85,6 +85,7 @@ class WorkerAPIClient:
         self._consecutive_failures = 0
         self._circuit_open_count = 0  # Track how many times circuit has opened
         self._half_open = False  # True when testing if circuit should close
+        self._circuit_lock = asyncio.Lock()  # Protect circuit breaker state updates
 
     def _check_circuit_breaker(self) -> None:
         """Check if circuit breaker is open and raise if so.
@@ -106,55 +107,57 @@ class WorkerAPIClient:
         self._circuit_open = False
         self._half_open = True
 
-    def _record_success(self) -> None:
+    async def _record_success(self) -> None:
         """Record a successful request, resetting circuit breaker."""
-        if self._half_open:
-            logger.info("Half-open probe succeeded, closing circuit breaker")
-        elif self._consecutive_failures > 0:
-            logger.info(f"API request succeeded after {self._consecutive_failures} failures, resetting circuit breaker")
-        self._consecutive_failures = 0
-        self._circuit_open = False
-        self._circuit_open_count = 0
-        self._half_open = False
-
-    def _record_failure(self) -> None:
-        """Record a failed request, potentially opening circuit breaker."""
-        self._consecutive_failures += 1
-
-        # If in half-open state, immediately re-open circuit on any failure
-        if self._half_open:
+        async with self._circuit_lock:
+            if self._half_open:
+                logger.info("Half-open probe succeeded, closing circuit breaker")
+            elif self._consecutive_failures > 0:
+                logger.info(f"API request succeeded after {self._consecutive_failures} failures, resetting circuit breaker")
+            self._consecutive_failures = 0
+            self._circuit_open = False
+            self._circuit_open_count = 0
             self._half_open = False
-            self._circuit_open = True
-            self._circuit_open_count += 1
 
-            # Exponential backoff for reset time (doubles each time circuit opens)
-            reset_seconds = min(
-                CIRCUIT_BREAKER_BASE_RESET_SECONDS * (2 ** (self._circuit_open_count - 1)),
-                CIRCUIT_BREAKER_MAX_RESET_SECONDS,
-            )
-            self._circuit_open_until = datetime.now() + timedelta(seconds=reset_seconds)
+    async def _record_failure(self) -> None:
+        """Record a failed request, potentially opening circuit breaker."""
+        async with self._circuit_lock:
+            self._consecutive_failures += 1
 
-            logger.warning(
-                f"Half-open probe failed, re-opening circuit breaker. "
-                f"Will retry after {reset_seconds:.1f}s (open count: {self._circuit_open_count})"
-            )
-            return
+            # If in half-open state, immediately re-open circuit on any failure
+            if self._half_open:
+                self._half_open = False
+                self._circuit_open = True
+                self._circuit_open_count += 1
 
-        if self._consecutive_failures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
-            self._circuit_open = True
-            self._circuit_open_count += 1
+                # Exponential backoff for reset time (doubles each time circuit opens)
+                reset_seconds = min(
+                    CIRCUIT_BREAKER_BASE_RESET_SECONDS * (2 ** (self._circuit_open_count - 1)),
+                    CIRCUIT_BREAKER_MAX_RESET_SECONDS,
+                )
+                self._circuit_open_until = datetime.now() + timedelta(seconds=reset_seconds)
 
-            # Exponential backoff for reset time (doubles each time circuit opens)
-            reset_seconds = min(
-                CIRCUIT_BREAKER_BASE_RESET_SECONDS * (2 ** (self._circuit_open_count - 1)),
-                CIRCUIT_BREAKER_MAX_RESET_SECONDS,
-            )
-            self._circuit_open_until = datetime.now() + timedelta(seconds=reset_seconds)
+                logger.warning(
+                    f"Half-open probe failed, re-opening circuit breaker. "
+                    f"Will retry after {reset_seconds:.1f}s (open count: {self._circuit_open_count})"
+                )
+                return
 
-            logger.warning(
-                f"Circuit breaker opened after {self._consecutive_failures} consecutive failures. "
-                f"Will retry after {reset_seconds:.1f}s (open count: {self._circuit_open_count})"
-            )
+            if self._consecutive_failures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+                self._circuit_open = True
+                self._circuit_open_count += 1
+
+                # Exponential backoff for reset time (doubles each time circuit opens)
+                reset_seconds = min(
+                    CIRCUIT_BREAKER_BASE_RESET_SECONDS * (2 ** (self._circuit_open_count - 1)),
+                    CIRCUIT_BREAKER_MAX_RESET_SECONDS,
+                )
+                self._circuit_open_until = datetime.now() + timedelta(seconds=reset_seconds)
+
+                logger.warning(
+                    f"Circuit breaker opened after {self._consecutive_failures} consecutive failures. "
+                    f"Will retry after {reset_seconds:.1f}s (open count: {self._circuit_open_count})"
+                )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with connection pooling."""
@@ -218,7 +221,7 @@ class WorkerAPIClient:
                 )
                 resp.raise_for_status()
                 # Success - reset circuit breaker
-                self._record_success()
+                await self._record_success()
                 return resp.json()
             except httpx.HTTPStatusError as e:
                 last_error = e
@@ -247,7 +250,7 @@ class WorkerAPIClient:
                 await asyncio.sleep(delay)
 
         # All retries exhausted - record failure for circuit breaker
-        self._record_failure()
+        await self._record_failure()
         if isinstance(last_error, httpx.HTTPStatusError):
             try:
                 detail = last_error.response.json().get("detail", str(last_error))
@@ -374,11 +377,11 @@ class WorkerAPIClient:
                     async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                         f.write(chunk)
             # Success - record for circuit breaker
-            self._record_success()
+            await self._record_success()
         except httpx.HTTPStatusError as e:
             # Record failure for 5xx errors (server issues)
             if e.response.status_code >= 500:
-                self._record_failure()
+                await self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
@@ -386,7 +389,7 @@ class WorkerAPIClient:
             raise WorkerAPIError(e.response.status_code, detail)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
             # Connection/timeout errors count against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(0, f"Download failed: {e}")
 
     async def upload_quality(
@@ -508,12 +511,12 @@ class WorkerAPIClient:
             )
             resp.raise_for_status()
             # Success - record for circuit breaker
-            self._record_success()
+            await self._record_success()
             return resp.json()
         except httpx.HTTPStatusError as e:
             # Record failure for 5xx errors (server issues)
             if e.response.status_code >= 500:
-                self._record_failure()
+                await self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
@@ -521,14 +524,14 @@ class WorkerAPIClient:
             raise WorkerAPIError(e.response.status_code, detail)
         except httpx.TimeoutException as e:
             # Timeout counts against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(
                 0,
                 f"Upload timeout for {quality_name} ({file_size_mb:.1f}MB): {e}",
             )
         except (httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
             # Connection errors count against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(0, f"Upload failed for {quality_name}: {e}")
         finally:
             tmp_path.unlink(missing_ok=True)
@@ -587,12 +590,12 @@ class WorkerAPIClient:
                 )
                 resp.raise_for_status()
                 # Success - record for circuit breaker
-                self._record_success()
+                await self._record_success()
                 return resp.json()
         except httpx.HTTPStatusError as e:
             # Record failure for 5xx errors (server issues)
             if e.response.status_code >= 500:
-                self._record_failure()
+                await self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
@@ -600,7 +603,7 @@ class WorkerAPIClient:
             raise WorkerAPIError(e.response.status_code, detail)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
             # Connection/timeout errors count against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(0, f"Upload finalize failed: {e}")
         finally:
             tmp_path.unlink(missing_ok=True)
@@ -712,12 +715,12 @@ class WorkerAPIClient:
             )
             resp.raise_for_status()
             # Success - record for circuit breaker
-            self._record_success()
+            await self._record_success()
             return resp.json()
         except httpx.HTTPStatusError as e:
             # Record failure for 5xx errors (server issues)
             if e.response.status_code >= 500:
-                self._record_failure()
+                await self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
@@ -725,14 +728,14 @@ class WorkerAPIClient:
             raise WorkerAPIError(e.response.status_code, detail)
         except httpx.TimeoutException as e:
             # Timeout counts against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(
                 0,
                 f"Upload timeout after {upload_timeout}s for {file_size_mb:.1f}MB file: {e}",
             )
         except (httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
             # Connection errors count against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(0, f"Upload HLS failed: {e}")
         finally:
             tmp_path.unlink(missing_ok=True)
@@ -898,11 +901,11 @@ class WorkerAPIClient:
                     async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                         f.write(chunk)
             # Success - record for circuit breaker
-            self._record_success()
+            await self._record_success()
         except httpx.HTTPStatusError as e:
             # Record failure for 5xx errors (server issues)
             if e.response.status_code >= 500:
-                self._record_failure()
+                await self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
@@ -910,7 +913,7 @@ class WorkerAPIClient:
             raise WorkerAPIError(e.response.status_code, detail)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
             # Connection/timeout errors count against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(0, f"Download reencode source failed: {e}")
 
     async def upload_reencode_result(
@@ -950,12 +953,12 @@ class WorkerAPIClient:
                 )
                 resp.raise_for_status()
                 # Success - record for circuit breaker
-                self._record_success()
+                await self._record_success()
                 return resp.json()
         except httpx.HTTPStatusError as e:
             # Record failure for 5xx errors (server issues)
             if e.response.status_code >= 500:
-                self._record_failure()
+                await self._record_failure()
             try:
                 detail = e.response.json().get("detail", str(e))
             except Exception:
@@ -963,7 +966,7 @@ class WorkerAPIClient:
             raise WorkerAPIError(e.response.status_code, detail)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError) as e:
             # Connection/timeout errors count against circuit breaker
-            self._record_failure()
+            await self._record_failure()
             raise WorkerAPIError(0, f"Upload reencode result failed: {e}")
 
     # =========================================================================
@@ -1026,7 +1029,7 @@ class WorkerAPIClient:
                     timeout=timeout,
                 )
                 resp.raise_for_status()
-                self._record_success()
+                await self._record_success()
                 return resp.json()
             except httpx.HTTPStatusError as e:
                 last_error = e
@@ -1052,7 +1055,7 @@ class WorkerAPIClient:
                 await asyncio.sleep(delay)
 
         # All retries exhausted
-        self._record_failure()
+        await self._record_failure()
         if isinstance(last_error, httpx.HTTPStatusError):
             try:
                 detail = last_error.response.json().get("detail", str(last_error))

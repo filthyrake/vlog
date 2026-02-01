@@ -85,6 +85,9 @@ class AuditAction(str, Enum):
     WORKER_DISABLE = "worker_disable"
     WORKER_ENABLE = "worker_enable"
     WORKER_DELETE = "worker_delete"
+    # API key rotation actions (Issue #226)
+    WORKER_KEY_ROTATE = "worker_key_rotate"
+    WORKER_BULK_REVOKE = "worker_bulk_revoke"
 
     # Settings actions
     SETTINGS_CHANGE = "settings_change"
@@ -102,6 +105,43 @@ class AuditAction(str, Enum):
     WEBHOOK_UPDATE = "webhook_update"
     WEBHOOK_DELETE = "webhook_delete"
     WEBHOOK_RETRY = "webhook_retry"
+
+    # Comment moderation actions (Issue #213)
+    COMMENT_MODERATE = "comment_moderate"
+    COMMENT_DELETE = "comment_delete"
+
+    # Backup and restore actions (Issue #216)
+    BACKUP_CREATE = "backup_create"
+    BACKUP_RESTORE = "backup_restore"
+    BACKUP_DELETE = "backup_delete"
+    BACKUP_VERIFY = "backup_verify"
+
+    # Studio/broadcaster dashboard actions (Issue #524)
+    STREAM_CREATE = "stream_create"
+    STREAM_UPDATE = "stream_update"
+    STREAM_END = "stream_end"
+    STREAM_KEY_REGENERATE = "stream_key_regenerate"
+    STUDIO_SSE_CONNECT = "studio_sse_connect"
+
+    # WebSocket infrastructure actions (Issue #530)
+    WEBSOCKET_CONNECT = "websocket_connect"
+    WEBSOCKET_AUTH_FAILURE = "websocket_auth_failure"
+
+    # Studio VOD management actions (Issue #530)
+    VOD_UPDATE = "vod_update"
+    VOD_DELETE = "vod_delete"
+    VOD_THUMBNAIL_UPLOAD = "vod_thumbnail_upload"
+
+    # Studio chat and moderation actions (Issue #530)
+    CHAT_MESSAGE_DELETE = "chat_message_delete"
+    CHAT_USER_TIMEOUT = "chat_user_timeout"
+    CHAT_USER_BAN = "chat_user_ban"
+    CHAT_USER_UNBAN = "chat_user_unban"
+    CHAT_SETTINGS_UPDATE = "chat_settings_update"
+    STREAM_MODERATOR_ADD = "stream_moderator_add"
+    STREAM_MODERATOR_REMOVE = "stream_moderator_remove"
+    STREAM_FILTER_ADD = "stream_filter_add"
+    STREAM_FILTER_REMOVE = "stream_filter_remove"
 
 
 class AuditLogger:

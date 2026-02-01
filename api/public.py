@@ -8,23 +8,28 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import sqlalchemy as sa
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
+import bleach
+
 from api.analytics_cache import AnalyticsCache
+from api.auth.middleware import get_current_user, require_auth, require_ownership_or_permission
+from api.auth.permissions import Permission, Role, has_permission
 from api.common import (
     HTTPMetricsMiddleware,
     RequestIDMiddleware,
@@ -34,20 +39,26 @@ from api.common import (
     get_storage_status,
     rate_limit_exceeded_handler,
     require_storage_available,
+    require_valid_slug,
     validate_slug,
 )
 from api.database import (
     categories,
     chapters,
+    comments,
     configure_database,
     custom_field_definitions,
     database,
+    live_stream_segments,
+    live_streams,
     playback_sessions,
     playlists,
     quality_progress,
+    ratings,
     tags,
     transcoding_jobs,
     transcriptions,
+    users,
     video_custom_fields,
     video_qualities,
     video_tags,
@@ -68,6 +79,13 @@ from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
     CategoryResponse,
     ChapterInfo,
+    CommentCreate,
+    CommentListResponse,
+    CommentResponse,
+    CommentUpdate,
+    CommentUserInfo,
+    CommentWithReplies,
+    EmbedCodeResponse,
     PaginatedVideoListResponse,
     PlaybackEnd,
     PlaybackHeartbeat,
@@ -78,23 +96,42 @@ from api.schemas import (
     PlaylistResponse,
     PlaylistVideoInfo,
     QualityProgressResponse,
+    RatingCreate,
+    RatingResponse,
     SpriteSheetInfo,
     TagResponse,
     TranscodingProgressResponse,
     TranscriptionResponse,
     VideoListResponse,
     VideoQualityResponse,
+    VideoRatingAggregates,
     VideoResponse,
+    VideoSocialStatus,
     VideoTagInfo,
 )
 from config import (
+    API_INCLUDE_LEGACY_ROUTES,
+    API_VERSION,
     CORS_ALLOWED_ORIGINS,
     DOWNLOADS_ALLOW_ORIGINAL,
     DOWNLOADS_ALLOW_TRANSCODED,
     DOWNLOADS_ENABLED,
     DOWNLOADS_MAX_CONCURRENT,
     DOWNLOADS_RATE_LIMIT_PER_HOUR,
+    EMBED_ALLOWED_DOMAINS,
+    EMBED_ALLOW_ALL_DOMAINS,
+    EMBED_DEFAULT_AUTOPLAY,
+    EMBED_ENABLED,
+    EMBED_MIN_PLAYBACK_FOR_VIEW,
+    RATE_LIMIT_EMBED,
+    AUTOPLAY_ENABLED,
+    UPNEXT_ENABLED,
+    AUTOPLAY_COUNTDOWN_SECONDS,
+    LIVE_ENABLED,
+    LIVE_STORAGE_PATH,
     NAS_STORAGE,
+    OPENAPI_DESCRIPTION,
+    OPENAPI_TITLE,
     PUBLIC_PORT,
     QUALITY_NAMES,
     RATE_LIMIT_ENABLED,
@@ -117,17 +154,38 @@ from config import (
     WATERMARK_TEXT_SIZE,
     WATERMARK_TYPE,
 )
+from api.live_schemas import (
+    PublicLiveStreamListResponse,
+    PublicLiveStreamResponse,
+)
+from api.logging_config import setup_logging
+from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
+
+# Initialize structured logging (Issue #208) - must be before any getLogger() calls
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
-# Cached watermark settings (refreshed every 60 seconds)
+# Cached watermark settings
+#
+# Cache watermark settings for 60 seconds to balance freshness with database load.
+# Rationale: At 60 seconds, settings changes appear within 1 minute while avoiding
+# a database query on every video page load (can be 100+ requests/minute under load).
+# Tradeoffs:
+#   - Shorter TTL (30s): More responsive to changes, but 2x database queries
+#   - Longer TTL (300s): Lower DB load, but 5 minute delay before changes appear
+#   - 60s chosen as reasonable default for admin-controlled settings that rarely change
 _cached_watermark_settings: Dict[str, Any] = {}
 _cached_watermark_settings_time: float = 0
-_WATERMARK_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+_WATERMARK_SETTINGS_CACHE_TTL_SECONDS = 60
 
 # Video list cache for performance (Issue #429)
-# Caches video list query results for 30 seconds to reduce database load
-_video_list_cache = AnalyticsCache(ttl_seconds=30, enabled=True, max_size=500)
+# Caches video list query results to reduce database load.
+# Performance review (Issue #211): Increased default from 30s to 300s for reduced DB load.
+# TTL is configurable via the VIDEO_LIST_CACHE_TTL environment variable (seconds).
+_VIDEO_LIST_CACHE_TTL_DEFAULT = 300
+_VIDEO_LIST_CACHE_TTL = int(os.getenv("VIDEO_LIST_CACHE_TTL", _VIDEO_LIST_CACHE_TTL_DEFAULT))
+_video_list_cache = AnalyticsCache(ttl_seconds=_VIDEO_LIST_CACHE_TTL, enabled=True, max_size=500)
 
 
 async def get_watermark_settings() -> Dict[str, Any]:
@@ -156,7 +214,7 @@ async def get_watermark_settings() -> Dict[str, Any]:
     global _cached_watermark_settings, _cached_watermark_settings_time
 
     now = time.time()
-    if _cached_watermark_settings and (now - _cached_watermark_settings_time) < _WATERMARK_SETTINGS_CACHE_TTL:
+    if _cached_watermark_settings and (now - _cached_watermark_settings_time) < _WATERMARK_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_watermark_settings
 
     try:
@@ -207,10 +265,14 @@ def reset_watermark_settings_cache() -> None:
     _cached_watermark_settings_time = 0
 
 
-# Cached CDN settings (refreshed every 60 seconds)
+# Cached CDN settings
+#
+# Same 60-second TTL rationale as watermark settings: balances freshness vs DB load.
+# CDN settings change rarely (typically during initial setup or migrations), so
+# the 1-minute delay is acceptable for the reduced database overhead.
 _cached_cdn_settings: Dict[str, Any] = {}
 _cached_cdn_settings_time: float = 0
-_CDN_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+_CDN_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_cdn_settings() -> Dict[str, Any]:
@@ -228,7 +290,7 @@ async def get_cdn_settings() -> Dict[str, Any]:
     global _cached_cdn_settings, _cached_cdn_settings_time
 
     now = time.time()
-    if _cached_cdn_settings and (now - _cached_cdn_settings_time) < _CDN_SETTINGS_CACHE_TTL:
+    if _cached_cdn_settings and (now - _cached_cdn_settings_time) < _CDN_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_cdn_settings
 
     try:
@@ -277,6 +339,197 @@ def reset_cdn_settings_cache() -> None:
     _cached_cdn_settings_time = 0
 
 
+# Cached embed settings
+#
+# Same 60-second TTL rationale: admin-controlled settings that change rarely.
+# Embed settings (autoplay, domain restrictions) are typically set once during
+# deployment and only adjusted when security posture changes.
+_cached_embed_settings: Dict[str, Any] = {}
+_cached_embed_settings_time: float = 0
+_EMBED_SETTINGS_CACHE_TTL_SECONDS = 60
+
+
+async def get_embed_settings() -> Dict[str, Any]:
+    """
+    Get embed settings from database with caching and env var fallback.
+
+    Settings are cached locally for 60 seconds to avoid database round-trips
+    on every embed page request.
+
+    Returns:
+        Dict with keys:
+        - enabled: Whether embeds are enabled
+        - allowed_domains: Domain whitelist for frame-ancestors CSP
+        - allow_all_domains: Allow embedding on any domain
+        - default_autoplay: Default autoplay behavior
+        - min_playback_for_view: Seconds before counting as view
+    """
+    global _cached_embed_settings, _cached_embed_settings_time
+
+    now = time.time()
+    if _cached_embed_settings and (now - _cached_embed_settings_time) < _EMBED_SETTINGS_CACHE_TTL_SECONDS:
+        return _cached_embed_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "enabled": await service.get("embed.enabled", EMBED_ENABLED),
+            "allowed_domains": await service.get("embed.allowed_domains", EMBED_ALLOWED_DOMAINS),
+            "allow_all_domains": await service.get("embed.allow_all_domains", EMBED_ALLOW_ALL_DOMAINS),
+            "default_autoplay": await service.get("embed.default_autoplay", EMBED_DEFAULT_AUTOPLAY),
+            "min_playback_for_view": await service.get("embed.min_playback_for_view", EMBED_MIN_PLAYBACK_FOR_VIEW),
+        }
+
+        _cached_embed_settings = settings
+        _cached_embed_settings_time = now
+    except Exception as e:
+        logger.debug(f"Failed to get embed settings from DB, using env vars: {e}")
+        _cached_embed_settings = {
+            "enabled": EMBED_ENABLED,
+            "allowed_domains": EMBED_ALLOWED_DOMAINS,
+            "allow_all_domains": EMBED_ALLOW_ALL_DOMAINS,
+            "default_autoplay": EMBED_DEFAULT_AUTOPLAY,
+            "min_playback_for_view": EMBED_MIN_PLAYBACK_FOR_VIEW,
+        }
+        _cached_embed_settings_time = now
+
+    return _cached_embed_settings
+
+
+# Domain validation pattern for CSP frame-ancestors (Issue #210 security fix)
+_CSP_DOMAIN_PATTERN = re.compile(
+    r'^([a-z]+://)?[a-z0-9]+([\-\.][a-z0-9]+)*\.[a-z]{2,}(:[0-9]{1,5})?$',
+    re.IGNORECASE
+)
+
+
+def _is_valid_csp_domain(domain: str) -> bool:
+    """
+    Validate that a domain is safe for CSP frame-ancestors.
+
+    Args:
+        domain: Domain string to validate (with or without protocol)
+
+    Returns:
+        True if domain is valid, False otherwise
+    """
+    # Remove protocol for validation if present
+    domain_to_check = domain
+    if domain.startswith("http://") or domain.startswith("https://"):
+        domain_to_check = domain.split("://", 1)[1]
+
+    return bool(_CSP_DOMAIN_PATTERN.match(domain_to_check))
+
+
+def build_embed_csp_frame_ancestors(embed_settings: Dict[str, Any]) -> str:
+    """
+    Build the frame-ancestors CSP directive value based on embed settings.
+
+    Uses the DB-backed settings so admin changes apply without restart.
+    Security: Validates all domains before including in CSP header.
+
+    Args:
+        embed_settings: Dict from get_embed_settings() with keys:
+            - allow_all_domains: bool
+            - allowed_domains: str (comma-separated)
+
+    Returns:
+        CSP frame-ancestors value:
+        - "*" if all domains allowed (public mode)
+        - "'self'" if only same-origin allowed (default secure mode)
+        - "'self' https://domain1.com ..." for domain whitelist
+    """
+    # Check for allow all domains first
+    if embed_settings.get("allow_all_domains", False):
+        return "*"
+
+    # Parse allowed domains from configuration
+    allowed = embed_settings.get("allowed_domains", "'self'").strip()
+
+    # If 'self' only or empty, return self
+    if not allowed or allowed == "'self'":
+        return "'self'"
+
+    # Parse comma-separated domains and build frame-ancestors value
+    domains = [d.strip() for d in allowed.split(",") if d.strip()]
+    if not domains:
+        return "'self'"
+
+    # Include 'self' and validate/normalize each domain
+    parts = ["'self'"]
+    for domain in domains:
+        # Skip 'self' if explicitly listed (already included)
+        if domain == "'self'":
+            continue
+
+        # Validate domain format to prevent CSP injection
+        if domain.startswith("'"):
+            # CSP keywords like 'none' - skip these in domain list
+            logger.warning(f"Skipping CSP keyword in embed domains: {domain}")
+            continue
+        elif domain.startswith("http://") or domain.startswith("https://"):
+            if _is_valid_csp_domain(domain):
+                parts.append(domain)
+            else:
+                logger.warning(f"Invalid CSP domain format skipped: {domain}")
+        else:
+            if _is_valid_csp_domain(domain):
+                parts.append(f"https://{domain}")
+            else:
+                logger.warning(f"Invalid CSP domain format skipped: {domain}")
+
+    # If all domains were invalid, fall back to self-only
+    if len(parts) == 1:
+        logger.warning("All configured embed domains were invalid, using 'self' only")
+
+    return " ".join(parts)
+
+
+def reset_embed_settings_cache() -> None:
+    """Reset the cached embed settings. Useful for testing."""
+    global _cached_embed_settings, _cached_embed_settings_time
+    _cached_embed_settings = {}
+    _cached_embed_settings_time = 0
+
+
+def validate_safe_path(base: Path, user_path: str) -> Path:
+    """
+    Validate that a path stays within the base directory to prevent path traversal.
+
+    Args:
+        base: The base directory that paths must be contained within
+        user_path: The user-provided path to validate
+
+    Returns:
+        The resolved full path if valid
+
+    Raises:
+        HTTPException: If the path is invalid or traverses outside base
+    """
+    if not user_path:
+        raise HTTPException(status_code=400, detail="Path cannot be empty")
+
+    # Block obvious traversal attempts
+    if ".." in user_path:
+        logger.warning(f"Path traversal attempt blocked: {user_path}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    try:
+        # Resolve both paths to catch symlink attacks
+        full_path = (base / user_path).resolve()
+        base_resolved = base.resolve()
+
+        # Ensure the path is within the base directory
+        full_path.relative_to(base_resolved)
+        return full_path
+    except (ValueError, OSError) as e:
+        logger.warning(f"Path validation failed for {user_path}: {e}")
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
 # Initialize rate limiter
 # Uses in-memory storage by default, can be configured to use Redis
 limiter = Limiter(
@@ -300,11 +553,37 @@ async def lifespan(app: FastAPI):
         )
     await database.connect()
     await configure_database()
+
+    # Start live streaming background tasks
+    if LIVE_ENABLED:
+        from api.live_tasks import start_live_background_tasks
+        await start_live_background_tasks()
+        logger.info("Started live streaming background tasks")
+
     yield
+
+    # Stop live streaming background tasks
+    if LIVE_ENABLED:
+        from api.live_tasks import stop_live_background_tasks
+        from api.live_ingest import stop_accepting_uploads, wait_for_active_uploads
+        stop_accepting_uploads()
+        await wait_for_active_uploads(timeout=10.0)
+        await stop_live_background_tasks(timeout=10.0)
+        logger.info("Stopped live streaming background tasks")
+
     await database.disconnect()
 
 
-app = FastAPI(title="VLog", description="Self-hosted video platform", lifespan=lifespan)
+app = FastAPI(
+    title=OPENAPI_TITLE,
+    description=OPENAPI_DESCRIPTION,
+    version=API_VERSION,
+    lifespan=lifespan,
+)
+
+# Create versioned API router
+# All /api endpoints are registered on this router and mounted with version prefix
+v1_router = APIRouter(tags=["API v1"])
 
 # Register rate limiter with the app
 app.state.limiter = limiter
@@ -324,6 +603,7 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(VersionHeaderMiddleware)
 
 # CORS middleware for HLS playback and analytics
 # If CORS_ALLOWED_ORIGINS is empty, allow same-origin only (no CORS headers)
@@ -415,15 +695,57 @@ HLSStaticFiles = StreamingStaticFiles
 if not os.environ.get("VLOG_TEST_MODE"):
     app.mount("/videos", HLSStaticFiles(directory=str(VIDEOS_DIR)), name="videos")
 
+# Serve live stream segments and playlists
+if not os.environ.get("VLOG_TEST_MODE") and LIVE_ENABLED:
+    try:
+        LIVE_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+        app.mount("/live", HLSStaticFiles(directory=str(LIVE_STORAGE_PATH)), name="live")
+        logger.info(f"Mounted live storage at /live from {LIVE_STORAGE_PATH}")
+    except (PermissionError, OSError) as e:
+        logger.warning(f"Could not mount live storage: {e}")
+
+# Mount live ingest API (for segment push from FFmpeg)
+if LIVE_ENABLED:
+    from api.live_ingest import router as live_ingest_router
+    app.include_router(live_ingest_router)
+    logger.info("Mounted live ingest API at /api/live/ingest")
+
 # Serve static web files
 WEB_DIR = Path(__file__).parent.parent / "web" / "public"
 app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+
+# Serve studio web files (broadcaster dashboard)
+# Requires built dist/ directory - run: cd web/studio && npm install && npm run build
+STUDIO_SRC_DIR = Path(__file__).parent.parent / "web" / "studio"
+STUDIO_DIST_DIR = STUDIO_SRC_DIR / "dist"
+
+if STUDIO_DIST_DIR.exists():
+    STUDIO_WEB_DIR = STUDIO_DIST_DIR
+    app.mount("/studio/assets", StaticFiles(directory=str(STUDIO_DIST_DIR / "assets")), name="studio-assets")
+    logger.info("Mounted studio dashboard at /studio")
+else:
+    STUDIO_WEB_DIR = None
+    logger.warning(
+        "Studio dist/ not found. Run 'cd web/studio && npm install && npm run build' to enable /studio"
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
     """Serve the main page."""
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/studio", response_class=HTMLResponse)
+@app.get("/studio/", response_class=HTMLResponse)
+async def studio_home():
+    """Serve the studio broadcaster dashboard."""
+    if STUDIO_WEB_DIR is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Studio not available. Run 'cd web/studio && npm install && npm run build' to enable."},
+        )
+    return FileResponse(STUDIO_WEB_DIR / "index.html")
 
 
 @app.get("/health")
@@ -467,6 +789,188 @@ async def category_page(slug: str):
 async def tag_page(slug: str):
     """Serve the tag page."""
     return FileResponse(WEB_DIR / "tag.html")
+
+
+# =============================================================================
+# Video Embed Routes (Issue #210)
+# =============================================================================
+
+
+def _is_video_embeddable(video: dict) -> bool:
+    """Check if video meets all requirements for embedding."""
+    return (
+        video["status"] == VideoStatus.READY
+        and video["published_at"] is not None
+        and video["deleted_at"] is None
+    )
+
+
+def _build_embed_error_response(
+    reason: str,
+    slug: str,
+) -> FileResponse:
+    """
+    Build appropriate error response for embed requests.
+
+    Args:
+        reason: Error reason ('disabled', 'invalid_slug', 'not_found', 'not_embeddable', 'database_error')
+        slug: Video slug for logging
+
+    Returns:
+        FileResponse with embed-error.html and appropriate headers
+    """
+    status_codes = {
+        "disabled": 404,
+        "invalid_slug": 400,
+        "not_found": 404,
+        "not_embeddable": 404,
+        "database_error": 503,
+    }
+
+    headers = {"Content-Security-Policy": "frame-ancestors 'none'"}
+    if reason == "database_error":
+        headers["Retry-After"] = "30"
+
+    return FileResponse(
+        WEB_DIR / "embed-error.html",
+        status_code=status_codes.get(reason, 500),
+        headers=headers,
+    )
+
+
+@app.get("/embed/{slug}", response_class=HTMLResponse)
+@limiter.limit(RATE_LIMIT_EMBED)
+async def embed_page(request: Request, slug: str):
+    """
+    Serve the embed player page for a video.
+
+    Returns a minimal video player designed for iframe embedding.
+    Sets appropriate CSP frame-ancestors header based on configuration.
+
+    Security:
+    - Validates slug format before database query
+    - Only serves videos with status='ready' and published_at set
+    - CSP frame-ancestors controls which domains can embed
+    - Does NOT set X-Frame-Options (CSP takes precedence)
+
+    Query Parameters:
+    - autoplay: 0 or 1 (default: from settings)
+    - start: Start time in seconds (default: 0)
+    - controls: 0 or 1 (default: 1)
+    """
+    # Validate slug format (security: prevents log injection, ensures valid input)
+    if not validate_slug(slug):
+        return _build_embed_error_response("invalid_slug", slug)
+
+    # Check if embeds are enabled
+    embed_settings = await get_embed_settings()
+    if not embed_settings["enabled"]:
+        return _build_embed_error_response("disabled", slug)
+
+    # Validate video exists and is embeddable
+    try:
+        query = sa.select(
+            videos.c.id,
+            videos.c.slug,
+            videos.c.status,
+            videos.c.published_at,
+            videos.c.deleted_at,
+        ).where(videos.c.slug == slug)
+
+        video = await fetch_one_with_retry(query)
+
+        if not video:
+            logger.debug(f"Embed: Video not found: {slug}")
+            return _build_embed_error_response("not_found", slug)
+
+        if not _is_video_embeddable(video):
+            logger.debug(
+                f"Embed: Video not embeddable: {slug} "
+                f"(status={video['status']}, published={video['published_at'] is not None})"
+            )
+            return _build_embed_error_response("not_embeddable", slug)
+
+    except Exception as e:
+        logger.warning(f"Embed: Database error for {slug}: {e}")
+        return _build_embed_error_response("database_error", slug)
+
+    # Build CSP frame-ancestors directive from DB-backed settings
+    frame_ancestors = build_embed_csp_frame_ancestors(embed_settings)
+
+    # Return embed page with CSP header
+    return FileResponse(
+        WEB_DIR / "embed.html",
+        headers={
+            "Content-Security-Policy": f"frame-ancestors {frame_ancestors}",
+        },
+    )
+
+
+@v1_router.get("/videos/{slug}/embed-code", response_model=EmbedCodeResponse)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_embed_code(request: Request, slug: str):
+    """
+    Get the embed code for a video.
+
+    Returns the iframe HTML and URL for embedding the video on external sites.
+
+    Security:
+    - Validates slug format before database query
+
+    Returns 404 if:
+    - Video doesn't exist
+    - Video is not ready or not published
+    - Embeds are disabled
+    """
+    # Validate slug format (security: prevents log injection, ensures valid input)
+    require_valid_slug(slug, "video")
+
+    # Check if embeds are enabled
+    embed_settings = await get_embed_settings()
+    if not embed_settings["enabled"]:
+        raise HTTPException(status_code=404, detail="Video embedding is disabled")
+
+    # Validate video exists and is embeddable
+    query = sa.select(
+        videos.c.id,
+        videos.c.slug,
+        videos.c.status,
+        videos.c.published_at,
+        videos.c.deleted_at,
+    ).where(videos.c.slug == slug)
+
+    video = await fetch_one_with_retry(query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if not _is_video_embeddable(video):
+        raise HTTPException(status_code=404, detail="Video not available for embedding")
+
+    # Build embed URL
+    # Use request's base URL for the embed URL
+    base_url = str(request.base_url).rstrip("/")
+    embed_url = f"{base_url}/embed/{slug}"
+
+    # Standard dimensions for 16:9 aspect ratio
+    width = 560
+    height = 315
+
+    # Build iframe HTML with proper attributes
+    iframe_html = (
+        f'<iframe src="{embed_url}" '
+        f'width="{width}" height="{height}" '
+        f'frameborder="0" '
+        f'allow="autoplay; fullscreen; picture-in-picture" '
+        f'allowfullscreen></iframe>'
+    )
+
+    return EmbedCodeResponse(
+        embed_url=embed_url,
+        iframe_html=iframe_html,
+        width=width,
+        height=height,
+    )
 
 
 async def get_video_tags(video_ids: List[int]) -> dict:
@@ -913,7 +1417,7 @@ def build_video_list_response(
     ]
 
 
-@app.get("/api/videos")
+@v1_router.get("/videos", summary="List videos", description="Get a paginated list of published videos with filtering and sorting options.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_videos(
     request: Request,
@@ -1102,7 +1606,7 @@ async def list_videos(
 MAX_BULK_VIDEO_IDS = 20
 
 
-@app.get("/api/videos/bulk")
+@v1_router.get("/videos/bulk", summary="Bulk get videos", description="Get multiple videos by their slugs in a single request.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_videos_bulk(
     request: Request,
@@ -1204,13 +1708,12 @@ async def get_videos_bulk(
     return build_video_list_response(ordered_rows, video_tags_map)
 
 
-@app.get("/api/videos/{slug}")
+@v1_router.get("/videos/{slug}", summary="Get video", description="Get detailed information about a specific video by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video(request: Request, slug: str) -> VideoResponse:
     """Get a single video by slug."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     query = (
         sa.select(
@@ -1329,13 +1832,12 @@ async def get_video(request: Request, slug: str) -> VideoResponse:
     )
 
 
-@app.get("/api/videos/{slug}/progress")
+@v1_router.get("/videos/{slug}/progress", summary="Get video progress", description="Get transcoding progress for a video.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_video_progress(request: Request, slug: str) -> TranscodingProgressResponse:
     """Get transcoding progress for a video."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
@@ -1396,13 +1898,12 @@ async def get_video_progress(request: Request, slug: str) -> TranscodingProgress
     )
 
 
-@app.get("/api/videos/{slug}/transcript")
+@v1_router.get("/videos/{slug}/transcript", summary="Get video transcript", description="Get the transcription for a video if available.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_transcript(request: Request, slug: str) -> TranscriptionResponse:
     """Get transcription status and text for a video."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Get video by slug (exclude soft-deleted)
     video_query = videos.select().where(videos.c.slug == slug).where(videos.c.deleted_at.is_(None))
@@ -1495,50 +1996,33 @@ async def _fetch_related_videos_tier(
     return await fetch_all_with_retry(query)
 
 
-@app.get("/api/videos/{slug}/related")
-@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
-async def get_related_videos(
-    request: Request,
+async def _find_related_videos_for_slug(
     slug: str,
-    limit: int = Query(default=12, ge=1, le=24, description="Maximum number of related videos to return"),
-) -> List[VideoListResponse]:
+    limit: int = 12,
+    parallelize: bool = False,
+) -> List[Dict[str, Any]]:
     """
-    Get related videos for a given video.
+    Shared helper to find related videos for a given video slug.
 
-    Algorithm priority (with early termination when limit reached):
+    Implements the tiered algorithm:
     1. Same category + shared tags (highest relevance)
     2. Same category only
     3. Shared tags only
     4. Recent videos (fallback)
 
-    Results are cached for 30 seconds using the video list cache.
-
     Args:
-        slug: The video slug to find related videos for
-        limit: Maximum number of related videos (1-24, default 12)
+        slug: The source video slug
+        limit: Maximum number of related videos to return
+        parallelize: If True, run all tier queries in parallel (optimal for limit=1)
 
     Returns:
-        List of related videos sorted by relevance tier then recency
+        List of related video row dicts, or empty list if source not found
+
+    Raises:
+        HTTPException: If video not found (404)
     """
-    # Validate slug to prevent injection attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
-
-    # Build cache key with SHA256 hash to prevent cache poisoning
-    # High priority fix (Margo): Include schema version in cache key
-    RELATED_VIDEOS_CACHE_VERSION = "v1"  # Increment on schema changes
-    cache_key_raw = f"related:{RELATED_VIDEOS_CACHE_VERSION}:{slug}|{limit}"
-    cache_key = f"related:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
-
-    # Check cache first
-    cached = _video_list_cache.get(cache_key)
-    if cached is not None:
-        try:
-            return [VideoListResponse(**v) for v in cached]
-        except Exception as e:
-            # Cache schema mismatch after deploy, invalidate and regenerate
-            logger.warning(f"Cached related videos schema mismatch, invalidating: {e}")
-            _video_list_cache.delete(cache_key)
+    # Validate slug
+    require_valid_slug(slug, "video")
 
     # Get the source video with its category
     video_query = (
@@ -1561,9 +2045,70 @@ async def get_related_videos(
     tag_rows = await fetch_all_with_retry(tag_query)
     source_tag_ids = [r["tag_id"] for r in tag_rows] if tag_rows else []
 
-    # Collect related videos using tiered algorithm with early termination
-    related_videos: List[Dict[str, Any]] = []
     seen_ids: set = {video_id}  # Always exclude the source video
+
+    if parallelize:
+        # Performance optimization: Run all tiers in parallel for limit=1 (Issue #211)
+        # This is optimal when we just need one result and don't know which tier will succeed
+        # Build list of (priority, coroutine) tuples - only include applicable tiers
+        tier_coros: List[Tuple[int, Any]] = []
+
+        # Tier 1: Same category + shared tags (highest relevance)
+        if category_id is not None and source_tag_ids:
+            tier_coros.append((1, _fetch_related_videos_tier(
+                category_id=category_id,
+                tag_ids=source_tag_ids,
+                exclude_ids=seen_ids,
+                limit=limit,
+            )))
+
+        # Tier 2: Same category only
+        if category_id is not None:
+            tier_coros.append((2, _fetch_related_videos_tier(
+                category_id=category_id,
+                tag_ids=None,
+                exclude_ids=seen_ids,
+                limit=limit,
+            )))
+
+        # Tier 3: Shared tags only
+        if source_tag_ids:
+            tier_coros.append((3, _fetch_related_videos_tier(
+                category_id=None,
+                tag_ids=source_tag_ids,
+                exclude_ids=seen_ids,
+                limit=limit,
+            )))
+
+        # Tier 4: Recent videos fallback (always included)
+        tier_coros.append((4, _fetch_related_videos_tier(
+            category_id=None,
+            tag_ids=None,
+            exclude_ids=seen_ids,
+            limit=limit,
+        )))
+
+        # Run all applicable tiers in parallel
+        tier_results = await asyncio.gather(
+            *[coro for _, coro in tier_coros],
+            return_exceptions=True
+        )
+
+        # Match results back to priorities and find first non-empty by priority
+        results_with_priority = list(zip([p for p, _ in tier_coros], tier_results))
+        results_with_priority.sort(key=lambda x: x[0])  # Sort by priority
+
+        for priority, tier_result in results_with_priority:
+            if isinstance(tier_result, Exception):
+                logger.warning(f"Tier {priority} query failed: {tier_result}")
+                continue
+            if tier_result:
+                return tier_result[:limit]
+
+        return []
+
+    # Sequential execution with early termination (optimal for larger limits)
+    related_videos: List[Dict[str, Any]] = []
 
     # Tier 1: Same category + shared tags (highest relevance)
     if category_id is not None and source_tag_ids:
@@ -1620,6 +2165,52 @@ async def get_related_videos(
                 related_videos.append(v)
                 seen_ids.add(v["id"])
 
+    return related_videos
+
+
+@v1_router.get("/videos/{slug}/related", summary="Get related videos", description="Get videos related to the specified video based on tags and category.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_related_videos(
+    request: Request,
+    slug: str,
+    limit: int = Query(default=12, ge=1, le=24, description="Maximum number of related videos to return"),
+) -> List[VideoListResponse]:
+    """
+    Get related videos for a given video.
+
+    Algorithm priority (with early termination when limit reached):
+    1. Same category + shared tags (highest relevance)
+    2. Same category only
+    3. Shared tags only
+    4. Recent videos (fallback)
+
+    Results are cached for 300 seconds using the video list cache.
+
+    Args:
+        slug: The video slug to find related videos for
+        limit: Maximum number of related videos (1-24, default 12)
+
+    Returns:
+        List of related videos sorted by relevance tier then recency
+    """
+    # Build cache key with SHA256 hash to prevent cache poisoning
+    RELATED_VIDEOS_CACHE_VERSION = "v1"  # Increment on schema changes
+    cache_key_raw = f"related:{RELATED_VIDEOS_CACHE_VERSION}:{slug}|{limit}"
+    cache_key = f"related:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
+
+    # Check cache first
+    cached = _video_list_cache.get(cache_key)
+    if cached is not None:
+        try:
+            return [VideoListResponse(**v) for v in cached]
+        except Exception as e:
+            # Cache schema mismatch after deploy, invalidate and regenerate
+            logger.warning(f"Cached related videos schema mismatch, invalidating: {e}")
+            _video_list_cache.delete(cache_key)
+
+    # Use shared helper for the tiered algorithm
+    related_videos = await _find_related_videos_for_slug(slug, limit=limit, parallelize=False)
+
     # Get tags for all related videos
     video_ids = [v["id"] for v in related_videos]
     video_tags_map = await get_video_tags(video_ids)
@@ -1633,7 +2224,65 @@ async def get_related_videos(
     return result
 
 
-@app.get("/api/categories")
+@v1_router.get("/videos/{slug}/next", summary="Get next video", description="Get the next suggested video for autoplay.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_next_video(
+    request: Request,
+    slug: str,
+) -> Optional[VideoListResponse]:
+    """
+    Get the next video suggestion for autoplay.
+
+    Returns the single best related video for the "Up Next" feature.
+    Uses the same tiered algorithm as related videos but returns only
+    the top result. Parallelizes tier queries for optimal latency.
+
+    Args:
+        slug: The current video slug
+
+    Returns:
+        Single video suggestion, or null if no related videos found
+    """
+    # Build cache key with SHA256 hash
+    NEXT_VIDEO_CACHE_VERSION = "v1"
+    cache_key_raw = f"next:{NEXT_VIDEO_CACHE_VERSION}:{slug}"
+    cache_key = f"next:{hashlib.sha256(cache_key_raw.encode()).hexdigest()[:16]}"
+
+    # Check cache first
+    cached = _video_list_cache.get(cache_key)
+    if cached is not None:
+        if cached == []:
+            return None
+        try:
+            return VideoListResponse(**cached[0])
+        except Exception as e:
+            logger.warning(f"Cached next video schema mismatch, invalidating: {e}")
+            _video_list_cache.delete(cache_key)
+
+    # Use shared helper with parallelization for optimal latency (Issue #211)
+    # For limit=1, running all tiers in parallel is faster than sequential with early termination
+    related_videos = await _find_related_videos_for_slug(slug, limit=1, parallelize=True)
+
+    if not related_videos:
+        # Cache empty result to avoid repeated lookups
+        _video_list_cache.set(cache_key, [])
+        return None
+
+    next_video = related_videos[0]
+
+    # Get tags for the next video
+    video_tags_map = await get_video_tags([next_video["id"]])
+
+    # Build response
+    result = build_video_list_response([next_video], video_tags_map)
+
+    # Cache the result
+    _video_list_cache.set(cache_key, [v.model_dump() for v in result])
+
+    return result[0] if result else None
+
+
+@v1_router.get("/categories", summary="List categories", description="Get all video categories.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_categories(request: Request) -> List[CategoryResponse]:
     """List all categories with video counts."""
@@ -1663,13 +2312,12 @@ async def list_categories(request: Request) -> List[CategoryResponse]:
     ]
 
 
-@app.get("/api/categories/{slug}")
+@v1_router.get("/categories/{slug}", summary="Get category", description="Get a category by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_category(request: Request, slug: str) -> CategoryResponse:
     """Get a single category by slug."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid category slug")
+    require_valid_slug(slug, "category")
 
     query = categories.select().where(categories.c.slug == slug)
     row = await fetch_one_with_retry(query)
@@ -1701,7 +2349,7 @@ async def get_category(request: Request, slug: str) -> CategoryResponse:
     )
 
 
-@app.get("/api/tags")
+@v1_router.get("/tags", summary="List tags", description="Get all video tags.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_tags(request: Request) -> List[TagResponse]:
     """List all tags with video counts."""
@@ -1731,13 +2379,12 @@ async def list_tags(request: Request) -> List[TagResponse]:
     ]
 
 
-@app.get("/api/tags/{slug}")
+@v1_router.get("/tags/{slug}", summary="Get tag", description="Get a tag by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_tag(request: Request, slug: str) -> TagResponse:
     """Get a single tag by slug."""
     # Validate slug to prevent path traversal attacks
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid tag slug")
+    require_valid_slug(slug, "tag")
 
     query = tags.select().where(tags.c.slug == slug)
     row = await fetch_one_with_retry(query)
@@ -1778,7 +2425,7 @@ def _get_video_url_prefix() -> str:
 VALID_PLAYLIST_TYPES = {"playlist", "collection", "series", "course"}
 
 
-@app.get("/api/playlists")
+@v1_router.get("/playlists", summary="List playlists", description="Get all public playlists.")
 @limiter.limit(RATE_LIMIT_PUBLIC_VIDEOS_LIST)
 async def list_public_playlists(
     request: Request,
@@ -1865,13 +2512,12 @@ async def list_public_playlists(
     return PlaylistListResponse(playlists=playlist_list, total_count=total_count or 0)
 
 
-@app.get("/api/playlists/{slug}")
+@v1_router.get("/playlists/{slug}", summary="Get playlist", description="Get a playlist by its slug.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResponse:
     """Get a public playlist by slug with its videos."""
     # Validate slug
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+    require_valid_slug(slug, "playlist")
 
     # Get playlist (only public or unlisted)
     playlist = await fetch_one_with_retry(
@@ -1937,13 +2583,12 @@ async def get_public_playlist(request: Request, slug: str) -> PlaylistDetailResp
     )
 
 
-@app.get("/api/playlists/{slug}/videos")
+@v1_router.get("/playlists/{slug}/videos", summary="Get playlist videos", description="Get videos in a playlist.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_public_playlist_videos(request: Request, slug: str) -> List[PlaylistVideoInfo]:
     """Get videos in a public playlist."""
     # Validate slug
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid playlist slug")
+    require_valid_slug(slug, "playlist")
 
     # Get playlist (only public or unlisted)
     playlist = await fetch_one_with_retry(
@@ -1985,11 +2630,96 @@ async def get_public_playlist_videos(request: Request, slug: str) -> List[Playli
 
 
 # ============================================================================
+# Live Streaming Public API
+# ============================================================================
+
+
+def _parse_qualities_json(qualities_str: Optional[str]) -> List[str]:
+    """Parse qualities JSON string to list."""
+    if not qualities_str:
+        return []
+    try:
+        return json.loads(qualities_str)
+    except json.JSONDecodeError:
+        return []
+
+
+@v1_router.get("/live/streams", summary="List live streams", description="Get all public live streams.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def list_public_live_streams(request: Request) -> PublicLiveStreamListResponse:
+    """
+    List live streams that are currently live or recently ended.
+
+    Only returns streams with status 'live' or 'ending'.
+    """
+    if not LIVE_ENABLED:
+        return PublicLiveStreamListResponse(streams=[], total=0)
+
+    rows = await fetch_all_with_retry(
+        live_streams.select()
+        .where(live_streams.c.status.in_(["live", "ending"]))
+        .order_by(live_streams.c.started_at.desc())
+    )
+
+    streams = []
+    for row in rows:
+        streams.append(
+            PublicLiveStreamResponse(
+                title=row["title"],
+                slug=row["slug"],
+                description=row["description"] or "",
+                status=row["status"],
+                qualities=_parse_qualities_json(row["qualities"]),
+                category_id=row["category_id"],
+                started_at=row["started_at"],
+                dvr_enabled=row["dvr_enabled"],
+                dvr_window_seconds=row["dvr_window_seconds"],
+            )
+        )
+
+    return PublicLiveStreamListResponse(streams=streams, total=len(streams))
+
+
+@v1_router.get("/live/streams/{slug}", summary="Get live stream", description="Get information about a live stream.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_live_stream(request: Request, slug: str) -> PublicLiveStreamResponse:
+    """
+    Get public information about a live stream.
+
+    Returns stream info if it exists and is live or ending.
+    Returns 404 if stream doesn't exist or is not active.
+    """
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+
+    row = await fetch_one_with_retry(
+        live_streams.select()
+        .where(live_streams.c.slug == slug)
+        .where(live_streams.c.status.in_(["live", "ending"]))
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Live stream not found")
+
+    return PublicLiveStreamResponse(
+        title=row["title"],
+        slug=row["slug"],
+        description=row["description"] or "",
+        status=row["status"],
+        qualities=_parse_qualities_json(row["qualities"]),
+        category_id=row["category_id"],
+        started_at=row["started_at"],
+        dvr_enabled=row["dvr_enabled"],
+        dvr_window_seconds=row["dvr_window_seconds"],
+    )
+
+
+# ============================================================================
 # Watermark Configuration
 # ============================================================================
 
 
-@app.get("/api/config/watermark")
+@v1_router.get("/config/watermark", summary="Get watermark config", description="Get watermark configuration for video overlay.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_watermark_config(request: Request):
     """
@@ -2081,10 +2811,13 @@ async def get_watermark_image(request: Request):
 # Display Configuration
 # ============================================================================
 
-# Cached display settings (refreshed every 60 seconds)
+# Cached display settings
+#
+# Same 60-second TTL rationale: balances freshness vs DB load for admin settings.
+# Display settings (view counts visibility, tagline) are cosmetic and rarely change.
 _cached_display_settings: Dict[str, Any] = {}
 _cached_display_settings_time: float = 0
-_DISPLAY_SETTINGS_CACHE_TTL = 60  # seconds
+_DISPLAY_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_display_settings() -> Dict[str, Any]:
@@ -2101,7 +2834,7 @@ async def get_display_settings() -> Dict[str, Any]:
     global _cached_display_settings, _cached_display_settings_time
 
     now = time.time()
-    if _cached_display_settings and (now - _cached_display_settings_time) < _DISPLAY_SETTINGS_CACHE_TTL:
+    if _cached_display_settings and (now - _cached_display_settings_time) < _DISPLAY_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_display_settings
 
     try:
@@ -2130,7 +2863,7 @@ async def get_display_settings() -> Dict[str, Any]:
     return _cached_display_settings
 
 
-@app.get("/api/config/display")
+@v1_router.get("/config/display", summary="Get display config", description="Get display configuration for the video player.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_display_config(request: Request):
     """
@@ -2143,13 +2876,189 @@ async def get_display_config(request: Request):
 
 
 # ============================================================================
+# Theme/Branding Configuration (Issue #214)
+# ============================================================================
+
+# Cached theme settings
+#
+# Same 60-second TTL rationale: theme/branding settings change rarely.
+# Theme colors and branding are typically set during initial deployment.
+_cached_theme_settings: Dict[str, Any] = {}
+_cached_theme_settings_time: float = 0
+_THEME_SETTINGS_CACHE_TTL_SECONDS = 60
+
+
+async def get_theme_settings() -> Dict[str, Any]:
+    """
+    Get theme and branding settings from database with caching.
+
+    Returns dict with branding, theme colors, and layout configuration.
+    """
+    import time
+
+    global _cached_theme_settings, _cached_theme_settings_time
+
+    now = time.time()
+    if _cached_theme_settings and (now - _cached_theme_settings_time) < _THEME_SETTINGS_CACHE_TTL_SECONDS:
+        return _cached_theme_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            # Branding
+            "site_name": await service.get("branding.site_name", "VLog"),
+            "logo_path": await service.get("branding.logo_path", None),
+            "favicon_path": await service.get("branding.favicon_path", None),
+            "footer_text": await service.get("branding.footer_text", None),
+            "footer_links": await service.get("branding.footer_links", []),
+            # Theme colors
+            "primary_color": await service.get("theme.primary_color", "#3B82F6"),
+            "secondary_color": await service.get("theme.secondary_color", "#1E40AF"),
+            "accent_color": await service.get("theme.accent_color", "#60A5FA"),
+            "mode": await service.get("theme.mode", "auto"),
+            "custom_css": await service.get("theme.custom_css", None),
+            # Layout
+            "homepage_style": await service.get("layout.homepage_style", "grid"),
+            "videos_per_page": await service.get("layout.videos_per_page", 24),
+            "grid_columns": await service.get("layout.grid_columns", 4),
+            "show_sidebar": await service.get("layout.show_sidebar", True),
+            "show_related_videos": await service.get("layout.show_related_videos", True),
+        }
+
+        _cached_theme_settings = settings
+        _cached_theme_settings_time = now
+
+    except Exception as e:
+        logger.debug(f"Failed to get theme settings from DB, using defaults: {e}")
+        _cached_theme_settings = {
+            "site_name": "VLog",
+            "logo_path": None,
+            "favicon_path": None,
+            "footer_text": None,
+            "footer_links": [],
+            "primary_color": "#3B82F6",
+            "secondary_color": "#1E40AF",
+            "accent_color": "#60A5FA",
+            "mode": "auto",
+            "custom_css": None,
+            "homepage_style": "grid",
+            "videos_per_page": 24,
+            "grid_columns": 4,
+            "show_sidebar": True,
+            "show_related_videos": True,
+        }
+        _cached_theme_settings_time = now
+
+    return _cached_theme_settings
+
+
+def reset_theme_settings_cache() -> None:
+    """
+    Reset the cached theme settings.
+
+    Should be called when branding/theme settings are updated via admin API
+    to ensure the public API reflects changes immediately.
+    """
+    global _cached_theme_settings, _cached_theme_settings_time
+    _cached_theme_settings = {}
+    _cached_theme_settings_time = 0
+
+
+@v1_router.get("/config/theme", summary="Get theme config", description="Get theme and branding configuration.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_theme_config(request: Request):
+    """
+    Get theme and branding configuration for the public UI.
+
+    Returns branding settings (site name, logo, footer), theme colors,
+    and layout preferences.
+    """
+    settings = await get_theme_settings()
+    return settings
+
+
+@v1_router.get("/branding/logo", summary="Get logo image", description="Serve the site logo image.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_logo(request: Request):
+    """Serve the logo image for public display."""
+    settings = await get_theme_settings()
+
+    if not settings.get("logo_path"):
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    # Validate path to prevent traversal attacks
+    logo_path = validate_safe_path(NAS_STORAGE, settings["logo_path"])
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    ext = logo_path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        logo_path,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=86400",  # Cache for 1 day
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@v1_router.get("/branding/favicon", summary="Get favicon", description="Serve the site favicon.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_public_favicon(request: Request):
+    """Serve the favicon for public display."""
+    settings = await get_theme_settings()
+
+    if not settings.get("favicon_path"):
+        raise HTTPException(status_code=404, detail="No favicon configured")
+
+    # Validate path to prevent traversal attacks
+    favicon_path = validate_safe_path(NAS_STORAGE, settings["favicon_path"])
+    if not favicon_path.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found")
+
+    ext = favicon_path.suffix.lower()
+    content_types = {
+        ".ico": "image/x-icon",
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        favicon_path,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=86400",  # Cache for 1 day
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+# ============================================================================
 # Download Configuration (Issue #202)
 # ============================================================================
 
-# Cached download settings (refreshed every 60 seconds)
+# Cached download settings
+#
+# Same 60-second TTL rationale: download permissions change rarely.
+# Download settings (enabled, rate limits) are security-related and
+# typically only change when operational policies are updated.
 _cached_download_settings: Dict[str, Any] = {}
 _cached_download_settings_time: float = 0
-_DOWNLOAD_SETTINGS_CACHE_TTL = 60  # seconds
+_DOWNLOAD_SETTINGS_CACHE_TTL_SECONDS = 60
 _download_settings_lock: Optional[asyncio.Lock] = None
 
 # Concurrent download tracking per IP (in-memory, resets on restart)
@@ -2205,14 +3114,14 @@ async def get_download_settings() -> Dict[str, Any]:
 
     now = time.time()
     # Fast path: cache is valid
-    if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL:
+    if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_download_settings
 
     # Slow path: acquire lock and refresh cache
     async with _get_download_settings_lock():
         # Double-check after acquiring lock (another request may have refreshed)
         now = time.time()
-        if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL:
+        if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL_SECONDS:
             return _cached_download_settings
 
         try:
@@ -2255,7 +3164,7 @@ def reset_download_settings_cache() -> None:
     _cached_download_settings_time = 0
 
 
-@app.get("/api/config/downloads")
+@v1_router.get("/config/downloads", summary="Get downloads config", description="Get download configuration and availability.")
 @limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
 async def get_download_config(request: Request):
     """
@@ -2273,6 +3182,83 @@ async def get_download_config(request: Request):
         "enabled": True,
         "allow_original": settings["allow_original"],
         "allow_transcoded": settings["allow_transcoded"],
+    }
+
+
+# ============================================================================
+# Playback Configuration (Issue #211)
+# ============================================================================
+
+# Cached playback settings
+#
+# Same 60-second TTL rationale: playback settings (autoplay, up-next) change rarely.
+# These user-experience settings are typically configured during initial setup.
+_cached_playback_settings: Dict[str, Any] = {}
+_cached_playback_settings_time: float = 0
+_PLAYBACK_SETTINGS_CACHE_TTL_SECONDS = 60
+
+
+async def get_playback_settings() -> Dict[str, Any]:
+    """
+    Get playback settings from database with caching.
+
+    Returns dict with:
+    - autoplay_enabled: bool (default True)
+    - upnext_enabled: bool (default True)
+    - autoplay_countdown_seconds: int (default 10)
+
+    Note: No locking needed - dict reads are atomic and stale data
+    for 60s is acceptable for these settings.
+    """
+    global _cached_playback_settings, _cached_playback_settings_time
+
+    now = time.time()
+    if _cached_playback_settings and (now - _cached_playback_settings_time) < _PLAYBACK_SETTINGS_CACHE_TTL_SECONDS:
+        return _cached_playback_settings
+
+    try:
+        from api.settings_service import get_settings_service
+
+        service = get_settings_service()
+
+        settings = {
+            "autoplay_enabled": await service.get("playback.autoplay_enabled", AUTOPLAY_ENABLED),
+            "upnext_enabled": await service.get("playback.upnext_enabled", UPNEXT_ENABLED),
+            "autoplay_countdown_seconds": await service.get(
+                "playback.autoplay_countdown_seconds", AUTOPLAY_COUNTDOWN_SECONDS
+            ),
+        }
+
+        _cached_playback_settings = settings
+        _cached_playback_settings_time = now
+
+    except Exception as e:
+        logger.warning(f"Failed to get playback settings from DB, using defaults: {e}")
+        _cached_playback_settings = {
+            "autoplay_enabled": AUTOPLAY_ENABLED,
+            "upnext_enabled": UPNEXT_ENABLED,
+            "autoplay_countdown_seconds": AUTOPLAY_COUNTDOWN_SECONDS,
+        }
+        _cached_playback_settings_time = now
+
+    return _cached_playback_settings
+
+
+@v1_router.get("/config/playback", summary="Get playback config", description="Get playback configuration for autoplay and up-next features.")
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_playback_config(request: Request):
+    """
+    Get playback configuration for the UI.
+
+    Returns autoplay and up-next settings that control video player behavior.
+    This is used by the watch page to enable/disable autoplay features.
+    """
+    settings = await get_playback_settings()
+
+    return {
+        "autoplay_enabled": settings["autoplay_enabled"],
+        "upnext_enabled": settings["upnext_enabled"],
+        "autoplay_countdown_seconds": settings["autoplay_countdown_seconds"],
     }
 
 
@@ -2369,7 +3355,7 @@ async def _release_download_slot(client_ip: str) -> None:
             _active_downloads_per_ip[client_ip] = current - 1
 
 
-@app.get("/api/videos/{slug}/download/original")
+@v1_router.get("/videos/{slug}/download/original", summary="Download original video", description="Download the original video file if downloads are enabled.")
 @limiter.limit(
     # Note: This rate limit is configured at startup from env vars.
     # Changing the database setting requires a restart to take effect.
@@ -2398,8 +3384,7 @@ async def download_original(
     client_ip = get_real_ip(request)
 
     # Validate slug
-    if not validate_slug(slug):
-        raise HTTPException(status_code=400, detail="Invalid video slug")
+    require_valid_slug(slug, "video")
 
     # Check download settings
     settings = await get_download_settings()
@@ -2518,7 +3503,7 @@ async def download_original(
 # ============================================================================
 
 
-@app.post("/api/analytics/session")
+@v1_router.post("/analytics/session", summary="Create analytics session", description="Start a new playback analytics session.")
 @limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
 async def start_analytics_session(
     request: Request,
@@ -2591,7 +3576,7 @@ async def start_analytics_session(
     return PlaybackSessionResponse(session_token=session_token)
 
 
-@app.post("/api/analytics/heartbeat")
+@v1_router.post("/analytics/heartbeat", summary="Send analytics heartbeat", description="Send periodic heartbeat during video playback.")
 @limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
 async def analytics_heartbeat(request: Request, data: PlaybackHeartbeat):
     """Update playback session with current progress."""
@@ -2628,7 +3613,7 @@ async def analytics_heartbeat(request: Request, data: PlaybackHeartbeat):
     return {"status": "ok"}
 
 
-@app.post("/api/analytics/end")
+@v1_router.post("/analytics/end", summary="End analytics session", description="End a playback analytics session.")
 @limiter.limit(RATE_LIMIT_PUBLIC_ANALYTICS)
 async def end_analytics_session(request: Request, data: PlaybackEnd):
     """End a playback session."""
@@ -2669,6 +3654,743 @@ async def end_analytics_session(request: Request, data: PlaybackEnd):
         VIDEOS_WATCH_TIME_SECONDS_TOTAL.inc(duration_watched)
 
     return {"status": "ok"}
+
+
+# =============================================================================
+# Comments and Ratings API (Issue #213)
+# Social engagement features with threading support
+# =============================================================================
+
+# Rate limiting for comments and ratings
+RATE_LIMIT_COMMENTS = "5/minute"
+RATE_LIMIT_COMMENTS_HOURLY = "20/hour"
+RATE_LIMIT_RATINGS = "10/minute"
+
+
+def sanitize_comment_content(content: str) -> str:
+    """
+    Sanitize comment content to prevent XSS.
+
+    Strips all HTML tags and attributes, returning plain text only.
+    Uses bleach library as recommended by security review.
+    """
+    return bleach.clean(content, tags=[], strip=True)
+
+
+async def get_video_by_slug(slug: str) -> dict:
+    """
+    Get a video by slug with validation.
+
+    Returns the video row or raises 404.
+    """
+    require_valid_slug(slug, "video")
+
+    video_query = (
+        videos.select()
+        .where(videos.c.slug == slug)
+        .where(videos.c.deleted_at.is_(None))
+        .where(videos.c.published_at.is_not(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    return video
+
+
+async def _build_social_settings(video: dict) -> dict:
+    """
+    Build resolved social settings from a video record.
+
+    Internal helper that inherits from global settings if per-video settings are NULL.
+    """
+    from api.settings_service import get_settings_service
+
+    service = get_settings_service()
+
+    # Get global settings
+    global_comments = await service.get("social.comments_enabled", True)
+    global_ratings = await service.get("social.ratings_enabled", True)
+    ratings_type = await service.get("social.ratings_type", "stars")
+    require_approval = await service.get("social.comments_require_approval", False)
+    max_length = await service.get("social.comments_max_length", 5000)
+    max_depth = await service.get("social.comments_max_depth", 5)
+
+    # Per-video settings override global if not NULL
+    comments_enabled = video["comments_enabled"] if video["comments_enabled"] is not None else global_comments
+    ratings_enabled = video["ratings_enabled"] if video["ratings_enabled"] is not None else global_ratings
+
+    return {
+        "comments_enabled": comments_enabled,
+        "ratings_enabled": ratings_enabled,
+        "ratings_type": ratings_type,
+        "require_approval": require_approval,
+        "max_length": max_length,
+        "max_depth": max_depth,
+        "video": video,
+    }
+
+
+async def get_social_settings(slug: str) -> dict:
+    """
+    Get resolved social feature settings for a video by slug.
+
+    Inherits from global settings if per-video settings are NULL.
+    """
+    video = await get_video_by_slug(slug)
+    return await _build_social_settings(video)
+
+
+async def get_social_settings_by_video_id(video_id: int) -> dict:
+    """
+    Get resolved social feature settings for a video by ID.
+
+    Used internally when we already have the video_id from a comment record.
+    Inherits from global settings if per-video settings are NULL.
+    """
+    video_query = (
+        videos.select()
+        .where(videos.c.id == video_id)
+        .where(videos.c.deleted_at.is_(None))
+    )
+    video = await fetch_one_with_retry(video_query)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    return await _build_social_settings(video)
+
+
+def build_comment_response(comment: dict, user: dict, reply_count: int = 0) -> CommentResponse:
+    """Build a comment response from database records."""
+    return CommentResponse(
+        id=comment["id"],
+        video_id=comment["video_id"],
+        user=CommentUserInfo(
+            id=user["id"],
+            username=user["username"],
+            display_name=user.get("display_name"),
+            avatar_url=user.get("avatar_url"),
+        ),
+        content=comment["content"],
+        video_timestamp=float(comment["video_timestamp"]) if comment["video_timestamp"] else None,
+        status=comment["status"],
+        depth=comment["depth"],
+        parent_id=comment["parent_id"],
+        path=comment["path"],
+        created_at=comment["created_at"],
+        updated_at=comment["updated_at"],
+        is_edited=comment["updated_at"] is not None,
+        reply_count=reply_count,
+    )
+
+
+@v1_router.get(
+    "/videos/{slug}/comments",
+    response_model=CommentListResponse,
+    summary="Get video comments",
+    description="Get paginated comments for a video with threaded replies.",
+)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video_comments(
+    request: Request,
+    slug: str,
+    cursor: Optional[str] = Query(None, description="Pagination cursor"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum comments to return"),
+    include_replies: bool = Query(True, description="Include nested replies"),
+):
+    """
+    Get comments for a video with optional threaded replies.
+
+    Comments are returned with nested replies (up to max depth).
+    Only approved, non-deleted comments are returned.
+    """
+    settings = await get_social_settings(slug)
+    video_id = settings["video"]["id"]
+    if not settings["comments_enabled"]:
+        raise HTTPException(status_code=403, detail="Comments are disabled for this video")
+
+    # Build base query for root-level comments
+    base_query = (
+        comments.select()
+        .where(comments.c.video_id == video_id)
+        .where(comments.c.status == "approved")
+        .where(comments.c.deleted_at.is_(None))
+        .where(comments.c.depth == 1)  # Root comments only
+        .order_by(comments.c.created_at.desc())
+    )
+
+    # Apply cursor pagination if provided
+    if cursor:
+        try:
+            cursor_data = validate_cursor(cursor)
+            cursor_time = datetime.fromisoformat(cursor_data["created_at"])
+            cursor_id = cursor_data["id"]
+            base_query = base_query.where(
+                sa.or_(
+                    comments.c.created_at < cursor_time,
+                    sa.and_(
+                        comments.c.created_at == cursor_time,
+                        comments.c.id < cursor_id,
+                    ),
+                )
+            )
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid cursor")
+
+    # Fetch one more than requested to check if there are more
+    root_comments = await fetch_all_with_retry(base_query.limit(limit + 1))
+
+    has_more = len(root_comments) > limit
+    root_comments = root_comments[:limit]
+
+    # Get total count
+    count_query = sa.select(sa.func.count()).select_from(comments).where(
+        comments.c.video_id == video_id,
+        comments.c.status == "approved",
+        comments.c.deleted_at.is_(None),
+    )
+    total_count = await fetch_val_with_retry(count_query) or 0
+
+    # Fetch all user IDs we need
+    user_ids = set()
+    for c in root_comments:
+        user_ids.add(c["user_id"])
+
+    # If including replies, fetch all replies for these root comments
+    replies_by_parent: Dict[int, List[dict]] = {}
+    if include_replies and root_comments:
+        root_ids = [c["id"] for c in root_comments]
+        # Fetch all descendants using path prefix
+        # For PostgreSQL ltree, we'd use: path <@ 'root_path'
+        # Since we're using text paths, we use LIKE with pattern
+        reply_conditions = []
+        for root_id in root_ids:
+            reply_conditions.append(comments.c.path.like(f"{root_id}.%"))
+
+        if reply_conditions:
+            replies_query = (
+                comments.select()
+                .where(comments.c.video_id == video_id)
+                .where(comments.c.status == "approved")
+                .where(comments.c.deleted_at.is_(None))
+                .where(sa.or_(*reply_conditions))
+                .order_by(comments.c.path, comments.c.created_at)
+            )
+            replies = await fetch_all_with_retry(replies_query)
+
+            for reply in replies:
+                user_ids.add(reply["user_id"])
+                parent_id = reply["parent_id"]
+                if parent_id not in replies_by_parent:
+                    replies_by_parent[parent_id] = []
+                replies_by_parent[parent_id].append(reply)
+
+    # Fetch all users at once
+    users_dict = {}
+    if user_ids:
+        users_query = users.select().where(users.c.id.in_(user_ids))
+        users_list = await fetch_all_with_retry(users_query)
+        users_dict = {u["id"]: dict(u) for u in users_list}
+
+    # Build nested comment structure
+    def build_nested(comment_row: dict, all_replies: Dict[int, List[dict]]) -> CommentWithReplies:
+        comment_id = comment_row["id"]
+        user = users_dict.get(comment_row["user_id"], {})
+        direct_replies = all_replies.get(comment_id, [])
+        reply_count = len(direct_replies)
+
+        nested_replies = []
+        for reply in direct_replies:
+            nested_replies.append(build_nested(reply, all_replies))
+
+        base_response = build_comment_response(comment_row, user, reply_count)
+        return CommentWithReplies(
+            **base_response.model_dump(),
+            replies=nested_replies,
+        )
+
+    result_comments = []
+    for root in root_comments:
+        result_comments.append(build_nested(root, replies_by_parent))
+
+    # Build next cursor
+    next_cursor = None
+    if has_more and root_comments:
+        last = root_comments[-1]
+        next_cursor = encode_cursor({
+            "created_at": last["created_at"].isoformat(),
+            "id": last["id"],
+        })
+
+    return CommentListResponse(
+        comments=result_comments,
+        total_count=total_count,
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
+
+
+@v1_router.post(
+    "/videos/{slug}/comments",
+    response_model=CommentResponse,
+    summary="Create comment",
+    description="Create a new comment on a video. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_COMMENTS)
+async def create_comment(
+    request: Request,
+    slug: str,
+    data: CommentCreate,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Create a new comment on a video.
+
+    Content is sanitized to prevent XSS.
+    If comments_require_approval is enabled, comment starts in 'pending' status.
+    """
+    settings = await get_social_settings(slug)
+    video_id = settings["video"]["id"]
+    if not settings["comments_enabled"]:
+        raise HTTPException(status_code=403, detail="Comments are disabled for this video")
+
+    # Check max length
+    if len(data.content) > settings["max_length"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Comment exceeds maximum length of {settings['max_length']} characters",
+        )
+
+    # Sanitize content
+    sanitized_content = sanitize_comment_content(data.content)
+    if not sanitized_content.strip():
+        raise HTTPException(status_code=400, detail="Comment content cannot be empty after sanitization")
+
+    # Handle replies
+    parent_comment = None
+    depth = 1
+    path = ""
+
+    if data.parent_id:
+        # Fetch parent comment
+        parent_query = comments.select().where(
+            comments.c.id == data.parent_id,
+            comments.c.video_id == video_id,  # Must be same video
+            comments.c.deleted_at.is_(None),
+        )
+        parent_comment = await fetch_one_with_retry(parent_query)
+
+        if not parent_comment:
+            raise HTTPException(status_code=400, detail="Parent comment not found or belongs to different video")
+
+        # Check depth limit
+        parent_depth = parent_comment["depth"]
+        if parent_depth >= settings["max_depth"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Maximum reply depth of {settings['max_depth']} reached",
+            )
+
+        depth = parent_depth + 1
+        parent_path = parent_comment["path"]
+
+    # Determine initial status
+    status = "pending" if settings["require_approval"] else "approved"
+
+    # Insert comment
+    now = datetime.now(timezone.utc)
+    insert_query = comments.insert().values(
+        video_id=video_id,
+        user_id=current_user["id"],
+        path="",  # Will be updated after we get the ID
+        depth=depth,
+        parent_id=data.parent_id,
+        content=sanitized_content,
+        video_timestamp=data.video_timestamp,
+        status=status,
+        created_at=now,
+    )
+
+    result = await db_execute_with_retry(insert_query)
+    comment_id = result
+
+    # Update path with actual ID
+    if parent_comment:
+        path = f"{parent_comment['path']}.{comment_id}"
+    else:
+        path = str(comment_id)
+
+    await db_execute_with_retry(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(path=path)
+    )
+
+    # Fetch the created comment
+    new_comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    return build_comment_response(new_comment, current_user, 0)
+
+
+@v1_router.put(
+    "/comments/{comment_id}",
+    response_model=CommentResponse,
+    summary="Update comment",
+    description="Update your own comment. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_COMMENTS)
+async def update_comment(
+    request: Request,
+    comment_id: int,
+    data: CommentUpdate,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Update an existing comment.
+
+    Only the comment author can update their own comment.
+    Admins can update any comment via the admin API.
+    """
+    # Fetch comment
+    comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment["deleted_at"]:
+        raise HTTPException(status_code=404, detail="Comment has been deleted")
+
+    # Check ownership
+    await require_ownership_or_permission(
+        comment["user_id"],
+        Permission.COMMENT_UPDATE,
+        Permission.COMMENT_UPDATE_ANY,
+        current_user,
+    )
+
+    # Get settings for content length validation
+    settings = await get_social_settings_by_video_id(comment["video_id"])
+
+    if len(data.content) > settings["max_length"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Comment exceeds maximum length of {settings['max_length']} characters",
+        )
+
+    # Sanitize content
+    sanitized_content = sanitize_comment_content(data.content)
+    if not sanitized_content.strip():
+        raise HTTPException(status_code=400, detail="Comment content cannot be empty after sanitization")
+
+    # Update comment
+    await db_execute_with_retry(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(
+            content=sanitized_content,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+
+    # Fetch updated comment
+    updated_comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    # Get reply count
+    reply_count_query = sa.select(sa.func.count()).select_from(comments).where(
+        comments.c.parent_id == comment_id,
+        comments.c.deleted_at.is_(None),
+    )
+    reply_count = await fetch_val_with_retry(reply_count_query) or 0
+
+    return build_comment_response(updated_comment, current_user, reply_count)
+
+
+@v1_router.delete(
+    "/comments/{comment_id}",
+    summary="Delete comment",
+    description="Soft-delete your own comment. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_COMMENTS)
+async def delete_comment(
+    request: Request,
+    comment_id: int,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Soft-delete a comment.
+
+    Only the comment author can delete their own comment.
+    Admins can hard-delete via the admin API.
+    """
+    # Fetch comment
+    comment = await fetch_one_with_retry(
+        comments.select().where(comments.c.id == comment_id)
+    )
+
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment["deleted_at"]:
+        raise HTTPException(status_code=404, detail="Comment already deleted")
+
+    # Check ownership
+    await require_ownership_or_permission(
+        comment["user_id"],
+        Permission.COMMENT_DELETE,
+        Permission.COMMENT_DELETE_ANY,
+        current_user,
+    )
+
+    # Soft delete
+    await db_execute_with_retry(
+        comments.update()
+        .where(comments.c.id == comment_id)
+        .values(deleted_at=datetime.now(timezone.utc))
+    )
+
+    return {"status": "deleted", "comment_id": comment_id}
+
+
+# Ratings endpoints
+
+@v1_router.get(
+    "/videos/{slug}/rating",
+    response_model=VideoRatingAggregates,
+    summary="Get video rating",
+    description="Get rating aggregates and the current user's rating for a video.",
+)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video_rating(
+    request: Request,
+    slug: str,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """
+    Get rating aggregates for a video.
+
+    Returns average rating, distribution, and the current user's rating if authenticated.
+    """
+    settings = await get_social_settings(slug)
+    video = settings["video"]
+    video_id = video["id"]
+
+    user_rating = None
+    if current_user:
+        user_rating_row = await fetch_one_with_retry(
+            ratings.select().where(
+                ratings.c.video_id == video_id,
+                ratings.c.user_id == current_user["id"],
+            )
+        )
+        if user_rating_row:
+            user_rating = user_rating_row["rating_value"]
+
+    # Parse rating distribution from JSON
+    distribution = None
+    if video["rating_distribution"]:
+        try:
+            distribution = json.loads(video["rating_distribution"])
+        except (json.JSONDecodeError, TypeError):
+            distribution = {}
+
+    return VideoRatingAggregates(
+        video_id=video_id,
+        rating_type=settings["ratings_type"],
+        rating_count=video["rating_count"] or 0,
+        rating_avg=float(video["rating_avg"]) if video["rating_avg"] else None,
+        rating_distribution=distribution,
+        likes_count=video["likes_count"] or 0,
+        dislikes_count=video["dislikes_count"] or 0,
+        user_rating=user_rating,
+    )
+
+
+@v1_router.post(
+    "/videos/{slug}/rating",
+    response_model=RatingResponse,
+    summary="Rate video",
+    description="Rate a video (upsert - creates or updates existing rating). Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_RATINGS)
+async def rate_video(
+    request: Request,
+    slug: str,
+    data: RatingCreate,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Rate a video.
+
+    For stars mode: value must be 1-5
+    For thumbs mode: value must be 1 (like) or -1 (dislike)
+
+    This is an upsert operation - creates a new rating or updates existing.
+    """
+    settings = await get_social_settings(slug)
+    video_id = settings["video"]["id"]
+    if not settings["ratings_enabled"]:
+        raise HTTPException(status_code=403, detail="Ratings are disabled for this video")
+
+    # Validate rating value based on type
+    if settings["ratings_type"] == "stars":
+        if data.value < 1 or data.value > 5:
+            raise HTTPException(status_code=400, detail="Star rating must be between 1 and 5")
+    else:  # thumbs
+        if data.value not in (1, -1):
+            raise HTTPException(status_code=400, detail="Thumbs rating must be 1 (like) or -1 (dislike)")
+
+    now = datetime.now(timezone.utc)
+
+    # Check if user already rated
+    existing = await fetch_one_with_retry(
+        ratings.select().where(
+            ratings.c.video_id == video_id,
+            ratings.c.user_id == current_user["id"],
+        )
+    )
+
+    if existing:
+        # Update existing rating
+        await db_execute_with_retry(
+            ratings.update()
+            .where(ratings.c.video_id == video_id)
+            .where(ratings.c.user_id == current_user["id"])
+            .values(
+                rating_value=data.value,
+                updated_at=now,
+            )
+        )
+    else:
+        # Create new rating
+        await db_execute_with_retry(
+            ratings.insert().values(
+                video_id=video_id,
+                user_id=current_user["id"],
+                rating_value=data.value,
+                created_at=now,
+            )
+        )
+
+    return RatingResponse(
+        video_id=video_id,
+        user_rating=data.value,
+        rating_type=settings["ratings_type"],
+    )
+
+
+@v1_router.delete(
+    "/videos/{slug}/rating",
+    summary="Remove rating",
+    description="Remove your rating from a video. Requires authentication.",
+)
+@limiter.limit(RATE_LIMIT_RATINGS)
+async def delete_rating(
+    request: Request,
+    slug: str,
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Remove the current user's rating from a video.
+    """
+    # Get video by slug to validate it exists and get video_id
+    video = await get_video_by_slug(slug)
+    video_id = video["id"]
+
+    # Check if rating exists
+    existing = await fetch_one_with_retry(
+        ratings.select().where(
+            ratings.c.video_id == video_id,
+            ratings.c.user_id == current_user["id"],
+        )
+    )
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rating not found")
+
+    # Delete rating
+    await db_execute_with_retry(
+        ratings.delete().where(
+            ratings.c.video_id == video_id,
+            ratings.c.user_id == current_user["id"],
+        )
+    )
+
+    return {"status": "deleted", "video_id": video_id}
+
+
+@v1_router.get(
+    "/videos/{slug}/social",
+    response_model=VideoSocialStatus,
+    summary="Get video social status",
+    description="Get resolved social feature status and aggregates for a video.",
+)
+@limiter.limit(RATE_LIMIT_PUBLIC_DEFAULT)
+async def get_video_social_status(
+    request: Request,
+    slug: str,
+):
+    """
+    Get social feature status for a video.
+
+    Returns whether comments/ratings are enabled and current aggregates.
+    """
+    settings = await get_social_settings(slug)
+    video = settings["video"]
+
+    return VideoSocialStatus(
+        comments_enabled=settings["comments_enabled"],
+        ratings_enabled=settings["ratings_enabled"],
+        ratings_type=settings["ratings_type"],
+        comment_count=video["comment_count"] or 0,
+        rating_count=video["rating_count"] or 0,
+        rating_avg=float(video["rating_avg"]) if video["rating_avg"] else None,
+        likes_count=video["likes_count"] or 0,
+        dislikes_count=video["dislikes_count"] or 0,
+    )
+
+
+# =============================================================================
+# API Router Mounting (Issue #218)
+# Mount versioned routers and configure OpenAPI documentation
+# =============================================================================
+
+# Mount v1 router at /api/v1
+app.include_router(v1_router, prefix="/api/v1")
+logger.info("Mounted API v1 at /api/v1")
+
+# Mount legacy routes at /api for backwards compatibility (if enabled)
+if API_INCLUDE_LEGACY_ROUTES:
+    app.include_router(v1_router, prefix="/api", include_in_schema=False)
+    logger.info("Mounted legacy routes at /api (aliased to v1)")
+
+# Include studio module routers for broadcaster dashboard
+# These have their own /api/v1/studio prefix
+from api import studio, studio_sse, studio_vod, studio_chat, studio_chat_ws, studio_moderation, studio_analytics
+
+app.include_router(studio.router)
+app.include_router(studio_sse.router)
+app.include_router(studio_vod.router)
+app.include_router(studio_chat.router)
+app.include_router(studio_chat_ws.router)
+app.include_router(studio_moderation.router)
+app.include_router(studio_analytics.router)
+logger.info("Mounted studio dashboard routers at /api/v1/studio")
+
+
+# Configure custom OpenAPI schema
+def custom_openapi():
+    return configure_openapi_schema(app)
+
+
+app.openapi = custom_openapi
 
 
 if __name__ == "__main__":

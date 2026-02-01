@@ -845,6 +845,35 @@ KNOWN_SETTINGS = [
         "Debounce delay for filesystem events (seconds)",
         {"min": 0.0, "max": 60.0},
     ),
+    # API key expiration and rotation settings (Issue #226)
+    (
+        "workers.api_key_expiration_days",
+        "workers",
+        "integer",
+        "API key expiration in days (0 = never expires)",
+        {"min": 0, "max": 365},
+    ),
+    (
+        "workers.api_key_grace_period_hours",
+        "workers",
+        "integer",
+        "Grace period after expiration where key still works with warning (max 24)",
+        {"min": 0, "max": 24},
+    ),
+    (
+        "workers.api_key_rotation_overlap_hours",
+        "workers",
+        "integer",
+        "Hours old key remains valid after rotation (max 24)",
+        {"min": 0, "max": 24},
+    ),
+    (
+        "workers.api_key_expiration_warning_days",
+        "workers",
+        "integer",
+        "Days before expiration to show warnings",
+        {"min": 1, "max": 90},
+    ),
     # Analytics settings
     ("analytics.cache_enabled", "analytics", "boolean", "Enable analytics caching", None),
     ("analytics.cache_ttl", "analytics", "integer", "Analytics cache TTL in seconds", {"min": 1, "max": 3600}),
@@ -1004,6 +1033,114 @@ KNOWN_SETTINGS = [
         "Footer tagline text",
         {"max_length": 100},
     ),
+    # Branding settings (Issue #214)
+    (
+        "branding.site_name",
+        "branding",
+        "string",
+        "Site name displayed in header and page titles",
+        {"max_length": 100},
+    ),
+    (
+        "branding.logo_path",
+        "branding",
+        "string",
+        "Path to logo image (relative to storage)",
+        None,
+    ),
+    (
+        "branding.favicon_path",
+        "branding",
+        "string",
+        "Path to favicon file (relative to storage)",
+        None,
+    ),
+    (
+        "branding.footer_text",
+        "branding",
+        "string",
+        "Custom footer text/copyright",
+        {"max_length": 200},
+    ),
+    (
+        "branding.footer_links",
+        "branding",
+        "json",
+        "Footer links as JSON array [{label, url}]",
+        None,
+    ),
+    # Theme settings (Issue #214)
+    (
+        "theme.primary_color",
+        "theme",
+        "string",
+        "Primary theme color (hex code, e.g., #3B82F6)",
+        {"pattern": r"^#[0-9A-Fa-f]{6}$"},
+    ),
+    (
+        "theme.secondary_color",
+        "theme",
+        "string",
+        "Secondary theme color (hex code)",
+        {"pattern": r"^#[0-9A-Fa-f]{6}$"},
+    ),
+    (
+        "theme.accent_color",
+        "theme",
+        "string",
+        "Accent theme color (hex code)",
+        {"pattern": r"^#[0-9A-Fa-f]{6}$"},
+    ),
+    (
+        "theme.mode",
+        "theme",
+        "enum",
+        "Default color scheme mode",
+        {"enum_values": ["light", "dark", "auto"]},
+    ),
+    (
+        "theme.custom_css",
+        "theme",
+        "string",
+        "Custom CSS to inject into public pages",
+        {"max_length": 50000},
+    ),
+    # Layout settings (Issue #214)
+    (
+        "layout.homepage_style",
+        "layout",
+        "enum",
+        "Homepage layout style",
+        {"enum_values": ["grid", "list", "featured"]},
+    ),
+    (
+        "layout.videos_per_page",
+        "layout",
+        "integer",
+        "Number of videos per page",
+        {"min": 6, "max": 48},
+    ),
+    (
+        "layout.grid_columns",
+        "layout",
+        "integer",
+        "Number of columns in grid view (desktop)",
+        {"min": 2, "max": 6},
+    ),
+    (
+        "layout.show_sidebar",
+        "layout",
+        "boolean",
+        "Show sidebar on video watch page",
+        None,
+    ),
+    (
+        "layout.show_related_videos",
+        "layout",
+        "boolean",
+        "Show related videos section on watch page",
+        None,
+    ),
     # Metrics settings (Issue #436)
     (
         "metrics.enabled",
@@ -1055,6 +1192,64 @@ KNOWN_SETTINGS = [
         "Maximum concurrent downloads per IP",
         {"min": 1, "max": 10},
     ),
+    # Playback settings (Issue #211)
+    (
+        "playback.autoplay_enabled",
+        "playback",
+        "boolean",
+        "Enable autoplay feature globally (can be overridden by user preferences)",
+        None,
+    ),
+    (
+        "playback.upnext_enabled",
+        "playback",
+        "boolean",
+        "Enable 'Up Next' suggestions after video ends",
+        None,
+    ),
+    (
+        "playback.autoplay_countdown_seconds",
+        "playback",
+        "integer",
+        "Countdown duration in seconds before autoplay starts",
+        {"min": 5, "max": 30},
+    ),
+    # Embed settings (Issue #210)
+    (
+        "embed.enabled",
+        "embed",
+        "boolean",
+        "Enable video embedding feature",
+        None,
+    ),
+    (
+        "embed.allowed_domains",
+        "embed",
+        "string",
+        "Domain whitelist for frame-ancestors CSP ('self' = same-origin only, or comma-separated domains)",
+        None,
+    ),
+    (
+        "embed.allow_all_domains",
+        "embed",
+        "boolean",
+        "Allow embedding on any domain (security warning: only for public platforms)",
+        None,
+    ),
+    (
+        "embed.default_autoplay",
+        "embed",
+        "boolean",
+        "Default autoplay behavior for embedded videos",
+        None,
+    ),
+    (
+        "embed.min_playback_for_view",
+        "embed",
+        "integer",
+        "Minimum seconds of playback before counting as a view",
+        {"min": 1, "max": 60},
+    ),
     # Webhook settings (Issue #203)
     (
         "webhooks.enabled",
@@ -1105,6 +1300,70 @@ KNOWN_SETTINGS = [
         "Number of pending deliveries to process per batch",
         {"min": 1, "max": 100},
     ),
+    # Social/Comments settings (Issue #213)
+    (
+        "social.comments_enabled",
+        "social",
+        "boolean",
+        "Enable comments globally (per-video settings inherit from this unless overridden)",
+        None,
+    ),
+    (
+        "social.ratings_enabled",
+        "social",
+        "boolean",
+        "Enable ratings globally (per-video settings inherit from this unless overridden)",
+        None,
+    ),
+    (
+        "social.ratings_type",
+        "social",
+        "enum",
+        "Rating type: 'stars' (1-5) or 'thumbs' (like/dislike)",
+        {"enum_values": ["stars", "thumbs"]},
+    ),
+    (
+        "social.comments_require_approval",
+        "social",
+        "boolean",
+        "Require admin approval before comments are visible",
+        None,
+    ),
+    (
+        "social.comments_max_length",
+        "social",
+        "integer",
+        "Maximum comment length in characters",
+        {"min": 100, "max": 50000},
+    ),
+    (
+        "social.comments_max_depth",
+        "social",
+        "integer",
+        "Maximum reply depth (1 = flat comments, 5 = deeply nested threads)",
+        {"min": 1, "max": 5},
+    ),
+    (
+        "social.comments_rate_limit_per_minute",
+        "social",
+        "integer",
+        "Maximum comments per user per minute",
+        {"min": 1, "max": 60},
+    ),
+    (
+        "social.comments_rate_limit_per_hour",
+        "social",
+        "integer",
+        "Maximum comments per user per hour",
+        {"min": 1, "max": 1000},
+    ),
+    (
+        "social.ratings_rate_limit_per_minute",
+        "social",
+        "integer",
+        "Maximum rating changes per user per minute",
+        {"min": 1, "max": 60},
+    ),
 ]
 
 # Mapping from setting key to environment variable name (for non-standard mappings)
@@ -1127,6 +1386,11 @@ SETTING_TO_ENV_MAP = {
     "workers.offline_threshold_minutes": "VLOG_WORKER_OFFLINE_THRESHOLD",
     "workers.fallback_poll_interval": "VLOG_WORKER_FALLBACK_POLL_INTERVAL",
     "workers.debounce_delay": "VLOG_WORKER_DEBOUNCE_DELAY",
+    # API key expiration/rotation settings (Issue #226)
+    "workers.api_key_expiration_days": "VLOG_WORKER_API_KEY_EXPIRATION_DAYS",
+    "workers.api_key_grace_period_hours": "VLOG_WORKER_API_KEY_GRACE_PERIOD_HOURS",
+    "workers.api_key_rotation_overlap_hours": "VLOG_WORKER_API_KEY_ROTATION_OVERLAP_HOURS",
+    "workers.api_key_expiration_warning_days": "VLOG_WORKER_API_KEY_EXPIRATION_WARNING_DAYS",
     # Analytics settings
     "analytics.cache_enabled": "VLOG_ANALYTICS_CACHE_ENABLED",
     "analytics.cache_ttl": "VLOG_ANALYTICS_CACHE_TTL",
@@ -1163,6 +1427,24 @@ SETTING_TO_ENV_MAP = {
     "display.show_view_counts": "VLOG_DISPLAY_SHOW_VIEW_COUNTS",
     "display.show_tagline": "VLOG_DISPLAY_SHOW_TAGLINE",
     "display.tagline": "VLOG_DISPLAY_TAGLINE",
+    # Branding settings (Issue #214)
+    "branding.site_name": "VLOG_SITE_NAME",
+    "branding.logo_path": "VLOG_SITE_LOGO",
+    "branding.favicon_path": "VLOG_SITE_FAVICON",
+    "branding.footer_text": "VLOG_FOOTER_TEXT",
+    "branding.footer_links": "VLOG_FOOTER_LINKS",
+    # Theme settings (Issue #214)
+    "theme.primary_color": "VLOG_PRIMARY_COLOR",
+    "theme.secondary_color": "VLOG_SECONDARY_COLOR",
+    "theme.accent_color": "VLOG_ACCENT_COLOR",
+    "theme.mode": "VLOG_DARK_MODE",
+    "theme.custom_css": "VLOG_CUSTOM_CSS",
+    # Layout settings (Issue #214)
+    "layout.homepage_style": "VLOG_HOMEPAGE_STYLE",
+    "layout.videos_per_page": "VLOG_VIDEOS_PER_PAGE",
+    "layout.grid_columns": "VLOG_GRID_COLUMNS",
+    "layout.show_sidebar": "VLOG_SHOW_SIDEBAR",
+    "layout.show_related_videos": "VLOG_SHOW_RELATED_VIDEOS",
     # Metrics settings (Issue #436)
     "metrics.enabled": "VLOG_METRICS_ENABLED",
     "metrics.auth_required": "VLOG_METRICS_AUTH_REQUIRED",
@@ -1172,6 +1454,10 @@ SETTING_TO_ENV_MAP = {
     "downloads.allow_transcoded": "VLOG_DOWNLOADS_ALLOW_TRANSCODED",
     "downloads.rate_limit_per_hour": "VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR",
     "downloads.max_concurrent": "VLOG_DOWNLOADS_MAX_CONCURRENT",
+    # Playback settings (Issue #211)
+    "playback.autoplay_enabled": "VLOG_AUTOPLAY_ENABLED",
+    "playback.upnext_enabled": "VLOG_UPNEXT_ENABLED",
+    "playback.autoplay_countdown_seconds": "VLOG_AUTOPLAY_COUNTDOWN_SECONDS",
     # Webhook settings (Issue #203)
     "webhooks.enabled": "VLOG_WEBHOOKS_ENABLED",
     "webhooks.max_retries": "VLOG_WEBHOOKS_MAX_RETRIES",
@@ -1180,6 +1466,22 @@ SETTING_TO_ENV_MAP = {
     "webhooks.request_timeout": "VLOG_WEBHOOKS_REQUEST_TIMEOUT",
     "webhooks.max_concurrent_deliveries": "VLOG_WEBHOOKS_MAX_CONCURRENT_DELIVERIES",
     "webhooks.delivery_batch_size": "VLOG_WEBHOOKS_DELIVERY_BATCH_SIZE",
+    # Embed settings (Issue #210)
+    "embed.enabled": "VLOG_EMBED_ENABLED",
+    "embed.allowed_domains": "VLOG_EMBED_ALLOWED_DOMAINS",
+    "embed.allow_all_domains": "VLOG_EMBED_ALLOW_ALL_DOMAINS",
+    "embed.default_autoplay": "VLOG_EMBED_DEFAULT_AUTOPLAY",
+    "embed.min_playback_for_view": "VLOG_EMBED_MIN_PLAYBACK_FOR_VIEW",
+    # Social/Comments settings (Issue #213)
+    "social.comments_enabled": "VLOG_COMMENTS_ENABLED",
+    "social.ratings_enabled": "VLOG_RATINGS_ENABLED",
+    "social.ratings_type": "VLOG_RATINGS_TYPE",
+    "social.comments_require_approval": "VLOG_COMMENTS_REQUIRE_APPROVAL",
+    "social.comments_max_length": "VLOG_COMMENTS_MAX_LENGTH",
+    "social.comments_max_depth": "VLOG_COMMENTS_MAX_DEPTH",
+    "social.comments_rate_limit_per_minute": "VLOG_COMMENTS_RATE_LIMIT_PER_MINUTE",
+    "social.comments_rate_limit_per_hour": "VLOG_COMMENTS_RATE_LIMIT_PER_HOUR",
+    "social.ratings_rate_limit_per_minute": "VLOG_RATINGS_RATE_LIMIT_PER_MINUTE",
 }
 
 

@@ -587,7 +587,8 @@ class TestRedisAnalyticsCache:
             mock_redis_module = sys.modules["redis"]
             mock_client = MagicMock()
             mock_redis_module.Redis.from_url.return_value = mock_client
-            mock_client.ping.side_effect = Exception("Connection refused")
+            # Use OSError to simulate connection failure (caught by the code)
+            mock_client.ping.side_effect = OSError("Connection refused")
 
             cache = RedisAnalyticsCache(
                 redis_url="redis://localhost:6379",
@@ -610,7 +611,8 @@ class TestRedisAnalyticsCache:
             mock_redis_module = sys.modules["redis"]
             mock_client = MagicMock()
             mock_redis_module.Redis.from_url.return_value = mock_client
-            mock_client.get.side_effect = Exception("Network error")
+            # Use OSError to simulate network failure (caught by the code)
+            mock_client.get.side_effect = OSError("Network error")
 
             cache = RedisAnalyticsCache(
                 redis_url="redis://localhost:6379",
@@ -653,6 +655,8 @@ class TestCreateAnalyticsCache:
             mock_redis_module = sys.modules["redis"]
             mock_client = MagicMock()
             mock_redis_module.Redis.from_url.return_value = mock_client
+            # Mock scan to return proper tuple format (cursor, keys)
+            mock_client.scan.return_value = (0, [])
 
             cache = create_analytics_cache(storage_url="redis://localhost:6379")
             assert isinstance(cache, RedisAnalyticsCache)
@@ -681,6 +685,8 @@ class TestCreateAnalyticsCache:
             mock_redis_module = sys.modules["redis"]
             mock_client = MagicMock()
             mock_redis_module.Redis.from_url.return_value = mock_client
+            # Mock scan to return proper tuple format (cursor, keys)
+            mock_client.scan.return_value = (0, [])
 
             cache = create_analytics_cache(
                 storage_url="redis://localhost:6379",
@@ -700,6 +706,8 @@ class TestCreateAnalyticsCache:
             mock_redis_module = sys.modules["redis"]
             mock_client = MagicMock()
             mock_redis_module.Redis.from_url.return_value = mock_client
+            # Mock scan to return proper tuple format (cursor, keys)
+            mock_client.scan.return_value = (0, [])
 
             cache = create_analytics_cache(
                 storage_url="redis://localhost:6379",
