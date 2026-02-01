@@ -215,9 +215,14 @@ async def handle_chat_message(
     now = datetime.now(timezone.utc)
 
     # Calculate stream offset for VOD sync
+    # Wrapped in try/except to ensure chat messages are saved even if offset calculation fails
     stream_offset_ms = None
     if stream["status"] == "live":
-        stream_offset_ms = calculate_stream_offset_ms(stream.get("started_at"), now)
+        try:
+            stream_offset_ms = calculate_stream_offset_ms(stream.get("started_at"), now)
+        except (TypeError, ValueError, OverflowError) as e:
+            logger.warning(f"Failed to calculate stream offset for stream {stream['id']}: {e}")
+            stream_offset_ms = None
 
     # Insert message to database (use RETURNING for PostgreSQL compatibility)
     insert_query = (

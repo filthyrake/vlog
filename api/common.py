@@ -231,20 +231,26 @@ def calculate_stream_offset_ms(
     Calculate milliseconds elapsed since stream start.
 
     Handles timezone normalization for naive datetimes (assumes UTC).
-    Returns None if stream_started_at is None.
+    Returns None if stream_started_at is None. Clamps result to non-negative
+    to protect against clock skew.
 
     Args:
-        stream_started_at: When the stream started (may be timezone-naive)
-        current_time: Current timestamp (should be timezone-aware UTC)
+        stream_started_at: When the stream started (may be timezone-naive, assumed UTC)
+        current_time: Current timestamp (may be timezone-naive, assumed UTC)
 
     Returns:
-        Milliseconds since stream start, or None if stream_started_at is None
+        Non-negative milliseconds since stream start, or None if stream_started_at is None
     """
     if stream_started_at is None:
         return None
 
+    # Normalize both timestamps to UTC to prevent TypeError on subtraction
     started = ensure_utc(stream_started_at)
-    return int((current_time - started).total_seconds() * 1000)
+    current = ensure_utc(current_time)
+
+    offset_ms = int((current - started).total_seconds() * 1000)
+    # Clamp to non-negative to protect against clock skew
+    return max(0, offset_ms)
 
 
 def get_real_ip(request: Request) -> str:
