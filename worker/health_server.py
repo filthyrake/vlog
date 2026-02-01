@@ -52,24 +52,47 @@ class HealthServer:
         """Check if FFmpeg is available."""
         return shutil.which("ffmpeg") is not None
 
+    # Maximum time for entire request parsing (request line + headers)
+    REQUEST_PARSE_TIMEOUT = 10.0
+    # Maximum number of header lines to prevent slowloris-style attacks
+    MAX_HEADER_LINES = 50
+
+    async def _parse_request(self, reader: asyncio.StreamReader) -> str:
+        """Parse HTTP request and return the path.
+
+        Returns:
+            The request path (e.g., "/health")
+        """
+        # Read request line
+        request_line = await reader.readline()
+        request_text = request_line.decode("utf-8", errors="replace")
+
+        # Parse path from request
+        parts = request_text.split()
+        path = parts[1] if len(parts) > 1 else "/"
+
+        # Drain remaining headers (we don't need them)
+        # Limit header count to prevent resource exhaustion
+        header_count = 0
+        while header_count < self.MAX_HEADER_LINES:
+            line = await reader.readline()
+            if line == b"\r\n" or line == b"\n" or line == b"":
+                break
+            header_count += 1
+
+        return path
+
     async def _handle_request(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
         """Handle incoming HTTP request."""
         try:
-            # Read request line
-            request_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-            request_text = request_line.decode("utf-8", errors="replace")
-
-            # Parse path from request
-            parts = request_text.split()
-            path = parts[1] if len(parts) > 1 else "/"
-
-            # Drain remaining headers (we don't need them)
-            while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-                if line == b"\r\n" or line == b"\n" or line == b"":
-                    break
+            # Wrap entire request parsing in overall timeout
+            # This prevents slowloris attacks where client sends data very slowly
+            path = await asyncio.wait_for(
+                self._parse_request(reader),
+                timeout=self.REQUEST_PARSE_TIMEOUT
+            )
 
             # Handle endpoints
             if path == "/health":
@@ -109,24 +132,33 @@ class HealthServer:
             await writer.drain()
 
         except asyncio.TimeoutError:
+            # Client took too long to send request - silently close
             pass
-        except Exception:
-            # Return 500 on any error
-            error_response = (
-                "HTTP/1.1 500 Internal Server Error\r\n"
-                "Content-Type: application/json\r\n"
-                "Content-Length: 25\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                '{"error": "server error"}'
-            )
-            writer.write(error_response.encode())
-            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            # Client disconnected - no need to send error response
+            pass
+        except (OSError, UnicodeDecodeError) as e:
+            # Network errors or malformed request encoding
+            # Return 500 if we can still write to the connection
+            try:
+                error_response = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: 25\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    '{"error": "server error"}'
+                )
+                writer.write(error_response.encode())
+                await writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                pass  # Client disconnected during error response
         finally:
             writer.close()
             try:
                 await writer.wait_closed()
-            except Exception:
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                # Connection may already be closed by client
                 pass
 
     async def start(self):

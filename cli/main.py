@@ -4,6 +4,7 @@ VLog CLI - Command line interface for video management.
 """
 
 import argparse
+import functools
 import os
 import sys
 from pathlib import Path
@@ -230,6 +231,52 @@ def get_admin_headers() -> dict:
     return headers
 
 
+def handle_api_errors(api_url: str = None, connect_hint: str = None, timeout_hint: str = None):
+    """
+    Decorator to handle common API errors in CLI commands.
+
+    Consolidates duplicate error handling patterns for:
+    - httpx.ConnectError: API connection failures
+    - httpx.TimeoutException: Request timeouts
+    - CLIError: Application-specific errors
+    - Exception: Unexpected errors
+
+    Args:
+        api_url: Optional API URL to display in error messages.
+                 If not provided, uses the global API_BASE.
+        connect_hint: Optional custom hint for connection errors.
+                      Defaults to "Make sure the server is running."
+        timeout_hint: Optional custom hint for timeout errors.
+                      If not provided, no additional hint is printed.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            url = api_url or API_BASE
+            try:
+                return func(*args, **kwargs)
+            except httpx.ConnectError:
+                print(f"Error: Could not connect to API at {url}")
+                print(connect_hint or "Make sure the server is running.")
+                sys.exit(1)
+            except httpx.TimeoutException:
+                print(f"Error: Request timed out while connecting to {url}")
+                if timeout_hint:
+                    print(timeout_hint)
+                sys.exit(1)
+            except CLIError as e:
+                print(f"Error: {e}")
+                sys.exit(1)
+            except KeyboardInterrupt:
+                print("\nCancelled.")
+                sys.exit(1)
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+                sys.exit(1)
+        return wrapper
+    return decorator
+
+
 def handle_auth_error(response) -> bool:
     """
     Check for auth errors and provide helpful message.
@@ -319,132 +366,97 @@ def cmd_upload(args):
     except CLIError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}")
         sys.exit(1)
 
 
+@handle_api_errors()
 def cmd_list(args):
     """List videos."""
-    try:
-        if args.archived:
-            # List archived/deleted videos
-            if args.status:
-                print("Warning: --status is ignored when listing archived videos")
+    if args.archived:
+        # List archived/deleted videos
+        if args.status:
+            print("Warning: --status is ignored when listing archived videos")
 
-            response = httpx.get(f"{API_BASE}/videos/archived", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
-            handle_auth_error(response)
-            result = safe_json_response(response)
-            videos_list = result.get("videos", [])
-            total = result.get("total", len(videos_list))
+        response = httpx.get(f"{API_BASE}/videos/archived", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+        handle_auth_error(response)
+        result = safe_json_response(response)
+        videos_list = result.get("videos", [])
+        total = result.get("total", len(videos_list))
 
-            if not videos_list:
-                print("No archived videos found.")
-                return
+        if not videos_list:
+            print("No archived videos found.")
+            return
 
-            print(f"Archived videos ({total} total):")
-            print(f"{'ID':<5} {'Deleted At':<20} {'Title':<40} {'Slug':<20}")
-            print("-" * 90)
-            for v in videos_list:
-                title = v["title"][:38] + ".." if len(v["title"]) > 40 else v["title"]
-                slug = v["slug"][:18] + ".." if len(v["slug"]) > 20 else v["slug"]
-                deleted_at = v["deleted_at"][:19] if v["deleted_at"] else "-"
-                print(f"{v['id']:<5} {deleted_at:<20} {title:<40} {slug:<20}")
-        else:
-            # List active videos
-            params = {}
-            if args.status:
-                params["status"] = args.status
+        print(f"Archived videos ({total} total):")
+        print(f"{'ID':<5} {'Deleted At':<20} {'Title':<40} {'Slug':<20}")
+        print("-" * 90)
+        for v in videos_list:
+            title = v["title"][:38] + ".." if len(v["title"]) > 40 else v["title"]
+            slug = v["slug"][:18] + ".." if len(v["slug"]) > 20 else v["slug"]
+            deleted_at = v["deleted_at"][:19] if v["deleted_at"] else "-"
+            print(f"{v['id']:<5} {deleted_at:<20} {title:<40} {slug:<20}")
+    else:
+        # List active videos
+        params = {}
+        if args.status:
+            params["status"] = args.status
 
-            response = httpx.get(f"{API_BASE}/videos", params=params, headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
-            handle_auth_error(response)
-            videos_list = safe_json_response(response)
+        response = httpx.get(f"{API_BASE}/videos", params=params, headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+        handle_auth_error(response)
+        videos_list = safe_json_response(response)
 
-            if not videos_list:
-                print("No videos found.")
-                return
+        if not videos_list:
+            print("No videos found.")
+            return
 
-            print(f"{'ID':<5} {'Status':<12} {'Title':<40} {'Category':<15}")
-            print("-" * 75)
-            for v in videos_list:
-                title = v["title"][:38] + ".." if len(v["title"]) > 40 else v["title"]
-                cat = v["category_name"] or "-"
-                print(f"{v['id']:<5} {v['status']:<12} {title:<40} {cat:<15}")
-
-    except httpx.ConnectError:
-        print(f"Error: Could not connect to admin API at {API_BASE}")
-        sys.exit(1)
-    except httpx.TimeoutException:
-        print(f"Error: Request timed out while connecting to {API_BASE}")
-        sys.exit(1)
-    except CLIError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        sys.exit(1)
+        print(f"{'ID':<5} {'Status':<12} {'Title':<40} {'Category':<15}")
+        print("-" * 75)
+        for v in videos_list:
+            title = v["title"][:38] + ".." if len(v["title"]) > 40 else v["title"]
+            cat = v["category_name"] or "-"
+            print(f"{v['id']:<5} {v['status']:<12} {title:<40} {cat:<15}")
 
 
+@handle_api_errors()
 def cmd_categories(args):
     """List or create categories."""
-    try:
-        if args.create:
-            response = httpx.post(
-                f"{API_BASE}/categories",
-                json={"name": args.create, "description": args.description or ""},
-                headers=get_admin_headers(),
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            handle_auth_error(response)
-            cat = safe_json_response(response)
-            print(f"Created category: {cat['name']} (slug: {cat['slug']})")
-        else:
-            response = httpx.get(f"{API_BASE}/categories", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
-            handle_auth_error(response)
-            categories = safe_json_response(response)
+    if args.create:
+        response = httpx.post(
+            f"{API_BASE}/categories",
+            json={"name": args.create, "description": args.description or ""},
+            headers=get_admin_headers(),
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        handle_auth_error(response)
+        cat = safe_json_response(response)
+        print(f"Created category: {cat['name']} (slug: {cat['slug']})")
+    else:
+        response = httpx.get(f"{API_BASE}/categories", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+        handle_auth_error(response)
+        categories = safe_json_response(response)
 
-            if not categories:
-                print("No categories found.")
-                return
+        if not categories:
+            print("No categories found.")
+            return
 
-            print(f"{'ID':<5} {'Name':<25} {'Slug':<25} {'Videos':<10}")
-            print("-" * 65)
-            for c in categories:
-                print(f"{c['id']:<5} {c['name']:<25} {c['slug']:<25} {c['video_count']:<10}")
-
-    except httpx.ConnectError:
-        print(f"Error: Could not connect to admin API at {API_BASE}")
-        sys.exit(1)
-    except httpx.TimeoutException:
-        print(f"Error: Request timed out while connecting to {API_BASE}")
-        sys.exit(1)
-    except CLIError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        sys.exit(1)
+        print(f"{'ID':<5} {'Name':<25} {'Slug':<25} {'Videos':<10}")
+        print("-" * 65)
+        for c in categories:
+            print(f"{c['id']:<5} {c['name']:<25} {c['slug']:<25} {c['video_count']:<10}")
 
 
+@handle_api_errors()
 def cmd_delete(args):
     """Delete a video."""
-    try:
-        response = httpx.delete(f"{API_BASE}/videos/{args.video_id}", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
-        handle_auth_error(response)
-        safe_json_response(response)  # Will raise CLIError if not successful
-        print(f"Video {args.video_id} deleted.")
-    except httpx.ConnectError:
-        print(f"Error: Could not connect to admin API at {API_BASE}")
-        sys.exit(1)
-    except httpx.TimeoutException:
-        print(f"Error: Request timed out while connecting to {API_BASE}")
-        sys.exit(1)
-    except CLIError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        sys.exit(1)
+    response = httpx.delete(f"{API_BASE}/videos/{args.video_id}", headers=get_admin_headers(), timeout=DEFAULT_API_TIMEOUT)
+    handle_auth_error(response)
+    safe_json_response(response)  # Will raise CLIError if not successful
+    print(f"Video {args.video_id} deleted.")
 
 
 def cmd_download(args):
@@ -572,11 +584,18 @@ def cmd_download(args):
     except CLIError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}")
         sys.exit(1)
 
 
+@handle_api_errors(
+    api_url=WORKER_API_BASE,
+    connect_hint="Make sure the worker API server is running (port 9002)."
+)
 def cmd_worker(args):
     """Worker management commands."""
     # Check for admin secret - required for worker management
@@ -595,8 +614,7 @@ def cmd_worker(args):
     # Headers for admin authentication
     admin_headers = {"X-Admin-Secret": worker_admin_secret}
 
-    try:
-        if args.worker_command == "register":
+    if args.worker_command == "register":
             # Register a new worker
             data = {"worker_type": args.type}
             if args.name:
@@ -767,20 +785,6 @@ def cmd_worker(args):
 
             print()
             print("To rotate a key: vlog worker rotate <worker-id>")
-
-    except httpx.ConnectError:
-        print(f"Error: Could not connect to Worker API at {WORKER_API_BASE}")
-        print("Make sure the worker API server is running (port 9002).")
-        sys.exit(1)
-    except httpx.TimeoutException:
-        print(f"Error: Request timed out while connecting to {WORKER_API_BASE}")
-        sys.exit(1)
-    except CLIError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        sys.exit(1)
 
 
 def cmd_manifests(args):

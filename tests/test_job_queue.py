@@ -13,9 +13,10 @@ Tests cover:
 
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis.exceptions import RedisError
 
 import api.job_queue
 from api.job_queue import (
@@ -161,6 +162,49 @@ class TestJobDispatch:
         assert job.source_height is None
         assert job.duration is None
 
+    def test_from_stream_dict_missing_required_fields(self):
+        """Should raise ValueError when required fields are missing."""
+        # Missing job_id
+        with pytest.raises(ValueError, match="Missing required fields"):
+            JobDispatch.from_stream_dict({"video_id": "1", "video_slug": "test"})
+
+        # Missing video_id
+        with pytest.raises(ValueError, match="Missing required fields"):
+            JobDispatch.from_stream_dict({"job_id": "1", "video_slug": "test"})
+
+        # Missing video_slug
+        with pytest.raises(ValueError, match="Missing required fields"):
+            JobDispatch.from_stream_dict({"job_id": "1", "video_id": "1"})
+
+    def test_from_stream_dict_invalid_job_id_format(self):
+        """Should raise ValueError when job_id is not a valid integer."""
+        data = {
+            "job_id": "not-a-number",
+            "video_id": "100",
+            "video_slug": "test-video",
+        }
+
+        with pytest.raises(ValueError, match="Invalid job_id or video_id"):
+            JobDispatch.from_stream_dict(data)
+
+    def test_from_stream_dict_invalid_optional_numbers(self):
+        """Should handle invalid optional numeric fields gracefully."""
+        data = {
+            "job_id": "1",
+            "video_id": "100",
+            "video_slug": "test-video",
+            "source_width": "invalid",
+            "source_height": "invalid",
+            "duration": "invalid",
+        }
+
+        job = JobDispatch.from_stream_dict(data)
+
+        # Invalid values should be converted to None
+        assert job.source_width is None
+        assert job.source_height is None
+        assert job.duration is None
+
 
 class TestJobQueueInitialization:
     """Tests for JobQueue initialization."""
@@ -198,7 +242,7 @@ class TestJobQueueInitialization:
         queue = JobQueue()
         mock_redis = AsyncMock()
         mock_redis.xgroup_create = AsyncMock(
-            side_effect=Exception("BUSYGROUP Consumer Group name already exists")
+            side_effect=RedisError("BUSYGROUP Consumer Group name already exists")
         )
 
         with patch("api.job_queue.JOB_QUEUE_MODE", "redis"):
@@ -276,7 +320,7 @@ class TestJobQueuePublish:
         queue = JobQueue()
         queue._redis_available = True
         mock_redis = AsyncMock()
-        mock_redis.xadd = AsyncMock(side_effect=Exception("Connection failed"))
+        mock_redis.xadd = AsyncMock(side_effect=RedisError("Connection failed"))
 
         job = JobDispatch(job_id=1, video_id=100, video_slug="test-video")
 
@@ -487,7 +531,7 @@ class TestJobQueueAcknowledge:
         """Should return False on Redis error."""
         queue = JobQueue()
         mock_redis = AsyncMock()
-        mock_redis.xack = AsyncMock(side_effect=Exception("Failed"))
+        mock_redis.xack = AsyncMock(side_effect=RedisError("Failed"))
 
         job = JobDispatch(job_id=1, video_id=100, video_slug="test-video")
         job._message_id = "1234-0"
@@ -499,14 +543,38 @@ class TestJobQueueAcknowledge:
         assert result is False
 
 
+class MockAsyncPipeline:
+    """Mock async context manager for Redis pipeline."""
+
+    def __init__(self):
+        self.xadd = MagicMock(return_value=self)
+        self.xack = MagicMock(return_value=self)
+        self.execute = AsyncMock(return_value=[True, True])
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return None
+
+
 class TestJobQueueReject:
     """Tests for job rejection and dead letter queue."""
+
+    def _create_mock_redis_with_pipeline(self):
+        """Create a mock Redis client with proper pipeline support."""
+        mock_redis = AsyncMock()
+        mock_pipeline = MockAsyncPipeline()
+        # pipeline() is NOT async - it returns an object usable as async context manager
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+
+        return mock_redis, mock_pipeline
 
     @pytest.mark.asyncio
     async def test_reject_job_moves_to_dlq(self):
         """Should move failed job to dead letter queue."""
         queue = JobQueue()
-        mock_redis = AsyncMock()
+        mock_redis, mock_pipeline = self._create_mock_redis_with_pipeline()
 
         job = JobDispatch(job_id=1, video_id=100, video_slug="test-video")
         job._message_id = "1234-0"
@@ -516,18 +584,20 @@ class TestJobQueueReject:
             result = await queue.reject_job(job, "Transcoding failed")
 
         assert result is True
-        # Should add to DLQ
-        mock_redis.xadd.assert_called_once()
-        call_args = mock_redis.xadd.call_args
+        # Should add to DLQ via pipeline
+        mock_pipeline.xadd.assert_called_once()
+        call_args = mock_pipeline.xadd.call_args
         assert DEAD_LETTER_STREAM in str(call_args)
-        # Should acknowledge original message
-        mock_redis.xack.assert_called_once()
+        # Should acknowledge original message via pipeline
+        mock_pipeline.xack.assert_called_once()
+        # Pipeline should be executed
+        mock_pipeline.execute.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_reject_job_truncates_long_error(self):
         """Should truncate error message to 500 characters."""
         queue = JobQueue()
-        mock_redis = AsyncMock()
+        mock_redis, mock_pipeline = self._create_mock_redis_with_pipeline()
 
         job = JobDispatch(job_id=1, video_id=100, video_slug="test-video")
         job._message_id = "1234-0"
@@ -537,7 +607,7 @@ class TestJobQueueReject:
         with patch("api.job_queue.get_redis", return_value=mock_redis):
             await queue.reject_job(job, long_error)
 
-        call_args = mock_redis.xadd.call_args
+        call_args = mock_pipeline.xadd.call_args
         dlq_data = call_args[0][1]
         assert len(dlq_data["error"]) == 500
 
@@ -730,8 +800,11 @@ class TestRedisRecovery:
         queue._redis_available = True
         queue._consumer_name = "test-consumer"
         mock_redis = AsyncMock()
-        mock_redis.xpending_range = AsyncMock(
-            side_effect=Exception("Connection lost")
+        # Mock both xpending_range and xreadgroup to raise exceptions
+        # to test that exceptions are caught at claim_job level
+        mock_redis.xpending_range = AsyncMock(return_value=[])
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=RedisError("Connection lost")
         )
 
         with patch("api.job_queue.JOB_QUEUE_MODE", "redis"):

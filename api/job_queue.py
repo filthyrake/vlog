@@ -18,6 +18,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+try:
+    from redis.exceptions import RedisError
+except ImportError:
+    # Fallback for when redis package is not installed (database-only mode)
+    class RedisError(Exception):
+        """Placeholder when redis package is not installed."""
+        pass
+
 from api.redis_client import get_redis
 from config import (
     JOB_QUEUE_MODE,
@@ -74,7 +82,30 @@ class JobDispatch:
 
     @classmethod
     def from_stream_dict(cls, data: dict, message_id: str = None, stream_name: str = None) -> "JobDispatch":
-        """Create from Redis stream message."""
+        """Create from Redis stream message.
+
+        Args:
+            data: Message data dictionary from Redis stream
+            message_id: Redis message ID for acknowledgment
+            stream_name: Source stream name for acknowledgment
+
+        Returns:
+            JobDispatch instance
+
+        Raises:
+            ValueError: If required fields are missing or have invalid format
+        """
+        # Validate required fields exist
+        if "job_id" not in data or "video_id" not in data or "video_slug" not in data:
+            missing = [f for f in ("job_id", "video_id", "video_slug") if f not in data]
+            raise ValueError(f"Missing required fields in job message: {missing}")
+
+        try:
+            job_id = int(data["job_id"])
+            video_id = int(data["video_id"])
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid job_id or video_id format: {e}")
+
         created_at = None
         if data.get("created_at"):
             try:
@@ -83,14 +114,30 @@ class JobDispatch:
                 # If parsing fails, leave created_at as None (invalid/missing date is acceptable)
                 pass
 
+        # Parse optional numeric fields with safe defaults
+        try:
+            source_width = int(data.get("source_width", 0)) or None
+        except (ValueError, TypeError):
+            source_width = None
+
+        try:
+            source_height = int(data.get("source_height", 0)) or None
+        except (ValueError, TypeError):
+            source_height = None
+
+        try:
+            duration = float(data.get("duration", 0)) or None
+        except (ValueError, TypeError):
+            duration = None
+
         job = cls(
-            job_id=int(data["job_id"]),
-            video_id=int(data["video_id"]),
+            job_id=job_id,
+            video_id=video_id,
             video_slug=data["video_slug"],
             source_filename=data.get("source_filename") or None,
-            source_width=int(data.get("source_width", 0)) or None,
-            source_height=int(data.get("source_height", 0)) or None,
-            duration=float(data.get("duration", 0)) or None,
+            source_width=source_width,
+            source_height=source_height,
+            duration=duration,
             priority=data.get("priority", "normal"),
             created_at=created_at,
         )
@@ -140,7 +187,7 @@ class JobQueue:
                 try:
                     await redis.xgroup_create(stream_name, REDIS_CONSUMER_GROUP, id="0", mkstream=True)
                     logger.info(f"Created consumer group for {priority} priority stream")
-                except Exception as e:
+                except RedisError as e:
                     if "BUSYGROUP" not in str(e):
                         raise
                     # Group already exists, that's fine
@@ -148,7 +195,7 @@ class JobQueue:
             self._redis_available = True
             self._initialized = True
             logger.info(f"Job queue initialized with Redis Streams (consumer: {consumer_name})")
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to initialize Redis consumer groups: {e}")
             if JOB_QUEUE_MODE == "hybrid":
                 logger.info("Falling back to database polling")
@@ -184,7 +231,7 @@ class JobQueue:
             )
             logger.debug(f"Published job {job.job_id} to {stream_name}")
             return True
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to publish job to Redis: {e}")
             return False
 
@@ -225,7 +272,7 @@ class JobQueue:
 
             return None
 
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             # Log warning but don't disable Redis; RedisClient handles recovery
             logger.warning(f"Redis claim failed: {e}")
             return None
@@ -260,8 +307,17 @@ class JobQueue:
                             logger.info(
                                 f"Recovered abandoned job {data.get('job_id')} from {stream_name} (idle {idle_time}ms)"
                             )
-                            return JobDispatch.from_stream_dict(data, message_id=message_id, stream_name=stream_name)
-            except Exception as e:
+                            try:
+                                return JobDispatch.from_stream_dict(data, message_id=message_id, stream_name=stream_name)
+                            except ValueError as e:
+                                # Malformed message - acknowledge it to remove from pending
+                                logger.error(f"Malformed job message in {stream_name} (id={message_id}): {e}")
+                                try:
+                                    await redis.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
+                                except (RedisError, OSError, TimeoutError):
+                                    pass  # Best effort cleanup
+                                continue  # Try next message
+            except (RedisError, OSError, TimeoutError) as e:
                 logger.debug(f"Error checking pending messages for {stream_name}: {e}")
 
         return None
@@ -282,8 +338,17 @@ class JobQueue:
                 stream, msg_list = messages[0]
                 if msg_list:
                     message_id, data = msg_list[0]
-                    return JobDispatch.from_stream_dict(data, message_id=message_id, stream_name=stream_name)
-        except Exception as e:
+                    try:
+                        return JobDispatch.from_stream_dict(data, message_id=message_id, stream_name=stream_name)
+                    except ValueError as e:
+                        # Malformed message - acknowledge it to remove from stream
+                        logger.error(f"Malformed job message in {stream_name} (id={message_id}): {e}")
+                        try:
+                            await redis.xack(stream_name, REDIS_CONSUMER_GROUP, message_id)
+                        except (RedisError, OSError, TimeoutError):
+                            pass  # Best effort cleanup
+                        return None
+        except (RedisError, OSError, TimeoutError) as e:
             logger.debug(f"Error reading from {stream_name}: {e}")
 
         return None
@@ -309,13 +374,17 @@ class JobQueue:
             await redis.xack(job._stream_name, REDIS_CONSUMER_GROUP, job._message_id)
             logger.debug(f"Acknowledged job {job.job_id}")
             return True
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to acknowledge job {job.job_id}: {e}")
             return False
 
     async def reject_job(self, job: JobDispatch, error: str) -> bool:
         """
         Reject a job and move it to dead letter stream.
+
+        Uses a Redis pipeline to ensure atomic operation - either both
+        the DLQ entry is added AND the original message is acknowledged,
+        or neither operation occurs.
 
         Args:
             job: The failed job
@@ -332,20 +401,22 @@ class JobQueue:
             return False
 
         try:
-            # Add to dead letter stream
+            # Prepare DLQ data
             dlq_data = job.to_stream_dict()
             dlq_data["error"] = error[:500]
             dlq_data["failed_at"] = datetime.now(timezone.utc).isoformat()
             dlq_data["original_stream"] = job._stream_name
 
-            await redis.xadd(DEAD_LETTER_STREAM, dlq_data, maxlen=1000)
-
-            # Acknowledge original message
-            await redis.xack(job._stream_name, REDIS_CONSUMER_GROUP, job._message_id)
+            # Use pipeline for atomic operation
+            # This ensures both operations succeed or fail together
+            async with redis.pipeline(transaction=True) as pipe:
+                pipe.xadd(DEAD_LETTER_STREAM, dlq_data, maxlen=1000)
+                pipe.xack(job._stream_name, REDIS_CONSUMER_GROUP, job._message_id)
+                await pipe.execute()
 
             logger.info(f"Job {job.job_id} moved to dead letter queue: {error[:100]}")
             return True
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to move job {job.job_id} to DLQ: {e}")
             return False
 
@@ -371,17 +442,17 @@ class JobQueue:
                         "length": length,
                         "pending": pending_info.get("pending", 0) if pending_info else 0,
                     }
-                except Exception:
+                except (RedisError, OSError, TimeoutError):
                     stats["streams"][priority] = {"length": 0, "pending": 0}
 
             # Dead letter queue
             try:
                 dlq_length = await redis.xlen(DEAD_LETTER_STREAM)
                 stats["dead_letter_queue"] = dlq_length
-            except Exception:
+            except (RedisError, OSError, TimeoutError):
                 stats["dead_letter_queue"] = 0
 
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to get queue stats: {e}")
 
         return stats
