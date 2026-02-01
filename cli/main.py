@@ -231,7 +231,7 @@ def get_admin_headers() -> dict:
     return headers
 
 
-def handle_api_errors(api_url: str = None):
+def handle_api_errors(api_url: str = None, connect_hint: str = None, timeout_hint: str = None):
     """
     Decorator to handle common API errors in CLI commands.
 
@@ -244,6 +244,10 @@ def handle_api_errors(api_url: str = None):
     Args:
         api_url: Optional API URL to display in error messages.
                  If not provided, uses the global API_BASE.
+        connect_hint: Optional custom hint for connection errors.
+                      Defaults to "Make sure the server is running."
+        timeout_hint: Optional custom hint for timeout errors.
+                      If not provided, no additional hint is printed.
     """
     def decorator(func):
         @functools.wraps(func)
@@ -253,10 +257,12 @@ def handle_api_errors(api_url: str = None):
                 return func(*args, **kwargs)
             except httpx.ConnectError:
                 print(f"Error: Could not connect to API at {url}")
-                print("Make sure the server is running.")
+                print(connect_hint or "Make sure the server is running.")
                 sys.exit(1)
             except httpx.TimeoutException:
                 print(f"Error: Request timed out while connecting to {url}")
+                if timeout_hint:
+                    print(timeout_hint)
                 sys.exit(1)
             except CLIError as e:
                 print(f"Error: {e}")
@@ -359,6 +365,9 @@ def cmd_upload(args):
         sys.exit(1)
     except CLIError as e:
         print(f"Error: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nCancelled.")
         sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}")
@@ -575,11 +584,18 @@ def cmd_download(args):
     except CLIError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}")
         sys.exit(1)
 
 
+@handle_api_errors(
+    api_url=WORKER_API_BASE,
+    connect_hint="Make sure the worker API server is running (port 9002)."
+)
 def cmd_worker(args):
     """Worker management commands."""
     # Check for admin secret - required for worker management
@@ -598,8 +614,7 @@ def cmd_worker(args):
     # Headers for admin authentication
     admin_headers = {"X-Admin-Secret": worker_admin_secret}
 
-    try:
-        if args.worker_command == "register":
+    if args.worker_command == "register":
             # Register a new worker
             data = {"worker_type": args.type}
             if args.name:
@@ -770,20 +785,6 @@ def cmd_worker(args):
 
             print()
             print("To rotate a key: vlog worker rotate <worker-id>")
-
-    except httpx.ConnectError:
-        print(f"Error: Could not connect to Worker API at {WORKER_API_BASE}")
-        print("Make sure the worker API server is running (port 9002).")
-        sys.exit(1)
-    except httpx.TimeoutException:
-        print(f"Error: Request timed out while connecting to {WORKER_API_BASE}")
-        sys.exit(1)
-    except CLIError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        sys.exit(1)
 
 
 def cmd_manifests(args):

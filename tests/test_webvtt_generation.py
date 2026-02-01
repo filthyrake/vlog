@@ -56,14 +56,15 @@ class TestFormatTimestamp:
         assert result == "00:01:30.000"
 
     def test_format_timestamp_negative_value(self):
-        """Test behavior with negative value (edge case)."""
-        # Negative values produce negative hour component
-        # This tests the actual behavior - negative times could occur
-        # from segment timing errors in transcription
+        """Test behavior with negative value (edge case).
+
+        Negative values can occur from segment timing errors in transcription.
+        The current implementation produces a negative hour component.
+        This test documents the actual behavior for regression detection.
+        """
         result = format_timestamp(-1.0)
-        # The current implementation will produce a negative hour
-        # This is documenting the behavior, not necessarily the ideal behavior
-        assert "-" in result or result.startswith("00")
+        # -1.0 seconds produces -1 hours, 59 minutes, 59 seconds due to modulo math
+        assert result == "-1:59:59.000"
 
 
 class TestGenerateWebvtt:

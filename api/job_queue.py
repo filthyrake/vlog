@@ -18,7 +18,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from redis.exceptions import RedisError
+try:
+    from redis.exceptions import RedisError
+except ImportError:
+    # Fallback for when redis package is not installed (database-only mode)
+    class RedisError(Exception):
+        """Placeholder when redis package is not installed."""
+        pass
 
 from api.redis_client import get_redis
 from config import (
