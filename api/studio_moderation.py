@@ -12,6 +12,7 @@ Related Issue: #530
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -66,40 +67,123 @@ limiter = Limiter(
     enabled=RATE_LIMIT_ENABLED,
 )
 
-# ReDoS protection: dangerous patterns to reject
-DANGEROUS_REGEX_PATTERNS = [
-    r"(a+)+",
-    r"(a|a)+",
-    r"(a|aa)+",
-    r"(.*a){10,}",
-    r"([a-zA-Z]+)*",
-]
-
 MAX_FILTERS_PER_STREAM = 50
+
+# Timeout in seconds for regex test execution
+REGEX_TEST_TIMEOUT_SECONDS = 0.5
+
+# Thread pool for timeout-limited regex testing (single worker to limit resource usage)
+_regex_test_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="regex_test")
+
+
+def _detect_dangerous_regex_structure(pattern: str) -> bool:
+    """
+    Detect structurally dangerous regex patterns that could cause catastrophic backtracking.
+
+    Returns True if dangerous patterns detected.
+    """
+    # Count nested quantified groups: patterns like (a+)+, (a*)+, ([a-z]+)*
+    # These are the primary cause of ReDoS
+    nested_quantifier_pattern = r'\([^)]*[+*][^)]*\)[+*?]|\([^)]*[+*][^)]*\)\{[0-9,]+\}'
+    if re.search(nested_quantifier_pattern, pattern):
+        return True
+
+    # Detect overlapping alternations with quantifiers: (a|a)+, (a|aa)+
+    # Look for alternations where branches can match the same input
+    overlapping_alt = r'\([^)]*\|[^)]*\)[+*]'
+    if re.search(overlapping_alt, pattern):
+        # Further check: if the alternation branches share common characters
+        alt_match = re.search(r'\(([^|)]+)\|([^)]+)\)[+*]', pattern)
+        if alt_match:
+            branch1, branch2 = alt_match.group(1), alt_match.group(2)
+            # Simple heuristic: if one branch is prefix of another or they share start char
+            if branch1.startswith(branch2) or branch2.startswith(branch1):
+                return True
+            if branch1 and branch2 and branch1[0] == branch2[0]:
+                return True
+
+    # Detect .* or .+ followed by specific char, repeated: (.*a)+
+    greedy_specific = r'\(\.\*[^)]+\)[+*]|\(\.\+[^)]+\)[+*]'
+    if re.search(greedy_specific, pattern):
+        return True
+
+    # Count quantifiers - too many is suspicious
+    quantifiers = re.findall(r'[+*?]|\{[0-9,]+\}', pattern)
+    if len(quantifiers) > 5:
+        return True
+
+    # Detect deeply nested groups (more than 3 levels)
+    depth = 0
+    max_depth = 0
+    for char in pattern:
+        if char == '(':
+            depth += 1
+            max_depth = max(max_depth, depth)
+        elif char == ')':
+            depth -= 1
+    if max_depth > 3:
+        return True
+
+    return False
+
+
+def _test_regex_with_timeout(pattern: str, test_input: str, timeout: float) -> bool:
+    """
+    Test a regex pattern against input with a timeout.
+
+    Returns True if matching completes within timeout, False otherwise.
+    """
+    def do_match():
+        compiled = re.compile(pattern)
+        compiled.search(test_input)
+        return True
+
+    try:
+        future = _regex_test_executor.submit(do_match)
+        future.result(timeout=timeout)
+        return True
+    except FuturesTimeoutError:
+        future.cancel()
+        return False
+    except re.error:
+        return False
+    except Exception:
+        return False
 
 
 def validate_regex_pattern(pattern: str) -> bool:
     """
     Validate a regex pattern is safe from ReDoS attacks.
 
+    Uses multiple layers of protection:
+    1. Length limit
+    2. Structural analysis for known dangerous patterns
+    3. Timeout-limited test execution against adversarial input
+
     Returns True if safe, False if potentially dangerous.
     """
-    # Check length
+    # Check length - limit complexity surface
     if len(pattern) > 100:
         return False
 
-    # Check for known dangerous patterns
-    for dangerous in DANGEROUS_REGEX_PATTERNS:
-        if dangerous in pattern:
-            return False
+    # Structural analysis for known dangerous patterns
+    if _detect_dangerous_regex_structure(pattern):
+        return False
 
-    # Try to compile with timeout simulation
-    # In production, use RE2 library for linear time guarantee
+    # Try to compile
     try:
         re.compile(pattern)
-        return True
     except re.error:
         return False
+
+    # Test against adversarial input that triggers backtracking
+    # This string is designed to maximize backtracking for vulnerable patterns
+    adversarial_input = "a" * 30 + "!"
+
+    if not _test_regex_with_timeout(pattern, adversarial_input, REGEX_TEST_TIMEOUT_SECONDS):
+        return False
+
+    return True
 
 
 async def verify_stream_moderator(stream_id: int, user: dict, required_permission: str) -> bool:

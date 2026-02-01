@@ -538,43 +538,61 @@ async def upload_vod_thumbnail(
 
     thumbnail_path = video_dir / "thumbnail.jpg"
 
-    # If PNG, we should convert to JPEG. For now, just save as-is.
-    # In production, use PIL to resize and convert.
+    # Maximum allowed image dimensions to prevent decompression bomb attacks (CVE-2018-14618)
+    # 10000x10000 = 100MP is generous for thumbnails while preventing memory exhaustion
+    MAX_IMAGE_DIMENSION = 10000
+
+    # Try to import PIL for secure image processing
     try:
-        if content_type == "image/png":
-            # Convert PNG to JPEG using PIL if available
-            try:
-                from PIL import Image
-                import io
-                img = Image.open(io.BytesIO(content))
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                # Resize if too large
-                if img.width > 1280 or img.height > 720:
-                    img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
-                img.save(thumbnail_path, "JPEG", quality=85)
-            except ImportError:
-                # PIL not available, save as PNG with jpg extension (not ideal)
-                with open(thumbnail_path, "wb") as f:
-                    f.write(content)
-        else:
-            # JPEG - resize if needed
-            try:
-                from PIL import Image
-                import io
-                img = Image.open(io.BytesIO(content))
-                if img.width > 1280 or img.height > 720:
-                    img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
-                    img.save(thumbnail_path, "JPEG", quality=85)
-                else:
-                    with open(thumbnail_path, "wb") as f:
-                        f.write(content)
-            except ImportError:
-                with open(thumbnail_path, "wb") as f:
-                    f.write(content)
-    except Exception as e:
-        logger.error(f"Failed to save thumbnail for {slug}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save thumbnail")
+        from PIL import Image
+        import io
+        PIL_AVAILABLE = True
+    except ImportError:
+        PIL_AVAILABLE = False
+
+    if PIL_AVAILABLE:
+        try:
+            # Set pixel limit to prevent decompression bombs (~400MB uncompressed max)
+            Image.MAX_IMAGE_PIXELS = 100_000_000  # 100 megapixels
+
+            img = Image.open(io.BytesIO(content))
+
+            # Additional explicit dimension check before any processing
+            if img.width > MAX_IMAGE_DIMENSION or img.height > MAX_IMAGE_DIMENSION:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION} pixels."
+                )
+
+            # Convert to RGB if needed (for PNG with alpha or palette)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+            # Resize if larger than target thumbnail size
+            if img.width > 1280 or img.height > 720:
+                img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+
+            img.save(thumbnail_path, "JPEG", quality=85)
+
+        except HTTPException:
+            raise
+        except Image.DecompressionBombError:
+            raise HTTPException(
+                status_code=400,
+                detail="Image file is too large (potential decompression bomb)."
+            )
+        except Exception as e:
+            logger.error(f"Failed to process thumbnail for {slug}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to process thumbnail")
+    else:
+        # PIL not available - save raw content (less safe, but functional)
+        logger.warning("PIL not available for thumbnail processing, saving raw content")
+        try:
+            with open(thumbnail_path, "wb") as f:
+                f.write(content)
+        except Exception as e:
+            logger.error(f"Failed to save thumbnail for {slug}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to save thumbnail")
 
     # Update video to mark as custom thumbnail
     await db_execute_with_retry(

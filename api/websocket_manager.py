@@ -35,6 +35,7 @@ from api.audit import AuditAction, log_audit
 from api.auth.sessions import validate_session_token
 from config import (
     CORS_ALLOWED_ORIGINS,
+    TRUSTED_PROXIES,
     WS_ALLOWED_ORIGINS,
     WS_HEARTBEAT_INTERVAL,
     WS_MAX_CONNECTIONS_GLOBAL,
@@ -737,14 +738,21 @@ async def authenticate_websocket(
 
 
 def get_client_ip(websocket: WebSocket) -> Optional[str]:
-    """Extract client IP from WebSocket connection."""
-    # Check X-Forwarded-For header first (for reverse proxy)
-    forwarded = websocket.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """
+    Extract client IP from WebSocket connection.
 
-    # Fall back to direct client
-    if websocket.client:
-        return websocket.client.host
+    Security: X-Forwarded-For is only trusted when the direct client IP is in TRUSTED_PROXIES.
+    This prevents attackers from spoofing the header to bypass IP-based rate limiting.
+    """
+    # Get direct client IP first
+    direct_ip = websocket.client.host if websocket.client else None
 
-    return None
+    # Only trust X-Forwarded-For if request came from a trusted proxy
+    if TRUSTED_PROXIES and direct_ip in TRUSTED_PROXIES:
+        forwarded = websocket.headers.get("x-forwarded-for")
+        if forwarded:
+            # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
+            # The first one is the original client
+            return forwarded.split(",")[0].strip()
+
+    return direct_ip
