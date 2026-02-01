@@ -220,17 +220,21 @@ async def handle_chat_message(
             started = started.replace(tzinfo=timezone.utc)
         stream_offset_ms = int((now - started).total_seconds() * 1000)
 
-    # Insert message to database
+    # Insert message to database (use RETURNING for PostgreSQL compatibility)
     now = datetime.now(timezone.utc)
-    insert_query = chat_messages.insert().values(
-        stream_id=stream["id"],
-        user_id=user["id"],
-        content=sanitized,
-        stream_offset_ms=stream_offset_ms,
-        created_at=now,
+    insert_query = (
+        chat_messages.insert()
+        .values(
+            stream_id=stream["id"],
+            user_id=user["id"],
+            content=sanitized,
+            stream_offset_ms=stream_offset_ms,
+            created_at=now,
+        )
+        .returning(chat_messages.c.id)
     )
-    result = await db_execute_with_retry(insert_query)
-    message_id = result.lastrowid
+    result = await fetch_one_with_retry(insert_query)
+    message_id = result["id"]
 
     # Broadcast to all connections via WebSocket manager
     # Note: Also published to Redis via REST endpoint, but for WebSocket-sent messages,

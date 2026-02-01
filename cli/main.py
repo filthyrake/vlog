@@ -615,176 +615,176 @@ def cmd_worker(args):
     admin_headers = {"X-Admin-Secret": worker_admin_secret}
 
     if args.worker_command == "register":
-            # Register a new worker
-            data = {"worker_type": args.type}
-            if args.name:
-                data["worker_name"] = args.name
+        # Register a new worker
+        data = {"worker_type": args.type}
+        if args.name:
+            data["worker_name"] = args.name
 
-            response = httpx.post(
-                f"{WORKER_API_BASE}/worker/register",
-                json=data,
-                headers=admin_headers,
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            result = safe_json_response(response)
+        response = httpx.post(
+            f"{WORKER_API_BASE}/worker/register",
+            json=data,
+            headers=admin_headers,
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        result = safe_json_response(response)
 
-            print("Worker registered successfully!")
-            print(f"  Worker ID: {result['worker_id']}")
-            print(f"  API Key: {result['api_key']}")
+        print("Worker registered successfully!")
+        print(f"  Worker ID: {result['worker_id']}")
+        print(f"  API Key: {result['api_key']}")
+        print()
+        print("IMPORTANT: Save the API key - it will not be shown again!")
+        print()
+        print("To use this worker, set the environment variable:")
+        print(f"  export VLOG_WORKER_API_KEY={result['api_key']}")
+
+    elif args.worker_command == "list":
+        # List all workers
+        response = httpx.get(
+            f"{WORKER_API_BASE}/workers",
+            headers=admin_headers,
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        result = safe_json_response(response)
+
+        workers = result.get("workers", [])
+        if not workers:
+            print("No workers registered.")
+            return
+
+        print(f"Workers: {result['active_count']} active, {result['offline_count']} offline")
+        print()
+        print(f"{'ID':<10} {'Name':<20} {'Type':<8} {'Status':<10} {'Last Heartbeat':<20} {'Current Job':<15}")
+        print("-" * 90)
+
+        for w in workers:
+            worker_id = w["worker_id"][:8] + "..."
+            name = (w["worker_name"] or "-")[:20]
+            wtype = w["worker_type"]
+            status = w["status"]
+            heartbeat = w["last_heartbeat"][:19] if w["last_heartbeat"] else "-"
+            job = w.get("current_video_slug") or "-"
+
+            print(f"{worker_id:<10} {name:<20} {wtype:<8} {status:<10} {heartbeat:<20} {job:<15}")
+
+    elif args.worker_command == "revoke":
+        # Revoke a worker's API key
+        response = httpx.post(
+            f"{WORKER_API_BASE}/workers/{args.worker_id}/revoke",
+            headers=admin_headers,
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        safe_json_response(response)
+        print(f"Worker {args.worker_id} has been revoked.")
+
+    elif args.worker_command == "status":
+        # Show worker status summary
+        response = httpx.get(
+            f"{WORKER_API_BASE}/workers",
+            headers=admin_headers,
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        result = safe_json_response(response)
+
+        print("Worker Status Summary")
+        print("=" * 40)
+        print(f"  Total workers: {result['total_count']}")
+        print(f"  Active: {result['active_count']}")
+        print(f"  Offline: {result['offline_count']}")
+
+        # Show active workers with current jobs
+        active = [w for w in result.get("workers", []) if w["status"] == "active"]
+        if active:
             print()
-            print("IMPORTANT: Save the API key - it will not be shown again!")
-            print()
-            print("To use this worker, set the environment variable:")
-            print(f"  export VLOG_WORKER_API_KEY={result['api_key']}")
-
-        elif args.worker_command == "list":
-            # List all workers
-            response = httpx.get(
-                f"{WORKER_API_BASE}/workers",
-                headers=admin_headers,
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            result = safe_json_response(response)
-
-            workers = result.get("workers", [])
-            if not workers:
-                print("No workers registered.")
-                return
-
-            print(f"Workers: {result['active_count']} active, {result['offline_count']} offline")
-            print()
-            print(f"{'ID':<10} {'Name':<20} {'Type':<8} {'Status':<10} {'Last Heartbeat':<20} {'Current Job':<15}")
-            print("-" * 90)
-
-            for w in workers:
-                worker_id = w["worker_id"][:8] + "..."
-                name = (w["worker_name"] or "-")[:20]
-                wtype = w["worker_type"]
-                status = w["status"]
-                heartbeat = w["last_heartbeat"][:19] if w["last_heartbeat"] else "-"
-                job = w.get("current_video_slug") or "-"
-
-                print(f"{worker_id:<10} {name:<20} {wtype:<8} {status:<10} {heartbeat:<20} {job:<15}")
-
-        elif args.worker_command == "revoke":
-            # Revoke a worker's API key
-            response = httpx.post(
-                f"{WORKER_API_BASE}/workers/{args.worker_id}/revoke",
-                headers=admin_headers,
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            safe_json_response(response)
-            print(f"Worker {args.worker_id} has been revoked.")
-
-        elif args.worker_command == "status":
-            # Show worker status summary
-            response = httpx.get(
-                f"{WORKER_API_BASE}/workers",
-                headers=admin_headers,
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            result = safe_json_response(response)
-
-            print("Worker Status Summary")
-            print("=" * 40)
-            print(f"  Total workers: {result['total_count']}")
-            print(f"  Active: {result['active_count']}")
-            print(f"  Offline: {result['offline_count']}")
-
-            # Show active workers with current jobs
-            active = [w for w in result.get("workers", []) if w["status"] == "active"]
-            if active:
-                print()
-                print("Active Workers:")
-                for w in active:
-                    name = w["worker_name"] or w["worker_id"][:8]
-                    job = w.get("current_video_slug")
-                    if job:
-                        print(f"  {name}: processing {job}")
-                    else:
-                        print(f"  {name}: idle")
-
-        elif args.worker_command == "rotate":
-            # Rotate a worker's API key (Issue #226)
-            params = {}
-            if args.revoke_old:
-                params["revoke_old"] = "true"
-
-            response = httpx.post(
-                f"{WORKER_API_BASE}/workers/{args.worker_id}/rotate",
-                params=params,
-                headers=admin_headers,
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-
-            # Handle 429 rate limit with user-friendly message
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After", "300")
-                try:
-                    seconds = int(retry_after)
-                    if seconds >= 60:
-                        wait_msg = f"{seconds // 60} minute(s)"
-                    else:
-                        wait_msg = f"{seconds} second(s)"
-                except ValueError:
-                    wait_msg = retry_after
-                print(f"Error: Rotation cooldown active. Please wait {wait_msg} before trying again.")
-                sys.exit(1)
-
-            result = safe_json_response(response)
-
-            print("API key rotated successfully!")
-            print()
-            print(f"  New API Key: {result['new_api_key']}")
-            if result.get("expires_at"):
-                print(f"  Expires at: {result['expires_at']}")
-            if result.get("old_key_expires_at"):
-                print(f"  Old key valid until: {result['old_key_expires_at']}")
-            print(f"  Overlap period: {result['overlap_hours']} hours")
-            print()
-            print("IMPORTANT: Save the new API key - it will not be shown again!")
-            print()
-            print("To update the worker, set the environment variable:")
-            print(f"  export VLOG_WORKER_API_KEY={result['new_api_key']}")
-
-        elif args.worker_command == "expire-warning":
-            # List expiring API keys (Issue #226)
-            params = {"days": args.days}
-            if args.include_grace:
-                params["include_grace"] = "true"
-
-            response = httpx.get(
-                f"{WORKER_API_BASE}/workers/expiring-keys",
-                params=params,
-                headers=admin_headers,
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            result = safe_json_response(response)
-
-            keys = result.get("keys", [])
-            if not keys:
-                print(f"No API keys expiring within {args.days} days.")
-                return
-
-            print(f"API keys expiring within {args.days} days: {len(keys)}")
-            print()
-            print(f"{'Worker ID':<38} {'Name':<20} {'Expires':<20} {'Status':<15}")
-            print("-" * 95)
-
-            for key in keys:
-                worker_id = key["worker_id"]
-                name = (key["worker_name"] or "-")[:20]
-                expires = key["expires_at"][:19] if key.get("expires_at") else "-"
-                if key.get("in_grace_period"):
-                    status = "IN GRACE PERIOD"
+            print("Active Workers:")
+            for w in active:
+                name = w["worker_name"] or w["worker_id"][:8]
+                job = w.get("current_video_slug")
+                if job:
+                    print(f"  {name}: processing {job}")
                 else:
-                    days_left = key.get("days_until_expiration", 0)
-                    status = f"{days_left} days left"
+                    print(f"  {name}: idle")
 
-                print(f"{worker_id:<38} {name:<20} {expires:<20} {status:<15}")
+    elif args.worker_command == "rotate":
+        # Rotate a worker's API key (Issue #226)
+        params = {}
+        if args.revoke_old:
+            params["revoke_old"] = "true"
 
-            print()
-            print("To rotate a key: vlog worker rotate <worker-id>")
+        response = httpx.post(
+            f"{WORKER_API_BASE}/workers/{args.worker_id}/rotate",
+            params=params,
+            headers=admin_headers,
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+
+        # Handle 429 rate limit with user-friendly message
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "300")
+            try:
+                seconds = int(retry_after)
+                if seconds >= 60:
+                    wait_msg = f"{seconds // 60} minute(s)"
+                else:
+                    wait_msg = f"{seconds} second(s)"
+            except ValueError:
+                wait_msg = retry_after
+            print(f"Error: Rotation cooldown active. Please wait {wait_msg} before trying again.")
+            sys.exit(1)
+
+        result = safe_json_response(response)
+
+        print("API key rotated successfully!")
+        print()
+        print(f"  New API Key: {result['new_api_key']}")
+        if result.get("expires_at"):
+            print(f"  Expires at: {result['expires_at']}")
+        if result.get("old_key_expires_at"):
+            print(f"  Old key valid until: {result['old_key_expires_at']}")
+        print(f"  Overlap period: {result['overlap_hours']} hours")
+        print()
+        print("IMPORTANT: Save the new API key - it will not be shown again!")
+        print()
+        print("To update the worker, set the environment variable:")
+        print(f"  export VLOG_WORKER_API_KEY={result['new_api_key']}")
+
+    elif args.worker_command == "expire-warning":
+        # List expiring API keys (Issue #226)
+        params = {"days": args.days}
+        if args.include_grace:
+            params["include_grace"] = "true"
+
+        response = httpx.get(
+            f"{WORKER_API_BASE}/workers/expiring-keys",
+            params=params,
+            headers=admin_headers,
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        result = safe_json_response(response)
+
+        keys = result.get("keys", [])
+        if not keys:
+            print(f"No API keys expiring within {args.days} days.")
+            return
+
+        print(f"API keys expiring within {args.days} days: {len(keys)}")
+        print()
+        print(f"{'Worker ID':<38} {'Name':<20} {'Expires':<20} {'Status':<15}")
+        print("-" * 95)
+
+        for key in keys:
+            worker_id = key["worker_id"]
+            name = (key["worker_name"] or "-")[:20]
+            expires = key["expires_at"][:19] if key.get("expires_at") else "-"
+            if key.get("in_grace_period"):
+                status = "IN GRACE PERIOD"
+            else:
+                days_left = key.get("days_until_expiration", 0)
+                status = f"{days_left} days left"
+
+            print(f"{worker_id:<38} {name:<20} {expires:<20} {status:<15}")
+
+        print()
+        print("To rotate a key: vlog worker rotate <worker-id>")
 
 
 def cmd_manifests(args):

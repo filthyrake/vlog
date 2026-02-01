@@ -331,16 +331,20 @@ async def send_chat_message(
             started = started.replace(tzinfo=timezone.utc)
         stream_offset_ms = int((now - started).total_seconds() * 1000)
 
-    # Insert message
-    insert_query = chat_messages.insert().values(
-        stream_id=stream["id"],
-        user_id=user["id"],
-        content=sanitized_content,
-        stream_offset_ms=stream_offset_ms,
-        created_at=now,
+    # Insert message (use RETURNING for PostgreSQL compatibility)
+    insert_query = (
+        chat_messages.insert()
+        .values(
+            stream_id=stream["id"],
+            user_id=user["id"],
+            content=sanitized_content,
+            stream_offset_ms=stream_offset_ms,
+            created_at=now,
+        )
+        .returning(chat_messages.c.id)
     )
-    result = await db_execute_with_retry(insert_query)
-    message_id = result.lastrowid
+    result = await fetch_one_with_retry(insert_query)
+    message_id = result["id"]
 
     # Fetch the inserted message with username
     msg = await fetch_one_with_retry(
@@ -624,17 +628,18 @@ async def list_moderators(
         .order_by(stream_moderators.c.granted_at.desc())
     )
 
-    # Get granted_by usernames
+    # Batch-fetch all granter usernames (avoid N+1 queries)
+    granter_ids = {mod["granted_by"] for mod in mods if mod["granted_by"]}
+    granter_map: dict[str, str] = {}
+    if granter_ids:
+        granters = await fetch_all_with_retry(
+            users.select().where(users.c.id.in_(granter_ids))
+        )
+        granter_map = {g["id"]: g["username"] for g in granters}
+
+    # Build response list
     mod_responses = []
     for mod in mods:
-        granted_by_username = None
-        if mod["granted_by"]:
-            granter = await fetch_one_with_retry(
-                users.select().where(users.c.id == mod["granted_by"])
-            )
-            if granter:
-                granted_by_username = granter["username"]
-
         perms = mod["permissions"]
         if isinstance(perms, str):
             try:
@@ -650,7 +655,7 @@ async def list_moderators(
                 username=mod["username"],
                 permissions=perms,
                 granted_by_id=mod["granted_by"],
-                granted_by_username=granted_by_username,
+                granted_by_username=granter_map.get(mod["granted_by"]) if mod["granted_by"] else None,
                 granted_at=mod["granted_at"],
             )
         )
