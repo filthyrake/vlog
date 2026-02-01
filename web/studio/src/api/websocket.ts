@@ -44,6 +44,9 @@ const DEFAULT_CONFIG: Required<ChatWSConfig> = {
   heartbeatTimeout: 45000, // Should be > server heartbeat interval (30s)
 };
 
+// Maximum queued messages during reconnection to prevent memory growth
+const MAX_QUEUED_MESSAGES = 10;
+
 export class ChatWebSocket {
   private ws: WebSocket | null = null;
   private streamSlug: string;
@@ -331,8 +334,12 @@ export class ChatWebSocket {
         return false;
       }
     } else {
-      // Queue message for later
+      // Queue message for later (skip pong messages)
       if (message.type !== 'pong') {
+        // Limit queue size to prevent unbounded memory growth
+        if (this.messageQueue.length >= MAX_QUEUED_MESSAGES) {
+          this.messageQueue.shift(); // Drop oldest message
+        }
         this.messageQueue.push(message);
       }
       return false;

@@ -182,17 +182,22 @@ async def log_moderation_action(
     details: Optional[dict] = None,
 ) -> int:
     """Log a moderation action and return the log ID."""
-    insert_query = moderation_logs.insert().values(
-        stream_id=stream_id,
-        moderator_id=moderator_id,
-        action=action,
-        target_user_id=target_user_id,
-        target_message_id=target_message_id,
-        details=json.dumps(details) if details else None,
-        created_at=datetime.now(timezone.utc),
+    # Use RETURNING for PostgreSQL compatibility
+    insert_query = (
+        moderation_logs.insert()
+        .values(
+            stream_id=stream_id,
+            moderator_id=moderator_id,
+            action=action,
+            target_user_id=target_user_id,
+            target_message_id=target_message_id,
+            details=json.dumps(details) if details else None,
+            created_at=datetime.now(timezone.utc),
+        )
+        .returning(moderation_logs.c.id)
     )
-    result = await db_execute_with_retry(insert_query)
-    return result.lastrowid
+    result = await fetch_one_with_retry(insert_query)
+    return result["id"]
 
 
 def is_ban_active(ban: dict) -> bool:
@@ -338,19 +343,23 @@ async def create_ban(
     if ban_data.ban_type == BanType.TIMEOUT and ban_data.duration_seconds:
         expires_at = now + timedelta(seconds=ban_data.duration_seconds)
 
-    # Insert ban
-    insert_query = stream_bans.insert().values(
-        stream_id=stream["id"],
-        user_id=ban_data.user_id,
-        ban_type=ban_data.ban_type.value,
-        duration_seconds=ban_data.duration_seconds,
-        reason=ban_data.reason,
-        banned_by=user["id"],
-        created_at=now,
-        expires_at=expires_at,
+    # Insert ban (use RETURNING for PostgreSQL compatibility)
+    insert_query = (
+        stream_bans.insert()
+        .values(
+            stream_id=stream["id"],
+            user_id=ban_data.user_id,
+            ban_type=ban_data.ban_type.value,
+            duration_seconds=ban_data.duration_seconds,
+            reason=ban_data.reason,
+            banned_by=user["id"],
+            created_at=now,
+            expires_at=expires_at,
+        )
+        .returning(stream_bans.c.id)
     )
-    result = await db_execute_with_retry(insert_query)
-    ban_id = result.lastrowid
+    result = await fetch_one_with_retry(insert_query)
+    ban_id = result["id"]
 
     # Log moderation action
     await log_moderation_action(
@@ -659,19 +668,23 @@ async def create_filter(
             detail="Invalid or potentially dangerous regex pattern",
         )
 
-    # Insert filter
+    # Insert filter (use RETURNING for PostgreSQL compatibility)
     now = datetime.now(timezone.utc)
-    insert_query = stream_word_filters.insert().values(
-        stream_id=stream["id"],
-        pattern=filter_data.pattern,
-        is_regex=filter_data.is_regex,
-        action=filter_data.action.value,
-        timeout_seconds=filter_data.timeout_seconds,
-        created_at=now,
-        created_by=user["id"],
+    insert_query = (
+        stream_word_filters.insert()
+        .values(
+            stream_id=stream["id"],
+            pattern=filter_data.pattern,
+            is_regex=filter_data.is_regex,
+            action=filter_data.action.value,
+            timeout_seconds=filter_data.timeout_seconds,
+            created_at=now,
+            created_by=user["id"],
+        )
+        .returning(stream_word_filters.c.id)
     )
-    result = await db_execute_with_retry(insert_query)
-    filter_id = result.lastrowid
+    result = await fetch_one_with_retry(insert_query)
+    filter_id = result["id"]
 
     # Log moderation action
     await log_moderation_action(
@@ -824,17 +837,18 @@ async def list_moderation_logs(
         .offset(offset)
     )
 
-    # Get target usernames
+    # Batch-fetch all target usernames (avoid N+1 queries)
+    target_ids = {log["target_user_id"] for log in logs if log["target_user_id"]}
+    target_map: dict[str, str] = {}
+    if target_ids:
+        targets = await fetch_all_with_retry(
+            users.select().where(users.c.id.in_(target_ids))
+        )
+        target_map = {t["id"]: t["username"] for t in targets}
+
+    # Build response list
     log_responses = []
     for log in logs:
-        target_username = None
-        if log["target_user_id"]:
-            target = await fetch_one_with_retry(
-                users.select().where(users.c.id == log["target_user_id"])
-            )
-            if target:
-                target_username = target["username"]
-
         details = None
         if log["details"]:
             try:
@@ -850,7 +864,7 @@ async def list_moderation_logs(
                 moderator_username=log["moderator_username"],
                 action=log["action"],
                 target_user_id=log["target_user_id"],
-                target_username=target_username,
+                target_username=target_map.get(log["target_user_id"]) if log["target_user_id"] else None,
                 target_message_id=log["target_message_id"],
                 details=details,
                 created_at=log["created_at"],

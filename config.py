@@ -392,6 +392,11 @@ LOGIN_LOCKOUT_DURATION_MINUTES = get_int_env("VLOG_LOCKOUT_DURATION_MINUTES", 30
 # Password reset token expiry (hours)
 PASSWORD_RESET_EXPIRY_HOURS = get_int_env("VLOG_PASSWORD_RESET_EXPIRY_HOURS", 1, min_val=1, max_val=24)
 
+# Password reset feature flag
+# Disabled by default because email delivery is not yet implemented.
+# Enable only if you have implemented email delivery for reset tokens.
+PASSWORD_RESET_ENABLED = os.getenv("VLOG_PASSWORD_RESET_ENABLED", "false").lower() in ("true", "1", "yes")
+
 # =============================================================================
 # OIDC Configuration (Issue #200)
 # Generic OpenID Connect for self-hosted identity providers

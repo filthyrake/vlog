@@ -819,6 +819,15 @@ async def forgot_password(
 
     Always returns success to prevent email enumeration.
     """
+    from config import PASSWORD_RESET_ENABLED
+
+    # Check if password reset is enabled (requires email delivery to be configured)
+    if not PASSWORD_RESET_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Password reset is not available. Please contact an administrator.",
+        )
+
     ip_address = _get_client_ip(request)
     now = datetime.now(timezone.utc)
 
@@ -879,6 +888,15 @@ async def reset_password(
     body: ResetPasswordRequest,
 ) -> dict:
     """Reset password using token."""
+    from config import PASSWORD_RESET_ENABLED
+
+    # Check if password reset is enabled
+    if not PASSWORD_RESET_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Password reset is not available. Please contact an administrator.",
+        )
+
     ip_address = _get_client_ip(request)
     now = datetime.now(timezone.utc)
 
