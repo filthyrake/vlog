@@ -10,13 +10,27 @@ Provides endpoints for broadcasters to manage their VOD recordings:
 Related Issue: #530
 """
 
+import io
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from slowapi import Limiter
+
+# Import PIL at module level and configure decompression bomb protection
+# This must be done once at import time, not per-request, to avoid race conditions
+try:
+    from PIL import Image
+    # Limit to 100 megapixels to prevent decompression bombs (CVE-2018-14618)
+    # ~400MB uncompressed max, well within server memory limits
+    Image.MAX_IMAGE_PIXELS = 100_000_000
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    Image = None  # type: ignore
 
 from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth
@@ -531,68 +545,67 @@ async def upload_vod_thumbnail(
             detail="File too large. Maximum size is 5MB."
         )
 
-    # Save thumbnail
+    # Require PIL for secure image processing - fail closed if unavailable
+    if not PIL_AVAILABLE:
+        logger.error("PIL not available - cannot safely process thumbnail uploads")
+        raise HTTPException(
+            status_code=503,
+            detail="Image processing unavailable. Please contact administrator."
+        )
+
+    # Save thumbnail with atomic write (temp file + rename)
     video_dir = VIDEOS_DIR / video["slug"]
     if not video_dir.exists():
         video_dir.mkdir(parents=True, exist_ok=True)
 
     thumbnail_path = video_dir / "thumbnail.jpg"
+    thumbnail_temp = video_dir / f"thumbnail.{uuid.uuid4().hex}.tmp"
 
-    # Maximum allowed image dimensions to prevent decompression bomb attacks (CVE-2018-14618)
-    # 10000x10000 = 100MP is generous for thumbnails while preventing memory exhaustion
-    MAX_IMAGE_DIMENSION = 10000
+    # Maximum allowed dimensions - 5000x5000 is generous for thumbnails
+    # Reduces worst-case memory from 300MB to 75MB per request
+    MAX_IMAGE_DIMENSION = 5000
 
-    # Try to import PIL for secure image processing
     try:
-        from PIL import Image
-        import io
-        PIL_AVAILABLE = True
-    except ImportError:
-        PIL_AVAILABLE = False
+        img = Image.open(io.BytesIO(content))
 
-    if PIL_AVAILABLE:
-        try:
-            # Set pixel limit to prevent decompression bombs (~400MB uncompressed max)
-            Image.MAX_IMAGE_PIXELS = 100_000_000  # 100 megapixels
-
-            img = Image.open(io.BytesIO(content))
-
-            # Additional explicit dimension check before any processing
-            if img.width > MAX_IMAGE_DIMENSION or img.height > MAX_IMAGE_DIMENSION:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION} pixels."
-                )
-
-            # Convert to RGB if needed (for PNG with alpha or palette)
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-
-            # Resize if larger than target thumbnail size
-            if img.width > 1280 or img.height > 720:
-                img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
-
-            img.save(thumbnail_path, "JPEG", quality=85)
-
-        except HTTPException:
-            raise
-        except Image.DecompressionBombError:
+        # Check dimensions before any pixel access to catch bombs early
+        if img.width > MAX_IMAGE_DIMENSION or img.height > MAX_IMAGE_DIMENSION:
             raise HTTPException(
                 status_code=400,
-                detail="Image file is too large (potential decompression bomb)."
+                detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION} pixels."
             )
-        except Exception as e:
-            logger.error(f"Failed to process thumbnail for {slug}: {e}")
-            raise HTTPException(status_code=500, detail="Failed to process thumbnail")
-    else:
-        # PIL not available - save raw content (less safe, but functional)
-        logger.warning("PIL not available for thumbnail processing, saving raw content")
-        try:
-            with open(thumbnail_path, "wb") as f:
-                f.write(content)
-        except Exception as e:
-            logger.error(f"Failed to save thumbnail for {slug}: {e}")
-            raise HTTPException(status_code=500, detail="Failed to save thumbnail")
+
+        # Convert to RGB if needed (for PNG with alpha or palette)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+
+        # Resize if larger than target thumbnail size
+        if img.width > 1280 or img.height > 720:
+            img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+
+        # Save to temp file first
+        img.save(thumbnail_temp, "JPEG", quality=85)
+
+        # Atomic rename (POSIX guarantees atomicity for same-filesystem renames)
+        thumbnail_temp.rename(thumbnail_path)
+
+    except HTTPException:
+        raise
+    except Image.DecompressionBombError:
+        raise HTTPException(
+            status_code=400,
+            detail="Image file is too large (potential decompression bomb)."
+        )
+    except Exception as e:
+        logger.error(f"Failed to process thumbnail for {slug}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process thumbnail")
+    finally:
+        # Clean up temp file if it still exists (failed before rename)
+        if thumbnail_temp.exists():
+            try:
+                thumbnail_temp.unlink()
+            except Exception:
+                pass  # Best effort cleanup
 
     # Update video to mark as custom thumbnail
     await db_execute_with_retry(

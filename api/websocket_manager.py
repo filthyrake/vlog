@@ -737,22 +737,37 @@ async def authenticate_websocket(
     return user
 
 
-def get_client_ip(websocket: WebSocket) -> Optional[str]:
+def get_client_ip(websocket: WebSocket) -> str:
     """
     Extract client IP from WebSocket connection.
 
     Security: X-Forwarded-For is only trusted when the direct client IP is in TRUSTED_PROXIES.
     This prevents attackers from spoofing the header to bypass IP-based rate limiting.
+
+    Returns:
+        Client IP address, or "unknown" if unable to determine (ensures rate limiting
+        never receives None which could cause bypass or errors).
     """
     # Get direct client IP first
     direct_ip = websocket.client.host if websocket.client else None
 
+    if not direct_ip:
+        logger.warning("WebSocket connection has no client IP information")
+        return "unknown"
+
     # Only trust X-Forwarded-For if request came from a trusted proxy
     if TRUSTED_PROXIES and direct_ip in TRUSTED_PROXIES:
-        forwarded = websocket.headers.get("x-forwarded-for")
+        forwarded = websocket.headers.get("x-forwarded-for", "").strip()
         if forwarded:
             # X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
             # The first one is the original client
-            return forwarded.split(",")[0].strip()
+            first_ip = forwarded.split(",")[0].strip()
+            # Basic validation: must look like an IP address (contains . or :)
+            if first_ip and ("." in first_ip or ":" in first_ip):
+                return first_ip
+            else:
+                logger.warning(
+                    f"Malformed X-Forwarded-For header: {forwarded[:50]}, using direct IP"
+                )
 
     return direct_ip
