@@ -27,7 +27,6 @@ from api.common import (
     calculate_stream_offset_ms,
     get_real_ip,
     get_request_id,
-    require_valid_slug,
     verify_stream_access,
 )
 from api.database import database, live_streams, chat_messages, stream_moderators, users

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from api.common import ensure_utc
+from api.common import calculate_stream_offset_ms, ensure_utc
 
 
 class TestEnsureUtc:
@@ -67,6 +67,77 @@ class TestEnsureUtc:
 
         assert normalized < current_utc
         assert (current_utc - normalized).total_seconds() == 7200  # 2 hours
+
+
+class TestCalculateStreamOffsetMs:
+    """Test the calculate_stream_offset_ms helper function."""
+
+    def test_none_started_at_returns_none(self):
+        """Test that None stream_started_at returns None."""
+        current = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        assert calculate_stream_offset_ms(None, current) is None
+
+    def test_normal_offset_calculation(self):
+        """Test normal offset calculation with timezone-aware datetimes."""
+        started = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        current = datetime(2024, 1, 1, 12, 1, 0, tzinfo=timezone.utc)  # 1 minute later
+
+        result = calculate_stream_offset_ms(started, current)
+        assert result == 60000  # 60 seconds = 60000 ms
+
+    def test_naive_started_at_handled(self):
+        """Test that naive stream_started_at is normalized to UTC."""
+        started_naive = datetime(2024, 1, 1, 12, 0, 0)  # naive
+        current = datetime(2024, 1, 1, 12, 1, 0, tzinfo=timezone.utc)
+
+        result = calculate_stream_offset_ms(started_naive, current)
+        assert result == 60000
+
+    def test_naive_current_time_handled(self):
+        """Test that naive current_time is normalized to UTC (prevents TypeError)."""
+        started = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        current_naive = datetime(2024, 1, 1, 12, 1, 0)  # naive
+
+        # This would crash without ensure_utc(current_time) in the implementation
+        result = calculate_stream_offset_ms(started, current_naive)
+        assert result == 60000
+
+    def test_both_naive_datetimes_handled(self):
+        """Test that both naive datetimes work correctly."""
+        started_naive = datetime(2024, 1, 1, 12, 0, 0)
+        current_naive = datetime(2024, 1, 1, 12, 2, 30)  # 2.5 minutes later
+
+        result = calculate_stream_offset_ms(started_naive, current_naive)
+        assert result == 150000  # 150 seconds = 150000 ms
+
+    def test_non_utc_timezone_converted(self):
+        """Test that non-UTC timezone-aware datetimes are converted correctly."""
+        eastern = zoneinfo.ZoneInfo("America/New_York")
+        # 12:00 EST = 17:00 UTC
+        started_eastern = datetime(2024, 1, 1, 12, 0, 0, tzinfo=eastern)
+        # 12:01 EST = 17:01 UTC
+        current_eastern = datetime(2024, 1, 1, 12, 1, 0, tzinfo=eastern)
+
+        result = calculate_stream_offset_ms(started_eastern, current_eastern)
+        assert result == 60000  # 1 minute regardless of timezone
+
+    def test_negative_offset_clamped_to_zero(self):
+        """Test that negative offsets (clock skew) are clamped to 0."""
+        # started_at is in the future (clock skew scenario)
+        started = datetime(2024, 1, 1, 13, 0, 0, tzinfo=timezone.utc)
+        current = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)  # 1 hour earlier
+
+        result = calculate_stream_offset_ms(started, current)
+        assert result == 0  # Clamped to 0, not -3600000
+
+    def test_large_offset_no_overflow(self):
+        """Test that large offsets (multi-day streams) work correctly."""
+        started = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        current = datetime(2024, 1, 8, 0, 0, 0, tzinfo=timezone.utc)  # 7 days later
+
+        result = calculate_stream_offset_ms(started, current)
+        expected = 7 * 24 * 60 * 60 * 1000  # 7 days in milliseconds
+        assert result == expected
 
 
 @pytest.mark.asyncio

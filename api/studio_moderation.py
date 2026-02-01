@@ -22,7 +22,7 @@ from slowapi import Limiter
 from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth
 from api.auth.permissions import Permission, Role, has_permission
-from api.common import ensure_utc, get_real_ip, get_request_id, require_valid_slug, verify_stream_access
+from api.common import ensure_utc, get_real_ip, get_request_id, verify_stream_access
 from api.database import (
     database,
     live_streams,
