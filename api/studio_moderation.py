@@ -9,10 +9,13 @@ Provides endpoints for stream moderation:
 Related Issue: #530
 """
 
+import atexit
 import json
 import logging
 import re
 from datetime import datetime, timezone, timedelta
+from multiprocessing import Process, Queue
+from queue import Empty
 from typing import Optional
 
 import sqlalchemy as sa
@@ -66,40 +69,182 @@ limiter = Limiter(
     enabled=RATE_LIMIT_ENABLED,
 )
 
-# ReDoS protection: dangerous patterns to reject
-DANGEROUS_REGEX_PATTERNS = [
-    r"(a+)+",
-    r"(a|a)+",
-    r"(a|aa)+",
-    r"(.*a){10,}",
-    r"([a-zA-Z]+)*",
-]
-
 MAX_FILTERS_PER_STREAM = 50
+
+# Timeout in seconds for regex test execution
+# 0.5s balances security (detect slow patterns) with UX (don't frustrate legitimate users)
+REGEX_TEST_TIMEOUT_SECONDS = 0.5
+
+# Track active regex test processes for cleanup
+_active_regex_processes: list[Process] = []
+
+
+def _cleanup_regex_processes() -> None:
+    """Terminate any lingering regex test processes on shutdown."""
+    for proc in _active_regex_processes:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=0.1)
+    _active_regex_processes.clear()
+
+
+# Register cleanup handler for graceful shutdown
+atexit.register(_cleanup_regex_processes)
+
+
+def _has_nested_quantifiers(pattern: str) -> bool:
+    """Detect nested quantified groups like (a+)+ or (a*)* that cause exponential backtracking."""
+    nested_quantifier_pattern = r'\([^)]*[+*][^)]*\)[+*?]|\([^)]*[+*][^)]*\)\{[0-9,]+\}'
+    return bool(re.search(nested_quantifier_pattern, pattern))
+
+
+def _has_overlapping_alternations(pattern: str) -> bool:
+    """Detect alternations where branches can match the same input, like (a|aa)+."""
+    overlapping_alt = r'\([^)]*\|[^)]*\)[+*]'
+    if not re.search(overlapping_alt, pattern):
+        return False
+
+    alt_match = re.search(r'\(([^|)]+)\|([^)]+)\)[+*]', pattern)
+    if alt_match:
+        branch1, branch2 = alt_match.group(1), alt_match.group(2)
+        # If one branch is prefix of another or they share starting character
+        if branch1.startswith(branch2) or branch2.startswith(branch1):
+            return True
+        if branch1 and branch2 and branch1[0] == branch2[0]:
+            return True
+    return False
+
+
+def _has_greedy_repetition(pattern: str) -> bool:
+    """Detect .* or .+ followed by specific char, repeated: (.*a)+"""
+    greedy_specific = r'\(\.\*[^)]+\)[+*]|\(\.\+[^)]+\)[+*]'
+    return bool(re.search(greedy_specific, pattern))
+
+
+def _has_excessive_nesting(pattern: str, max_depth: int = 3) -> bool:
+    """Check for deeply nested groups that increase backtracking complexity."""
+    depth = 0
+    found_max_depth = 0
+    for char in pattern:
+        if char == '(':
+            depth += 1
+            found_max_depth = max(found_max_depth, depth)
+        elif char == ')':
+            depth -= 1
+    return found_max_depth > max_depth
+
+
+def _has_dangerous_regex_structure(pattern: str) -> bool:
+    """
+    Detect structurally dangerous regex patterns that could cause catastrophic backtracking.
+
+    Returns True if any dangerous pattern is detected.
+    """
+    return (
+        _has_nested_quantifiers(pattern) or
+        _has_overlapping_alternations(pattern) or
+        _has_greedy_repetition(pattern) or
+        _has_excessive_nesting(pattern)
+    )
+
+
+def _regex_match_worker(pattern: str, test_input: str, result_queue: Queue) -> None:
+    """Worker function that runs in a separate process to test regex matching."""
+    try:
+        compiled = re.compile(pattern)
+        compiled.search(test_input)
+        result_queue.put(True)
+    except Exception:
+        result_queue.put(False)
+
+
+def _test_regex_with_timeout(pattern: str, test_input: str, timeout: float) -> bool:
+    """
+    Test a regex pattern against input with a hard timeout using process isolation.
+
+    Unlike threads, processes can be forcibly terminated, ensuring the regex
+    cannot consume CPU beyond the timeout period.
+
+    Returns True if matching completes within timeout, False otherwise.
+    """
+    result_queue: Queue = Queue()
+    proc = Process(target=_regex_match_worker, args=(pattern, test_input, result_queue))
+
+    try:
+        _active_regex_processes.append(proc)
+        proc.start()
+        proc.join(timeout=timeout)
+
+        if proc.is_alive():
+            # Timeout exceeded - forcibly terminate the process
+            proc.terminate()
+            proc.join(timeout=0.1)  # Brief wait for cleanup
+            if proc.is_alive():
+                proc.kill()  # Force kill if terminate didn't work
+                proc.join(timeout=0.1)
+            logger.warning(
+                "Regex pattern timed out and was terminated",
+                extra={"pattern": pattern[:50], "timeout": timeout}
+            )
+            return False
+
+        # Process completed - get result from queue
+        # Note: Queue.empty() is unreliable across processes, use get() with timeout instead
+        try:
+            return result_queue.get(timeout=0.1)
+        except Empty:
+            # No result in queue - worker failed silently
+            return False
+
+    except Exception as e:
+        logger.error(f"Regex test process error: {e}")
+        return False
+    finally:
+        # Clean up process reference
+        if proc in _active_regex_processes:
+            _active_regex_processes.remove(proc)
+        # Ensure process is cleaned up
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=0.1)
+        # Close queue to avoid resource leaks
+        result_queue.close()
+        result_queue.join_thread()
 
 
 def validate_regex_pattern(pattern: str) -> bool:
     """
     Validate a regex pattern is safe from ReDoS attacks.
 
+    Uses multiple layers of protection:
+    1. Length limit
+    2. Structural analysis for known dangerous patterns
+    3. Timeout-limited test execution against adversarial input
+
     Returns True if safe, False if potentially dangerous.
     """
-    # Check length
+    # Check length - limit complexity surface
     if len(pattern) > 100:
         return False
 
-    # Check for known dangerous patterns
-    for dangerous in DANGEROUS_REGEX_PATTERNS:
-        if dangerous in pattern:
-            return False
+    # Structural analysis for known dangerous patterns
+    if _has_dangerous_regex_structure(pattern):
+        return False
 
-    # Try to compile with timeout simulation
-    # In production, use RE2 library for linear time guarantee
+    # Try to compile
     try:
         re.compile(pattern)
-        return True
     except re.error:
         return False
+
+    # Test against adversarial input that triggers backtracking
+    # This string is designed to maximize backtracking for vulnerable patterns
+    adversarial_input = "a" * 30 + "!"
+
+    if not _test_regex_with_timeout(pattern, adversarial_input, REGEX_TEST_TIMEOUT_SECONDS):
+        return False
+
+    return True
 
 
 async def verify_stream_moderator(stream_id: int, user: dict, required_permission: str) -> bool:

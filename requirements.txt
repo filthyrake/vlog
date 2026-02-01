@@ -26,6 +26,9 @@ slowapi>=0.1.9
 # System resource monitoring
 psutil>=5.9.0
 
+# Image processing for thumbnail uploads
+Pillow>=10.0.0
+
 # HTML sanitization for comments
 bleach>=6.0.0
 

@@ -104,6 +104,7 @@ async def verify_stream_analytics_access(stream_slug: str, user: dict) -> dict:
     summary="Get stream analytics",
     description="Get analytics summary and viewer history for a stream.",
 )
+@limiter.limit("60/minute")
 async def get_stream_analytics(
     request: Request,
     stream_slug: str,
@@ -176,6 +177,7 @@ async def get_stream_analytics(
     summary="Get analytics summary",
     description="Get aggregated analytics summary for a stream.",
 )
+@limiter.limit("60/minute")
 async def get_analytics_summary(
     request: Request,
     stream_slug: str,
@@ -227,6 +229,7 @@ async def get_analytics_summary(
     summary="Get viewer history",
     description="Get viewer count history for a stream.",
 )
+@limiter.limit("60/minute")
 async def get_viewer_history(
     request: Request,
     stream_slug: str,
@@ -274,6 +277,7 @@ async def get_viewer_history(
     description="Trigger recomputation of analytics for a stream.",
     dependencies=[Depends(require_csrf)],
 )
+@limiter.limit("10/minute")
 async def recompute_analytics(
     request: Request,
     stream_slug: str,
