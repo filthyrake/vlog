@@ -108,10 +108,16 @@ else:
 # Maximum video duration allowed (1 week in seconds)
 MAX_DURATION_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
 
-# Cached transcoding settings (refreshed periodically)
+# Cached transcoding settings
+#
+# Cache transcoding settings for 60 seconds to balance freshness with database load.
+# Rationale: Transcoding jobs can run for hours, so a 60-second TTL is very short
+# relative to job duration. This ensures settings changes (like HLS segment duration)
+# take effect within 1 minute while avoiding a database query on every transcode step.
+# The worker may process hundreds of segments per job, so caching is essential.
 _cached_transcoder_settings: Dict[str, Any] = {}
 _cached_transcoder_settings_time: float = 0
-_TRANSCODER_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+_TRANSCODER_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_transcoder_settings() -> Dict[str, Any]:
@@ -140,7 +146,7 @@ async def get_transcoder_settings() -> Dict[str, Any]:
     global _cached_transcoder_settings, _cached_transcoder_settings_time
 
     now = time.time()
-    if _cached_transcoder_settings and (now - _cached_transcoder_settings_time) < _TRANSCODER_SETTINGS_CACHE_TTL:
+    if _cached_transcoder_settings and (now - _cached_transcoder_settings_time) < _TRANSCODER_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_transcoder_settings
 
     try:

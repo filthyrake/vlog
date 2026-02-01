@@ -24,6 +24,26 @@ async def configure_database():
     pass
 
 
+# Video categories for content organization
+#
+# PURPOSE:
+# --------
+# Categories provide a primary organizational hierarchy for videos.
+# Each video can belong to at most one category. For finer-grained
+# tagging, see the `tags` and `video_tags` tables.
+#
+# FIELD SEMANTICS:
+# ----------------
+# - name: Human-readable display name (e.g., "Gaming", "Tutorials")
+# - slug: URL-safe identifier used in routes (e.g., "/categories/gaming")
+#   → Unique constraint ensures no duplicate slugs
+# - description: Optional rich text description shown on category pages
+#
+# USAGE:
+# ------
+# - Videos reference categories via nullable FK (videos.category_id)
+# - Category deletion does NOT cascade to videos (FK uses SET NULL)
+# - Admin UI allows creating/editing categories and assigning videos
 categories = sa.Table(
     "categories",
     metadata,
@@ -34,6 +54,39 @@ categories = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
 )
 
+# Core video metadata table
+#
+# PURPOSE:
+# --------
+# Stores all video metadata including transcoding status, thumbnails,
+# streaming format, analytics aggregates, and social engagement settings.
+# Actual video files are stored on the filesystem (NAS) with paths derived
+# from the video slug.
+#
+# LIFECYCLE:
+# ----------
+# 1. Upload: Video created with status='pending', file saved to uploads dir
+# 2. Processing: Worker claims job, status='processing', transcoding begins
+# 3. Ready: Transcoding complete, status='ready', HLS files in videos dir
+# 4. Failed: Transcoding error, status='failed', error_message populated
+#
+# SOFT DELETE:
+# ------------
+# - deleted_at: When set, video is hidden from public listings but preserved
+# - Files moved to archive directory for ARCHIVE_RETENTION_DAYS (default 30)
+# - Background job permanently deletes after retention period expires
+#
+# INDEXES:
+# --------
+# - ix_videos_status: Filter by transcoding status
+# - ix_videos_category_id: List videos by category
+# - ix_videos_created_at: Sort by upload date (descending for recent)
+# - ix_videos_published_at: Filter/sort published videos
+# - ix_videos_deleted_at: Filter soft-deleted videos (NULL = not deleted)
+# - ix_videos_streaming_format: Filter by HLS/CMAF format
+# - ix_videos_owner_id: Filter by video owner (multi-user support)
+#
+# See: docs/TRANSCODING_ARCHITECTURE.md for transcoding workflow details
 videos = sa.Table(
     "videos",
     metadata,
@@ -127,6 +180,30 @@ videos = sa.Table(
 )
 
 # Available quality variants for each video
+#
+# PURPOSE:
+# --------
+# Tracks which quality levels (2160p, 1080p, 720p, etc.) are available
+# for each video. Only qualities at or below the source resolution are
+# generated (e.g., a 1080p source won't have 1440p or 2160p variants).
+#
+# FIELD SEMANTICS:
+# ----------------
+# - quality: Named preset ("2160p", "1080p", "720p", "480p", "360p", "original")
+#   → "original" is the untranscoded source file (if preserved)
+# - width/height: Actual dimensions after encoding (may differ from preset target)
+# - bitrate: Actual video bitrate in kbps (from ffprobe after encoding)
+#
+# RELATIONSHIP:
+# -------------
+# - One video has many quality variants (1:N relationship)
+# - CASCADE delete: removing a video removes all its quality records
+#
+# USAGE:
+# ------
+# - Public API uses this to show available quality options in player
+# - Adaptive bitrate streaming (ABR) uses this for quality ladder
+# - Admin can see which qualities are ready vs pending
 video_qualities = sa.Table(
     "video_qualities",
     metadata,
@@ -146,7 +223,27 @@ video_qualities = sa.Table(
     sa.Index("ix_video_qualities_video_id", "video_id"),
 )
 
-# Analytics: unique viewers (cookie-based)
+# Analytics: unique viewers (cookie-based session tracking)
+#
+# PURPOSE:
+# --------
+# Tracks unique visitors using anonymous session cookies. Each viewer
+# gets a persistent session_id stored in a cookie, allowing us to count
+# unique viewers without storing PII.
+#
+# FIELD SEMANTICS:
+# ----------------
+# - session_id: 64-char hex string from secure random generation
+#   → Stored in HTTP-only cookie on client (prevents JS access)
+#   → Used as foreign key for playback_sessions
+# - first_seen: When this viewer first visited the platform
+# - last_seen: Updated on each new playback session
+#
+# PRIVACY:
+# --------
+# - No PII stored (no IP addresses, user agents, etc.)
+# - Session can be linked to user_id via playback_sessions if logged in
+# - Cookie is same-site to prevent cross-site tracking
 viewers = sa.Table(
     "viewers",
     metadata,
@@ -156,7 +253,33 @@ viewers = sa.Table(
     sa.Column("last_seen", sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
 )
 
-# Analytics: playback sessions
+# Analytics: playback sessions for watch time and completion tracking
+#
+# PURPOSE:
+# --------
+# Tracks individual video viewing sessions including watch duration,
+# completion status, and quality preferences. Used for engagement
+# analytics and "resume playback" features.
+#
+# SESSION LIFECYCLE:
+# ------------------
+# 1. Start: Created when video player initializes (session_token generated)
+# 2. Progress: duration_watched and max_position updated as user watches
+# 3. End: ended_at set when session closes (tab close, navigate away)
+#
+# FIELD SEMANTICS:
+# ----------------
+# - session_token: Unique identifier for this playback instance
+# - duration_watched: Total seconds actually watched (excludes paused time)
+# - max_position: Furthest timestamp reached (for resume playback)
+# - quality_used: Primary quality level used during session (may change)
+# - completed: True if user watched >= 90% of video duration
+#
+# INDEXES:
+# --------
+# - ix_playback_sessions_video_id: Aggregate stats per video
+# - ix_playback_sessions_viewer_id: User watch history
+# - ix_playback_sessions_started_at: Time-series analytics
 playback_sessions = sa.Table(
     "playback_sessions",
     metadata,
@@ -228,7 +351,31 @@ transcoding_jobs = sa.Table(
     sa.Index("ix_transcoding_jobs_claim_expires", "claim_expires_at"),
 )
 
-# Per-quality progress tracking
+# Per-quality progress tracking for transcoding jobs
+#
+# PURPOSE:
+# --------
+# Tracks encoding progress for each quality variant independently.
+# Enables granular progress display (e.g., "720p: 45%, 1080p: 20%")
+# and supports resuming transcodes that failed partway through.
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> in_progress -> uploading -> uploaded -> completed (success path)
+# pending -> in_progress -> failed (error during encode)
+# pending -> skipped (quality higher than source resolution)
+# Note: "uploaded" represents all segments uploaded but before finalization.
+# FIELD SEMANTICS:
+# ----------------
+# - quality: One of "2160p", "1080p", "720p", "480p", "360p", "original"
+# - segments_total: Total HLS segments expected for this quality
+# - segments_completed: Segments successfully encoded so far
+# - progress_percent: Overall progress 0-100 (derived from segments)
+#
+# CONSTRAINTS:
+# ------------
+# - uq_job_quality: Each job can only have one record per quality level
+# - CASCADE delete: Removing the job removes all quality progress records
 quality_progress = sa.Table(
     "quality_progress",
     metadata,
@@ -270,7 +417,32 @@ quality_progress = sa.Table(
     sa.UniqueConstraint("job_id", "quality", name="uq_job_quality"),
 )
 
-# Transcription tracking
+# Transcription tracking for automatic caption generation
+#
+# PURPOSE:
+# --------
+# Tracks Whisper-based speech-to-text transcription jobs. Each video
+# can have at most one transcription. Generates WebVTT captions for
+# the video player and full-text transcript for search/accessibility.
+#
+# STATUS LIFECYCLE:
+# -----------------
+# pending -> processing -> completed (success)
+# pending -> processing -> failed (Whisper error)
+#
+# FIELD SEMANTICS:
+# ----------------
+# - language: Detected or user-specified language code (e.g., "en", "es")
+# - duration_seconds: How long the transcription process took
+# - transcript_text: Full plain-text transcript (for search indexing)
+# - vtt_path: Path to WebVTT file relative to video storage
+# - word_count: Total words in transcript (for stats)
+#
+# CONFIGURATION:
+# --------------
+# - Model: VLOG_WHISPER_MODEL (tiny, base, small, medium, large-v3)
+# - Compute: VLOG_TRANSCRIPTION_COMPUTE_TYPE (float16, int8)
+# - Auto-transcribe: VLOG_TRANSCRIPTION_ON_UPLOAD (default: true)
 transcriptions = sa.Table(
     "transcriptions",
     metadata,
@@ -491,6 +663,24 @@ deployment_events = sa.Table(
 )
 
 # Tags for granular content organization
+#
+# PURPOSE:
+# --------
+# Provides flexible tagging for videos beyond the single-category hierarchy.
+# Videos can have multiple tags (many-to-many via video_tags table).
+# Useful for cross-cutting concerns like "tutorial", "beginner", "live-stream".
+#
+# FIELD SEMANTICS:
+# ----------------
+# - name: Display name shown in UI (e.g., "Getting Started")
+# - slug: URL-safe identifier for routes/API (e.g., "getting-started")
+#   → Unique constraint prevents duplicate tags
+#
+# USAGE:
+# ------
+# - Tags are global (not scoped to categories)
+# - Admin creates tags, then assigns to videos via video_tags junction
+# - Public API supports filtering videos by tag slug
 tags = sa.Table(
     "tags",
     metadata,
@@ -502,6 +692,22 @@ tags = sa.Table(
 )
 
 # Many-to-many relationship between videos and tags
+#
+# PURPOSE:
+# --------
+# Junction table linking videos to tags. Allows each video to have
+# multiple tags and each tag to be applied to multiple videos.
+#
+# CASCADE BEHAVIOR:
+# -----------------
+# - Deleting a video removes all its tag associations
+# - Deleting a tag removes all video associations for that tag
+# - Neither action deletes the other entity (just the relationship)
+#
+# INDEXES:
+# --------
+# - ix_video_tags_video_id: Efficiently find all tags for a video
+# - ix_video_tags_tag_id: Efficiently find all videos with a tag
 video_tags = sa.Table(
     "video_tags",
     metadata,
