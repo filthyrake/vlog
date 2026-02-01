@@ -630,7 +630,7 @@ async def list_moderators(
 
     # Batch-fetch all granter usernames (avoid N+1 queries)
     granter_ids = {mod["granted_by"] for mod in mods if mod["granted_by"]}
-    granter_map: dict[int, str] = {}
+    granter_map: dict[str, str] = {}
     if granter_ids:
         granters = await fetch_all_with_retry(
             users.select().where(users.c.id.in_(granter_ids))
