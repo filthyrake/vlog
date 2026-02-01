@@ -1689,6 +1689,108 @@ Response:
 }
 ```
 
+### Watermark Settings
+
+Manage watermark overlay for transcoded videos. Supports both image and text watermarks.
+
+#### Get Watermark Configuration
+```
+GET /api/settings/watermark
+```
+
+Response:
+```json
+{
+  "enabled": true,
+  "type": "image",
+  "image": "watermark.png",
+  "image_exists": true,
+  "image_url": "/api/settings/watermark/image",
+  "max_width_percent": 15,
+  "text": null,
+  "text_size": 24,
+  "text_color": "#FFFFFF",
+  "position": "bottom-right",
+  "opacity": 0.7,
+  "padding": 10
+}
+```
+
+**Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| enabled | bool | Whether watermarking is enabled |
+| type | string | Watermark type: `image` or `text` |
+| image | string | Path to watermark image (relative to storage) |
+| image_exists | bool | Whether the image file exists on disk |
+| image_url | string | URL to preview the watermark image |
+| max_width_percent | int | Maximum width of watermark as percentage of video width |
+| text | string | Text to display (for text watermarks) |
+| text_size | int | Font size for text watermarks |
+| text_color | string | Hex color for text watermarks |
+| position | string | Position: `top-left`, `top-right`, `bottom-left`, `bottom-right`, `center` |
+| opacity | float | Opacity from 0.0 (transparent) to 1.0 (opaque) |
+| padding | int | Padding from video edge in pixels |
+
+#### Get Watermark Image
+```
+GET /api/settings/watermark/image
+```
+
+Returns the watermark image file for preview.
+
+**Response:** Binary image data with appropriate `Content-Type` header.
+
+**Error Responses:**
+- `404 Not Found` - No watermark configured or image file not found
+
+#### Upload Watermark Image
+```
+POST /api/settings/watermark/upload
+Content-Type: multipart/form-data
+```
+
+Form fields:
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| file | file | yes | Image file (PNG, JPEG, WebP, SVG, GIF, max 10MB) |
+
+Response:
+```json
+{
+  "status": "ok",
+  "message": "Watermark uploaded successfully",
+  "path": "watermark.png",
+  "size": 45678,
+  "note": "Update 'watermark.image' to 'watermark.png' and 'watermark.enabled' to true in Settings to enable the watermark."
+}
+```
+
+**Notes:**
+- For best results, use a PNG with transparency
+- After uploading, enable via Settings: set `watermark.enabled` to `true`
+
+#### Delete Watermark Image
+```
+DELETE /api/settings/watermark
+```
+
+Removes the watermark image file from storage.
+
+Response:
+```json
+{
+  "status": "ok",
+  "message": "Watermark deleted successfully",
+  "note": "Set 'watermark.enabled' to false in Settings to disable the watermark overlay."
+}
+```
+
+**Error Responses:**
+- `404 Not Found` - No watermark configured or image file not found
+
+---
+
 ### Re-encode Queue
 
 Queue videos for re-encoding to modern CMAF format with HEVC/AV1 codecs.

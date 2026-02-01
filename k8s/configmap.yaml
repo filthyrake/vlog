@@ -1,5 +1,8 @@
 # VLog Worker ConfigMap
 # kubectl apply -f k8s/configmap.yaml
+#
+# This ConfigMap contains environment variables for VLog worker pods.
+# Review and update values marked REQUIRED before deploying.
 
 apiVersion: v1
 kind: ConfigMap
@@ -10,25 +13,72 @@ metadata:
     app.kubernetes.io/name: vlog
     app.kubernetes.io/component: worker
 data:
-  # Worker API URL - update this to your Worker API service address
-  # For external API: use the public IP/hostname of your VLog server
-  # For in-cluster API: use the service name
-  VLOG_WORKER_API_URL: "http://vlog-server.example.com:9002"
+  # ===========================================================================
+  # REQUIRED: Worker API URL
+  # ===========================================================================
+  # The URL workers use to connect to the VLog Worker API server.
+  # This MUST be changed from the placeholder value before deployment.
+  #
+  # Examples:
+  #   In-cluster (same namespace):
+  #     http://vlog-server:9002
+  #   In-cluster (different namespace):
+  #     http://vlog-server.vlog-namespace.svc.cluster.local:9002
+  #   External server:
+  #     http://vlog.yourdomain.com:9002
+  #     https://vlog.yourdomain.com:9002  (if using TLS)
+  #
+  # CHANGE THIS VALUE:
+  VLOG_WORKER_API_URL: "http://vlog-server.example.com:9002"  # <-- PLACEHOLDER - CHANGE ME
 
-  # Heartbeat interval in seconds
+  # ===========================================================================
+  # OPTIONAL: Worker Behavior Settings
+  # ===========================================================================
+  # These settings control worker polling and health check behavior.
+  # Default values work well for most deployments.
+
+  # Heartbeat interval in seconds - how often workers report their status
+  # Lower values = faster detection of offline workers, more API traffic
+  # Range: 10-120 seconds, Default: 30
   VLOG_WORKER_HEARTBEAT_INTERVAL: "30"
 
-  # Job poll interval in seconds (when no jobs available)
+  # Job poll interval in seconds - how often to check for new jobs when idle
+  # Only used when Redis is not available or in database-only mode
+  # Lower values = faster job pickup, more database load
+  # Range: 5-60 seconds, Default: 10
   VLOG_WORKER_POLL_INTERVAL: "10"
 
-  # Work directory for temporary files
+  # Work directory for temporary transcoding files
+  # Must match the volumeMount path in worker-deployment.yaml
+  # Default: /tmp/vlog-worker
   VLOG_WORKER_WORK_DIR: "/tmp/vlog-worker"
 
-  # Redis URL for job queue (optional - enables instant job dispatch)
-  # If empty, workers will poll the database for jobs
-  # Include password in URL: redis://:PASSWORD@host:6379
-  # Note: For production, store the Redis URL in a Secret instead of ConfigMap
+  # ===========================================================================
+  # OPTIONAL: Redis Configuration (for instant job dispatch)
+  # ===========================================================================
+  # Redis enables instant job notifications via pub/sub instead of polling.
+  # Without Redis, workers poll the database periodically (still works, just slower).
+  #
+  # SECURITY NOTE: For production, store the Redis URL in a Secret instead of
+  # ConfigMap to protect the password. See secret.yaml for an example.
+  #
+  # Examples:
+  #   Without password:
+  #     redis://redis-host:6379
+  #   With password:
+  #     redis://:YOUR_PASSWORD@redis-host:6379
+  #   In-cluster Redis:
+  #     redis://redis.vlog-namespace.svc.cluster.local:6379
+  #   External Redis:
+  #     redis://:password@redis.yourdomain.com:6379
+  #
+  # Uncomment and configure if using Redis:
   # VLOG_REDIS_URL: "redis://:YOUR_REDIS_PASSWORD@vlog-server.example.com:6379"
 
-  # Job queue mode: database (polling only), redis (Redis only), hybrid (Redis with DB fallback)
+  # Job queue mode - how workers receive job notifications
+  # Options:
+  #   database - Poll database only (no Redis required)
+  #   redis    - Use Redis pub/sub only (fails if Redis unavailable)
+  #   hybrid   - Redis with database fallback (recommended if using Redis)
+  # Default: database (if VLOG_REDIS_URL not set), hybrid (if set)
   # VLOG_JOB_QUEUE_MODE: "hybrid"
