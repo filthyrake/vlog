@@ -9,11 +9,14 @@ Runs on port 8080 by default (configurable via VLOG_WORKER_HEALTH_PORT).
 """
 
 import asyncio
+import logging
 import shutil
 from http import HTTPStatus
 from typing import Callable, Optional
 
 from config import WORKER_API_URL
+
+logger = logging.getLogger(__name__)
 
 # Default health check port
 DEFAULT_HEALTH_PORT = 8080
@@ -21,6 +24,9 @@ DEFAULT_HEALTH_PORT = 8080
 
 class HealthServer:
     """Simple async HTTP health server for worker liveness/readiness probes."""
+
+    # Timeout for writing response to client (prevents slow-read attacks)
+    RESPONSE_WRITE_TIMEOUT = 5.0
 
     def __init__(
         self,
@@ -39,6 +45,8 @@ class HealthServer:
         self._server: Optional[asyncio.Server] = None
         self._is_ready = False
         self._last_heartbeat_ok = False
+        # Cache FFmpeg availability to avoid repeated PATH lookups on every healthcheck
+        self._ffmpeg_available: Optional[bool] = None
 
     def set_ready(self, ready: bool):
         """Set readiness state (called after successful API connection)."""
@@ -49,8 +57,14 @@ class HealthServer:
         self._last_heartbeat_ok = ok
 
     async def _check_ffmpeg(self) -> bool:
-        """Check if FFmpeg is available."""
-        return shutil.which("ffmpeg") is not None
+        """Check if FFmpeg is available (cached after first check)."""
+        if self._ffmpeg_available is None:
+            self._ffmpeg_available = shutil.which("ffmpeg") is not None
+        return self._ffmpeg_available
+
+    def clear_ffmpeg_cache(self):
+        """Clear the FFmpeg availability cache (useful for testing)."""
+        self._ffmpeg_available = None
 
     # Maximum time for entire request parsing (request line + headers)
     REQUEST_PARSE_TIMEOUT = 10.0
@@ -79,6 +93,11 @@ class HealthServer:
             if line == b"\r\n" or line == b"\n" or line == b"":
                 break
             header_count += 1
+        else:
+            # Loop exited due to hitting MAX_HEADER_LINES, not finding end of headers
+            # This indicates a potential attack or malformed request
+            logger.warning(f"Request exceeded MAX_HEADER_LINES ({self.MAX_HEADER_LINES})")
+            raise ValueError("Too many headers")
 
         return path
 
@@ -119,7 +138,7 @@ class HealthServer:
                 status = HTTPStatus.NOT_FOUND
                 body = '{"error": "not found"}'
 
-            # Send response
+            # Send response with timeout to prevent slow-read attacks
             response = (
                 f"HTTP/1.1 {status.value} {status.phrase}\r\n"
                 f"Content-Type: application/json\r\n"
@@ -129,16 +148,35 @@ class HealthServer:
                 f"{body}"
             )
             writer.write(response.encode())
-            await writer.drain()
+            await asyncio.wait_for(writer.drain(), timeout=self.RESPONSE_WRITE_TIMEOUT)
 
         except asyncio.TimeoutError:
-            # Client took too long to send request - silently close
-            pass
+            # Client took too long to send request or receive response
+            logger.debug("Health check request timed out")
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             # Client disconnected - no need to send error response
             pass
+        except ValueError as e:
+            # Malformed request (e.g., too many headers)
+            logger.debug(f"Health check request error: {e}")
+            try:
+                error_response = (
+                    "HTTP/1.1 400 Bad Request\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: 26\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    '{"error": "bad request"}'
+                )
+                writer.write(error_response.encode())
+                await asyncio.wait_for(
+                    writer.drain(), timeout=self.RESPONSE_WRITE_TIMEOUT
+                )
+            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
+                pass  # Client disconnected or timed out during error response
         except (OSError, UnicodeDecodeError) as e:
             # Network errors or malformed request encoding
+            logger.debug(f"Health check request error: {type(e).__name__}: {e}")
             # Return 500 if we can still write to the connection
             try:
                 error_response = (
@@ -150,9 +188,11 @@ class HealthServer:
                     '{"error": "server error"}'
                 )
                 writer.write(error_response.encode())
-                await writer.drain()
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                pass  # Client disconnected during error response
+                await asyncio.wait_for(
+                    writer.drain(), timeout=self.RESPONSE_WRITE_TIMEOUT
+                )
+            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
+                pass  # Client disconnected or timed out during error response
         finally:
             writer.close()
             try:

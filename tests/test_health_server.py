@@ -97,6 +97,8 @@ class TestHealthServer:
         """Test that /ready returns 503 when FFmpeg is not available."""
         health_server.set_ready(True)
         health_server.set_heartbeat_status(True)
+        # Clear FFmpeg cache to ensure our mock is used
+        health_server.clear_ffmpeg_cache()
 
         with patch("shutil.which", return_value=None):
             status, body = await self._make_request(health_server._test_port, "/ready")
@@ -109,6 +111,8 @@ class TestHealthServer:
         """Test that /ready returns 200 when all dependencies are available."""
         health_server.set_ready(True)
         health_server.set_heartbeat_status(True)
+        # Clear FFmpeg cache to ensure our mock is used
+        health_server.clear_ffmpeg_cache()
 
         with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
             status, body = await self._make_request(health_server._test_port, "/ready")
@@ -123,6 +127,8 @@ class TestHealthServer:
         """Test that /ready returns 503 when heartbeat is failing."""
         health_server.set_ready(True)
         health_server.set_heartbeat_status(False)  # Heartbeat failed
+        # Clear FFmpeg cache to ensure our mock is used
+        health_server.clear_ffmpeg_cache()
 
         with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
             status, body = await self._make_request(health_server._test_port, "/ready")
@@ -137,6 +143,8 @@ class TestHealthServer:
 
         health_server.set_ready(True)
         health_server.set_heartbeat_status(True)
+        # Clear FFmpeg cache to ensure our mock is used
+        health_server.clear_ffmpeg_cache()
 
         with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
             status, body = await self._make_request(health_server._test_port, "/ready")
@@ -305,6 +313,49 @@ class TestHealthServer:
         # All should succeed
         assert all(status == 200 for status in results)
 
+    @pytest.mark.asyncio
+    async def test_rejects_too_many_headers(self, health_server):
+        """Test that server returns 400 when too many headers are sent."""
+        from worker.health_server import HealthServer
+
+        reader, writer = await asyncio.open_connection("127.0.0.1", health_server._test_port)
+        try:
+            # Send request with more than MAX_HEADER_LINES headers
+            writer.write(b"GET /health HTTP/1.1\r\n")
+            for i in range(HealthServer.MAX_HEADER_LINES + 5):
+                writer.write(f"X-Header-{i}: value{i}\r\n".encode())
+            writer.write(b"\r\n")
+            await writer.drain()
+
+            # Should get 400 Bad Request
+            response = await asyncio.wait_for(reader.read(4096), timeout=5.0)
+            assert b"400" in response
+            assert b"bad request" in response.lower()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_accepts_max_headers(self, health_server):
+        """Test that server accepts requests with exactly MAX_HEADER_LINES - 1 headers."""
+        from worker.health_server import HealthServer
+
+        reader, writer = await asyncio.open_connection("127.0.0.1", health_server._test_port)
+        try:
+            # Send request with MAX_HEADER_LINES - 1 headers (safe limit)
+            writer.write(b"GET /health HTTP/1.1\r\n")
+            for i in range(HealthServer.MAX_HEADER_LINES - 1):
+                writer.write(f"X-Header-{i}: value{i}\r\n".encode())
+            writer.write(b"\r\n")
+            await writer.drain()
+
+            # Should get 200 OK
+            response = await asyncio.wait_for(reader.read(4096), timeout=5.0)
+            assert b"200" in response
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
 
 class TestHealthServerFFmpegCheck:
     """Tests specifically for FFmpeg availability checking."""
@@ -333,6 +384,63 @@ class TestHealthServerFFmpegCheck:
 
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_ffmpeg_check_is_cached(self):
+        """Test that FFmpeg check result is cached after first call."""
+        from worker.health_server import HealthServer
+
+        server = HealthServer()
+
+        with patch("shutil.which", return_value="/usr/bin/ffmpeg") as mock_which:
+            # First call should check
+            result1 = await server._check_ffmpeg()
+            assert result1 is True
+            assert mock_which.call_count == 1
+
+            # Second call should use cache
+            result2 = await server._check_ffmpeg()
+            assert result2 is True
+            assert mock_which.call_count == 1  # Still 1, not called again
+
+    @pytest.mark.asyncio
+    async def test_clear_ffmpeg_cache_resets_cache(self):
+        """Test that clear_ffmpeg_cache() allows re-checking FFmpeg."""
+        from worker.health_server import HealthServer
+
+        server = HealthServer()
+
+        with patch("shutil.which", return_value="/usr/bin/ffmpeg") as mock_which:
+            # First call
+            result1 = await server._check_ffmpeg()
+            assert result1 is True
+            assert mock_which.call_count == 1
+
+            # Clear cache
+            server.clear_ffmpeg_cache()
+
+            # Next call should check again
+            result2 = await server._check_ffmpeg()
+            assert result2 is True
+            assert mock_which.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_ffmpeg_cache_reflects_changed_state(self):
+        """Test that FFmpeg cache can be cleared to detect changed state."""
+        from worker.health_server import HealthServer
+
+        server = HealthServer()
+
+        # First check: FFmpeg available
+        with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+            result1 = await server._check_ffmpeg()
+            assert result1 is True
+
+        # Clear cache and check again: FFmpeg removed
+        server.clear_ffmpeg_cache()
+        with patch("shutil.which", return_value=None):
+            result2 = await server._check_ffmpeg()
+            assert result2 is False
+
 
 class TestHealthServerConstants:
     """Tests for health server constants and configuration."""
@@ -349,6 +457,13 @@ class TestHealthServerConstants:
 
         assert HealthServer.REQUEST_PARSE_TIMEOUT == 10.0
 
+    def test_response_write_timeout_is_reasonable(self):
+        """Test that response write timeout is set to prevent slow-read attacks."""
+        from worker.health_server import HealthServer
+
+        # Should be reasonable - long enough for normal clients, short enough to prevent attacks
+        assert HealthServer.RESPONSE_WRITE_TIMEOUT == 5.0
+
     def test_max_header_lines_prevents_abuse(self):
         """Test that max header lines is set to prevent abuse."""
         from worker.health_server import HealthServer
@@ -356,3 +471,10 @@ class TestHealthServerConstants:
         # Should be reasonable (not too high)
         assert HealthServer.MAX_HEADER_LINES <= 100
         assert HealthServer.MAX_HEADER_LINES >= 10
+
+    def test_ffmpeg_cache_starts_empty(self):
+        """Test that FFmpeg cache starts as None (uncached)."""
+        from worker.health_server import HealthServer
+
+        server = HealthServer()
+        assert server._ffmpeg_available is None
