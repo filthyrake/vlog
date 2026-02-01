@@ -42,6 +42,14 @@ services:
               count: 1
               capabilities: [gpu, video, compute]
     restart: unless-stopped
+    healthcheck:
+      # Check the worker's /ready endpoint which validates FFmpeg and API connectivity
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Allow time for worker to start and establish API connection
+      start_period: 30s
     profiles:
       - nvidia
 
@@ -68,6 +76,14 @@ services:
       - video
       - render
     restart: unless-stopped
+    healthcheck:
+      # Check the worker's /ready endpoint which validates FFmpeg and API connectivity
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Allow time for worker to start and establish API connection
+      start_period: 30s
     profiles:
       - intel
 
@@ -95,6 +111,14 @@ services:
           cpus: '1'
           memory: 2G
     restart: unless-stopped
+    healthcheck:
+      # Check the worker's /ready endpoint which validates FFmpeg and API connectivity
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Allow time for worker to start and establish API connection
+      start_period: 30s
     profiles:
       - cpu
 
