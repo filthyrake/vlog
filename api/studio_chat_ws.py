@@ -21,7 +21,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.audit import AuditAction, log_audit
 from api.auth.permissions import Permission, Role, has_permission
-from api.common import require_valid_slug
+from api.common import calculate_stream_offset_ms, require_valid_slug
 from api.database import database, live_streams, chat_messages, stream_moderators, users
 from api.db_retry import db_execute_with_retry, fetch_one_with_retry
 from api.live_schemas import ChatSettingsResponse, WSMessageType
@@ -211,17 +211,20 @@ async def handle_chat_message(
         await conn.send_error("invalid_message", "Message cannot be empty after sanitization")
         return
 
+    # Get current time for timestamp and offset calculation
+    now = datetime.now(timezone.utc)
+
     # Calculate stream offset for VOD sync
+    # Wrapped in try/except to ensure chat messages are saved even if offset calculation fails
     stream_offset_ms = None
-    if stream["status"] == "live" and stream.get("started_at"):
-        now = datetime.now(timezone.utc)
-        started = stream["started_at"]
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        stream_offset_ms = int((now - started).total_seconds() * 1000)
+    if stream["status"] == "live":
+        try:
+            stream_offset_ms = calculate_stream_offset_ms(stream.get("started_at"), now)
+        except (TypeError, ValueError, OverflowError) as e:
+            logger.warning(f"Failed to calculate stream offset for stream {stream['id']}: {e}")
+            stream_offset_ms = None
 
     # Insert message to database (use RETURNING for PostgreSQL compatibility)
-    now = datetime.now(timezone.utc)
     insert_query = (
         chat_messages.insert()
         .values(

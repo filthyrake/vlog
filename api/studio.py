@@ -23,7 +23,7 @@ from slugify import slugify
 from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth, SESSION_COOKIE_NAME
 from api.auth.permissions import Permission, Role, has_permission
-from api.common import get_real_ip, get_request_id, require_valid_slug
+from api.common import get_real_ip, get_request_id, verify_stream_access
 from api.database import database, live_streams
 from api.db_retry import db_execute_with_retry, fetch_one_with_retry
 from api.live_auth import generate_stream_key, get_key_prefix, hash_stream_key
@@ -94,43 +94,6 @@ async def require_csrf(
     if not _validate_csrf_token(session_token, x_csrf_token):
         logger.warning("CSRF validation failed for studio request")
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-
-async def verify_stream_access(slug: str, user: dict) -> dict:
-    """
-    Verify user has access to a stream (ownership or admin permission).
-
-    Args:
-        slug: Stream slug
-        user: Current authenticated user
-
-    Returns:
-        Stream record as dict
-
-    Raises:
-        HTTPException: 400 if slug is invalid
-        HTTPException: 404 if stream not found or user doesn't have access
-    """
-    # Validate slug format to prevent enumeration/injection
-    require_valid_slug(slug, "stream")
-
-    stream = await fetch_one_with_retry(
-        live_streams.select().where(live_streams.c.slug == slug)
-    )
-
-    if not stream:
-        raise HTTPException(status_code=404, detail="Stream not found")
-
-    # Owner check OR admin permission
-    role = Role(user["role"])
-    is_owner = stream["owner_id"] == user["id"]
-    has_manage_any = has_permission(role, Permission.LIVE_STREAM_MANAGE)
-
-    if not is_owner and not has_manage_any:
-        # Return same error to prevent enumeration
-        raise HTTPException(status_code=404, detail="Stream not found")
-
-    return dict(stream)
 
 
 def stream_to_response(stream: dict) -> StudioStreamResponse:
