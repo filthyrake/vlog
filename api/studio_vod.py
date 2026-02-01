@@ -23,7 +23,7 @@ from slowapi import Limiter
 # Import PIL at module level and configure decompression bomb protection
 # This must be done once at import time, not per-request, to avoid race conditions
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
     # Limit to 100 megapixels to prevent decompression bombs (CVE-2018-14618)
     # ~400MB uncompressed max, well within server memory limits
     Image.MAX_IMAGE_PIXELS = 100_000_000
@@ -31,6 +31,7 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
     Image = None  # type: ignore
+    ImageOps = None  # type: ignore
 
 from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth
@@ -574,6 +575,10 @@ async def upload_vod_thumbnail(
                 status_code=400,
                 detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION} pixels."
             )
+
+        # Apply EXIF orientation before any other processing
+        # This ensures the image displays correctly after EXIF metadata is stripped during re-encoding
+        img = ImageOps.exif_transpose(img)
 
         # Convert to RGB if needed (for PNG with alpha or palette)
         if img.mode in ("RGBA", "P"):

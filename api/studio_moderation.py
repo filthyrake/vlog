@@ -15,6 +15,7 @@ import logging
 import re
 from datetime import datetime, timezone, timedelta
 from multiprocessing import Process, Queue
+from queue import Empty
 from typing import Optional
 
 import sqlalchemy as sa
@@ -187,10 +188,13 @@ def _test_regex_with_timeout(pattern: str, test_input: str, timeout: float) -> b
             )
             return False
 
-        # Process completed - check result
-        if not result_queue.empty():
-            return result_queue.get_nowait()
-        return False
+        # Process completed - get result from queue
+        # Note: Queue.empty() is unreliable across processes, use get() with timeout instead
+        try:
+            return result_queue.get(timeout=0.1)
+        except Empty:
+            # No result in queue - worker failed silently
+            return False
 
     except Exception as e:
         logger.error(f"Regex test process error: {e}")
@@ -203,6 +207,9 @@ def _test_regex_with_timeout(pattern: str, test_input: str, timeout: float) -> b
         if proc.is_alive():
             proc.terminate()
             proc.join(timeout=0.1)
+        # Close queue to avoid resource leaks
+        result_queue.close()
+        result_queue.join_thread()
 
 
 def validate_regex_pattern(pattern: str) -> bool:
