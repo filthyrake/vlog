@@ -264,6 +264,9 @@ def handle_api_errors(api_url: str = None):
             except KeyboardInterrupt:
                 print("\nCancelled.")
                 sys.exit(1)
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+                sys.exit(1)
         return wrapper
     return decorator
 

@@ -338,8 +338,20 @@ class RedisAnalyticsCache:
             Cached value if exists and not expired, None otherwise
         """
         def get_operation():
-            data = self._client.get(self._get_full_key(key))
-            return None if data is None else json.loads(data)
+            full_key = self._get_full_key(key)
+            data = self._client.get(full_key)
+            if data is None:
+                return None
+            try:
+                return json.loads(data)
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                # Corrupted cache entry - delete it to prevent repeated failures
+                logger.warning(f"Corrupted cache entry for key '{key}': {e}")
+                try:
+                    self._client.delete(full_key)
+                except (RedisError, OSError, TimeoutError):
+                    pass  # Best effort cleanup
+                return None
 
         return self._safe_redis_call(
             get_operation,
