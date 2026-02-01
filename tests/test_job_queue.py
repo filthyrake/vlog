@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from redis.exceptions import RedisError
 
 import api.job_queue
 from api.job_queue import (
@@ -198,7 +199,7 @@ class TestJobQueueInitialization:
         queue = JobQueue()
         mock_redis = AsyncMock()
         mock_redis.xgroup_create = AsyncMock(
-            side_effect=Exception("BUSYGROUP Consumer Group name already exists")
+            side_effect=RedisError("BUSYGROUP Consumer Group name already exists")
         )
 
         with patch("api.job_queue.JOB_QUEUE_MODE", "redis"):
@@ -276,7 +277,7 @@ class TestJobQueuePublish:
         queue = JobQueue()
         queue._redis_available = True
         mock_redis = AsyncMock()
-        mock_redis.xadd = AsyncMock(side_effect=Exception("Connection failed"))
+        mock_redis.xadd = AsyncMock(side_effect=RedisError("Connection failed"))
 
         job = JobDispatch(job_id=1, video_id=100, video_slug="test-video")
 
@@ -487,7 +488,7 @@ class TestJobQueueAcknowledge:
         """Should return False on Redis error."""
         queue = JobQueue()
         mock_redis = AsyncMock()
-        mock_redis.xack = AsyncMock(side_effect=Exception("Failed"))
+        mock_redis.xack = AsyncMock(side_effect=RedisError("Failed"))
 
         job = JobDispatch(job_id=1, video_id=100, video_slug="test-video")
         job._message_id = "1234-0"
@@ -730,8 +731,11 @@ class TestRedisRecovery:
         queue._redis_available = True
         queue._consumer_name = "test-consumer"
         mock_redis = AsyncMock()
-        mock_redis.xpending_range = AsyncMock(
-            side_effect=Exception("Connection lost")
+        # Mock both xpending_range and xreadgroup to raise exceptions
+        # to test that exceptions are caught at claim_job level
+        mock_redis.xpending_range = AsyncMock(return_value=[])
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=RedisError("Connection lost")
         )
 
         with patch("api.job_queue.JOB_QUEUE_MODE", "redis"):

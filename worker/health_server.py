@@ -109,24 +109,33 @@ class HealthServer:
             await writer.drain()
 
         except asyncio.TimeoutError:
+            # Client took too long to send request - silently close
             pass
-        except Exception:
-            # Return 500 on any error
-            error_response = (
-                "HTTP/1.1 500 Internal Server Error\r\n"
-                "Content-Type: application/json\r\n"
-                "Content-Length: 25\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                '{"error": "server error"}'
-            )
-            writer.write(error_response.encode())
-            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            # Client disconnected - no need to send error response
+            pass
+        except (OSError, UnicodeDecodeError) as e:
+            # Network errors or malformed request encoding
+            # Return 500 if we can still write to the connection
+            try:
+                error_response = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: 25\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    '{"error": "server error"}'
+                )
+                writer.write(error_response.encode())
+                await writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                pass  # Client disconnected during error response
         finally:
             writer.close()
             try:
                 await writer.wait_closed()
-            except Exception:
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                # Connection may already be closed by client
                 pass
 
     async def start(self):

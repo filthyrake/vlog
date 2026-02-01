@@ -14,6 +14,16 @@ import random
 import time
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
+# Import redis exceptions at module level for proper exception handling
+# This avoids issues with mocked redis modules in tests
+try:
+    from redis.exceptions import RedisError
+except ImportError:
+    # Redis not installed - create a placeholder exception that will never match
+    class RedisError(Exception):  # type: ignore
+        """Placeholder when redis package is not installed."""
+        pass
+
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
@@ -213,8 +223,8 @@ class RedisAnalyticsCache:
             True if connection successful, False otherwise.
         """
         try:
-            import redis  # Lazy import
-            self._client = redis.Redis.from_url(
+            import redis as redis_module  # Lazy import
+            self._client = redis_module.Redis.from_url(
                 self._redis_url,
                 socket_timeout=REDIS_SOCKET_TIMEOUT,
                 socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
@@ -226,8 +236,14 @@ class RedisAnalyticsCache:
             self._connection_failed = False
             self._reconnect_backoff = REDIS_RECONNECT_MIN_INTERVAL
             return True
-        except Exception as e:
-            # Catch broad exceptions to avoid hard dependency on redis
+        except ImportError as e:
+            # Redis package not installed - graceful degradation
+            logger.warning(f"Redis package not available: {e}")
+            self._client = None
+            self._connection_failed = True
+            return False
+        except (RedisError, OSError, TimeoutError) as e:
+            # Network/connection errors (socket issues, DNS failures, timeouts)
             logger.warning(f"Redis analytics cache connection failed: {e}")
             self._client = None
             self._connection_failed = True
@@ -296,10 +312,19 @@ class RedisAnalyticsCache:
 
         try:
             return operation()
-        except Exception as e:
+        except RedisError as e:
+            # Redis-specific errors (connection issues, protocol errors, etc.)
             logger.warning(f"Redis analytics cache {operation_name} failed: {e}")
-            # Mark as failed to trigger reconnection on next call
             self._connection_failed = True
+            return fallback
+        except (OSError, TimeoutError) as e:
+            # Network/socket errors
+            logger.warning(f"Redis analytics cache {operation_name} connection error: {e}")
+            self._connection_failed = True
+            return fallback
+        except (TypeError, ValueError) as e:
+            # JSON serialization/deserialization errors
+            logger.warning(f"Redis analytics cache {operation_name} data error: {e}")
             return fallback
 
     def get(self, key: str) -> Optional[Any]:

@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from redis.exceptions import RedisError
+
 from api.redis_client import get_redis
 from config import (
     JOB_QUEUE_MODE,
@@ -140,7 +142,7 @@ class JobQueue:
                 try:
                     await redis.xgroup_create(stream_name, REDIS_CONSUMER_GROUP, id="0", mkstream=True)
                     logger.info(f"Created consumer group for {priority} priority stream")
-                except Exception as e:
+                except RedisError as e:
                     if "BUSYGROUP" not in str(e):
                         raise
                     # Group already exists, that's fine
@@ -148,7 +150,7 @@ class JobQueue:
             self._redis_available = True
             self._initialized = True
             logger.info(f"Job queue initialized with Redis Streams (consumer: {consumer_name})")
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to initialize Redis consumer groups: {e}")
             if JOB_QUEUE_MODE == "hybrid":
                 logger.info("Falling back to database polling")
@@ -184,7 +186,7 @@ class JobQueue:
             )
             logger.debug(f"Published job {job.job_id} to {stream_name}")
             return True
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to publish job to Redis: {e}")
             return False
 
@@ -225,7 +227,7 @@ class JobQueue:
 
             return None
 
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             # Log warning but don't disable Redis; RedisClient handles recovery
             logger.warning(f"Redis claim failed: {e}")
             return None
@@ -261,7 +263,7 @@ class JobQueue:
                                 f"Recovered abandoned job {data.get('job_id')} from {stream_name} (idle {idle_time}ms)"
                             )
                             return JobDispatch.from_stream_dict(data, message_id=message_id, stream_name=stream_name)
-            except Exception as e:
+            except (RedisError, OSError, TimeoutError) as e:
                 logger.debug(f"Error checking pending messages for {stream_name}: {e}")
 
         return None
@@ -283,7 +285,7 @@ class JobQueue:
                 if msg_list:
                     message_id, data = msg_list[0]
                     return JobDispatch.from_stream_dict(data, message_id=message_id, stream_name=stream_name)
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.debug(f"Error reading from {stream_name}: {e}")
 
         return None
@@ -309,7 +311,7 @@ class JobQueue:
             await redis.xack(job._stream_name, REDIS_CONSUMER_GROUP, job._message_id)
             logger.debug(f"Acknowledged job {job.job_id}")
             return True
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to acknowledge job {job.job_id}: {e}")
             return False
 
@@ -345,7 +347,7 @@ class JobQueue:
 
             logger.info(f"Job {job.job_id} moved to dead letter queue: {error[:100]}")
             return True
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to move job {job.job_id} to DLQ: {e}")
             return False
 
@@ -371,17 +373,17 @@ class JobQueue:
                         "length": length,
                         "pending": pending_info.get("pending", 0) if pending_info else 0,
                     }
-                except Exception:
+                except (RedisError, OSError, TimeoutError):
                     stats["streams"][priority] = {"length": 0, "pending": 0}
 
             # Dead letter queue
             try:
                 dlq_length = await redis.xlen(DEAD_LETTER_STREAM)
                 stats["dead_letter_queue"] = dlq_length
-            except Exception:
+            except (RedisError, OSError, TimeoutError):
                 stats["dead_letter_queue"] = 0
 
-        except Exception as e:
+        except (RedisError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to get queue stats: {e}")
 
         return stats
