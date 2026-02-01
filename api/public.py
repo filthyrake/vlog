@@ -166,10 +166,18 @@ setup_logging()
 
 logger = logging.getLogger(__name__)
 
-# Cached watermark settings (refreshed every 60 seconds)
+# Cached watermark settings
+#
+# Cache watermark settings for 60 seconds to balance freshness with database load.
+# Rationale: At 60 seconds, settings changes appear within 1 minute while avoiding
+# a database query on every video page load (can be 100+ requests/minute under load).
+# Tradeoffs:
+#   - Shorter TTL (30s): More responsive to changes, but 2x database queries
+#   - Longer TTL (300s): Lower DB load, but 5 minute delay before changes appear
+#   - 60s chosen as reasonable default for admin-controlled settings that rarely change
 _cached_watermark_settings: Dict[str, Any] = {}
 _cached_watermark_settings_time: float = 0
-_WATERMARK_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+_WATERMARK_SETTINGS_CACHE_TTL_SECONDS = 60
 
 # Video list cache for performance (Issue #429)
 # Caches video list query results to reduce database load.
@@ -206,7 +214,7 @@ async def get_watermark_settings() -> Dict[str, Any]:
     global _cached_watermark_settings, _cached_watermark_settings_time
 
     now = time.time()
-    if _cached_watermark_settings and (now - _cached_watermark_settings_time) < _WATERMARK_SETTINGS_CACHE_TTL:
+    if _cached_watermark_settings and (now - _cached_watermark_settings_time) < _WATERMARK_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_watermark_settings
 
     try:
@@ -257,10 +265,14 @@ def reset_watermark_settings_cache() -> None:
     _cached_watermark_settings_time = 0
 
 
-# Cached CDN settings (refreshed every 60 seconds)
+# Cached CDN settings
+#
+# Same 60-second TTL rationale as watermark settings: balances freshness vs DB load.
+# CDN settings change rarely (typically during initial setup or migrations), so
+# the 1-minute delay is acceptable for the reduced database overhead.
 _cached_cdn_settings: Dict[str, Any] = {}
 _cached_cdn_settings_time: float = 0
-_CDN_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+_CDN_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_cdn_settings() -> Dict[str, Any]:
@@ -278,7 +290,7 @@ async def get_cdn_settings() -> Dict[str, Any]:
     global _cached_cdn_settings, _cached_cdn_settings_time
 
     now = time.time()
-    if _cached_cdn_settings and (now - _cached_cdn_settings_time) < _CDN_SETTINGS_CACHE_TTL:
+    if _cached_cdn_settings and (now - _cached_cdn_settings_time) < _CDN_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_cdn_settings
 
     try:
@@ -327,10 +339,14 @@ def reset_cdn_settings_cache() -> None:
     _cached_cdn_settings_time = 0
 
 
-# Cached embed settings (refreshed every 60 seconds)
+# Cached embed settings
+#
+# Same 60-second TTL rationale: admin-controlled settings that change rarely.
+# Embed settings (autoplay, domain restrictions) are typically set once during
+# deployment and only adjusted when security posture changes.
 _cached_embed_settings: Dict[str, Any] = {}
 _cached_embed_settings_time: float = 0
-_EMBED_SETTINGS_CACHE_TTL = 60  # Refresh every 60 seconds
+_EMBED_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_embed_settings() -> Dict[str, Any]:
@@ -351,7 +367,7 @@ async def get_embed_settings() -> Dict[str, Any]:
     global _cached_embed_settings, _cached_embed_settings_time
 
     now = time.time()
-    if _cached_embed_settings and (now - _cached_embed_settings_time) < _EMBED_SETTINGS_CACHE_TTL:
+    if _cached_embed_settings and (now - _cached_embed_settings_time) < _EMBED_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_embed_settings
 
     try:
@@ -2795,10 +2811,13 @@ async def get_watermark_image(request: Request):
 # Display Configuration
 # ============================================================================
 
-# Cached display settings (refreshed every 60 seconds)
+# Cached display settings
+#
+# Same 60-second TTL rationale: balances freshness vs DB load for admin settings.
+# Display settings (view counts visibility, tagline) are cosmetic and rarely change.
 _cached_display_settings: Dict[str, Any] = {}
 _cached_display_settings_time: float = 0
-_DISPLAY_SETTINGS_CACHE_TTL = 60  # seconds
+_DISPLAY_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_display_settings() -> Dict[str, Any]:
@@ -2815,7 +2834,7 @@ async def get_display_settings() -> Dict[str, Any]:
     global _cached_display_settings, _cached_display_settings_time
 
     now = time.time()
-    if _cached_display_settings and (now - _cached_display_settings_time) < _DISPLAY_SETTINGS_CACHE_TTL:
+    if _cached_display_settings and (now - _cached_display_settings_time) < _DISPLAY_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_display_settings
 
     try:
@@ -2860,10 +2879,13 @@ async def get_display_config(request: Request):
 # Theme/Branding Configuration (Issue #214)
 # ============================================================================
 
-# Cached theme settings (refreshed every 60 seconds)
+# Cached theme settings
+#
+# Same 60-second TTL rationale: theme/branding settings change rarely.
+# Theme colors and branding are typically set during initial deployment.
 _cached_theme_settings: Dict[str, Any] = {}
 _cached_theme_settings_time: float = 0
-_THEME_SETTINGS_CACHE_TTL = 60  # seconds
+_THEME_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_theme_settings() -> Dict[str, Any]:
@@ -2877,7 +2899,7 @@ async def get_theme_settings() -> Dict[str, Any]:
     global _cached_theme_settings, _cached_theme_settings_time
 
     now = time.time()
-    if _cached_theme_settings and (now - _cached_theme_settings_time) < _THEME_SETTINGS_CACHE_TTL:
+    if _cached_theme_settings and (now - _cached_theme_settings_time) < _THEME_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_theme_settings
 
     try:
@@ -3029,10 +3051,14 @@ async def get_public_favicon(request: Request):
 # Download Configuration (Issue #202)
 # ============================================================================
 
-# Cached download settings (refreshed every 60 seconds)
+# Cached download settings
+#
+# Same 60-second TTL rationale: download permissions change rarely.
+# Download settings (enabled, rate limits) are security-related and
+# typically only change when operational policies are updated.
 _cached_download_settings: Dict[str, Any] = {}
 _cached_download_settings_time: float = 0
-_DOWNLOAD_SETTINGS_CACHE_TTL = 60  # seconds
+_DOWNLOAD_SETTINGS_CACHE_TTL_SECONDS = 60
 _download_settings_lock: Optional[asyncio.Lock] = None
 
 # Concurrent download tracking per IP (in-memory, resets on restart)
@@ -3088,14 +3114,14 @@ async def get_download_settings() -> Dict[str, Any]:
 
     now = time.time()
     # Fast path: cache is valid
-    if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL:
+    if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_download_settings
 
     # Slow path: acquire lock and refresh cache
     async with _get_download_settings_lock():
         # Double-check after acquiring lock (another request may have refreshed)
         now = time.time()
-        if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL:
+        if _cached_download_settings and (now - _cached_download_settings_time) <= _DOWNLOAD_SETTINGS_CACHE_TTL_SECONDS:
             return _cached_download_settings
 
         try:
@@ -3163,10 +3189,13 @@ async def get_download_config(request: Request):
 # Playback Configuration (Issue #211)
 # ============================================================================
 
-# Cached playback settings (refreshed every 60 seconds)
+# Cached playback settings
+#
+# Same 60-second TTL rationale: playback settings (autoplay, up-next) change rarely.
+# These user-experience settings are typically configured during initial setup.
 _cached_playback_settings: Dict[str, Any] = {}
 _cached_playback_settings_time: float = 0
-_PLAYBACK_SETTINGS_CACHE_TTL = 60  # seconds
+_PLAYBACK_SETTINGS_CACHE_TTL_SECONDS = 60
 
 
 async def get_playback_settings() -> Dict[str, Any]:
@@ -3184,7 +3213,7 @@ async def get_playback_settings() -> Dict[str, Any]:
     global _cached_playback_settings, _cached_playback_settings_time
 
     now = time.time()
-    if _cached_playback_settings and (now - _cached_playback_settings_time) < _PLAYBACK_SETTINGS_CACHE_TTL:
+    if _cached_playback_settings and (now - _cached_playback_settings_time) < _PLAYBACK_SETTINGS_CACHE_TTL_SECONDS:
         return _cached_playback_settings
 
     try:
