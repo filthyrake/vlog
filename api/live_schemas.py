@@ -404,9 +404,10 @@ class ChatMessageListResponse(BaseModel):
     """Response for listing chat messages with cursor-based pagination."""
 
     messages: List[ChatMessageResponse]
-    total: int = Field(
-        description="Count of messages returned in this response (not total in database). "
-        "Use 'has_more' for pagination decisions."
+    total: Optional[int] = Field(
+        default=None,
+        description="Deprecated: Always returns None. Use 'has_more' for pagination. "
+        "Previously returned total count but was removed for performance (Issue #546)."
     )
     has_more: bool = Field(
         description="True if more messages exist before the oldest message in this response"

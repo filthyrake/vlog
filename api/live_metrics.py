@@ -175,10 +175,12 @@ async def _enforce_cache_size_limit(current_time: float) -> None:
             # If still over limit after removing expired, find oldest entries
             remaining_after_expired = len(_bitrate_cache) - len(keys_to_evict)
             if remaining_after_expired > BITRATE_CACHE_MAX_SIZE:
+                # Convert to set for O(1) membership check (Copilot review feedback)
+                keys_to_evict_set = set(keys_to_evict)
                 # Sort non-expired entries by expiry time (oldest first)
                 non_expired = [
                     (k, v) for k, v in _bitrate_cache.items()
-                    if k not in keys_to_evict
+                    if k not in keys_to_evict_set
                 ]
                 non_expired.sort(key=lambda x: x[1][1])
                 evict_count = remaining_after_expired - BITRATE_CACHE_MAX_SIZE
