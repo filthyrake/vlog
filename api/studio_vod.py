@@ -38,7 +38,7 @@ from api.auth.middleware import require_auth
 from api.auth.permissions import Permission, Role, has_permission
 from api.common import get_real_ip, get_request_id, require_valid_slug
 from api.database import database, live_streams, videos, playback_sessions, viewers
-from api.db_retry import db_execute_with_retry, fetch_one_with_retry, fetch_all_with_retry
+from api.db_retry import db_execute_with_retry, fetch_one_with_retry, fetch_all_with_retry, fetch_val_with_retry
 from api.live_schemas import (
     StudioVODResponse,
     StudioVODListResponse,
@@ -226,33 +226,45 @@ async def list_vods(
     if status and status in ("pending", "processing", "ready", "failed"):
         query = query.where(videos.c.status == status)
 
-    # Count total
-    count_query = (
-        sa.select(sa.func.count())
-        .select_from(
-            videos.outerjoin(
-                live_streams,
-                live_streams.c.vod_video_id == videos.c.id
-            )
-        )
-        .where(videos.c.deleted_at.is_(None))
+    # Add window function for total count (Issue #544)
+    # This computes total in a single query, avoiding a separate COUNT query
+    # Note: Requires index on (deleted_at, owner_id, created_at) for optimal performance
+    query = query.add_columns(
+        sa.func.count().over().label("total_count")
     )
-    if not has_manage_any:
-        count_query = count_query.where(
-            sa.or_(
-                videos.c.owner_id == user["id"],
-                live_streams.c.owner_id == user["id"],
-            )
-        )
-    if status and status in ("pending", "processing", "ready", "failed"):
-        count_query = count_query.where(videos.c.status == status)
 
-    total = await database.fetch_val(count_query) or 0
-
-    # Fetch page
+    # Fetch page with total count included
     query = query.order_by(videos.c.created_at.desc())
     query = query.offset(offset).limit(page_size)
     rows = await fetch_all_with_retry(query)
+
+    # Extract total from first row (all rows have same total_count)
+    # If rows is empty (e.g., page past last page), fallback to COUNT query
+    # to avoid returning incorrect total=0 (Copilot review feedback)
+    if rows:
+        total = rows[0]["total_count"]
+    else:
+        # Fallback COUNT for empty pages - only runs for invalid page requests
+        count_query = (
+            sa.select(sa.func.count())
+            .select_from(
+                videos.outerjoin(
+                    live_streams,
+                    live_streams.c.vod_video_id == videos.c.id
+                )
+            )
+            .where(videos.c.deleted_at.is_(None))
+        )
+        if not has_manage_any:
+            count_query = count_query.where(
+                sa.or_(
+                    videos.c.owner_id == user["id"],
+                    live_streams.c.owner_id == user["id"],
+                )
+            )
+        if status and status in ("pending", "processing", "ready", "failed"):
+            count_query = count_query.where(videos.c.status == status)
+        total = await fetch_val_with_retry(count_query) or 0
 
     vods = [vod_to_response(dict(row)) for row in rows]
 

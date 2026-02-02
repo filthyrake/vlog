@@ -11,8 +11,10 @@ import pytest
 from api.db_retry import (
     DatabaseLockedError,
     DatabaseRetryableError,
+    DatabaseTimeoutError,
     execute_with_retry,
     fetch_val_with_retry,
+    fetch_one_with_retry,
     is_database_locked_error,
     is_retryable_database_error,
     with_db_retry,
@@ -414,3 +416,134 @@ class TestFetchValWithRetry:
             result = await fetch_val_with_retry("SELECT NULL")
 
         assert result is None
+
+
+class TestDatabaseTimeoutError:
+    """Tests for database timeout functionality (Issue #549)."""
+
+    @pytest.mark.asyncio
+    async def test_query_timeout_raises_database_timeout_error(self):
+        """Should raise DatabaseTimeoutError when query times out."""
+        import asyncio
+
+        mock_db = AsyncMock()
+        # Simulate a query that takes longer than timeout
+        async def slow_query(*args, **kwargs):
+            await asyncio.sleep(10)  # Sleep longer than timeout
+            return "result"
+
+        mock_db.fetch_one = slow_query
+
+        with patch("api.database.database", mock_db):
+            with pytest.raises(DatabaseTimeoutError) as exc_info:
+                await fetch_one_with_retry("SELECT 1", timeout=0.01)
+
+        assert "timed out" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_timeout_error_not_retried_for_fetch(self):
+        """DatabaseTimeoutError from fetch should not be retried (not a retryable error)."""
+        import asyncio
+
+        call_count = 0
+        mock_db = AsyncMock()
+
+        async def slow_query(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(10)  # Sleep longer than timeout
+            return "result"
+
+        mock_db.fetch_one = slow_query
+
+        with patch("api.database.database", mock_db):
+            with pytest.raises(DatabaseTimeoutError):
+                await fetch_one_with_retry(
+                    "SELECT 1",
+                    timeout=0.01,
+                    max_retries=5,  # Would retry 5 times if timeout was retryable
+                )
+
+        # Should only be called once - DatabaseTimeoutError is not retryable
+        assert call_count == 1
+
+
+class TestTotalDeadline:
+    """Tests for total_deadline parameter (Issue #549 review feedback)."""
+
+    @pytest.mark.asyncio
+    async def test_total_deadline_stops_retries(self):
+        """Should stop retries when total_deadline is exceeded."""
+        call_count = 0
+        mock_time = 0.0
+
+        async def failing_func():
+            nonlocal call_count
+            call_count += 1
+            raise sqlite3.OperationalError("database is locked")
+
+        def mock_monotonic():
+            nonlocal mock_time
+            # Simulate time advancing by 0.05s on each call
+            mock_time += 0.05
+            return mock_time
+
+        with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+            with patch("api.db_retry.time.monotonic", mock_monotonic):
+                with pytest.raises(DatabaseTimeoutError) as exc_info:
+                    await execute_with_retry(
+                        failing_func,
+                        max_retries=100,  # High retry count
+                        total_deadline=0.1,  # But short deadline (2 iterations)
+                        base_delay=0.01,
+                    )
+
+        assert "deadline" in str(exc_info.value).lower()
+        # Should have stopped due to deadline after ~2-3 attempts
+        assert call_count < 10
+
+    @pytest.mark.asyncio
+    async def test_total_deadline_none_allows_full_retries(self):
+        """Should allow all retries when total_deadline is None."""
+        call_count = 0
+
+        async def failing_then_succeed():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return "success"
+
+        with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+            result = await execute_with_retry(
+                failing_then_succeed,
+                max_retries=5,
+                total_deadline=None,  # No deadline
+                base_delay=0.01,
+            )
+
+        assert result == "success"
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_success_before_deadline(self):
+        """Should succeed normally if within deadline."""
+        call_count = 0
+
+        async def succeed_on_second():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return "success"
+
+        with patch("api.db_retry.asyncio.sleep", new_callable=AsyncMock):
+            result = await execute_with_retry(
+                succeed_on_second,
+                max_retries=5,
+                total_deadline=60.0,  # Long deadline
+                base_delay=0.01,
+            )
+
+        assert result == "success"
+        assert call_count == 2

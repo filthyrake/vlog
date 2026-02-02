@@ -24,10 +24,29 @@ BITRATE_WINDOW_SECONDS = 30
 # Cache TTL for bitrate estimates (seconds) - prevents query amplification
 BITRATE_CACHE_TTL_SECONDS = 3.0
 
+# Maximum cache size to prevent unbounded memory growth (Issue #553)
+BITRATE_CACHE_MAX_SIZE = 1000
+
+# Number of sharded locks to reduce contention (Issue #545)
+# Using 16 shards allows ~16x more concurrent access
+BITRATE_CACHE_SHARD_COUNT = 16
+
 # Simple in-memory cache for bitrate estimates
 # Format: {stream_id: (bitrate_kbps, expiry_time)}
 _bitrate_cache: Dict[int, Tuple[Optional[int], float]] = {}
-_cache_lock = asyncio.Lock()
+
+# Sharded locks to reduce contention under high load (Issue #545)
+# Each shard handles stream_ids where hash(stream_id) % SHARD_COUNT == shard_index
+_cache_locks = [asyncio.Lock() for _ in range(BITRATE_CACHE_SHARD_COUNT)]
+
+# Single lock to prevent concurrent eviction attempts (Issue #545/#553 review feedback)
+# This avoids the need to acquire all shard locks during eviction
+_eviction_lock = asyncio.Lock()
+
+
+def _get_cache_lock(stream_id: int) -> asyncio.Lock:
+    """Get the appropriate sharded lock for a stream_id."""
+    return _cache_locks[stream_id % BITRATE_CACHE_SHARD_COUNT]
 
 
 async def compute_and_publish_metrics(stream_id: int) -> bool:
@@ -100,9 +119,10 @@ async def estimate_bitrate(stream_id: int, window_seconds: int = BITRATE_WINDOW_
     """
     import time
     current_time = time.monotonic()
+    cache_lock = _get_cache_lock(stream_id)
 
-    # Check cache first (with lock to prevent race conditions)
-    async with _cache_lock:
+    # Check cache first (with sharded lock to reduce contention - Issue #545)
+    async with cache_lock:
         if stream_id in _bitrate_cache:
             cached_value, expiry_time = _bitrate_cache[stream_id]
             if current_time < expiry_time:
@@ -111,20 +131,83 @@ async def estimate_bitrate(stream_id: int, window_seconds: int = BITRATE_WINDOW_
     # Cache miss or expired - compute fresh value
     bitrate_kbps = await _compute_bitrate_uncached(stream_id, window_seconds)
 
-    # Update cache
-    async with _cache_lock:
+    # Update cache (with sharded lock)
+    async with cache_lock:
         _bitrate_cache[stream_id] = (bitrate_kbps, current_time + BITRATE_CACHE_TTL_SECONDS)
 
-        # Clean up old cache entries periodically (every 100 entries)
-        if len(_bitrate_cache) > 100:
-            expired_keys = [
-                k for k, (_, expiry) in _bitrate_cache.items()
-                if current_time >= expiry
-            ]
-            for k in expired_keys:
-                del _bitrate_cache[k]
+    # Enforce cache size limit (Issue #553)
+    # Use a separate check to avoid holding lock during eviction scan
+    if len(_bitrate_cache) > BITRATE_CACHE_MAX_SIZE:
+        await _enforce_cache_size_limit(current_time)
 
     return bitrate_kbps
+
+
+async def _enforce_cache_size_limit(current_time: float) -> None:
+    """
+    Enforce the cache size limit by evicting expired and oldest entries.
+
+    Uses a single eviction lock to prevent concurrent evictions, then
+    acquires per-shard locks only when deleting entries from that shard.
+    This allows normal cache operations on other shards to continue during eviction.
+    (Issue #545/#553 review feedback)
+    """
+    # Quick check without lock - if we're under limit, skip
+    if len(_bitrate_cache) <= BITRATE_CACHE_MAX_SIZE:
+        return
+
+    # Use eviction lock to prevent concurrent evictions
+    # This is non-blocking for normal cache operations
+    if not _eviction_lock.locked():
+        async with _eviction_lock:
+            # Re-check under lock - another eviction may have already cleaned up
+            if len(_bitrate_cache) <= BITRATE_CACHE_MAX_SIZE:
+                return
+
+            # Build list of keys to evict (without holding shard locks)
+            keys_to_evict = []
+
+            # First, collect expired entries
+            for k, (_, expiry) in list(_bitrate_cache.items()):
+                if current_time >= expiry:
+                    keys_to_evict.append(k)
+
+            # If still over limit after removing expired, find oldest entries
+            remaining_after_expired = len(_bitrate_cache) - len(keys_to_evict)
+            if remaining_after_expired > BITRATE_CACHE_MAX_SIZE:
+                # Convert to set for O(1) membership check (Copilot review feedback)
+                keys_to_evict_set = set(keys_to_evict)
+                # Sort non-expired entries by expiry time (oldest first)
+                non_expired = [
+                    (k, v) for k, v in _bitrate_cache.items()
+                    if k not in keys_to_evict_set
+                ]
+                non_expired.sort(key=lambda x: x[1][1])
+                evict_count = remaining_after_expired - BITRATE_CACHE_MAX_SIZE
+                keys_to_evict.extend(k for k, _ in non_expired[:evict_count])
+
+            # Delete entries, acquiring only the relevant shard lock for each
+            # Group by shard to minimize lock acquisitions
+            by_shard: Dict[int, list] = {}
+            for k in keys_to_evict:
+                shard = k % BITRATE_CACHE_SHARD_COUNT
+                if shard not in by_shard:
+                    by_shard[shard] = []
+                by_shard[shard].append(k)
+
+            evicted = 0
+            for shard, keys in by_shard.items():
+                async with _cache_locks[shard]:
+                    for k in keys:
+                        if k in _bitrate_cache:
+                            del _bitrate_cache[k]
+                            evicted += 1
+
+            if evicted > 0:
+                logger.warning(
+                    f"Bitrate cache exceeded max size ({BITRATE_CACHE_MAX_SIZE}), "
+                    f"evicted {evicted} entries"
+                )
 
 
 async def _compute_bitrate_uncached(stream_id: int, window_seconds: int) -> Optional[int]:

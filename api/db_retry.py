@@ -35,6 +35,14 @@ DEFAULT_BASE_DELAY = 0.1  # 100ms
 DEFAULT_MAX_DELAY = 2.0  # 2 seconds
 DEFAULT_EXPONENTIAL_BASE = 2
 
+# Default timeout for database operations (Issue #549)
+# Prevents queries from hanging indefinitely under database contention
+DEFAULT_QUERY_TIMEOUT = 30.0  # 30 seconds
+
+# Default total deadline for retry operations
+# Bounds cumulative wait time across all retries (Issue #549 review feedback)
+DEFAULT_TOTAL_DEADLINE = 60.0  # 60 seconds total
+
 
 class DatabaseRetryableError(Exception):
     """Raised when a database operation fails after all retries exhausted."""
@@ -135,12 +143,19 @@ class DeadlockError(DatabaseRetryableError):
     pass
 
 
+class DatabaseTimeoutError(Exception):
+    """Raised when a database operation times out. (Issue #549)"""
+
+    pass
+
+
 async def execute_with_retry(
     func: Callable,
     *args,
     max_retries: int = DEFAULT_MAX_RETRIES,
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
+    total_deadline: Optional[float] = DEFAULT_TOTAL_DEADLINE,
     **kwargs,
 ) -> T:
     """
@@ -155,6 +170,7 @@ async def execute_with_retry(
         max_retries: Maximum number of retry attempts
         base_delay: Initial delay between retries (seconds)
         max_delay: Maximum delay between retries (seconds)
+        total_deadline: Maximum total time for all attempts (seconds). None for no limit.
         **kwargs: Keyword arguments for func
 
     Returns:
@@ -162,18 +178,27 @@ async def execute_with_retry(
 
     Raises:
         DeadlockError: If too many deadlocks occur (indicates chronic problem)
+        DatabaseTimeoutError: If total deadline is exceeded
         DatabaseRetryableError: If all retries are exhausted
         Other exceptions: Non-retryable errors are re-raised immediately
     """
     import random
 
     last_exception: Optional[Exception] = None
+    start_time = time.monotonic()
 
     # Track deadlocks separately - chronic deadlocks indicate deeper problems (Issue #460)
     MAX_DEADLOCK_RETRIES = 3
     deadlock_count = 0
 
     for attempt in range(max_retries + 1):
+        # Check total deadline before each attempt (Issue #549 review feedback)
+        if total_deadline is not None:
+            elapsed = time.monotonic() - start_time
+            if elapsed >= total_deadline:
+                logger.error(f"Database operation exceeded total deadline of {total_deadline}s after {attempt} attempts")
+                raise DatabaseTimeoutError(f"Operation exceeded total deadline of {total_deadline}s")
+
         try:
             return await func(*args, **kwargs)
         except Exception as e:
@@ -201,6 +226,12 @@ async def execute_with_retry(
                 # Add jitter (±25%) to prevent thundering herd
                 jitter = delay * 0.25 * (2 * random.random() - 1)
                 delay = max(0.01, delay + jitter)
+
+                # Ensure we don't sleep past the deadline
+                if total_deadline is not None:
+                    remaining = total_deadline - (time.monotonic() - start_time)
+                    if delay > remaining:
+                        delay = max(0.01, remaining)
 
                 logger.warning(
                     f"Database error (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.2f}s: {e}"
@@ -257,6 +288,7 @@ async def fetch_one_with_retry(
     max_retries: int = DEFAULT_MAX_RETRIES,
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
+    timeout: float = DEFAULT_QUERY_TIMEOUT,
 ):
     """
     Execute a fetch_one query with retry logic for transient database errors.
@@ -266,18 +298,28 @@ async def fetch_one_with_retry(
         max_retries: Maximum number of retry attempts
         base_delay: Initial delay between retries (seconds)
         max_delay: Maximum delay between retries (seconds)
+        timeout: Query timeout in seconds (Issue #549)
 
     Returns:
         The query result (single row or None)
 
     Raises:
+        DatabaseTimeoutError: If query times out
         DatabaseRetryableError: If all retries are exhausted
     """
     from api.database import database
 
     async def _fetch():
         start_time = time.monotonic()
-        result = await database.fetch_one(query)
+        try:
+            result = await asyncio.wait_for(
+                database.fetch_one(query),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            query_str = str(query)[:500]
+            logger.error(f"Query timeout after {timeout}s: {query_str}")
+            raise DatabaseTimeoutError(f"Query timed out after {timeout}s")
         elapsed = time.monotonic() - start_time
         if elapsed >= SLOW_QUERY_THRESHOLD:
             # Log slow query with truncated SQL for debugging (Issue #429)
@@ -298,6 +340,7 @@ async def fetch_all_with_retry(
     max_retries: int = DEFAULT_MAX_RETRIES,
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
+    timeout: float = DEFAULT_QUERY_TIMEOUT,
 ):
     """
     Execute a fetch_all query with retry logic for transient database errors.
@@ -307,18 +350,28 @@ async def fetch_all_with_retry(
         max_retries: Maximum number of retry attempts
         base_delay: Initial delay between retries (seconds)
         max_delay: Maximum delay between retries (seconds)
+        timeout: Query timeout in seconds (Issue #549)
 
     Returns:
         The query result (list of rows)
 
     Raises:
+        DatabaseTimeoutError: If query times out
         DatabaseRetryableError: If all retries are exhausted
     """
     from api.database import database
 
     async def _fetch():
         start_time = time.monotonic()
-        result = await database.fetch_all(query)
+        try:
+            result = await asyncio.wait_for(
+                database.fetch_all(query),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            query_str = str(query)[:500]
+            logger.error(f"Query timeout after {timeout}s: {query_str}")
+            raise DatabaseTimeoutError(f"Query timed out after {timeout}s")
         elapsed = time.monotonic() - start_time
         if elapsed >= SLOW_QUERY_THRESHOLD:
             # Log slow query with truncated SQL for debugging (Issue #429)
@@ -339,6 +392,7 @@ async def fetch_val_with_retry(
     max_retries: int = DEFAULT_MAX_RETRIES,
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
+    timeout: float = DEFAULT_QUERY_TIMEOUT,
 ):
     """
     Execute a fetch_val query with retry logic for transient database errors.
@@ -348,18 +402,28 @@ async def fetch_val_with_retry(
         max_retries: Maximum number of retry attempts
         base_delay: Initial delay between retries (seconds)
         max_delay: Maximum delay between retries (seconds)
+        timeout: Query timeout in seconds (Issue #549)
 
     Returns:
         The query result (single scalar value or None)
 
     Raises:
+        DatabaseTimeoutError: If query times out
         DatabaseRetryableError: If all retries are exhausted
     """
     from api.database import database
 
     async def _fetch():
         start_time = time.monotonic()
-        result = await database.fetch_val(query)
+        try:
+            result = await asyncio.wait_for(
+                database.fetch_val(query),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            query_str = str(query)[:500]
+            logger.error(f"Query timeout after {timeout}s: {query_str}")
+            raise DatabaseTimeoutError(f"Query timed out after {timeout}s")
         elapsed = time.monotonic() - start_time
         if elapsed >= SLOW_QUERY_THRESHOLD:
             # Log slow query with truncated SQL for debugging (Issue #429)
@@ -381,9 +445,14 @@ async def db_execute_with_retry(
     max_retries: int = DEFAULT_MAX_RETRIES,
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
+    timeout: float = DEFAULT_QUERY_TIMEOUT,
 ):
     """
     Execute a database write query with retry logic for transient database errors.
+
+    IMPORTANT: Timeouts are NOT retried for write operations because the write
+    may have committed on the database side. Retrying could cause duplicates
+    or data corruption. (Issue #549 review feedback)
 
     Args:
         query: SQLAlchemy query to execute
@@ -391,21 +460,35 @@ async def db_execute_with_retry(
         max_retries: Maximum number of retry attempts
         base_delay: Initial delay between retries (seconds)
         max_delay: Maximum delay between retries (seconds)
+        timeout: Query timeout in seconds (Issue #549)
 
     Returns:
         The query result (typically row ID for inserts)
 
     Raises:
+        DatabaseTimeoutError: If query times out (NOT retried - write may have committed)
         DatabaseRetryableError: If all retries are exhausted
     """
     from api.database import database
 
     async def _execute():
         start_time = time.monotonic()
-        if values is not None:
-            result = await database.execute(query, values)
-        else:
-            result = await database.execute(query)
+        try:
+            if values is not None:
+                result = await asyncio.wait_for(
+                    database.execute(query, values),
+                    timeout=timeout
+                )
+            else:
+                result = await asyncio.wait_for(
+                    database.execute(query),
+                    timeout=timeout
+                )
+        except asyncio.TimeoutError:
+            query_str = str(query)[:500]
+            # CRITICAL: Write timeout - do NOT retry, the write may have committed
+            logger.error(f"Write query timeout after {timeout}s (NOT retrying - write may have committed): {query_str}")
+            raise DatabaseTimeoutError(f"Write query timed out after {timeout}s - write may have committed, not retrying")
         elapsed = time.monotonic() - start_time
         if elapsed >= SLOW_QUERY_THRESHOLD:
             # Log slow query with truncated SQL for debugging (Issue #429)
@@ -413,9 +496,16 @@ async def db_execute_with_retry(
             logger.warning(f"Slow query ({elapsed:.2f}s): {query_str}")
         return result
 
-    return await execute_with_retry(
-        _execute,
-        max_retries=max_retries,
-        base_delay=base_delay,
-        max_delay=max_delay,
-    )
+    # Wrap execution to catch timeout errors and prevent retry
+    # Timeouts for writes are NOT retryable - the write may have succeeded
+    try:
+        return await execute_with_retry(
+            _execute,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            max_delay=max_delay,
+        )
+    except DatabaseTimeoutError:
+        # Re-raise timeout errors immediately without retry consideration
+        # This is critical for write safety - the operation may have committed
+        raise
