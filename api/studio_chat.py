@@ -253,7 +253,10 @@ async def list_chat_messages(
             )
             for msg in messages
         ],
-        total=len(messages),  # Count of returned messages
+        # Note: 'total' is count of returned messages, NOT total in database.
+        # This is intentional for cursor-based pagination - use 'has_more' for pagination.
+        # (Issue #546 - removed expensive COUNT query for performance)
+        total=len(messages),
         has_more=has_more,
         before_id=messages[-1]["id"] if messages else None,
     )

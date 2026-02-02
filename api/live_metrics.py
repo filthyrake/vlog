@@ -39,6 +39,10 @@ _bitrate_cache: Dict[int, Tuple[Optional[int], float]] = {}
 # Each shard handles stream_ids where hash(stream_id) % SHARD_COUNT == shard_index
 _cache_locks = [asyncio.Lock() for _ in range(BITRATE_CACHE_SHARD_COUNT)]
 
+# Single lock to prevent concurrent eviction attempts (Issue #545/#553 review feedback)
+# This avoids the need to acquire all shard locks during eviction
+_eviction_lock = asyncio.Lock()
+
 
 def _get_cache_lock(stream_id: int) -> asyncio.Lock:
     """Get the appropriate sharded lock for a stream_id."""
@@ -143,40 +147,65 @@ async def _enforce_cache_size_limit(current_time: float) -> None:
     """
     Enforce the cache size limit by evicting expired and oldest entries.
 
-    This is called without holding any lock to minimize contention.
-    Uses a simple global lock for the eviction operation itself.
+    Uses a single eviction lock to prevent concurrent evictions, then
+    acquires per-shard locks only when deleting entries from that shard.
+    This allows normal cache operations on other shards to continue during eviction.
+    (Issue #545/#553 review feedback)
     """
     # Quick check without lock - if we're under limit, skip
     if len(_bitrate_cache) <= BITRATE_CACHE_MAX_SIZE:
         return
 
-    # Acquire all locks to safely modify cache during eviction
-    # This is rare (only when cache exceeds max size) so acceptable
-    for lock in _cache_locks:
-        await lock.acquire()
+    # Use eviction lock to prevent concurrent evictions
+    # This is non-blocking for normal cache operations
+    if not _eviction_lock.locked():
+        async with _eviction_lock:
+            # Re-check under lock - another eviction may have already cleaned up
+            if len(_bitrate_cache) <= BITRATE_CACHE_MAX_SIZE:
+                return
 
-    try:
-        # First, remove expired entries
-        expired_keys = [
-            k for k, (_, expiry) in _bitrate_cache.items()
-            if current_time >= expiry
-        ]
-        for k in expired_keys:
-            del _bitrate_cache[k]
+            # Build list of keys to evict (without holding shard locks)
+            keys_to_evict = []
 
-        # If still over limit, evict oldest entries by expiry time
-        if len(_bitrate_cache) > BITRATE_CACHE_MAX_SIZE:
-            items = sorted(_bitrate_cache.items(), key=lambda x: x[1][1])
-            evict_count = len(_bitrate_cache) - BITRATE_CACHE_MAX_SIZE
-            for k, _ in items[:evict_count]:
-                del _bitrate_cache[k]
-            logger.warning(
-                f"Bitrate cache exceeded max size ({BITRATE_CACHE_MAX_SIZE}), "
-                f"evicted {evict_count + len(expired_keys)} entries"
-            )
-    finally:
-        for lock in _cache_locks:
-            lock.release()
+            # First, collect expired entries
+            for k, (_, expiry) in list(_bitrate_cache.items()):
+                if current_time >= expiry:
+                    keys_to_evict.append(k)
+
+            # If still over limit after removing expired, find oldest entries
+            remaining_after_expired = len(_bitrate_cache) - len(keys_to_evict)
+            if remaining_after_expired > BITRATE_CACHE_MAX_SIZE:
+                # Sort non-expired entries by expiry time (oldest first)
+                non_expired = [
+                    (k, v) for k, v in _bitrate_cache.items()
+                    if k not in keys_to_evict
+                ]
+                non_expired.sort(key=lambda x: x[1][1])
+                evict_count = remaining_after_expired - BITRATE_CACHE_MAX_SIZE
+                keys_to_evict.extend(k for k, _ in non_expired[:evict_count])
+
+            # Delete entries, acquiring only the relevant shard lock for each
+            # Group by shard to minimize lock acquisitions
+            by_shard: Dict[int, list] = {}
+            for k in keys_to_evict:
+                shard = k % BITRATE_CACHE_SHARD_COUNT
+                if shard not in by_shard:
+                    by_shard[shard] = []
+                by_shard[shard].append(k)
+
+            evicted = 0
+            for shard, keys in by_shard.items():
+                async with _cache_locks[shard]:
+                    for k in keys:
+                        if k in _bitrate_cache:
+                            del _bitrate_cache[k]
+                            evicted += 1
+
+            if evicted > 0:
+                logger.warning(
+                    f"Bitrate cache exceeded max size ({BITRATE_CACHE_MAX_SIZE}), "
+                    f"evicted {evicted} entries"
+                )
 
 
 async def _compute_bitrate_uncached(stream_id: int, window_seconds: int) -> Optional[int]:

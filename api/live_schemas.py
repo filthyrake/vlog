@@ -401,12 +401,20 @@ class ChatMessageResponse(BaseModel):
 
 
 class ChatMessageListResponse(BaseModel):
-    """Response for listing chat messages."""
+    """Response for listing chat messages with cursor-based pagination."""
 
     messages: List[ChatMessageResponse]
-    total: int
-    has_more: bool
-    before_id: Optional[int] = None  # For pagination
+    total: int = Field(
+        description="Count of messages returned in this response (not total in database). "
+        "Use 'has_more' for pagination decisions."
+    )
+    has_more: bool = Field(
+        description="True if more messages exist before the oldest message in this response"
+    )
+    before_id: Optional[int] = Field(
+        default=None,
+        description="ID of the oldest message returned. Use as 'before_id' param for next page."
+    )
 
 
 class ChatMessageSend(BaseModel):
