@@ -302,22 +302,31 @@ VLOG_WORKER_API_KEY=your-api-key
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all options.
 
-### Admin API Authentication
+### Authentication
 
-The admin API can require authentication via `VLOG_ADMIN_API_SECRET`:
+VLog uses multi-user authentication with role-based access control (RBAC). On first access, a setup wizard guides you through creating the initial admin account.
 
 ```bash
-# Generate a secret
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# Set in environment
-export VLOG_ADMIN_API_SECRET=your-generated-secret
-
-# CLI commands will use this automatically
-vlog upload video.mp4 -t "My Video"
+# Required: Set a session secret for signing tokens
+# Generate with: openssl rand -base64 32
+export VLOG_SESSION_SECRET_KEY=your-secret-key-here
 ```
 
-When set, all admin API endpoints require the `X-Admin-Secret` header. The CLI automatically includes this header when `VLOG_ADMIN_API_SECRET` is set.
+**Features:**
+- Session-based auth with JWT refresh tokens
+- Role-based access control (admin, editor, viewer)
+- API keys for programmatic access
+- OIDC integration (Google, GitHub, Keycloak, etc.)
+- Invite-based user registration
+
+See [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) for full details.
+
+<details>
+<summary>Legacy Authentication (deprecated)</summary>
+
+The legacy single-secret authentication via `VLOG_ADMIN_API_SECRET` is still supported as a fallback but is deprecated. Migrate to multi-user auth for better security and audit logging.
+
+</details>
 
 ## Troubleshooting
 

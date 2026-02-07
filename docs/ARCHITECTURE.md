@@ -422,10 +422,10 @@ vlog settings migrate-from-env         # Import from environment
 Event-driven notification system for external integrations:
 
 **Supported Events:**
-- `video.ready` / `video.processing` / `video.failed`
-- `video.deleted` / `video.restored` / `video.purged`
-- `transcription.complete` / `transcription.failed`
-- `worker.connected` / `worker.disconnected`
+- `video.uploaded` / `video.ready` / `video.failed`
+- `video.deleted` / `video.restored`
+- `transcription.completed`
+- `worker.registered` / `worker.offline`
 
 **Security Features:**
 - HMAC-SHA256 signature verification

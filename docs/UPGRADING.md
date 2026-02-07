@@ -27,7 +27,7 @@ sudo systemctl stop vlog.target
 ### 3. Pull Latest Code
 
 ```bash
-cd /home/damen/vlog
+cd /path/to/vlog
 git fetch origin
 git checkout main
 git pull origin main

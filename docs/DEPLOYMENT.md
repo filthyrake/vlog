@@ -829,7 +829,7 @@ sudo systemctl stop vlog.target
 pg_dump -U vlog vlog > /backup/vlog-pre-upgrade-$(date +%Y%m%d).sql
 
 # Pull latest code
-cd /home/damen/vlog
+cd /path/to/vlog
 git pull origin main
 
 # Update dependencies
