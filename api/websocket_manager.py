@@ -444,8 +444,8 @@ class WebSocketManager:
         """
         Broadcast a message to all connections on a stream.
 
-        Sends are parallelized to avoid O(n * timeout) latency. With parallel sends,
-        worst-case latency is O(timeout) = 5 seconds regardless of connection count.
+        Uses bounded concurrency (100 concurrent sends) to avoid memory spikes.
+        For non-critical priority, stops scheduling new sends after failure threshold.
 
         Args:
             stream_id: The stream to broadcast to
@@ -468,39 +468,60 @@ class WebSocketManager:
         if not targets:
             return BroadcastResult(sent_count=0, failed_count=0, early_exit=False)
 
-        message_json = json.dumps(message)
+        # Serialize message once, with error handling
+        try:
+            message_json = json.dumps(message)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                f"Failed to JSON serialize broadcast message for stream {stream_id}: {exc}",
+                extra={"stream_id": stream_id},
+            )
+            return BroadcastResult(sent_count=0, failed_count=len(targets), early_exit=False)
 
-        # Parallel send to all connections - O(timeout) instead of O(n * timeout)
-        results = await asyncio.gather(
-            *[self._send_to_one(conn, message_json) for conn in targets],
+        # Track results with thread-safe counters for early exit
+        sent_count = 0
+        failed_count = 0
+        failed_connection_ids: list[str] = []
+        early_exit = False
+        lock = asyncio.Lock()
+        semaphore = asyncio.Semaphore(100)  # Bounded concurrency
+
+        async def send_one(conn: ConnectionInfo) -> None:
+            nonlocal sent_count, failed_count, early_exit
+
+            # Check early exit before acquiring semaphore
+            if allow_early_exit and early_exit:
+                return
+
+            async with semaphore:
+                # Check again after acquiring semaphore
+                if allow_early_exit and early_exit:
+                    return
+
+                conn_id, success = await self._send_to_one(conn, message_json)
+
+                async with lock:
+                    if success:
+                        sent_count += 1
+                    else:
+                        failed_count += 1
+                        failed_connection_ids.append(conn_id)
+
+                        # Trigger early exit for subsequent sends
+                        if allow_early_exit and failed_count >= WS_BROADCAST_MAX_FAILURES:
+                            if not early_exit:
+                                early_exit = True
+                                logger.warning(
+                                    f"Broadcast early exit: {failed_count} failures "
+                                    f"(threshold: {WS_BROADCAST_MAX_FAILURES}) for stream {stream_id}",
+                                    extra={"stream_id": stream_id, "sent": sent_count, "failed": failed_count},
+                                )
+
+        # Run all sends with bounded concurrency
+        await asyncio.gather(
+            *[send_one(conn) for conn in targets],
             return_exceptions=True,
         )
-
-        sent_count = 0
-        failed_connection_ids: list[str] = []
-
-        for result in results:
-            if isinstance(result, Exception):
-                # Unexpected exception from gather
-                logger.debug(f"Unexpected broadcast exception: {result}")
-                continue
-            conn_id, success = result
-            if success:
-                sent_count += 1
-            else:
-                failed_connection_ids.append(conn_id)
-
-        failed_count = len(failed_connection_ids)
-
-        # Check early exit threshold (for logging/metrics, broadcast already complete)
-        early_exit = False
-        if allow_early_exit and failed_count >= WS_BROADCAST_MAX_FAILURES:
-            logger.warning(
-                f"Broadcast had {failed_count} failures (threshold: {WS_BROADCAST_MAX_FAILURES}) "
-                f"for stream {stream_id}",
-                extra={"stream_id": stream_id, "sent": sent_count, "failed": failed_count},
-            )
-            early_exit = True
 
         # Schedule cleanup of failed connections (tracked for shutdown)
         if failed_connection_ids:
@@ -508,13 +529,22 @@ class WebSocketManager:
                 self._cleanup_failed_connections(failed_connection_ids)
             )
             self._cleanup_tasks.add(task)
-            task.add_done_callback(self._cleanup_tasks.discard)
+            task.add_done_callback(self._on_cleanup_task_done)
 
         return BroadcastResult(
             sent_count=sent_count,
             failed_count=failed_count,
             early_exit=early_exit,
         )
+
+    def _on_cleanup_task_done(self, task: asyncio.Task) -> None:
+        """Callback to handle cleanup task completion and log any exceptions."""
+        self._cleanup_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"Cleanup task failed with exception: {exc}")
 
     async def _cleanup_failed_connections(self, connection_ids: list[str]) -> None:
         """
@@ -623,13 +653,19 @@ class WebSocketManager:
         """
         logger.info("Initiating WebSocket manager shutdown")
         self._shutting_down = True
+        start_time = asyncio.get_event_loop().time()
+
+        # Allocate 1/3 of timeout for cleanup tasks, 2/3 for closing connections
+        cleanup_timeout = timeout / 3
 
         # Wait for cleanup tasks before closing connections (Issue #554)
         if self._cleanup_tasks:
             logger.info(f"Waiting for {len(self._cleanup_tasks)} cleanup tasks")
-            done, pending = await asyncio.wait(self._cleanup_tasks, timeout=10.0)
+            done, pending = await asyncio.wait(self._cleanup_tasks, timeout=cleanup_timeout)
             if pending:
-                logger.warning(f"{len(pending)} cleanup tasks still pending after timeout")
+                logger.warning(f"Cancelling {len(pending)} pending cleanup tasks after timeout")
+                for task in pending:
+                    task.cancel()
 
         # Get all connection IDs
         async with self._lock:
@@ -643,7 +679,6 @@ class WebSocketManager:
             })
 
         # Close all connections
-        start_time = asyncio.get_event_loop().time()
         for conn_id in conn_ids:
             await self.close_connection(
                 conn_id,
@@ -652,7 +687,8 @@ class WebSocketManager:
             )
 
             # Check timeout
-            if asyncio.get_event_loop().time() - start_time > timeout:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > timeout:
                 logger.warning("Shutdown timeout reached, forcing remaining connections closed")
                 break
 
