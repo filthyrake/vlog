@@ -233,13 +233,19 @@ async def update_variant_playlist(
     if dvr_window_seconds > 0:
         cutoff = now.timestamp() - dvr_window_seconds
 
-    # Fetch segments for this quality
+    # Fetch segments for this quality, pushing DVR cutoff filter to the
+    # database to avoid loading all segments into memory. (Issue #559)
     query = (
         live_stream_segments.select()
         .where(live_stream_segments.c.stream_id == stream_id)
         .where(live_stream_segments.c.quality == quality)
-        .order_by(live_stream_segments.c.sequence_number)
     )
+
+    if cutoff:
+        cutoff_dt = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+        query = query.where(live_stream_segments.c.received_at >= cutoff_dt)
+
+    query = query.order_by(live_stream_segments.c.sequence_number)
 
     segments = await fetch_all_with_retry(query)
 
@@ -247,16 +253,7 @@ async def update_variant_playlist(
         logger.debug(f"No segments yet for {slug}/{quality}")
         return
 
-    # Apply DVR window filter
-    if cutoff:
-        filtered_segments = []
-        for seg in segments:
-            received_at = seg["received_at"]
-            if received_at and received_at.timestamp() >= cutoff:
-                filtered_segments.append(dict(seg))
-        segments = filtered_segments
-    else:
-        segments = [dict(seg) for seg in segments]
+    segments = [dict(seg) for seg in segments]
 
     if not segments:
         return

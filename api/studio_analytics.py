@@ -34,6 +34,7 @@ from api.live_schemas import (
 )
 from api.studio import require_csrf
 from config import (
+    DATABASE_URL,
     LIVE_ENABLED,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_STORAGE_URL,
@@ -329,44 +330,47 @@ async def recompute_analytics(
     total_watch_minutes = 0.0  # Would need session tracking
     average_watch_time_seconds = 0.0  # Would need session tracking
 
-    # Upsert analytics summary
-    # Check if exists
-    existing_query = sa.select(stream_analytics_summary.c.stream_id).where(
-        stream_analytics_summary.c.stream_id == stream_id
+    # Atomic upsert to eliminate the TOCTOU race condition where concurrent
+    # requests could both see "not exists" and attempt inserts. (Issue #550)
+    # Uses PostgreSQL INSERT ... ON CONFLICT DO UPDATE when available,
+    # falls back to UPDATE-then-INSERT for other dialects (e.g., SQLite).
+    analytics_values = dict(
+        peak_viewers=peak_viewers,
+        average_viewers=average_viewers,
+        total_unique_viewers=total_unique_viewers,
+        total_chat_messages=total_chat_messages,
+        total_watch_minutes=total_watch_minutes,
+        average_watch_time_seconds=average_watch_time_seconds,
+        stream_duration_seconds=stream_duration_seconds,
+        computed_at=now,
     )
-    existing = await fetch_one_with_retry(existing_query)
 
-    if existing:
-        # Update
-        update_query = (
+    if DATABASE_URL.startswith("postgresql"):
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        upsert_stmt = pg_insert(stream_analytics_summary).values(
+            stream_id=stream_id,
+            **analytics_values,
+        ).on_conflict_do_update(
+            index_elements=[stream_analytics_summary.c.stream_id],
+            set_=analytics_values,
+        )
+        await db_execute_with_retry(upsert_stmt)
+    else:
+        # Fallback for non-PostgreSQL: try UPDATE first, INSERT if no rows matched.
+        # Not fully atomic but acceptable for SQLite (single-writer).
+        result = await db_execute_with_retry(
             stream_analytics_summary.update()
             .where(stream_analytics_summary.c.stream_id == stream_id)
-            .values(
-                peak_viewers=peak_viewers,
-                average_viewers=average_viewers,
-                total_unique_viewers=total_unique_viewers,
-                total_chat_messages=total_chat_messages,
-                total_watch_minutes=total_watch_minutes,
-                average_watch_time_seconds=average_watch_time_seconds,
-                stream_duration_seconds=stream_duration_seconds,
-                computed_at=now,
+            .values(**analytics_values)
+        )
+        if result == 0:
+            await db_execute_with_retry(
+                stream_analytics_summary.insert().values(
+                    stream_id=stream_id,
+                    **analytics_values,
+                )
             )
-        )
-        await db_execute_with_retry(update_query)
-    else:
-        # Insert
-        insert_query = stream_analytics_summary.insert().values(
-            stream_id=stream_id,
-            peak_viewers=peak_viewers,
-            average_viewers=average_viewers,
-            total_unique_viewers=total_unique_viewers,
-            total_chat_messages=total_chat_messages,
-            total_watch_minutes=total_watch_minutes,
-            average_watch_time_seconds=average_watch_time_seconds,
-            stream_duration_seconds=stream_duration_seconds,
-            computed_at=now,
-        )
-        await db_execute_with_retry(insert_query)
 
     logger.info(
         f"Recomputed analytics for stream {stream_slug}",

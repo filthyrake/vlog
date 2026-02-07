@@ -411,6 +411,45 @@ class Subscriber:
             except Exception as e:
                 logger.debug(f"Error closing pub/sub: {e}")
 
+    async def force_close(self, timeout: float = 2.0) -> None:
+        """
+        Force cleanup of pub/sub connection even if graceful close hangs.
+
+        Unlike close(), this captures the underlying pub/sub reference before
+        clearing state, then attempts a timed close. If that also times out,
+        it forcibly disconnects the underlying connection. (Issue #562)
+        """
+        pubsub = self._pubsub
+        channels = list(self._subscribed_channels)
+        patterns = list(self._subscribed_patterns)
+        self._pubsub = None
+        self._subscribed_channels.clear()
+        self._subscribed_patterns.clear()
+
+        if not pubsub:
+            return
+
+        # Best-effort unsubscribe before closing (consistent with close())
+        try:
+            if channels:
+                await asyncio.wait_for(pubsub.unsubscribe(*channels), timeout=1.0)
+            if patterns:
+                await asyncio.wait_for(pubsub.punsubscribe(*patterns), timeout=1.0)
+        except Exception as e:
+            logger.debug(f"Best-effort unsubscribe during force_close failed (non-critical): {e}")
+
+        try:
+            await asyncio.wait_for(pubsub.close(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error("Pub/Sub force_close timed out - disconnecting underlying connection")
+            try:
+                if hasattr(pubsub, 'connection') and pubsub.connection:
+                    await pubsub.connection.disconnect()
+            except Exception as e:
+                logger.error(f"Failed to disconnect pub/sub connection: {e}")
+        except Exception as e:
+            logger.debug(f"Error during force_close: {e}")
+
     @property
     def is_active(self) -> bool:
         """Check if subscription is active."""

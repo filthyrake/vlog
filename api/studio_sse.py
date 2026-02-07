@@ -291,17 +291,17 @@ async def stream_events(
             # Cleanup connection tracking FIRST - must succeed even if subscriber fails
             await _remove_connection(stream_id, connection_id)
 
-            # Then cleanup subscriber with timeout - allowed to fail
+            # Cleanup subscriber using force_close() which handles its own
+            # timeouts internally. Unlike close(), force_close() captures the
+            # underlying pub/sub reference before clearing state, so if the
+            # close operation hangs it can still forcibly disconnect the
+            # connection and prevent Redis pool exhaustion. (Issue #562)
             if subscriber:
                 try:
-                    await asyncio.wait_for(subscriber.close(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"SSE subscriber close timed out for {connection_id}"
-                    )
+                    await subscriber.force_close(timeout=5.0)
                 except Exception as e:
                     logger.warning(
-                        f"SSE subscriber close error for {connection_id}: {e}"
+                        f"SSE subscriber cleanup error for {connection_id}: {e}"
                     )
 
             logger.debug(f"SSE connection {connection_id} closed")
