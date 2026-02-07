@@ -23,6 +23,9 @@ from config import (
     LIVE_STALE_GRACE_MULTIPLIER,
     LIVE_STALE_THRESHOLD,
     LIVE_STORAGE_PATH,
+    LIVE_VOD_RECOVERY_GRACE_PERIOD,
+    LIVE_VOD_RECOVERY_INTERVAL,
+    LIVE_VOD_RECOVERY_MAX_RETRIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +38,13 @@ _running = False
 # Prometheus-style metrics (counter values)
 _dvr_segments_cleaned = 0
 _stale_streams_detected = 0
+_vod_recovery_attempts = 0
+_vod_recovery_successes = 0
+_vod_recovery_failures = 0
+
+# VOD recovery state
+_vod_recovery_task: Optional[asyncio.Task] = None
+_vod_recovery_retry_counts: dict = {}
 
 
 async def cleanup_dvr_segments() -> int:
@@ -178,26 +188,124 @@ async def detect_stale_streams() -> int:
             logger.info(f"Stream {stream['slug']} marked as ended (stale timeout)")
 
             # Re-fetch stream after update to verify state before VOD recording (Issue #552)
-            updated_stream = await fetch_one_with_retry(
-                live_streams.select().where(live_streams.c.id == stream["id"])
-            )
+            # Wrapped in try/except so a re-fetch failure doesn't abort processing
+            # of remaining ending streams.
+            try:
+                updated_stream = await fetch_one_with_retry(
+                    live_streams.select().where(live_streams.c.id == stream["id"])
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Stream {stream['slug']} state verification failed after update: {e}, "
+                    f"skipping VOD recording (recovery will retry later)"
+                )
+                updated_stream = None
 
-            if updated_stream and updated_stream["status"] == "ended" and updated_stream["auto_record_vod"]:
-                try:
-                    await finalize_playlists_for_vod(stream["id"])
-                    await trigger_vod_recording(stream["id"])
-                except Exception as e:
-                    logger.error(f"Failed to create VOD for stream {stream['slug']}: {e}")
-            elif not updated_stream or updated_stream["status"] != "ended":
+            # Use original stream["auto_record_vod"] for the VOD decision — the
+            # re-fetch only verifies status == "ended" to guard against races.
+            if updated_stream and updated_stream["status"] == "ended":
+                if stream["auto_record_vod"]:
+                    try:
+                        await finalize_playlists_for_vod(stream["id"])
+                        await trigger_vod_recording(stream["id"])
+                    except Exception as e:
+                        logger.error(f"Failed to create VOD for stream {stream['slug']} (id={stream['id']}): {e}")
+            elif updated_stream and updated_stream["status"] != "ended":
                 logger.warning(
                     f"Stream {stream['slug']} status verification failed after update "
-                    f"(expected 'ended', got '{updated_stream['status'] if updated_stream else 'missing'}'), "
+                    f"(expected 'ended', got '{updated_stream['status']}'), "
                     f"skipping VOD recording"
                 )
 
             transitions += 1
 
     return transitions
+
+
+async def recover_orphaned_vod_streams() -> dict:
+    """
+    Recover streams stuck in 'ended' state without a VOD recording.
+
+    Finds streams where auto_record_vod=true, status='ended', vod_video_id IS NULL,
+    and ended_at is older than the grace period. Retries VOD creation for each,
+    up to LIVE_VOD_RECOVERY_MAX_RETRIES per stream per process lifetime.
+
+    Returns dict with attempted/succeeded/failed/skipped counts.
+    """
+    global _vod_recovery_attempts, _vod_recovery_successes, _vod_recovery_failures
+
+    now = datetime.now(timezone.utc)
+    grace_cutoff = now - timedelta(seconds=LIVE_VOD_RECOVERY_GRACE_PERIOD)
+
+    result = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+
+    orphaned = await fetch_all_with_retry(
+        live_streams.select()
+        .where(live_streams.c.status == "ended")
+        .where(live_streams.c.auto_record_vod.is_(True))
+        .where(live_streams.c.vod_video_id.is_(None))
+        .where(live_streams.c.ended_at < grace_cutoff)
+    )
+
+    for stream in orphaned:
+        stream_id = stream["id"]
+        retry_count = _vod_recovery_retry_counts.get(stream_id, 0)
+
+        if retry_count >= LIVE_VOD_RECOVERY_MAX_RETRIES:
+            if retry_count == LIVE_VOD_RECOVERY_MAX_RETRIES:
+                logger.error(
+                    f"VOD recovery: stream {stream['slug']} (id={stream_id}) "
+                    f"exceeded max retries ({LIVE_VOD_RECOVERY_MAX_RETRIES}), giving up"
+                )
+                # Increment past max so this log fires only once
+                _vod_recovery_retry_counts[stream_id] = retry_count + 1
+            result["skipped"] += 1
+            continue
+
+        _vod_recovery_retry_counts[stream_id] = retry_count + 1
+        result["attempted"] += 1
+        _vod_recovery_attempts += 1
+
+        logger.info(
+            f"VOD recovery: retrying stream {stream['slug']} (id={stream_id}), "
+            f"attempt {retry_count + 1}/{LIVE_VOD_RECOVERY_MAX_RETRIES}"
+        )
+
+        try:
+            await finalize_playlists_for_vod(stream_id)
+            await trigger_vod_recording(stream_id)
+            # Success — clean up retry tracker
+            _vod_recovery_retry_counts.pop(stream_id, None)
+            result["succeeded"] += 1
+            _vod_recovery_successes += 1
+            logger.info(
+                f"VOD recovery: successfully created VOD for stream {stream['slug']} (id={stream_id})"
+            )
+        except Exception as e:
+            result["failed"] += 1
+            _vod_recovery_failures += 1
+            logger.error(
+                f"VOD recovery: failed for stream {stream['slug']} (id={stream_id}): {e}"
+            )
+
+    return result
+
+
+async def _vod_recovery_loop():
+    """Background loop for VOD recording recovery."""
+    while _running:
+        try:
+            result = await recover_orphaned_vod_streams()
+            if result["attempted"] > 0:
+                logger.debug(
+                    f"VOD recovery: attempted={result['attempted']}, "
+                    f"succeeded={result['succeeded']}, failed={result['failed']}, "
+                    f"skipped={result['skipped']}"
+                )
+        except Exception as e:
+            logger.error(f"VOD recovery loop error: {e}")
+
+        await asyncio.sleep(LIVE_VOD_RECOVERY_INTERVAL)
 
 
 async def _dvr_cleanup_loop():
@@ -237,7 +345,7 @@ async def _stale_detection_loop():
 
 async def start_live_background_tasks():
     """Start all live streaming background tasks."""
-    global _running, _dvr_cleanup_task, _stale_detection_task
+    global _running, _dvr_cleanup_task, _stale_detection_task, _vod_recovery_task
 
     if _running:
         logger.warning("Live background tasks already running")
@@ -247,13 +355,14 @@ async def start_live_background_tasks():
 
     _dvr_cleanup_task = asyncio.create_task(_dvr_cleanup_loop())
     _stale_detection_task = asyncio.create_task(_stale_detection_loop())
+    _vod_recovery_task = asyncio.create_task(_vod_recovery_loop())
 
     logger.info("Started live streaming background tasks")
 
 
 async def stop_live_background_tasks(timeout: float = 10.0):
     """Stop all live streaming background tasks gracefully."""
-    global _running, _dvr_cleanup_task, _stale_detection_task
+    global _running, _dvr_cleanup_task, _stale_detection_task, _vod_recovery_task
 
     if not _running:
         return
@@ -265,6 +374,8 @@ async def stop_live_background_tasks(timeout: float = 10.0):
         tasks.append(_dvr_cleanup_task)
     if _stale_detection_task:
         tasks.append(_stale_detection_task)
+    if _vod_recovery_task:
+        tasks.append(_vod_recovery_task)
 
     if tasks:
         # Wait for tasks to complete with timeout
@@ -280,6 +391,7 @@ async def stop_live_background_tasks(timeout: float = 10.0):
 
     _dvr_cleanup_task = None
     _stale_detection_task = None
+    _vod_recovery_task = None
 
     logger.info("Stopped live streaming background tasks")
 
@@ -289,5 +401,8 @@ def get_live_task_metrics() -> dict:
     return {
         "dvr_segments_cleaned_total": _dvr_segments_cleaned,
         "stale_streams_detected_total": _stale_streams_detected,
+        "vod_recovery_attempts_total": _vod_recovery_attempts,
+        "vod_recovery_successes_total": _vod_recovery_successes,
+        "vod_recovery_failures_total": _vod_recovery_failures,
         "running": _running,
     }
