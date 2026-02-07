@@ -14,7 +14,7 @@ from typing import Optional
 import sqlalchemy as sa
 
 from api.database import live_stream_segments, live_streams
-from api.db_retry import db_execute_with_retry, fetch_all_with_retry
+from api.db_retry import db_execute_with_retry, fetch_all_with_retry, fetch_one_with_retry
 from api.live_playlist import finalize_playlists_for_vod
 from api.live_vod import trigger_vod_recording
 from config import (
@@ -177,13 +177,23 @@ async def detect_stale_streams() -> int:
         if result > 0:
             logger.info(f"Stream {stream['slug']} marked as ended (stale timeout)")
 
-            # Finalize playlists and trigger VOD recording
-            if stream["auto_record_vod"]:
+            # Re-fetch stream after update to verify state before VOD recording (Issue #552)
+            updated_stream = await fetch_one_with_retry(
+                live_streams.select().where(live_streams.c.id == stream["id"])
+            )
+
+            if updated_stream and updated_stream["status"] == "ended" and updated_stream["auto_record_vod"]:
                 try:
                     await finalize_playlists_for_vod(stream["id"])
                     await trigger_vod_recording(stream["id"])
                 except Exception as e:
                     logger.error(f"Failed to create VOD for stream {stream['slug']}: {e}")
+            elif not updated_stream or updated_stream["status"] != "ended":
+                logger.warning(
+                    f"Stream {stream['slug']} status verification failed after update "
+                    f"(expected 'ended', got '{updated_stream['status'] if updated_stream else 'missing'}'), "
+                    f"skipping VOD recording"
+                )
 
             transitions += 1
 
