@@ -880,6 +880,12 @@ WS_MAX_CONNECTIONS_PER_USER_PER_STREAM = get_int_env("VLOG_WS_MAX_CONNECTIONS_PE
 # WebSocket heartbeat/ping interval in seconds
 WS_HEARTBEAT_INTERVAL = get_int_env("VLOG_WS_HEARTBEAT_INTERVAL", 30, min_val=10, max_val=120)
 
+# Maximum total failures before early exit from broadcast (Issue #554)
+# Uses total failures, not consecutive, since iteration order is non-deterministic
+WS_BROADCAST_MAX_FAILURES = get_int_env(
+    "VLOG_WS_BROADCAST_MAX_FAILURES", 50, min_val=10, max_val=500
+)
+
 # Session revalidation interval in seconds (matches SSE pattern)
 WS_SESSION_REVALIDATION_INTERVAL = get_int_env("VLOG_WS_SESSION_REVALIDATION_INTERVAL", 300, min_val=60)
 
