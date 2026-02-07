@@ -863,6 +863,12 @@ LIVE_ALLOWED_QUALITIES = frozenset({"2160p", "1440p", "1080p", "720p", "480p", "
 # The actual ingest happens via HTTP segment push, but users may use RTMP re-streaming
 LIVE_RTMP_INGEST_URL = os.getenv("VLOG_LIVE_RTMP_INGEST_URL", "rtmp://localhost/live")
 
+# VOD recording recovery for orphaned streams (Issue #552)
+# Streams that end but fail VOD creation are retried by a background loop
+LIVE_VOD_RECOVERY_INTERVAL = get_int_env("VLOG_LIVE_VOD_RECOVERY_INTERVAL", 120, min_val=30, max_val=600)
+LIVE_VOD_RECOVERY_GRACE_PERIOD = get_int_env("VLOG_LIVE_VOD_RECOVERY_GRACE_PERIOD", 300, min_val=60, max_val=3600)
+LIVE_VOD_RECOVERY_MAX_RETRIES = get_int_env("VLOG_LIVE_VOD_RECOVERY_MAX_RETRIES", 5, min_val=1, max_val=20)
+
 # =============================================================================
 # WebSocket Configuration (Issue #530)
 # Chat and real-time features use WebSocket connections
