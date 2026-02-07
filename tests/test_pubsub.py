@@ -10,6 +10,7 @@ Tests cover:
 - Cleanup and resource management
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -447,6 +448,93 @@ class TestSubscriber:
         subscriber._pubsub = None
 
         assert subscriber.is_active is False
+
+
+class TestSubscriberForceClose:
+    """Tests for Subscriber.force_close method (Issue #562)."""
+
+    @pytest.mark.asyncio
+    async def test_force_close_cleans_up_normally(self):
+        """Should unsubscribe and close when close() completes in time."""
+        subscriber = Subscriber()
+        mock_pubsub = AsyncMock()
+        subscriber._pubsub = mock_pubsub
+        subscriber._subscribed_channels = {"channel1", "channel2"}
+        subscriber._subscribed_patterns = {"pattern:*"}
+
+        await subscriber.force_close(timeout=2.0)
+
+        # Should attempt unsubscribe before close
+        mock_pubsub.unsubscribe.assert_called_once()
+        call_args = set(mock_pubsub.unsubscribe.call_args[0])
+        assert call_args == {"channel1", "channel2"}
+        mock_pubsub.punsubscribe.assert_called_once_with("pattern:*")
+        mock_pubsub.close.assert_called_once()
+        assert subscriber._pubsub is None
+        assert len(subscriber._subscribed_channels) == 0
+        assert len(subscriber._subscribed_patterns) == 0
+
+    @pytest.mark.asyncio
+    async def test_force_close_disconnects_on_timeout(self):
+        """Should forcibly disconnect when close() hangs."""
+        subscriber = Subscriber()
+        mock_pubsub = AsyncMock()
+        mock_connection = AsyncMock()
+        mock_pubsub.connection = mock_connection
+
+        # Make close() hang forever
+        async def hanging_close():
+            await asyncio.sleep(999)
+
+        mock_pubsub.close = hanging_close
+        subscriber._pubsub = mock_pubsub
+        subscriber._subscribed_channels = {"channel1"}
+
+        await subscriber.force_close(timeout=0.1)
+
+        # Should have fallen back to disconnect
+        mock_connection.disconnect.assert_called_once()
+        assert subscriber._pubsub is None
+        assert len(subscriber._subscribed_channels) == 0
+
+    @pytest.mark.asyncio
+    async def test_force_close_noop_without_pubsub(self):
+        """Should be a no-op when no pubsub object exists."""
+        subscriber = Subscriber()
+        subscriber._pubsub = None
+
+        # Should not raise
+        await subscriber.force_close()
+
+        assert subscriber._pubsub is None
+
+    @pytest.mark.asyncio
+    async def test_force_close_handles_unsubscribe_error(self):
+        """Should still close even if unsubscribe fails."""
+        subscriber = Subscriber()
+        mock_pubsub = AsyncMock()
+        mock_pubsub.unsubscribe = AsyncMock(side_effect=Exception("Redis gone"))
+        subscriber._pubsub = mock_pubsub
+        subscriber._subscribed_channels = {"channel1"}
+
+        await subscriber.force_close(timeout=2.0)
+
+        # Should still close the connection despite unsubscribe failure
+        mock_pubsub.close.assert_called_once()
+        assert subscriber._pubsub is None
+
+    @pytest.mark.asyncio
+    async def test_force_close_handles_close_error(self):
+        """Should not raise when close() raises a non-timeout error."""
+        subscriber = Subscriber()
+        mock_pubsub = AsyncMock()
+        mock_pubsub.close = AsyncMock(side_effect=ConnectionError("Already closed"))
+        subscriber._pubsub = mock_pubsub
+
+        # Should not raise
+        await subscriber.force_close(timeout=2.0)
+
+        assert subscriber._pubsub is None
 
 
 class TestSubscriberListen:

@@ -420,12 +420,23 @@ class Subscriber:
         it forcibly disconnects the underlying connection. (Issue #562)
         """
         pubsub = self._pubsub
+        channels = list(self._subscribed_channels)
+        patterns = list(self._subscribed_patterns)
         self._pubsub = None
         self._subscribed_channels.clear()
         self._subscribed_patterns.clear()
 
         if not pubsub:
             return
+
+        # Best-effort unsubscribe before closing (consistent with close())
+        try:
+            if channels:
+                await asyncio.wait_for(pubsub.unsubscribe(*channels), timeout=1.0)
+            if patterns:
+                await asyncio.wait_for(pubsub.punsubscribe(*patterns), timeout=1.0)
+        except Exception as e:
+            logger.debug(f"Best-effort unsubscribe during force_close failed (non-critical): {e}")
 
         try:
             await asyncio.wait_for(pubsub.close(), timeout=timeout)
