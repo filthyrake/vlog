@@ -53,7 +53,7 @@ VLOG_SESSION_SECRET_KEY=your-secret-key-here
 
 # Session expiry (optional, defaults shown)
 VLOG_SESSION_EXPIRY_HOURS=24
-VLOG_REFRESH_TOKEN_EXPIRY_DAYS=7
+VLOG_REFRESH_EXPIRY_DAYS=7
 
 # Registration mode (optional)
 # invite - Users must be invited by admin (default)
@@ -575,3 +575,12 @@ Sessions expire after 24 hours. Use the refresh endpoint or re-login.
 1. Verify the key hasn't been revoked
 2. Check if it has expired
 3. Ensure proper Authorization header format
+
+---
+
+## Related Documentation
+
+- [API.md](API.md) - API endpoint reference including auth endpoints
+- [CONFIGURATION.md](CONFIGURATION.md) - Authentication environment variables
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Production auth setup and nginx configuration
+- [DATABASE.md](DATABASE.md) - User and session table schemas

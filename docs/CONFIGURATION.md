@@ -23,7 +23,7 @@ All settings support environment variable configuration. Set these in your shell
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_DATABASE_URL` | `postgresql://vlog:vlog_password@localhost/vlog` | PostgreSQL connection URL |
+| `VLOG_DATABASE_URL` | `postgresql://vlog@localhost/vlog` | PostgreSQL connection URL |
 | `VLOG_DATABASE_PATH` | `./vlog.db` | Legacy SQLite path (for migration scripts only) |
 
 **Notes:**
@@ -276,7 +276,7 @@ VLOG_WATERMARK_TEXT_COLOR=rgba(255,255,255,0.8)
 | `VLOG_WORKER_HEARTBEAT_INTERVAL` | `30` | Heartbeat interval in seconds |
 | `VLOG_WORKER_POLL_INTERVAL` | `10` | Job polling interval in seconds |
 | `VLOG_WORKER_WORK_DIR` | `/tmp/vlog-worker` | Working directory for downloads/transcoding |
-| `VLOG_WORKER_JOB_TIMEOUT` | `7200` | Maximum job duration before expiration (seconds) |
+| `VLOG_WORKER_CLAIM_DURATION` | `30` | Job claim duration in minutes before re-availability |
 
 **Remote Worker Architecture:**
 - Workers register with the Worker API and receive an API key
@@ -288,7 +288,7 @@ VLOG_WATERMARK_TEXT_COLOR=rgba(255,255,255,0.8)
 
 **API Key Security:**
 - Keys are generated on worker registration
-- Stored as SHA-256 hashes in the database
+- Stored as argon2id hashes in the database (migrated from SHA-256)
 - Each worker has a unique key that can be revoked
 - Prefix-based lookup for efficient authentication
 
@@ -630,7 +630,7 @@ Reduced from 5 to 2 for faster failure detection on stale NFS mounts.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_WORKER_OFFLINE_THRESHOLD` | `2` | Minutes before worker marked offline |
+| `VLOG_WORKER_OFFLINE_THRESHOLD` | `5` | Minutes before worker marked offline |
 | `VLOG_STALE_JOB_CHECK_INTERVAL` | `60` | Seconds between stale job checks |
 
 ---
@@ -715,11 +715,11 @@ Run 'vlog settings migrate-from-env' to migrate all settings.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/settings` | GET | List all settings |
-| `/api/settings/{key}` | GET | Get a specific setting |
-| `/api/settings/{key}` | PUT | Update a setting |
-| `/api/settings/seed` | POST | Seed settings from environment |
-| `/api/settings/export` | GET | Export all settings as JSON |
+| `/api/v1/settings` | GET | List all settings |
+| `/api/v1/settings/key/{key}` | GET | Get a specific setting |
+| `/api/v1/settings/key/{key}` | PUT | Update a setting |
+| `/api/v1/settings/seed-from-env` | POST | Seed settings from environment |
+| `/api/v1/settings/export` | POST | Export all settings as JSON |
 
 ---
 
@@ -885,7 +885,7 @@ When enabled, workers must report a version >= `REQUIRED_WORKER_VERSION` or jobs
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VLOG_TAR_EXTRACTION_TIMEOUT` | `300` | Timeout for tar extraction in seconds |
+| `VLOG_TAR_EXTRACTION_TIMEOUT` | `600` | Timeout for tar extraction in seconds |
 
 Prevents hung tar extraction operations from blocking the worker API.
 
@@ -906,16 +906,14 @@ Configure webhook notifications for video lifecycle events.
 | `VLOG_WEBHOOKS_DELIVERY_BATCH_SIZE` | `50` | Deliveries to process per batch |
 
 **Supported Events:**
+- `video.uploaded` - New video uploaded
 - `video.ready` - Video transcoding complete
-- `video.processing` - Transcoding started
 - `video.failed` - Transcoding failed
 - `video.deleted` - Video soft-deleted
 - `video.restored` - Video restored from archive
-- `video.purged` - Video permanently deleted
-- `transcription.complete` - Captions generated
-- `transcription.failed` - Transcription failed
-- `worker.connected` - Worker came online
-- `worker.disconnected` - Worker went offline
+- `transcription.completed` - Captions generated
+- `worker.registered` - New worker registered
+- `worker.offline` - Worker went offline
 
 **Security Features:**
 - HMAC-SHA256 signature verification (`X-VLog-Signature` header)
@@ -956,9 +954,7 @@ Configure video download functionality.
 - Consider CDN integration for high-traffic scenarios
 
 **Download Endpoints:**
-- `GET /api/videos/{slug}/download` - Download highest quality transcoded version
-- `GET /api/videos/{slug}/download?quality=720p` - Download specific quality
-- `GET /api/videos/{slug}/download?original=true` - Download original (if enabled)
+- `GET /api/v1/videos/{slug}/download/original` - Download original file (if enabled)
 
 ---
 

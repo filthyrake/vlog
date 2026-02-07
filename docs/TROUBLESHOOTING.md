@@ -833,3 +833,12 @@ If you can't resolve an issue:
    - Error messages
    - Relevant logs
    - Steps to reproduce
+
+---
+
+## Related Documentation
+
+- [MONITORING.md](MONITORING.md) - Prometheus metrics for diagnosing issues
+- [CONFIGURATION.md](CONFIGURATION.md) - Environment variable reference
+- [AUTHENTICATION.md](AUTHENTICATION.md) - Authentication troubleshooting details
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Service setup and nginx configuration

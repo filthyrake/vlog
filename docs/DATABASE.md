@@ -870,3 +870,12 @@ sudo -u postgres psql -c "CREATE DATABASE vlog OWNER vlog;"
 # Recreate tables
 python api/database.py
 ```
+
+---
+
+## Related Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture and component overview
+- [API.md](API.md) - API endpoint reference (maps to database tables)
+- [CONFIGURATION.md](CONFIGURATION.md) - Database connection and settings configuration
+- [AUTHENTICATION.md](AUTHENTICATION.md) - User authentication schema details

@@ -2241,39 +2241,29 @@ Response: Binary file stream with `Content-Disposition: attachment` header.
 - Default: 10 downloads per hour per IP
 - Configurable via `VLOG_DOWNLOADS_RATE_LIMIT_PER_HOUR`
 
-### Download Transcoded Video
-```
-GET /api/videos/{slug}/download/{quality}
-```
-
-Path parameters:
-| Parameter | Description |
-|-----------|-------------|
-| quality | Quality level: 2160p, 1440p, 1080p, 720p, 480p, 360p |
-
-Returns the transcoded MP4 file for the specified quality.
-
 **Error Responses:**
-- `404 Not Found` - Video or quality not found
-- `403 Forbidden` - Downloads disabled
+- `404 Not Found` - Video not found or original file missing
+- `403 Forbidden` - Downloads disabled or original downloads not allowed
 - `429 Too Many Requests` - Rate limit exceeded
 
 ---
 
 ## Worker API (Port 9002)
 
-**Authentication:** All endpoints (except `/api/health`) require API key authentication via `X-API-Key` header.
+**Authentication:** All endpoints (except `/api/v1/health`) require API key authentication via `X-Worker-API-Key` header.
 
 ### Health Check
 
 ```
-GET /api/health
+GET /api/v1/health
 ```
 
 Response:
 ```json
 {"status": "healthy"}
 ```
+
+**Note:** Also available at `/api/health` via legacy route alias.
 
 ### Worker Registration
 
@@ -2830,7 +2820,7 @@ Response: `SpriteStatusResponse`
 
 ### Queue Sprite Generation
 ```
-POST /api/videos/{video_id}/sprites
+POST /api/videos/{video_id}/sprites/generate
 ```
 
 Request body:

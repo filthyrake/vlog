@@ -1,5 +1,7 @@
 # Issue #478: Streaming Segment Upload - Progress Tracker
 
+> **Note:** This is an internal development tracking document, not user-facing documentation. See [ARCHITECTURE.md](ARCHITECTURE.md) and [CONFIGURATION.md](CONFIGURATION.md) for the user-facing streaming upload documentation.
+
 ## Overview
 Eliminate tar.gz blocking during large video transcoding by uploading segments individually as FFmpeg writes them.
 
