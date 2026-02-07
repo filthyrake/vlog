@@ -125,20 +125,26 @@ async def detect_stale_streams() -> int:
     )
 
     for stream in live_streams_query:
-        # Check if there's been a recent segment (race condition check)
-        if stream["last_segment_at"] and stream["last_segment_at"] >= stale_cutoff:
-            continue
-
-        # Transition to ending
-        await db_execute_with_retry(
+        # Atomic UPDATE with WHERE conditions on status AND timestamp.
+        # This eliminates the race condition where a segment arrives between
+        # our SELECT and UPDATE — the UPDATE simply won't match any rows
+        # if the stream is no longer stale. (Issue #551)
+        result = await db_execute_with_retry(
             live_streams.update()
             .where(live_streams.c.id == stream["id"])
             .where(live_streams.c.status == "live")
+            .where(
+                sa.or_(
+                    live_streams.c.last_segment_at < stale_cutoff,
+                    live_streams.c.last_segment_at.is_(None),
+                )
+            )
             .values(status="ending")
         )
 
-        logger.info(f"Stream {stream['slug']} marked as ending (no segments received)")
-        transitions += 1
+        if result > 0:
+            logger.info(f"Stream {stream['slug']} marked as ending (no segments received)")
+            transitions += 1
 
     # Check ending streams for final timeout
     ending_streams = await fetch_all_with_retry(
@@ -153,29 +159,33 @@ async def detect_stale_streams() -> int:
     )
 
     for stream in ending_streams:
-        # Check if there's been a recent segment (grace period)
-        if stream["last_segment_at"] and stream["last_segment_at"] >= final_cutoff:
-            continue
-
-        # Finalize stream
-        await db_execute_with_retry(
+        # Atomic UPDATE with WHERE conditions on status AND timestamp.
+        # Same race-condition fix as the live->ending transition. (Issue #551)
+        result = await db_execute_with_retry(
             live_streams.update()
             .where(live_streams.c.id == stream["id"])
             .where(live_streams.c.status == "ending")
+            .where(
+                sa.or_(
+                    live_streams.c.last_segment_at < final_cutoff,
+                    live_streams.c.last_segment_at.is_(None),
+                )
+            )
             .values(status="ended", ended_at=now)
         )
 
-        logger.info(f"Stream {stream['slug']} marked as ended (stale timeout)")
+        if result > 0:
+            logger.info(f"Stream {stream['slug']} marked as ended (stale timeout)")
 
-        # Finalize playlists and trigger VOD recording
-        if stream["auto_record_vod"]:
-            try:
-                await finalize_playlists_for_vod(stream["id"])
-                await trigger_vod_recording(stream["id"])
-            except Exception as e:
-                logger.error(f"Failed to create VOD for stream {stream['slug']}: {e}")
+            # Finalize playlists and trigger VOD recording
+            if stream["auto_record_vod"]:
+                try:
+                    await finalize_playlists_for_vod(stream["id"])
+                    await trigger_vod_recording(stream["id"])
+                except Exception as e:
+                    logger.error(f"Failed to create VOD for stream {stream['slug']}: {e}")
 
-        transitions += 1
+            transitions += 1
 
     return transitions
 
