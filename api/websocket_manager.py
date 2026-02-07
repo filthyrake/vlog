@@ -407,6 +407,33 @@ class WebSocketManager:
             conn_ids = self._stream_connections.get(stream_id, set())
             return [self._connections[cid] for cid in conn_ids if cid in self._connections]
 
+    async def _send_to_one(
+        self,
+        conn: ConnectionInfo,
+        message_json: str,
+    ) -> tuple[str, bool]:
+        """
+        Send message to a single connection with timeout.
+
+        Returns:
+            (connection_id, success) tuple
+        """
+        try:
+            if conn.websocket.client_state == WebSocketState.CONNECTED:
+                await asyncio.wait_for(
+                    conn.websocket.send_text(message_json),
+                    timeout=5.0,
+                )
+                return (conn.connection_id, True)
+            else:
+                return (conn.connection_id, False)
+        except asyncio.TimeoutError:
+            logger.debug(f"Send timeout for connection {conn.connection_id}")
+            return (conn.connection_id, False)
+        except Exception as e:
+            logger.debug(f"Failed to send to connection {conn.connection_id}: {e}")
+            return (conn.connection_id, False)
+
     async def broadcast_to_stream(
         self,
         stream_id: int,
@@ -416,6 +443,9 @@ class WebSocketManager:
     ) -> BroadcastResult:
         """
         Broadcast a message to all connections on a stream.
+
+        Sends are parallelized to avoid O(n * timeout) latency. With parallel sends,
+        worst-case latency is O(timeout) = 5 seconds regardless of connection count.
 
         Args:
             stream_id: The stream to broadcast to
@@ -427,48 +457,50 @@ class WebSocketManager:
             BroadcastResult with sent/failed counts and early exit flag
         """
         connections = await self.get_stream_connections(stream_id)
-        sent_count = 0
-        failed_count = 0
-        failed_connection_ids: list[str] = []
-        early_exit = False
         allow_early_exit = priority != "critical"
+
+        # Filter excluded connection
+        targets = [
+            conn for conn in connections
+            if not (exclude_connection and conn.connection_id == exclude_connection)
+        ]
+
+        if not targets:
+            return BroadcastResult(sent_count=0, failed_count=0, early_exit=False)
 
         message_json = json.dumps(message)
 
-        for conn in connections:
-            if exclude_connection and conn.connection_id == exclude_connection:
+        # Parallel send to all connections - O(timeout) instead of O(n * timeout)
+        results = await asyncio.gather(
+            *[self._send_to_one(conn, message_json) for conn in targets],
+            return_exceptions=True,
+        )
+
+        sent_count = 0
+        failed_connection_ids: list[str] = []
+
+        for result in results:
+            if isinstance(result, Exception):
+                # Unexpected exception from gather
+                logger.debug(f"Unexpected broadcast exception: {result}")
                 continue
+            conn_id, success = result
+            if success:
+                sent_count += 1
+            else:
+                failed_connection_ids.append(conn_id)
 
-            try:
-                if conn.websocket.client_state == WebSocketState.CONNECTED:
-                    # Timeout prevents blackholed connections from blocking
-                    await asyncio.wait_for(
-                        conn.websocket.send_text(message_json),
-                        timeout=5.0,
-                    )
-                    sent_count += 1
-                else:
-                    failed_count += 1
-                    failed_connection_ids.append(conn.connection_id)
-            except asyncio.TimeoutError:
-                logger.debug(f"Send timeout for connection {conn.connection_id}")
-                failed_count += 1
-                failed_connection_ids.append(conn.connection_id)
-            except Exception as e:
-                logger.debug(f"Failed to send to connection {conn.connection_id}: {e}")
-                failed_count += 1
-                failed_connection_ids.append(conn.connection_id)
+        failed_count = len(failed_connection_ids)
 
-            # Check total failures threshold (not consecutive - iteration order is non-deterministic)
-            if allow_early_exit and failed_count >= WS_BROADCAST_MAX_FAILURES:
-                remaining = len(connections) - (sent_count + failed_count)
-                logger.warning(
-                    f"Broadcast early exit: {failed_count} total failures, "
-                    f"skipping {remaining} remaining connections for stream {stream_id}",
-                    extra={"stream_id": stream_id, "sent": sent_count, "failed": failed_count},
-                )
-                early_exit = True
-                break
+        # Check early exit threshold (for logging/metrics, broadcast already complete)
+        early_exit = False
+        if allow_early_exit and failed_count >= WS_BROADCAST_MAX_FAILURES:
+            logger.warning(
+                f"Broadcast had {failed_count} failures (threshold: {WS_BROADCAST_MAX_FAILURES}) "
+                f"for stream {stream_id}",
+                extra={"stream_id": stream_id, "sent": sent_count, "failed": failed_count},
+            )
+            early_exit = True
 
         # Schedule cleanup of failed connections (tracked for shutdown)
         if failed_connection_ids:
@@ -488,22 +520,30 @@ class WebSocketManager:
         """
         Clean up connections that failed during broadcast.
 
-        Uses "never raise" pattern - logs errors but never raises (Issue #561).
+        Uses bounded parallelism (10 concurrent) to avoid O(n * timeout) cleanup time.
+        Catches all exceptions except CancelledError to support cooperative shutdown.
         """
-        for conn_id in connection_ids:
-            try:
-                await asyncio.wait_for(
-                    self.close_connection(conn_id, code=1001, reason="Connection failed"),
-                    timeout=10.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout closing connection {conn_id}, forcing unregister")
-                await self.unregister_connection(conn_id)
-            except asyncio.CancelledError:
-                logger.debug(f"Cleanup cancelled for {conn_id}")
-                raise  # Allow shutdown to proceed
-            except Exception as e:
-                logger.debug(f"Error cleaning up connection {conn_id}: {e}")
+        semaphore = asyncio.Semaphore(10)  # Max 10 concurrent cleanups
+
+        async def cleanup_one(conn_id: str) -> None:
+            async with semaphore:
+                try:
+                    await asyncio.wait_for(
+                        self.close_connection(conn_id, code=1001, reason="Connection failed"),
+                        timeout=2.0,  # Short timeout, parallelism compensates
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout closing connection {conn_id}, forcing unregister")
+                    await self.unregister_connection(conn_id)
+                except asyncio.CancelledError:
+                    raise  # Allow shutdown to proceed
+                except Exception as e:
+                    logger.debug(f"Error cleaning up connection {conn_id}: {e}")
+
+        await asyncio.gather(
+            *[cleanup_one(conn_id) for conn_id in connection_ids],
+            return_exceptions=True,
+        )
 
     async def send_to_connection(self, connection_id: str, message: dict) -> bool:
         """
@@ -522,8 +562,13 @@ class WebSocketManager:
 
         try:
             if conn.websocket.client_state == WebSocketState.CONNECTED:
-                await conn.websocket.send_text(json.dumps(message))
+                await asyncio.wait_for(
+                    conn.websocket.send_text(json.dumps(message)),
+                    timeout=5.0,
+                )
                 return True
+        except asyncio.TimeoutError:
+            logger.debug(f"Send timeout for connection {connection_id}")
         except Exception as e:
             logger.debug(f"Failed to send to connection {connection_id}: {e}")
 

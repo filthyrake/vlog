@@ -345,6 +345,7 @@ async def pubsub_listener(
     Listen to Redis pub/sub for chat events and forward to WebSocket.
 
     This handles messages sent via REST API or from other server instances.
+    Notifies client on failure to avoid silent message loss.
     """
     subscriber = None
     try:
@@ -358,15 +359,25 @@ async def pubsub_listener(
                 await conn.send_json(message)
             except Exception as e:
                 logger.debug(f"Error forwarding pubsub message: {e}")
+                # Notify client that real-time updates stopped
+                await conn.send_error("pubsub_send_error", "Real-time updates interrupted")
                 break
     except asyncio.CancelledError:
         # Expected during normal shutdown (e.g., WebSocket disconnect or server shutdown)
         pass
     except Exception as e:
         logger.warning(f"Pubsub listener error for stream {stream_id}: {e}")
+        # Notify client about the failure so they know messages may be missing
+        try:
+            await conn.send_error("pubsub_error", "Real-time updates unavailable")
+        except Exception:
+            pass  # Best effort notification
     finally:
         if subscriber:
-            await subscriber.close()
+            try:
+                await subscriber.close()
+            except Exception as e:
+                logger.debug(f"Error closing pubsub subscriber: {e}")
 
 
 async def _setup_chat_connection(
@@ -477,8 +488,7 @@ async def _route_incoming_message(
             await handle_delete_message(conn, ctx.stream, ctx.user, message_id, ctx.client_ip)
         else:
             await conn.send_error("invalid_request", "message_id required")
-    elif msg_type == "pong":
-        pass  # Handled by ManagedWebSocketConnection
+    # Note: "pong" messages are filtered by ManagedWebSocketConnection.receive_json()
     else:
         await conn.send_error("unknown_type", f"Unknown message type: {msg_type}")
 
@@ -495,6 +505,8 @@ async def _cleanup_pubsub_task(
             await pubsub_task
         except asyncio.CancelledError:
             pass  # Expected during cleanup
+        except Exception as e:
+            logger.debug(f"Pubsub task cleanup error: {e}")
 
 
 @router.websocket("/{slug}/chat")
