@@ -8,11 +8,18 @@ Provides real-time chat functionality via WebSocket:
 - Receive settings updates
 
 Related Issue: #530
+
+Error Handling Patterns (Issue #561):
+-------------------------------------
+- _setup_chat_connection: Returns None on failure (caller handles)
+- _register_chat_connection: Returns None on failure (caller handles)
+- _cleanup_pubsub_task: Never raises (catch CancelledError, continue)
 """
 
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -27,6 +34,7 @@ from api.db_retry import db_execute_with_retry, fetch_one_with_retry
 from api.live_schemas import ChatSettingsResponse, WSMessageType
 from api.pubsub import subscribe_to_stream_chat
 from api.websocket_manager import (
+    ConnectionInfo,
     ManagedWebSocketConnection,
     ConnectionLimitError,
     OriginValidationError,
@@ -37,6 +45,19 @@ from api.websocket_manager import (
 from config import LIVE_ENABLED
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChatConnectionContext:
+    """Context for a chat WebSocket connection (Issue #556)."""
+
+    stream: dict
+    user: dict
+    client_ip: Optional[str]
+    user_agent: Optional[str]
+    session_token: str
+    is_moderator: bool
+    is_owner: bool
 
 # Create router for chat WebSocket
 router = APIRouter(prefix="/api/v1/studio/streams", tags=["Studio Chat WebSocket"])
@@ -303,7 +324,7 @@ async def handle_delete_message(
         },
     )
 
-    # Broadcast deletion
+    # Broadcast deletion - critical priority ensures all connections receive it (Issue #554)
     await websocket_manager.broadcast_to_stream(
         stream["id"],
         {
@@ -311,6 +332,7 @@ async def handle_delete_message(
             "message_id": message_id,
             "deleted_by": user.get("username", ""),
         },
+        priority="critical",
     )
 
 
@@ -323,6 +345,7 @@ async def pubsub_listener(
     Listen to Redis pub/sub for chat events and forward to WebSocket.
 
     This handles messages sent via REST API or from other server instances.
+    Notifies client on failure to avoid silent message loss.
     """
     subscriber = None
     try:
@@ -336,45 +359,48 @@ async def pubsub_listener(
                 await conn.send_json(message)
             except Exception as e:
                 logger.debug(f"Error forwarding pubsub message: {e}")
+                # Notify client that real-time updates stopped
+                await conn.send_error("pubsub_send_error", "Real-time updates interrupted")
                 break
     except asyncio.CancelledError:
         # Expected during normal shutdown (e.g., WebSocket disconnect or server shutdown)
         pass
     except Exception as e:
         logger.warning(f"Pubsub listener error for stream {stream_id}: {e}")
+        # Notify client about the failure so they know messages may be missing
+        try:
+            await conn.send_error("pubsub_error", "Real-time updates unavailable")
+        except Exception:
+            pass  # Best effort notification
     finally:
         if subscriber:
-            await subscriber.close()
+            try:
+                await subscriber.close()
+            except Exception as e:
+                logger.debug(f"Error closing pubsub subscriber: {e}")
 
 
-@router.websocket("/{slug}/chat")
-async def chat_websocket(websocket: WebSocket, slug: str):
+async def _setup_chat_connection(
+    websocket: WebSocket,
+    slug: str,
+) -> Optional[ChatConnectionContext]:
     """
-    WebSocket endpoint for stream chat.
+    Set up a chat WebSocket connection (Issue #556).
 
-    Protocol:
-    - Connect with session cookie for authentication
-    - Server sends 'connected' message with user info and permissions
-    - Client sends 'message' type to chat
-    - Client sends 'delete' type to delete messages (requires permission)
-    - Server broadcasts chat messages and moderation events
-    - Server sends 'ping', client responds with 'pong'
+    Returns None if connection should be closed (already handled).
     """
     if not LIVE_ENABLED:
         await websocket.close(code=1008, reason="Live streaming is not enabled")
-        return
+        return None
 
-    # Verify stream exists
     stream = await verify_stream_exists(slug)
     if not stream:
         await websocket.close(code=1008, reason="Stream not found")
-        return
+        return None
 
-    # Get client info for logging
     client_ip = get_client_ip(websocket)
     user_agent = websocket.headers.get("user-agent")
 
-    # Authenticate user
     user = await authenticate_websocket(websocket, stream["id"])
     if not user:
         log_audit(
@@ -387,22 +413,39 @@ async def chat_websocket(websocket: WebSocket, slug: str):
             success=False,
         )
         await websocket.close(code=4001, reason="Authentication required")
-        return
+        return None
 
-    # Get session token for revalidation
     session_token = websocket.cookies.get("vlog_session", "")
+    is_moderator = await is_user_moderator(stream["id"], user)
+    is_owner = stream["owner_id"] == user["id"]
 
-    # Accept the WebSocket connection first
-    await websocket.accept()
+    return ChatConnectionContext(
+        stream=stream,
+        user=user,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        session_token=session_token,
+        is_moderator=is_moderator,
+        is_owner=is_owner,
+    )
 
+
+async def _register_chat_connection(
+    websocket: WebSocket,
+    ctx: ChatConnectionContext,
+) -> Optional[ConnectionInfo]:
+    """
+    Register the WebSocket connection with the manager (Issue #556).
+
+    Returns None if registration failed (already handled).
+    """
     try:
-        # Register connection with manager
-        conn_info = await websocket_manager.register_connection(
+        return await websocket_manager.register_connection(
             websocket=websocket,
-            stream_id=stream["id"],
-            user=user,
-            client_ip=client_ip,
-            user_agent=user_agent,
+            stream_id=ctx.stream["id"],
+            user=ctx.user,
+            client_ip=ctx.client_ip,
+            user_agent=ctx.user_agent,
         )
     except OriginValidationError as e:
         await websocket.send_json({
@@ -411,7 +454,7 @@ async def chat_websocket(websocket: WebSocket, slug: str):
             "message": str(e),
         })
         await websocket.close(code=4003, reason="Origin validation failed")
-        return
+        return None
     except ConnectionLimitError as e:
         await websocket.send_json({
             "type": "error",
@@ -419,82 +462,109 @@ async def chat_websocket(websocket: WebSocket, slug: str):
             "message": str(e),
         })
         await websocket.close(code=4029, reason="Connection limit exceeded")
-        return
+        return None
     except Exception as e:
         logger.error(f"Error registering WebSocket connection: {e}")
         await websocket.close(code=1011, reason="Internal error")
+        return None
+
+
+async def _route_incoming_message(
+    conn: ManagedWebSocketConnection,
+    message: dict,
+    ctx: ChatConnectionContext,
+    rate_limiter: MessageRateLimiter,
+) -> None:
+    """Route and dispatch a single WebSocket message (Issue #556)."""
+    msg_type = message.get("type")
+
+    if msg_type == "message":
+        await handle_chat_message(
+            conn, ctx.stream, ctx.user, message.get("content", ""), rate_limiter
+        )
+    elif msg_type == "delete":
+        message_id = message.get("message_id")
+        if message_id:
+            await handle_delete_message(conn, ctx.stream, ctx.user, message_id, ctx.client_ip)
+        else:
+            await conn.send_error("invalid_request", "message_id required")
+    # Note: "pong" messages are filtered by ManagedWebSocketConnection.receive_json()
+    else:
+        await conn.send_error("unknown_type", f"Unknown message type: {msg_type}")
+
+
+async def _cleanup_pubsub_task(
+    stop_event: asyncio.Event,
+    pubsub_task: Optional[asyncio.Task],
+) -> None:
+    """Clean up the pubsub listener task. Never raises (Issue #561)."""
+    stop_event.set()
+    if pubsub_task:
+        pubsub_task.cancel()
+        try:
+            await pubsub_task
+        except asyncio.CancelledError:
+            pass  # Expected during cleanup
+        except Exception as e:
+            logger.debug(f"Pubsub task cleanup error: {e}")
+
+
+@router.websocket("/{slug}/chat")
+async def chat_websocket(websocket: WebSocket, slug: str):
+    """
+    WebSocket endpoint for stream chat (Issue #556 - refactored).
+
+    Protocol:
+    - Connect with session cookie for authentication
+    - Server sends 'connected' message with user info and permissions
+    - Client sends 'message' type to chat
+    - Client sends 'delete' type to delete messages (requires permission)
+    - Server broadcasts chat messages and moderation events
+    - Server sends 'ping', client responds with 'pong'
+    """
+    # Setup phase - returns None if connection should be closed
+    ctx = await _setup_chat_connection(websocket, slug)
+    if not ctx:
         return
 
-    # Create rate limiter for this connection
+    await websocket.accept()
+
+    # Register with manager - returns None if registration failed
+    conn_info = await _register_chat_connection(websocket, ctx)
+    if not conn_info:
+        return
+
     rate_limiter = MessageRateLimiter(max_messages=60, window_seconds=60)
-
-    # Check moderator status
-    is_moderator = await is_user_moderator(stream["id"], user)
-    is_owner = stream["owner_id"] == user["id"]
-
-    # Create managed connection context
     managed_conn = ManagedWebSocketConnection(
         manager=websocket_manager,
         conn_info=conn_info,
-        session_token=session_token,
+        session_token=ctx.session_token,
     )
 
-    # Create stop event for pubsub listener
     stop_event = asyncio.Event()
     pubsub_task = None
 
     try:
         async with managed_conn as conn:
-            # Send connected message
             await conn.send_json({
                 "type": WSMessageType.CONNECTED,
-                "user_id": user["id"],
-                "username": user.get("username", ""),
-                "is_moderator": is_moderator,
-                "is_owner": is_owner,
-                "settings": get_chat_settings_response(stream).model_dump(),
+                "user_id": ctx.user["id"],
+                "username": ctx.user.get("username", ""),
+                "is_moderator": ctx.is_moderator,
+                "is_owner": ctx.is_owner,
+                "settings": get_chat_settings_response(ctx.stream).model_dump(),
             })
 
-            # Start pubsub listener in background
             pubsub_task = asyncio.create_task(
-                pubsub_listener(stream["id"], conn, stop_event)
+                pubsub_listener(ctx.stream["id"], conn, stop_event)
             )
 
-            # Message handling loop
             async for message in conn.receive_messages():
-                msg_type = message.get("type")
-
-                if msg_type == "message":
-                    content = message.get("content", "")
-                    await handle_chat_message(conn, stream, user, content, rate_limiter)
-
-                elif msg_type == "delete":
-                    message_id = message.get("message_id")
-                    if message_id:
-                        await handle_delete_message(
-                            conn, stream, user, message_id, client_ip
-                        )
-                    else:
-                        await conn.send_error("invalid_request", "message_id required")
-
-                elif msg_type == "pong":
-                    # Handled internally by ManagedWebSocketConnection
-                    pass
-
-                else:
-                    await conn.send_error("unknown_type", f"Unknown message type: {msg_type}")
+                await _route_incoming_message(conn, message, ctx, rate_limiter)
 
     except WebSocketDisconnect:
         logger.debug(f"WebSocket disconnected: {conn_info.connection_id}")
     except Exception as e:
         logger.error(f"WebSocket error for {conn_info.connection_id}: {e}", exc_info=True)
     finally:
-        # Stop pubsub listener
-        stop_event.set()
-        if pubsub_task:
-            pubsub_task.cancel()
-            try:
-                await pubsub_task
-            except asyncio.CancelledError:
-                # Expected when cancelling the pubsub task during cleanup
-                pass
+        await _cleanup_pubsub_task(stop_event, pubsub_task)
