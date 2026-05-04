@@ -15,7 +15,7 @@ aiofiles>=23.0.0
 httpx>=0.25.0
 
 # Transcription
-faster-whisper>=1.0.0
+faster-whisper>=1.2.1
 
 # Filesystem watching (event-driven transcoding)
 watchdog>=6.0.0
