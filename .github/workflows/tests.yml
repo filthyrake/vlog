@@ -54,25 +54,32 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python virtual environment
+      # Test against the Python version we actually ship (the container images
+      # install python3.12). The runner's default python3 is 3.9, where pip
+      # backtracks over our unbounded ">=" requirements for an hour before
+      # aborting with "error: resolution-too-deep". actions/setup-python has no
+      # build for this runner's OS, so uv provides the interpreter.
+      - name: Provision Python 3.12 via uv
         run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
+          python3 -m venv .uv-bootstrap
+          ./.uv-bootstrap/bin/pip install --upgrade pip uv
+          ./.uv-bootstrap/bin/uv python install 3.12
+          ./.uv-bootstrap/bin/uv venv --python 3.12 .venv
+          .venv/bin/python --version
 
-      - name: Cache pip packages
+      - name: Cache uv packages
         uses: actions/cache@v5
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-uv-
 
       - name: Install dependencies
         run: |
-          source .venv/bin/activate
-          pip install -r requirements.txt -r requirements-dev.txt
-          pip install -e .
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
+            -r requirements.txt -r requirements-dev.txt
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -e .
 
       - name: Wait for PostgreSQL
         run: |
@@ -130,25 +137,32 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python virtual environment
+      # Test against the Python version we actually ship (the container images
+      # install python3.12). The runner's default python3 is 3.9, where pip
+      # backtracks over our unbounded ">=" requirements for an hour before
+      # aborting with "error: resolution-too-deep". actions/setup-python has no
+      # build for this runner's OS, so uv provides the interpreter.
+      - name: Provision Python 3.12 via uv
         run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
+          python3 -m venv .uv-bootstrap
+          ./.uv-bootstrap/bin/pip install --upgrade pip uv
+          ./.uv-bootstrap/bin/uv python install 3.12
+          ./.uv-bootstrap/bin/uv venv --python 3.12 .venv
+          .venv/bin/python --version
 
-      - name: Cache pip packages
+      - name: Cache uv packages
         uses: actions/cache@v5
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-uv-
 
       - name: Install dependencies
         run: |
-          source .venv/bin/activate
-          pip install -r requirements.txt -r requirements-dev.txt
-          pip install -e .
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
+            -r requirements.txt -r requirements-dev.txt
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -e .
 
       - name: Wait for PostgreSQL
         run: |
