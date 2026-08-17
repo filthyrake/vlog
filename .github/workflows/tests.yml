@@ -101,7 +101,7 @@ jobs:
           # For dev branch: skip slow integration tests (~800-900 tests, ~5-6 min)
           # Full test suite (~1000+ tests) runs on main branch
           # Using -x to fail fast, -n 4 for parallelism (avoid too many DB connections)
-          pytest -n 4 -x --tb=short \
+          pytest -n 4 --tb=line -q \
             --ignore=tests/test_workflows.py \
             --ignore=tests/test_worker_integration.py \
             --ignore=tests/test_transcoder_integration.py \
