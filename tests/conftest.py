@@ -390,7 +390,7 @@ def public_client(test_storage: dict, test_db_url: str, monkeypatch):
 
     # Reload api.database to create a new Database instance with the test URL
     if "api.database" in sys.modules:
-        importlib.reload(sys.modules["api.database"])
+        reload_api_database()
 
     # Force reload the public module to pick up the new database
     if "api.public" in sys.modules:
@@ -403,10 +403,49 @@ def public_client(test_storage: dict, test_db_url: str, monkeypatch):
         yield client
 
 
+def reload_api_database():
+    """
+    Rebuild api.database against the currently patched config, and repoint
+    every module that already imported the shared `database` object at the new
+    instance.
+
+    Reloading api.database constructs a brand new Database. Modules that ran
+    `from api.database import database` at import time keep a reference to the
+    old one, which nothing ever connects, so they fail with "DatabaseBackend is
+    not running" - api.auth.endpoints returning 503 from /api/auth/setup was
+    exactly this. Rebinding keeps the whole app pointed at one Database.
+    """
+    import importlib
+    import sys
+
+    import api.database
+
+    importlib.reload(api.database)
+    new_database = api.database.database
+
+    for name, module in list(sys.modules.items()):
+        if module is None or name == "api.database" or not name.startswith("api."):
+            continue
+        if isinstance(getattr(module, "database", None), Database):
+            module.database = new_database
+
+    return new_database
+
+
+# Admin secret used by the authenticated `admin_client` fixture.
+# Issue #431 made the Admin API reject unauthenticated requests: with no
+# ADMIN_API_SECRET configured and no users in the database, every endpoint
+# except /api/auth/setup returns 503. A fresh test database has no users, so
+# the fixture configures a secret and sends it on every request.
+# Tests that exercise the unconfigured behaviour build their own client and
+# set ADMIN_API_SECRET to "" themselves (see TestAdminAPIAuth).
+TEST_ADMIN_API_SECRET = "test-admin-api-secret-12345"
+
+
 @pytest.fixture(scope="function")
 def admin_client(test_storage: dict, test_db_url: str, monkeypatch):
     """
-    Create a test client for the admin API.
+    Create an authenticated test client for the admin API.
     Patches config to use test paths.
     The app manages its own database connection through its lifespan.
     """
@@ -422,19 +461,27 @@ def admin_client(test_storage: dict, test_db_url: str, monkeypatch):
     monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
     monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
     monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+    monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
     # Reload api.database to create a new Database instance with the test URL
     if "api.database" in sys.modules:
-        importlib.reload(sys.modules["api.database"])
+        reload_api_database()
 
-    # Force reload the admin module to pick up the new database
+    # Force reload the admin module to pick up the new database and secret
     if "api.admin" in sys.modules:
+        # Clear the cached "do any users exist" answer so it is not carried
+        # over from a previous test's database.
+        sys.modules["api.admin"]._users_exist_cache = None
         importlib.reload(sys.modules["api.admin"])
 
     from api.admin import app
 
     # Create test client with lifespan so the app manages its own database
-    with TestClient(app, raise_server_exceptions=True) as client:
+    with TestClient(
+        app,
+        raise_server_exceptions=True,
+        headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
+    ) as client:
         yield client
 
 
@@ -472,7 +519,7 @@ def worker_client(test_storage: dict, test_db_url: str, monkeypatch):
 
     # Reload api.database to create a new Database instance with the test URL
     if "api.database" in sys.modules:
-        importlib.reload(sys.modules["api.database"])
+        reload_api_database()
 
     # Force reload common to pick up new database and storage paths (needed for health checks)
     if "api.common" in sys.modules:
