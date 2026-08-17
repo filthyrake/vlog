@@ -58,13 +58,6 @@ jobs:
     runs-on: self-hosted
     needs: trivy-filesystem
 
-    # Trivy exports the (large) worker image to a temporary directory before
-    # analysing it. The runner's /tmp is too small for that, which failed the
-    # scan with "no space left on device", so keep temp files on the runner's
-    # own work volume instead.
-    env:
-      TMPDIR: ${{ runner.temp }}
-
     steps:
       - uses: actions/checkout@v6
 
@@ -81,8 +74,13 @@ jobs:
         run: |
           docker build -f Dockerfile.worker.gpu -t vlog-worker:scan .
 
+      # Trivy exports this multi-GB image to a temp directory before analysing
+      # it, and the runner's /tmp is too small - the scan died with "no space
+      # left on device". Keep the export on the runner's own work volume.
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@0.35.0
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           image-ref: 'vlog-worker:scan'
           severity: 'CRITICAL,HIGH'
@@ -93,6 +91,8 @@ jobs:
       - name: Run Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.35.0
         if: always()
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           image-ref: 'vlog-worker:scan'
           severity: 'CRITICAL,HIGH,MEDIUM'
