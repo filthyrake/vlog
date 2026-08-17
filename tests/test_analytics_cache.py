@@ -5,6 +5,7 @@ Tests for analytics caching functionality.
 import time
 from unittest.mock import MagicMock, patch
 
+from api import analytics_cache
 from api.analytics_cache import (
     AnalyticsCache,
     RedisAnalyticsCache,
@@ -119,8 +120,14 @@ class TestAnalyticsCache:
         # Should not raise an error
         cache.invalidate("nonexistent_key")
 
-    def test_cleanup_expired(self):
+    def test_cleanup_expired(self, monkeypatch):
         """Test cleanup of expired entries."""
+        # set() runs cleanup_expired() itself with CLEANUP_PROBABILITY (1%).
+        # When that fires on the key4 set below it removes the three expired
+        # entries first, and the explicit call then reports 0 removed - a ~4%
+        # flake per run. Pin the dice so only the explicit call cleans up.
+        monkeypatch.setattr(analytics_cache.random, "random", lambda: 1.0)
+
         cache = AnalyticsCache(ttl_seconds=1)
 
         # Add some entries

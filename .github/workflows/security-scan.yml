@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -36,7 +36,7 @@ jobs:
           format: 'table'
 
       - name: Run Trivy filesystem scan (SARIF)
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         if: always()
         with:
           scan-type: 'fs'
@@ -78,7 +78,7 @@ jobs:
       # it, and the runner's /tmp is too small - the scan died with "no space
       # left on device". Keep the export on the runner's own work volume.
       - name: Run Trivy image scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         env:
           TMPDIR: ${{ runner.temp }}
         with:
@@ -89,7 +89,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Run Trivy image scan (SARIF)
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         if: always()
         env:
           TMPDIR: ${{ runner.temp }}
