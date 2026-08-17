@@ -79,6 +79,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from starlette.background import BackgroundTask
 
+from api.audit import AuditAction, log_audit
 from api.common import (
     HTTPMetricsMiddleware,
     RequestIDMiddleware,
@@ -112,10 +113,10 @@ from api.metrics import (
     get_metrics,
     sanitize_label,
 )
-from api.audit import AuditAction, log_audit
 from api.pubsub import Publisher
 from api.redis_client import get_redis
 from api.settings_service import get_setting as get_db_setting
+from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 from api.webhook_service import trigger_webhook_event
 from api.worker_auth import (
     DEFAULT_EXPIRATION_DAYS,
@@ -153,11 +154,11 @@ from api.worker_schemas import (
 from config import (
     API_INCLUDE_LEGACY_ROUTES,
     API_VERSION,
-    OPENAPI_DESCRIPTION,
-    OPENAPI_TITLE,
     MAX_HLS_ARCHIVE_FILES,
     MAX_HLS_ARCHIVE_SIZE,
     MAX_HLS_SINGLE_FILE_SIZE,
+    OPENAPI_DESCRIPTION,
+    OPENAPI_TITLE,
     ORPHAN_CLEANUP_ENABLED,
     ORPHAN_CLEANUP_INTERVAL,
     ORPHAN_CLEANUP_MIN_AGE,
@@ -180,8 +181,6 @@ from config import (
     WORKER_HEARTBEAT_INTERVAL,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
 )
-
-from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 
 # Initialize structured logging (Issue #208) - must be before any getLogger() calls
 setup_logging()

@@ -977,16 +977,17 @@ def cmd_auth(args):
 
     async def run_auth_command():
         """Run the auth command with database connection."""
-        from api.database import users, user_sessions, user_api_keys
+        import uuid
+        from datetime import datetime, timezone
+
         from api.auth.password import (
-            hash_password,
-            validate_password_strength,
             generate_token,
+            hash_password,
             hash_token,
+            validate_password_strength,
         )
         from api.auth.permissions import Role
-        from datetime import datetime, timezone
-        import uuid
+        from api.database import user_api_keys, user_sessions, users
 
         await configure_database()
         await database.connect()
@@ -1128,7 +1129,7 @@ def cmd_auth(args):
                         .where(videos.c.owner_id.is_(None))
                         .values(owner_id=user_id)
                     )
-                    print(f"  Assigned orphan videos to admin")
+                    print("  Assigned orphan videos to admin")
 
                     # Invalidate legacy sessions
                     from api.database import admin_sessions
@@ -1356,8 +1357,9 @@ def cmd_auth(args):
                 now = datetime.now(timezone.utc)
 
                 from datetime import timedelta
-                from config import PASSWORD_RESET_EXPIRY_HOURS
+
                 from api.database import password_reset_tokens
+                from config import PASSWORD_RESET_EXPIRY_HOURS
 
                 expires_at = now + timedelta(hours=PASSWORD_RESET_EXPIRY_HOURS)
                 token_id = str(uuid.uuid4())
@@ -1378,7 +1380,7 @@ def cmd_auth(args):
                 )
 
                 print(f"Password reset initiated for {user['username']}.")
-                print(f"User has been logged out of all sessions.")
+                print("User has been logged out of all sessions.")
                 print()
                 print(f"Reset token (send to user): {token}")
                 print(f"Expires: {expires_at.isoformat()}")
@@ -1470,11 +1472,9 @@ def cmd_backup(args):
     """Backup management commands."""
     import asyncio
 
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
     async def run_backup_command():
         """Run the backup command with database connection."""
-        from api.database import configure_database, database
         from config import (
             BACKUP_ENABLED,
             BACKUP_PATH,
@@ -1677,9 +1677,9 @@ def cmd_backup(args):
 
         elif args.backup_command == "schedule":
             from config import (
+                BACKUP_SCHEDULE_DAY,
                 BACKUP_SCHEDULE_ENABLED,
                 BACKUP_SCHEDULE_TIME,
-                BACKUP_SCHEDULE_DAY,
             )
 
             if args.show or (not args.time and not args.daily and not args.weekly):

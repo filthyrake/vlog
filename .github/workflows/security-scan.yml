@@ -12,6 +12,12 @@ on:
     - cron: '0 0 * * 0'
   workflow_dispatch:
 
+# github/codeql-action/upload-sarif needs security-events: write, otherwise the
+# upload fails with "Resource not accessible by integration".
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   trivy-filesystem:
     name: Trivy Filesystem Scan
@@ -55,12 +61,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # This job builds a multi-GB GPU image on every run. Without reclaiming
+      # space first, layers and build cache from previous runs fill the disk.
+      - name: Reclaim disk space
+        run: |
+          df -h /tmp "${RUNNER_TEMP:-/tmp}" /var/lib/docker 2>/dev/null || true
+          docker builder prune -af --filter until=24h || true
+          docker image prune -f || true
+          df -h /tmp "${RUNNER_TEMP:-/tmp}" /var/lib/docker 2>/dev/null || true
+
       - name: Build Docker image for scanning
         run: |
           docker build -f Dockerfile.worker.gpu -t vlog-worker:scan .
 
+      # Trivy exports this multi-GB image to a temp directory before analysing
+      # it, and the runner's /tmp is too small - the scan died with "no space
+      # left on device". Keep the export on the runner's own work volume.
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@0.35.0
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           image-ref: 'vlog-worker:scan'
           severity: 'CRITICAL,HIGH'
@@ -71,6 +91,8 @@ jobs:
       - name: Run Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.35.0
         if: always()
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           image-ref: 'vlog-worker:scan'
           severity: 'CRITICAL,HIGH,MEDIUM'
@@ -90,6 +112,9 @@ jobs:
         if: always()
         run: |
           docker rmi vlog-worker:scan || true
+          # Removing the tag alone leaves the build cache behind, which is what
+          # actually accumulates between runs.
+          docker builder prune -f || true
 
   dependency-check:
     name: Python Dependency Audit
@@ -98,21 +123,30 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python virtual environment
+      # Audit against the Python version we actually ship (the container images
+      # install python3.12). The runner's default python3 is 3.9, and resolving
+      # our unbounded ">=" requirements under 3.9 makes pip backtrack for about
+      # an hour before aborting with "error: resolution-too-deep".
+      #
+      # actions/setup-python publishes no build for this runner's OS, so uv
+      # provisions the interpreter instead. Its resolver also does not suffer
+      # the backtracking blowup that made this job fail.
+      - name: Provision Python 3.12 via uv
         run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip setuptools
+          python3 -m venv .uv-bootstrap
+          ./.uv-bootstrap/bin/pip install --upgrade pip uv
+          ./.uv-bootstrap/bin/uv python install 3.12
+          ./.uv-bootstrap/bin/uv venv --python 3.12 .venv
+          .venv/bin/python --version
 
-      - name: Install pip-audit
+      - name: Install pip-audit and project dependencies
         run: |
-          source .venv/bin/activate
-          pip install pip-audit
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
+            pip-audit -r requirements.txt
 
       - name: Run pip-audit
         run: |
           source .venv/bin/activate
-          pip install -r requirements.txt
           # Ignored vulnerabilities (review quarterly):
           # - PYSEC-2024-87: Jinja2 sandbox escape - not exploitable in our use case (no user templates)
           # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
