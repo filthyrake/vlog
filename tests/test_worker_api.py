@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from conftest import reload_api_database
 
 from api.database import quality_progress, transcoding_jobs, videos, worker_api_keys, workers
 from api.errors import ERROR_MESSAGES
@@ -1954,7 +1955,7 @@ class TestAdminSecretNotConfigured:
 
         # Reload api.database to pick up new URL
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
 
         if "api.worker_auth" in sys.modules:
             importlib.reload(sys.modules["api.worker_auth"])
@@ -1989,7 +1990,7 @@ class TestAdminSecretNotConfigured:
 
         # Reload api.database to pick up new URL
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
 
         if "api.worker_auth" in sys.modules:
             importlib.reload(sys.modules["api.worker_auth"])
@@ -2023,7 +2024,7 @@ class TestAdminSecretNotConfigured:
 
         # Reload api.database to pick up new URL
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
 
         if "api.worker_auth" in sys.modules:
             importlib.reload(sys.modules["api.worker_auth"])

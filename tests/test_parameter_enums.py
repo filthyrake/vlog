@@ -3,63 +3,51 @@ Tests for parameter enums that replace boolean traps.
 See: https://github.com/filthyrake/vlog/issues/443
 """
 
-import logging
 import warnings
-from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import api.errors
 from api.enums import ErrorLogging, JobFailureMode, PlaylistValidation
 from api.errors import sanitize_error_message
 
 
-@contextmanager
-def capture_api_errors(caplog):
-    """
-    Capture records from the api.errors logger.
-
-    caplog normally works through a handler on the root logger, but
-    api.logging_config.setup_logging() clears every root handler when an app
-    starts up. Any earlier test in the same pytest-xdist worker that starts an
-    app therefore leaves caplog deaf, which made these assertions pass or fail
-    depending on test distribution. Attaching caplog's handler straight to the
-    logger under test removes that dependency.
-    """
-    logger = logging.getLogger("api.errors")
-    logger.addHandler(caplog.handler)
-    try:
-        with caplog.at_level("WARNING", logger="api.errors"):
-            yield
-    finally:
-        logger.removeHandler(caplog.handler)
-
-
 class TestErrorLoggingEnum:
-    """Tests for ErrorLogging enum usage in sanitize_error_message."""
+    """Tests for ErrorLogging enum usage in sanitize_error_message.
 
-    def test_log_original_logs_message(self, caplog):
+    These assert against api.errors' own logger rather than caplog.
+    api.logging_config.setup_logging() tears down every root handler when an
+    app starts, so once any earlier test in the same pytest-xdist worker has
+    booted an app, caplog captures nothing and the outcome depends on how
+    tests happen to be distributed.
+    """
+
+    def test_log_original_logs_message(self):
         """Test that LOG_ORIGINAL logs the original error."""
-        with capture_api_errors(caplog):
+        with patch.object(api.errors.logger, "warning") as mock_warning:
             result = sanitize_error_message(
                 "Test error message",
                 ErrorLogging.LOG_ORIGINAL,
                 context="test_context",
             )
 
-        assert "Original error" in caplog.text
-        assert "test_context" in caplog.text
+        mock_warning.assert_called_once()
+        logged = mock_warning.call_args.args[0]
+        assert "Original error" in logged
+        assert "test_context" in logged
+        assert "Test error message" in logged
         assert result is not None
 
-    def test_skip_logging_does_not_log(self, caplog):
+    def test_skip_logging_does_not_log(self):
         """Test that SKIP_LOGGING skips logging."""
-        with capture_api_errors(caplog):
+        with patch.object(api.errors.logger, "warning") as mock_warning:
             result = sanitize_error_message(
                 "Test error message",
                 ErrorLogging.SKIP_LOGGING,
             )
 
-        assert "Original error" not in caplog.text
+        mock_warning.assert_not_called()
         assert result is not None
 
     def test_boolean_true_emits_deprecation_warning(self):

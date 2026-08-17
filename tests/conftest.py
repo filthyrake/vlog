@@ -390,7 +390,7 @@ def public_client(test_storage: dict, test_db_url: str, monkeypatch):
 
     # Reload api.database to create a new Database instance with the test URL
     if "api.database" in sys.modules:
-        importlib.reload(sys.modules["api.database"])
+        reload_api_database()
 
     # Force reload the public module to pick up the new database
     if "api.public" in sys.modules:
@@ -401,6 +401,35 @@ def public_client(test_storage: dict, test_db_url: str, monkeypatch):
     # Create test client with lifespan so the app manages its own database
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
+
+
+def reload_api_database():
+    """
+    Rebuild api.database against the currently patched config, and repoint
+    every module that already imported the shared `database` object at the new
+    instance.
+
+    Reloading api.database constructs a brand new Database. Modules that ran
+    `from api.database import database` at import time keep a reference to the
+    old one, which nothing ever connects, so they fail with "DatabaseBackend is
+    not running" - api.auth.endpoints returning 503 from /api/auth/setup was
+    exactly this. Rebinding keeps the whole app pointed at one Database.
+    """
+    import importlib
+    import sys
+
+    import api.database
+
+    importlib.reload(api.database)
+    new_database = api.database.database
+
+    for name, module in list(sys.modules.items()):
+        if module is None or name == "api.database" or not name.startswith("api."):
+            continue
+        if isinstance(getattr(module, "database", None), Database):
+            module.database = new_database
+
+    return new_database
 
 
 # Admin secret used by the authenticated `admin_client` fixture.
@@ -436,7 +465,7 @@ def admin_client(test_storage: dict, test_db_url: str, monkeypatch):
 
     # Reload api.database to create a new Database instance with the test URL
     if "api.database" in sys.modules:
-        importlib.reload(sys.modules["api.database"])
+        reload_api_database()
 
     # Force reload the admin module to pick up the new database and secret
     if "api.admin" in sys.modules:
@@ -490,7 +519,7 @@ def worker_client(test_storage: dict, test_db_url: str, monkeypatch):
 
     # Reload api.database to create a new Database instance with the test URL
     if "api.database" in sys.modules:
-        importlib.reload(sys.modules["api.database"])
+        reload_api_database()
 
     # Force reload common to pick up new database and storage paths (needed for health checks)
     if "api.common" in sys.modules:
