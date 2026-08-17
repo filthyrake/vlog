@@ -12,6 +12,12 @@ on:
     - cron: '0 0 * * 0'
   workflow_dispatch:
 
+# github/codeql-action/upload-sarif needs security-events: write, otherwise the
+# upload fails with "Resource not accessible by integration".
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   trivy-filesystem:
     name: Trivy Filesystem Scan
@@ -98,9 +104,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Audit against the Python version we actually ship (the container images
+      # install python3.12). The runner's default python3 is 3.9, and resolving
+      # our unbounded ">=" requirements under 3.9 makes pip backtrack until it
+      # aborts with "error: resolution-too-deep".
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Set up Python virtual environment
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip setuptools
 
