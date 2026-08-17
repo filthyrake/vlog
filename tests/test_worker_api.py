@@ -15,7 +15,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from api.database import quality_progress, transcoding_jobs, videos, worker_api_keys, workers
+from api.errors import ERROR_MESSAGES
 from api.worker_auth import (
+    DEFAULT_GRACE_PERIOD_HOURS,
     HASH_VERSION_ARGON2,
     HASH_VERSION_SHA256,
     get_key_prefix,
@@ -50,8 +52,10 @@ class TestAuthenticationEdgeCases:
     @pytest.mark.asyncio
     async def test_expired_api_key(self, worker_client, test_database, registered_worker):
         """Test expired API key returns 401 with appropriate message."""
-        # Set expiration to the past
-        past_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        # Expire the key beyond the post-expiry grace period (issue #226 lets a
+        # key keep working for DEFAULT_GRACE_PERIOD_HOURS so a worker mid-job
+        # is not cut off), otherwise the key is still legitimately accepted.
+        past_time = datetime.now(timezone.utc) - timedelta(hours=DEFAULT_GRACE_PERIOD_HOURS + 1)
         await test_database.execute(
             worker_api_keys.update()
             .where(worker_api_keys.c.key_prefix == get_key_prefix(registered_worker["api_key"]))
@@ -477,7 +481,11 @@ class TestPathTraversalPrevention:
             files={"file": ("hls.tar.gz", tar_data, "application/gzip")},
         )
         assert response.status_code == 400
-        assert "path traversal" in response.json()["detail"].lower()
+        # The upload must be rejected, but the response must not disclose why:
+        # error messages are sanitized so they cannot be used to probe the
+        # server's filesystem layout (see api/errors.py).
+        assert response.json()["detail"] == ERROR_MESSAGES["general"]
+        assert not (test_storage["videos"].parent / "etc").exists()
 
     @pytest.mark.asyncio
     async def test_path_traversal_with_absolute_path(
@@ -503,11 +511,8 @@ class TestPathTraversalPrevention:
             files={"file": ("hls.tar.gz", tar_data, "application/gzip")},
         )
         assert response.status_code == 400
-        # Either path traversal or unexpected file type error
-        assert (
-            "path traversal" in response.json()["detail"].lower()
-            or "cannot resolve" in response.json()["detail"].lower()
-        )
+        # Rejected, and the reason is not disclosed - see the note above.
+        assert response.json()["detail"] == ERROR_MESSAGES["general"]
 
     @pytest.mark.asyncio
     async def test_hardlink_blocked(

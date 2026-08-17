@@ -3,7 +3,9 @@ Tests for parameter enums that replace boolean traps.
 See: https://github.com/filthyrake/vlog/issues/443
 """
 
+import logging
 import warnings
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,12 +14,33 @@ from api.enums import ErrorLogging, JobFailureMode, PlaylistValidation
 from api.errors import sanitize_error_message
 
 
+@contextmanager
+def capture_api_errors(caplog):
+    """
+    Capture records from the api.errors logger.
+
+    caplog normally works through a handler on the root logger, but
+    api.logging_config.setup_logging() clears every root handler when an app
+    starts up. Any earlier test in the same pytest-xdist worker that starts an
+    app therefore leaves caplog deaf, which made these assertions pass or fail
+    depending on test distribution. Attaching caplog's handler straight to the
+    logger under test removes that dependency.
+    """
+    logger = logging.getLogger("api.errors")
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level("WARNING", logger="api.errors"):
+            yield
+    finally:
+        logger.removeHandler(caplog.handler)
+
+
 class TestErrorLoggingEnum:
     """Tests for ErrorLogging enum usage in sanitize_error_message."""
 
     def test_log_original_logs_message(self, caplog):
         """Test that LOG_ORIGINAL logs the original error."""
-        with caplog.at_level("WARNING", logger="api.errors"):
+        with capture_api_errors(caplog):
             result = sanitize_error_message(
                 "Test error message",
                 ErrorLogging.LOG_ORIGINAL,
@@ -30,7 +53,7 @@ class TestErrorLoggingEnum:
 
     def test_skip_logging_does_not_log(self, caplog):
         """Test that SKIP_LOGGING skips logging."""
-        with caplog.at_level("WARNING"):
+        with capture_api_errors(caplog):
             result = sanitize_error_message(
                 "Test error message",
                 ErrorLogging.SKIP_LOGGING,
