@@ -453,7 +453,7 @@ async def login(
                 )
             )
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Database error during login user lookup")
         raise HTTPException(
             status_code=503,
@@ -1038,7 +1038,7 @@ async def get_csrf_token(
 
     try:
         csrf_token = _generate_csrf_token(session_token)
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(status_code=500, detail="Server configuration error")
 
     return {"csrf_token": csrf_token}

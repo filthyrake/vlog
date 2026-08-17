@@ -25,7 +25,6 @@ from config import (
     LIVE_HLS_PLAYLIST_LENGTH,
     LIVE_HLS_SEGMENT_DURATION,
     LIVE_STORAGE_PATH,
-    QUALITY_PRESETS,
 )
 
 logger = logging.getLogger(__name__)
