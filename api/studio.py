@@ -21,7 +21,7 @@ from slowapi import Limiter
 from slugify import slugify
 
 from api.audit import AuditAction, log_audit
-from api.auth.middleware import require_auth, SESSION_COOKIE_NAME
+from api.auth.middleware import SESSION_COOKIE_NAME, require_auth
 from api.auth.permissions import Permission, Role, has_permission
 from api.common import get_real_ip, get_request_id, verify_stream_access
 from api.database import database, live_streams

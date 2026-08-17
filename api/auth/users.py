@@ -459,8 +459,9 @@ async def force_password_reset(
     token_hash = hash_token(token)
     now = datetime.now(timezone.utc)
 
-    from config import PASSWORD_RESET_EXPIRY_HOURS
     from datetime import timedelta
+
+    from config import PASSWORD_RESET_EXPIRY_HOURS
 
     expires_at = now + timedelta(hours=PASSWORD_RESET_EXPIRY_HOURS)
 

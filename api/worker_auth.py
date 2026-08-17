@@ -531,7 +531,7 @@ async def rotate_worker_key(
                 remaining = int(ROTATION_COOLDOWN_SECONDS - seconds_since_last)
                 raise HTTPException(
                     status_code=429,
-                    detail=f"Rotation cooldown active. Try again later.",
+                    detail="Rotation cooldown active. Try again later.",
                     headers={"Retry-After": str(remaining)},
                 )
 
