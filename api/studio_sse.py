@@ -30,7 +30,7 @@ from api.auth.middleware import SESSION_COOKIE_NAME
 from api.auth.permissions import Permission, Role, has_permission
 from api.auth.sessions import validate_session_token
 from api.common import get_real_ip, get_request_id, require_valid_slug
-from api.database import database, live_streams
+from api.database import live_streams
 from api.db_retry import fetch_one_with_retry
 from api.live_metrics import get_stream_metrics
 from api.pubsub import subscribe_to_stream_metrics

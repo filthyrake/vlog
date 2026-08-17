@@ -32,7 +32,6 @@ from api.auth.permissions import (
     has_permission,
 )
 
-
 # =============================================================================
 # Password Hashing Tests
 # =============================================================================
@@ -476,7 +475,6 @@ class TestSessionManagement:
     async def test_invalidate_session(self, test_database, sample_user, monkeypatch):
         """invalidate_session should revoke a session."""
         import api.auth.sessions as sessions_module
-
         from api.database import user_sessions
 
         monkeypatch.setattr(sessions_module, "database", test_database)

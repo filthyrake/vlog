@@ -2489,7 +2489,7 @@ class TestAdminAPIAuth:
             api.admin._users_exist_cache = None
             importlib.reload(sys.modules["api.admin"])
 
-        from api.admin import app, _check_users_exist
+        from api.admin import app
 
         # Mock the database to raise an exception
         async def mock_fetch_val_error(*args, **kwargs):

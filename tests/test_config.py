@@ -399,6 +399,7 @@ class TestCorsOriginValidation:
     def test_missing_protocol_rejected(self):
         """Origins without http:// or https:// should raise ValueError."""
         import importlib
+
         import pytest
 
         env = {
@@ -417,6 +418,7 @@ class TestCorsOriginValidation:
     def test_missing_protocol_ip_rejected(self):
         """IP addresses without protocol should raise ValueError."""
         import importlib
+
         import pytest
 
         env = {
@@ -435,6 +437,7 @@ class TestCorsOriginValidation:
     def test_trailing_slash_rejected(self):
         """Origins with trailing slash should raise ValueError."""
         import importlib
+
         import pytest
 
         env = {
