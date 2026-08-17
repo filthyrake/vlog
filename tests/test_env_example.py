@@ -12,13 +12,15 @@ def extract_env_vars_from_config():
     config_path = Path(__file__).parent.parent / "config.py"
     content = config_path.read_text()
 
-    # Find all os.getenv("VLOG_...") and os.environ.get("VLOG_...") calls
-    # Explicitly match both quote types
-    pattern1 = r'os\.(?:getenv|environ\.get)\(["\']VLOG_([A-Z_]+)["\']'
+    # Find all os.getenv("VLOG_...") and os.environ.get("VLOG_...") calls.
+    # `\s*` after the paren so calls wrapped across lines are still matched -
+    # without it, VLOG_OPENAPI_DESCRIPTION (whose name sits on its own line)
+    # looked unused and was reported as an extra var in .env.example.
+    pattern1 = r'os\.(?:getenv|environ\.get)\(\s*["\']VLOG_([A-Z_]+)["\']'
     matches1 = re.findall(pattern1, content)
 
     # Also find get_int_env("VLOG_...") and get_float_env("VLOG_...") helper calls
-    pattern2 = r'get_(?:int|float)_env\(["\']VLOG_([A-Z_]+)["\']'
+    pattern2 = r'get_(?:int|float)_env\(\s*["\']VLOG_([A-Z_]+)["\']'
     matches2 = re.findall(pattern2, content)
 
     return set(f"VLOG_{var}" for var in matches1 + matches2)

@@ -36,7 +36,6 @@ from api.live_auth import verify_stream_key
 from api.live_metrics import compute_and_publish_metrics
 from api.live_playlist import update_master_playlist, update_variant_playlist
 from api.live_schemas import IngestStatusResponse, SegmentUploadResponse
-
 from config import (
     LIVE_ALLOWED_QUALITIES,
     LIVE_ENABLED,
@@ -504,7 +503,7 @@ async def put_media_segment(
 
             asyncio.create_task(_publish_metrics())
 
-    except Exception as e:
+    except Exception:
         # Clean up orphaned file if DB operations failed after file write
         if file_written:
             try:
