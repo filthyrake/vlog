@@ -58,8 +58,24 @@ jobs:
     runs-on: self-hosted
     needs: trivy-filesystem
 
+    # Trivy exports the (large) worker image to a temporary directory before
+    # analysing it. The runner's /tmp is too small for that, which failed the
+    # scan with "no space left on device", so keep temp files on the runner's
+    # own work volume instead.
+    env:
+      TMPDIR: ${{ runner.temp }}
+
     steps:
       - uses: actions/checkout@v6
+
+      # This job builds a multi-GB GPU image on every run. Without reclaiming
+      # space first, layers and build cache from previous runs fill the disk.
+      - name: Reclaim disk space
+        run: |
+          df -h /tmp "${RUNNER_TEMP:-/tmp}" /var/lib/docker 2>/dev/null || true
+          docker builder prune -af --filter until=24h || true
+          docker image prune -f || true
+          df -h /tmp "${RUNNER_TEMP:-/tmp}" /var/lib/docker 2>/dev/null || true
 
       - name: Build Docker image for scanning
         run: |
@@ -96,6 +112,9 @@ jobs:
         if: always()
         run: |
           docker rmi vlog-worker:scan || true
+          # Removing the tag alone leaves the build cache behind, which is what
+          # actually accumulates between runs.
+          docker builder prune -f || true
 
   dependency-check:
     name: Python Dependency Audit
