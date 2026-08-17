@@ -106,28 +106,28 @@ jobs:
 
       # Audit against the Python version we actually ship (the container images
       # install python3.12). The runner's default python3 is 3.9, and resolving
-      # our unbounded ">=" requirements under 3.9 makes pip backtrack until it
-      # aborts with "error: resolution-too-deep".
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Set up Python virtual environment
+      # our unbounded ">=" requirements under 3.9 makes pip backtrack for about
+      # an hour before aborting with "error: resolution-too-deep".
+      #
+      # actions/setup-python publishes no build for this runner's OS, so uv
+      # provisions the interpreter instead. Its resolver also does not suffer
+      # the backtracking blowup that made this job fail.
+      - name: Provision Python 3.12 via uv
         run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip setuptools
+          python3 -m venv .uv-bootstrap
+          ./.uv-bootstrap/bin/pip install --upgrade pip uv
+          ./.uv-bootstrap/bin/uv python install 3.12
+          ./.uv-bootstrap/bin/uv venv --python 3.12 .venv
+          .venv/bin/python --version
 
-      - name: Install pip-audit
+      - name: Install pip-audit and project dependencies
         run: |
-          source .venv/bin/activate
-          pip install pip-audit
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
+            pip-audit -r requirements.txt
 
       - name: Run pip-audit
         run: |
           source .venv/bin/activate
-          pip install -r requirements.txt
           # Ignored vulnerabilities (review quarterly):
           # - PYSEC-2024-87: Jinja2 sandbox escape - not exploitable in our use case (no user templates)
           # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
