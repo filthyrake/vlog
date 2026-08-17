@@ -32,7 +32,6 @@ from api.auth.permissions import (
     has_permission,
 )
 
-
 # =============================================================================
 # Password Hashing Tests
 # =============================================================================
@@ -476,7 +475,6 @@ class TestSessionManagement:
     async def test_invalidate_session(self, test_database, sample_user, monkeypatch):
         """invalidate_session should revoke a session."""
         import api.auth.sessions as sessions_module
-
         from api.database import user_sessions
 
         monkeypatch.setattr(sessions_module, "database", test_database)
@@ -623,8 +621,12 @@ class TestAuthEndpointsIntegration:
         # Should not error even without a session
         assert response.status_code in [200, 204, 401]
 
-    def test_forgot_password_endpoint_exists(self, admin_client):
+    def test_forgot_password_endpoint_exists(self, admin_client, monkeypatch):
         """POST /api/v1/auth/forgot should be accessible."""
+        # Password reset ships disabled (it needs email delivery configured) and
+        # returns 503 in that state, so enable it to exercise the real handler.
+        monkeypatch.setattr("api.auth.endpoints.PASSWORD_RESET_ENABLED", True)
+
         response = admin_client.post(
             "/api/v1/auth/forgot",
             json={"email": "nonexistent@example.com"},
@@ -633,6 +635,15 @@ class TestAuthEndpointsIntegration:
         # Should always return success to prevent user enumeration
         # or return 200/204 regardless of whether email exists
         assert response.status_code in [200, 204]
+
+    def test_forgot_password_unavailable_when_disabled(self, admin_client):
+        """POST /api/v1/auth/forgot should report unavailability when disabled."""
+        response = admin_client.post(
+            "/api/v1/auth/forgot",
+            json={"email": "nonexistent@example.com"},
+        )
+
+        assert response.status_code == 503
 
 
 # =============================================================================

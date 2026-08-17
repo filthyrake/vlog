@@ -1346,14 +1346,16 @@ class TestNextVideoHTTP:
         # Test with path traversal attempt in slug
         response = public_client.get("/api/videos/..test-video/next")
         assert response.status_code == 400
-        assert response.json()["detail"] == "Invalid video slug"
+        # The message now explains which slug rule was broken; match the prefix
+        # so wording changes do not break the test.
+        assert response.json()["detail"].startswith("Invalid video slug")
 
     def test_next_video_invalid_slug_uppercase(self, public_client):
         """Test next video rejects uppercase slugs."""
         # Slugs should be lowercase only
         response = public_client.get("/api/videos/Test-Video/next")
         assert response.status_code == 400
-        assert response.json()["detail"] == "Invalid video slug"
+        assert response.json()["detail"].startswith("Invalid video slug")
 
 
 # ============================================================================
