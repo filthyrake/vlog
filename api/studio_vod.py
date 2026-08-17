@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from slowapi import Limiter
 
 # Import PIL at module level and configure decompression bomb protection
@@ -37,14 +37,14 @@ from api.audit import AuditAction, log_audit
 from api.auth.middleware import require_auth
 from api.auth.permissions import Permission, Role, has_permission
 from api.common import get_real_ip, get_request_id, require_valid_slug
-from api.database import database, live_streams, videos, playback_sessions, viewers
-from api.db_retry import db_execute_with_retry, fetch_one_with_retry, fetch_all_with_retry, fetch_val_with_retry
+from api.database import database, live_streams, playback_sessions, videos
+from api.db_retry import db_execute_with_retry, fetch_all_with_retry, fetch_one_with_retry, fetch_val_with_retry
 from api.live_schemas import (
-    StudioVODResponse,
-    StudioVODListResponse,
-    StudioVODUpdate,
     StudioVODAnalyticsResponse,
     StudioVODDownloadResponse,
+    StudioVODListResponse,
+    StudioVODResponse,
+    StudioVODUpdate,
 )
 from api.studio import require_csrf
 from config import (
