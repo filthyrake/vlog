@@ -1,8 +1,31 @@
 """Tests for config.py environment variable parsing helpers."""
 
+import importlib
 import logging
 import os
 from unittest import mock
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def restore_config_module():
+    """
+    Reload `config` against the real environment after every test here.
+
+    Many tests in this module reload `config` inside
+    `mock.patch.dict(os.environ, ..., clear=True)`. Restoring os.environ on
+    exit does not undo the reload: the shared `config` module object keeps
+    whatever the cleared environment produced. The most damaging casualty is
+    SESSION_SECRET_KEY, which becomes "" and then makes the admin app's
+    lifespan raise "VLOG_SESSION_SECRET_KEY is required" for every later test
+    in the same pytest-xdist worker.
+    """
+    yield
+
+    import config
+
+    importlib.reload(config)
 
 
 class TestGetIntEnv:
