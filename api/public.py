@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
+import bleach
 import sqlalchemy as sa
 from fastapi import APIRouter, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,11 +26,9 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
-import bleach
-
 from api.analytics_cache import AnalyticsCache
 from api.auth.middleware import get_current_user, require_auth, require_ownership_or_permission
-from api.auth.permissions import Permission, Role, has_permission
+from api.auth.permissions import Permission
 from api.common import (
     HTTPMetricsMiddleware,
     RequestIDMiddleware,
@@ -49,7 +48,6 @@ from api.database import (
     configure_database,
     custom_field_definitions,
     database,
-    live_stream_segments,
     live_streams,
     playback_sessions,
     playlists,
@@ -74,6 +72,11 @@ from api.db_retry import (
 )
 from api.enums import DurationFilter, SortBy, SortOrder, TranscriptionStatus, VideoStatus
 from api.errors import sanitize_error_message, sanitize_progress_error
+from api.live_schemas import (
+    PublicLiveStreamListResponse,
+    PublicLiveStreamResponse,
+)
+from api.logging_config import setup_logging
 from api.metrics import VIDEOS_WATCH_TIME_SECONDS_TOTAL
 from api.pagination import encode_cursor, validate_cursor
 from api.schemas import (
@@ -109,24 +112,23 @@ from api.schemas import (
     VideoSocialStatus,
     VideoTagInfo,
 )
+from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 from config import (
     API_INCLUDE_LEGACY_ROUTES,
     API_VERSION,
+    AUTOPLAY_COUNTDOWN_SECONDS,
+    AUTOPLAY_ENABLED,
     CORS_ALLOWED_ORIGINS,
     DOWNLOADS_ALLOW_ORIGINAL,
     DOWNLOADS_ALLOW_TRANSCODED,
     DOWNLOADS_ENABLED,
     DOWNLOADS_MAX_CONCURRENT,
     DOWNLOADS_RATE_LIMIT_PER_HOUR,
-    EMBED_ALLOWED_DOMAINS,
     EMBED_ALLOW_ALL_DOMAINS,
+    EMBED_ALLOWED_DOMAINS,
     EMBED_DEFAULT_AUTOPLAY,
     EMBED_ENABLED,
     EMBED_MIN_PLAYBACK_FOR_VIEW,
-    RATE_LIMIT_EMBED,
-    AUTOPLAY_ENABLED,
-    UPNEXT_ENABLED,
-    AUTOPLAY_COUNTDOWN_SECONDS,
     LIVE_ENABLED,
     LIVE_STORAGE_PATH,
     NAS_STORAGE,
@@ -134,6 +136,7 @@ from config import (
     OPENAPI_TITLE,
     PUBLIC_PORT,
     QUALITY_NAMES,
+    RATE_LIMIT_EMBED,
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_PUBLIC_ANALYTICS,
     RATE_LIMIT_PUBLIC_DEFAULT,
@@ -142,6 +145,7 @@ from config import (
     SECURE_COOKIES,
     SUPPORTED_VIDEO_EXTENSIONS,
     UPLOADS_DIR,
+    UPNEXT_ENABLED,
     VIDEOS_DIR,
     WATERMARK_ENABLED,
     WATERMARK_IMAGE,
@@ -154,12 +158,6 @@ from config import (
     WATERMARK_TEXT_SIZE,
     WATERMARK_TYPE,
 )
-from api.live_schemas import (
-    PublicLiveStreamListResponse,
-    PublicLiveStreamResponse,
-)
-from api.logging_config import setup_logging
-from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 
 # Initialize structured logging (Issue #208) - must be before any getLogger() calls
 setup_logging()
@@ -564,8 +562,8 @@ async def lifespan(app: FastAPI):
 
     # Stop live streaming background tasks
     if LIVE_ENABLED:
-        from api.live_tasks import stop_live_background_tasks
         from api.live_ingest import stop_accepting_uploads, wait_for_active_uploads
+        from api.live_tasks import stop_live_background_tasks
         stop_accepting_uploads()
         await wait_for_active_uploads(timeout=10.0)
         await stop_live_background_tasks(timeout=10.0)
@@ -3994,7 +3992,6 @@ async def create_comment(
             )
 
         depth = parent_depth + 1
-        parent_path = parent_comment["path"]
 
     # Determine initial status
     status = "pending" if settings["require_approval"] else "approved"
@@ -4372,8 +4369,18 @@ if API_INCLUDE_LEGACY_ROUTES:
     logger.info("Mounted legacy routes at /api (aliased to v1)")
 
 # Include studio module routers for broadcaster dashboard
-# These have their own /api/v1/studio prefix
-from api import studio, studio_sse, studio_vod, studio_chat, studio_chat_ws, studio_moderation, studio_analytics
+# These have their own /api/v1/studio prefix.
+# Imported here rather than at the top of the file so the studio modules load
+# after `app` and the v1 router are fully configured above.
+from api import (  # noqa: E402
+    studio,
+    studio_analytics,
+    studio_chat,
+    studio_chat_ws,
+    studio_moderation,
+    studio_sse,
+    studio_vod,
+)
 
 app.include_router(studio.router)
 app.include_router(studio_sse.router)

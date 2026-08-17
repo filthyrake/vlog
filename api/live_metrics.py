@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
-from api.database import database, live_stream_segments, live_streams
+from api.database import database, live_streams
 from api.pubsub import publish_stream_metrics
 
 logger = logging.getLogger(__name__)
