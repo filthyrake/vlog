@@ -5,17 +5,23 @@ Includes both database-level tests and HTTP-level tests using FastAPI TestClient
 """
 
 import io
-from datetime import datetime, timezone
+import secrets
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
+from conftest import reload_api_database
 from fastapi import HTTPException
 
 from api.database import (
+    admin_sessions,
     categories,
     playback_sessions,
     quality_progress,
     transcoding_jobs,
     transcriptions,
+    users,
     video_qualities,
     videos,
     worker_api_keys,
@@ -1871,6 +1877,66 @@ class TestBulkOperationsHTTP:
 TEST_ADMIN_API_SECRET = "test-admin-api-secret-12345"
 
 
+def _sync_engine(test_db_url: str):
+    """
+    Open a plain synchronous engine against the test database.
+
+    These middleware tests drive the app through TestClient, which owns its own
+    event loop for the app's asyncpg pool. Reaching for that pool from the test
+    body binds a coroutine to a second loop and asyncpg fails with "attached to
+    a different loop", so seed rows over a synchronous connection instead.
+    """
+    return sa.create_engine(test_db_url, isolation_level="AUTOCOMMIT")
+
+
+def seed_admin_session(test_db_url: str, expires_in: timedelta = timedelta(hours=1)) -> str:
+    """
+    Insert a legacy admin session and return its token.
+
+    The secret-based login endpoint that used to mint these was removed with
+    issue #200, but the middleware still accepts the cookie, so tests seed one
+    directly to exercise that path.
+    """
+    token = secrets.token_urlsafe(48)
+    now = datetime.now(timezone.utc)
+    engine = _sync_engine(test_db_url)
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                admin_sessions.insert().values(
+                    session_token=token,
+                    created_at=now,
+                    expires_at=now + expires_in,
+                    last_used_at=now,
+                )
+            )
+    finally:
+        engine.dispose()
+    return token
+
+
+def seed_user(test_db_url: str, username: str = "testuser", role: str = "admin") -> str:
+    """Insert a user so the middleware sees a configured deployment."""
+    user_id = str(uuid.uuid4())
+    engine = _sync_engine(test_db_url)
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                users.insert().values(
+                    id=user_id,
+                    username=username,
+                    email=f"{username}@example.com",
+                    password_hash="fakehash",
+                    role=role,
+                    status="active",
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+    finally:
+        engine.dispose()
+    return user_id
+
+
 class TestAdminAPIAuth:
     """Tests for Admin API authentication middleware."""
 
@@ -1890,7 +1956,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", "")  # Empty = not configured
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             # Reset the user cache before reloading
             import api.admin
@@ -1927,7 +1993,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", "")
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             import api.admin
 
@@ -1958,7 +2024,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", "")
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             import api.admin
 
@@ -1966,26 +2032,12 @@ class TestAdminAPIAuth:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
-        from api.database import database, users
+
+        # Create a user to simulate an existing deployment. This has to happen
+        # over a synchronous connection - see seed_user().
+        seed_user(test_db_url)
 
         with TestClient(app, raise_server_exceptions=False) as client:
-            # First, create a user to simulate existing deployment
-            import asyncio
-            from datetime import datetime, timezone
-
-            async def create_test_user():
-                await database.connect()
-                await database.execute(
-                    users.insert().values(
-                        username="testuser",
-                        email="test@example.com",
-                        password_hash="fakehash",
-                        created_at=datetime.now(timezone.utc),
-                    )
-                )
-
-            asyncio.get_event_loop().run_until_complete(create_test_user())
-
             # Reset cache to force re-check
             api.admin._users_exist_cache = None
 
@@ -2010,7 +2062,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", "")
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             import api.admin
 
@@ -2043,7 +2095,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", "")
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             import api.admin
 
@@ -2080,7 +2132,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2108,7 +2160,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2138,7 +2190,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2167,7 +2219,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2194,7 +2246,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2222,7 +2274,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2251,7 +2303,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2289,7 +2341,7 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2303,8 +2355,8 @@ class TestAdminAPIAuth:
             assert data["authenticated"] is False
             assert data["auth_required"] is True
 
-    def test_auth_login_with_valid_secret(self, test_storage, test_db_url, monkeypatch):
-        """Successful login should set session cookie."""
+    def test_header_auth_with_valid_secret(self, test_storage, test_db_url, monkeypatch):
+        """A correct X-Admin-Secret header should authenticate a request."""
         import importlib
         import sys
 
@@ -2319,26 +2371,21 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login with valid secret
-            response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
+            response = client.get(
+                "/api/categories",
+                headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
             )
             assert response.status_code == 200
-            assert response.json()["authenticated"] is True
 
-            # Should have set a cookie
-            assert "vlog_admin_session" in response.cookies
-
-    def test_auth_login_with_invalid_secret(self, test_storage, test_db_url, monkeypatch):
-        """Login with invalid secret should return 403."""
+    def test_header_auth_with_invalid_secret(self, test_storage, test_db_url, monkeypatch):
+        """A wrong X-Admin-Secret header should be rejected with 403."""
         import importlib
         import sys
 
@@ -2353,19 +2400,19 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login with invalid secret
-            response = client.post(
-                "/api/auth/login",
-                json={"secret": "wrong-secret"},
+            response = client.get(
+                "/api/categories",
+                headers={"X-Admin-Secret": "wrong-secret"},
             )
             assert response.status_code == 403
+            assert response.json()["detail"] == "Invalid admin secret"
 
     def test_session_cookie_auth(self, test_storage, test_db_url, monkeypatch):
         """Session cookie should authenticate subsequent requests."""
@@ -2383,34 +2430,23 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # First, login to get session cookie
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-
-            # Get the session token from cookies
-            session_token = login_response.cookies.get("vlog_admin_session")
-            assert session_token is not None
-
-            # Now make authenticated request with cookie explicitly set
-            # TestClient should include cookies automatically, but let's verify
             response = client.get(
                 "/api/categories",
                 cookies={"vlog_admin_session": session_token},
             )
             assert response.status_code == 200
 
-    def test_auth_logout(self, test_storage, test_db_url, monkeypatch):
-        """Logout should clear session and cookie."""
+    def test_expired_session_cookie_rejected(self, test_storage, test_db_url, monkeypatch):
+        """An expired session cookie should not authenticate."""
         import importlib
         import sys
 
@@ -2425,45 +2461,63 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        session_token = seed_admin_session(test_db_url, expires_in=timedelta(hours=-1))
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-
-            # Get the session token
-            session_token = login_response.cookies.get("vlog_admin_session")
-            assert session_token is not None
-
-            # Verify we're authenticated (with explicit cookie)
-            check_response = client.get(
-                "/api/auth/check",
+            response = client.get(
+                "/api/categories",
                 cookies={"vlog_admin_session": session_token},
             )
-            assert check_response.json()["authenticated"] is True
+            assert response.status_code == 401
 
-            # Logout (with explicit cookie)
-            logout_response = client.post(
-                "/api/auth/logout",
-                cookies={"vlog_admin_session": session_token},
-            )
-            assert logout_response.status_code == 200
-            assert logout_response.json()["authenticated"] is False
+    def test_auth_legacy_logout(self, test_storage, test_db_url, monkeypatch):
+        """Legacy logout should invalidate the admin session."""
+        import importlib
+        import sys
 
-            # After logout, session should be invalid even if cookie is still present
-            check_after = client.get(
-                "/api/auth/check",
-                cookies={"vlog_admin_session": session_token},
+        from fastapi.testclient import TestClient
+
+        import config
+
+        monkeypatch.setattr(config, "VIDEOS_DIR", test_storage["videos"])
+        monkeypatch.setattr(config, "UPLOADS_DIR", test_storage["uploads"])
+        monkeypatch.setattr(config, "ARCHIVE_DIR", test_storage["archive"])
+        monkeypatch.setattr(config, "DATABASE_URL", test_db_url)
+        monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
+
+        if "api.database" in sys.modules:
+            reload_api_database()
+        if "api.admin" in sys.modules:
+            importlib.reload(sys.modules["api.admin"])
+
+        from api.admin import app
+
+        session_token = seed_admin_session(test_db_url)
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            cookies = {"vlog_admin_session": session_token}
+
+            # The session works before logging out
+            assert client.get("/api/categories", cookies=cookies).status_code == 200
+
+            # Cookie-authenticated writes need a CSRF token
+            csrf = client.get("/api/v1/auth/csrf-token", cookies=cookies).json()["csrf_token"]
+            logout = client.post(
+                "/api/v1/auth/legacy-logout",
+                cookies=cookies,
+                headers={"X-CSRF-Token": csrf},
             )
-            assert check_after.json()["authenticated"] is False
+            assert logout.status_code == 200
+
+            # ...and stops working afterwards, even with the cookie still set
+            assert client.get("/api/categories", cookies=cookies).status_code == 401
+
 
     def test_db_error_fails_closed_requires_auth(self, test_storage, test_db_url, monkeypatch):
         """When database errors occur in _check_users_exist, it should fail closed (require auth)."""
@@ -2482,14 +2536,14 @@ class TestAdminAPIAuth:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", "")
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             import api.admin
 
             api.admin._users_exist_cache = None
             importlib.reload(sys.modules["api.admin"])
 
-        from api.admin import app, _check_users_exist
+        from api.admin import app
 
         # Mock the database to raise an exception
         async def mock_fetch_val_error(*args, **kwargs):
@@ -2529,20 +2583,17 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        # The secret-based login endpoint was removed with issue #200, so seed
+        # the admin session the middleware still accepts.
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # Get CSRF token
             csrf_response = client.get(
@@ -2571,7 +2622,7 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2598,20 +2649,17 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        # The secret-based login endpoint was removed with issue #200, so seed
+        # the admin session the middleware still accepts.
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # POST without CSRF token should fail
             response = client.post(
@@ -2638,20 +2686,17 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        # The secret-based login endpoint was removed with issue #200, so seed
+        # the admin session the middleware still accepts.
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # Get CSRF token
             csrf_response = client.get(
@@ -2685,20 +2730,17 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        # The secret-based login endpoint was removed with issue #200, so seed
+        # the admin session the middleware still accepts.
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # POST with wrong CSRF token should fail
             response = client.post(
@@ -2726,20 +2768,17 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        # The secret-based login endpoint was removed with issue #200, so seed
+        # the admin session the middleware still accepts.
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # GET without CSRF should succeed (CSRF not required for GET)
             response = client.get(
@@ -2764,7 +2803,7 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
@@ -2795,20 +2834,17 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        # The secret-based login endpoint was removed with issue #200, so seed
+        # the admin session the middleware still accepts.
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # DELETE without CSRF token should fail
             response = client.delete(
@@ -2834,20 +2870,17 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        # The secret-based login endpoint was removed with issue #200, so seed
+        # the admin session the middleware still accepts.
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login first
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            assert login_response.status_code == 200
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # PUT without CSRF token should fail
             response = client.put(
@@ -2874,19 +2907,15 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
+        session_token = seed_admin_session(test_db_url)
+
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Login
-            login_response = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            session_token = login_response.cookies.get("vlog_admin_session")
 
             # Get CSRF token multiple times
             csrf_response1 = client.get(
@@ -2921,38 +2950,23 @@ class TestCSRFProtection:
         monkeypatch.setattr(config, "ADMIN_API_SECRET", TEST_ADMIN_API_SECRET)
 
         if "api.database" in sys.modules:
-            importlib.reload(sys.modules["api.database"])
+            reload_api_database()
         if "api.admin" in sys.modules:
             importlib.reload(sys.modules["api.admin"])
 
         from api.admin import app
 
-        with TestClient(app, raise_server_exceptions=False) as client:
-            # First login
-            login_response1 = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            session_token1 = login_response1.cookies.get("vlog_admin_session")
+        # Two independent sessions rather than a login/logout/login cycle - the
+        # secret-based login endpoint was removed with issue #200.
+        session_token1 = seed_admin_session(test_db_url)
+        session_token2 = seed_admin_session(test_db_url)
 
+        with TestClient(app, raise_server_exceptions=False) as client:
             csrf_response1 = client.get(
                 "/api/auth/csrf-token",
                 cookies={"vlog_admin_session": session_token1},
             )
             csrf_token1 = csrf_response1.json()["csrf_token"]
-
-            # Logout
-            client.post(
-                "/api/auth/logout",
-                cookies={"vlog_admin_session": session_token1},
-            )
-
-            # Second login (new session)
-            login_response2 = client.post(
-                "/api/auth/login",
-                json={"secret": TEST_ADMIN_API_SECRET},
-            )
-            session_token2 = login_response2.cookies.get("vlog_admin_session")
 
             csrf_response2 = client.get(
                 "/api/auth/csrf-token",

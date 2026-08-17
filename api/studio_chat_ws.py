@@ -29,14 +29,14 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from api.audit import AuditAction, log_audit
 from api.auth.permissions import Permission, Role, has_permission
 from api.common import calculate_stream_offset_ms, require_valid_slug
-from api.database import database, live_streams, chat_messages, stream_moderators, users
+from api.database import chat_messages, live_streams, stream_moderators
 from api.db_retry import db_execute_with_retry, fetch_one_with_retry
 from api.live_schemas import ChatSettingsResponse, WSMessageType
 from api.pubsub import subscribe_to_stream_chat
 from api.websocket_manager import (
     ConnectionInfo,
-    ManagedWebSocketConnection,
     ConnectionLimitError,
+    ManagedWebSocketConnection,
     OriginValidationError,
     authenticate_websocket,
     get_client_ip,
