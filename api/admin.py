@@ -32,6 +32,13 @@ from sse_starlette.sse import EventSourceResponse
 
 from api.analytics_cache import create_analytics_cache
 from api.audit import AuditAction, log_audit
+from api.auth import api_keys as auth_api_keys
+
+# User authentication module (Issue #200)
+from api.auth import endpoints as auth_endpoints
+from api.auth import invite as auth_invite
+from api.auth import oidc as auth_oidc
+from api.auth import users as auth_users
 from api.chapter_detection import (
     extract_chapters_from_metadata,
     filter_chapters_by_length,
@@ -65,14 +72,12 @@ from api.database import (
     playlist_items,
     playlists,
     quality_progress,
-    ratings,
     reencode_queue,
+    settings,
     sprite_queue,
     tags,
     transcoding_jobs,
     transcriptions,
-    user_api_keys,
-    user_invites,
     user_sessions,
     users,
     video_custom_fields,
@@ -84,13 +89,6 @@ from api.database import (
     worker_api_keys,
     workers,
 )
-
-# User authentication module (Issue #200)
-from api.auth import endpoints as auth_endpoints
-from api.auth import users as auth_users
-from api.auth import api_keys as auth_api_keys
-from api.auth import invite as auth_invite
-from api.auth import oidc as auth_oidc
 from api.db_retry import (
     DatabaseLockedError,
     db_execute_with_retry,
@@ -102,6 +100,17 @@ from api.db_retry import (
 from api.enums import ErrorLogging, TranscriptionStatus, VideoStatus
 from api.errors import is_unique_violation, sanitize_error_message, sanitize_progress_error
 from api.job_queue import JobDispatch, get_job_queue
+from api.live_auth import generate_stream_key, get_key_prefix, hash_stream_key, revoke_stream_key
+from api.live_schemas import (
+    LiveStreamCreate,
+    LiveStreamCreatedResponse,
+    LiveStreamKeyRegenerateResponse,
+    LiveStreamListResponse,
+    LiveStreamResponse,
+    LiveStreamStatus,
+    LiveStreamUpdate,
+)
+from api.logging_config import setup_logging
 from api.metrics import (
     STORAGE_VIDEOS_BYTES,
     get_metrics,
@@ -122,6 +131,12 @@ from api.schemas import (
     AnalyticsOverview,
     AutoDetectChaptersRequest,
     AutoDetectChaptersResponse,
+    BackupCreateRequest,
+    BackupListResponse,
+    BackupResponse,
+    BackupRestoreRequest,
+    BackupRestoreResponse,
+    BackupVerifyResponse,
     BulkCustomFieldsResponse,
     BulkCustomFieldsUpdate,
     BulkDeleteRequest,
@@ -133,25 +148,18 @@ from api.schemas import (
     BulkRetranscodeResponse,
     BulkUpdateRequest,
     BulkUpdateResponse,
-    BackupCreateRequest,
-    BackupListResponse,
-    BackupResponse,
-    BackupRestoreRequest,
-    BackupRestoreResponse,
-    BackupVerifyResponse,
     CategoryCreate,
     CategoryResponse,
-    CommentListResponse,
-    CommentModerate,
-    CommentModerationQueueResponse,
-    CommentResponse,
-    CommentStatus,
-    CommentUserInfo,
     ChapterCreate,
     ChapterDetectionSource,
     ChapterListResponse,
     ChapterResponse,
     ChapterUpdate,
+    CommentModerate,
+    CommentModerationQueueResponse,
+    CommentResponse,
+    CommentStatus,
+    CommentUserInfo,
     CustomFieldCreate,
     CustomFieldListResponse,
     CustomFieldResponse,
@@ -234,44 +242,34 @@ from api.settings_service import (
 from api.settings_service import (
     get_setting as get_db_setting,
 )
-from api.worker_auth import authenticate_api_key
-from api.live_auth import generate_stream_key, get_key_prefix, hash_stream_key, revoke_stream_key
-from api.live_schemas import (
-    LiveStreamCreate,
-    LiveStreamCreatedResponse,
-    LiveStreamKeyRegenerateResponse,
-    LiveStreamListResponse,
-    LiveStreamResponse,
-    LiveStreamStatus,
-    LiveStreamUpdate,
-)
-from api.logging_config import setup_logging
 from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
+from api.worker_auth import authenticate_api_key
 from config import (
-    API_INCLUDE_LEGACY_ROUTES,
-    API_VERSION,
-    OPENAPI_DESCRIPTION,
-    OPENAPI_TITLE,
     ADMIN_API_SECRET,
     ADMIN_CORS_ALLOWED_ORIGINS,
     ADMIN_PORT,
     ADMIN_SESSION_EXPIRY_HOURS,
     ANALYTICS_CACHE_ENABLED,
-    SESSION_SECRET_KEY,
     ANALYTICS_CACHE_STORAGE_URL,
     ANALYTICS_CACHE_TTL,
     ANALYTICS_CLIENT_CACHE_MAX_AGE,
+    API_INCLUDE_LEGACY_ROUTES,
+    API_VERSION,
     ARCHIVE_DIR,
     BACKUP_ENABLED,
     BACKUP_PATH,
     BACKUP_RESTORE_COOLDOWN_SECONDS,
-    BACKUP_S3_BUCKET,
     BACKUP_SIGNING_KEY,
     DATABASE_URL,
     JOB_QUEUE_MODE,
+    LIVE_ENABLED,
+    LIVE_MAX_CONCURRENT_STREAMS,
+    LIVE_STORAGE_PATH,
     MAX_THUMBNAIL_UPLOAD_SIZE,
     MAX_UPLOAD_SIZE,
     NAS_STORAGE,
+    OPENAPI_DESCRIPTION,
+    OPENAPI_TITLE,
     QUALITY_PRESETS,
     RATE_LIMIT_ADMIN_DEFAULT,
     RATE_LIMIT_ADMIN_UPLOAD,
@@ -279,6 +277,7 @@ from config import (
     RATE_LIMIT_STORAGE_URL,
     RATE_LIMIT_WORKER_DEFAULT,
     SECURE_COOKIES,
+    SESSION_SECRET_KEY,
     SSE_HEARTBEAT_INTERVAL,
     SSE_RECONNECT_TIMEOUT_MS,
     STREAMING_CODEC,
@@ -292,9 +291,6 @@ from config import (
     VIDEOS_DIR,
     WORKER_OFFLINE_THRESHOLD_MINUTES,
     check_deprecated_env_vars,
-    LIVE_ENABLED,
-    LIVE_STORAGE_PATH,
-    LIVE_MAX_CONCURRENT_STREAMS,
 )
 from worker.transcoder import generate_thumbnail, get_video_info
 
@@ -11075,7 +11071,7 @@ async def get_comments_moderation_queue(
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid status. Must be one of: pending, approved, rejected, spam"
+                detail="Invalid status. Must be one of: pending, approved, rejected, spam"
             )
 
     # Apply video filter
@@ -11389,8 +11385,8 @@ async def create_backup(request: Request, data: BackupCreateRequest) -> BackupRe
     if not BACKUP_ENABLED:
         raise HTTPException(status_code=403, detail="Backup functionality is disabled")
 
-    from backup.service import BackupService
     from backup.manifest import BackupType
+    from backup.service import BackupService
 
     # Map request type to BackupType
     backup_type_map = {

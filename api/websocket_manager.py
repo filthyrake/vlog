@@ -231,7 +231,7 @@ class WebSocketManager:
         if not self.validate_origin(websocket):
             origin = websocket.headers.get("origin", "none")
             logger.warning(
-                f"WebSocket origin validation failed",
+                "WebSocket origin validation failed",
                 extra={"origin": origin, "stream_id": stream_id, "user_id": user["id"]},
             )
             log_audit(
@@ -260,7 +260,7 @@ class WebSocketManager:
             # Check global limit
             if self._total_connections >= WS_MAX_CONNECTIONS_GLOBAL:
                 logger.warning(
-                    f"Global WebSocket connection limit reached",
+                    "Global WebSocket connection limit reached",
                     extra={"total": self._total_connections, "limit": WS_MAX_CONNECTIONS_GLOBAL},
                 )
                 raise ConnectionLimitError(
@@ -326,7 +326,7 @@ class WebSocketManager:
         )
 
         logger.debug(
-            f"WebSocket connection registered",
+            "WebSocket connection registered",
             extra={
                 "connection_id": connection_id,
                 "stream_id": stream_id,
@@ -371,7 +371,7 @@ class WebSocketManager:
                 self._total_connections = max(0, self._total_connections - 1)
 
             logger.debug(
-                f"WebSocket connection unregistered",
+                "WebSocket connection unregistered",
                 extra={
                     "connection_id": connection_id,
                     "stream_id": stream_id,

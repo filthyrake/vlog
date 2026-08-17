@@ -9,7 +9,6 @@ Tests cover:
 - Legacy route behavior
 """
 
-import pytest
 
 
 class TestVersionHeaders:

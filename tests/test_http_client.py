@@ -148,7 +148,7 @@ class TestCircuitBreaker:
         assert client._consecutive_failures == 0
         assert client._circuit_open_count == 0
 
-    def test_record_success_resets_state(self):
+    async def test_record_success_resets_state(self):
         """Test that successful requests reset circuit breaker state."""
         client = WorkerAPIClient("http://test.example.com", "test-api-key")
 
@@ -157,31 +157,31 @@ class TestCircuitBreaker:
         client._circuit_open_count = 1
 
         # Record success
-        client._record_success()
+        await client._record_success()
 
         assert client._consecutive_failures == 0
         assert client._circuit_open is False
         assert client._circuit_open_count == 0
 
-    def test_record_failure_increments_counter(self):
+    async def test_record_failure_increments_counter(self):
         """Test that failures increment the counter."""
         client = WorkerAPIClient("http://test.example.com", "test-api-key")
 
-        client._record_failure()
+        await client._record_failure()
         assert client._consecutive_failures == 1
         assert client._circuit_open is False  # Not yet at threshold
 
-        client._record_failure()
+        await client._record_failure()
         assert client._consecutive_failures == 2
         assert client._circuit_open is False  # Still not at threshold
 
-    def test_circuit_opens_after_threshold(self):
+    async def test_circuit_opens_after_threshold(self):
         """Test that circuit opens after reaching failure threshold."""
         client = WorkerAPIClient("http://test.example.com", "test-api-key")
 
         # Record failures up to threshold
         for _ in range(CIRCUIT_BREAKER_FAILURE_THRESHOLD):
-            client._record_failure()
+            await client._record_failure()
 
         assert client._circuit_open is True
         assert client._circuit_open_count == 1
@@ -219,7 +219,7 @@ class TestCircuitBreaker:
         assert client._circuit_open is False  # Half-open allows probe
         assert client._half_open is True  # Should be in half-open state
 
-    def test_half_open_success_closes_circuit(self):
+    async def test_half_open_success_closes_circuit(self):
         """Test that successful probe in half-open state closes circuit."""
         client = WorkerAPIClient("http://test.example.com", "test-api-key")
 
@@ -229,14 +229,14 @@ class TestCircuitBreaker:
         client._circuit_open_count = 2
 
         # Record success
-        client._record_success()
+        await client._record_success()
 
         assert client._half_open is False
         assert client._circuit_open is False
         assert client._consecutive_failures == 0
         assert client._circuit_open_count == 0
 
-    def test_half_open_failure_reopens_circuit_immediately(self):
+    async def test_half_open_failure_reopens_circuit_immediately(self):
         """Test that failure in half-open state immediately re-opens circuit."""
         client = WorkerAPIClient("http://test.example.com", "test-api-key")
 
@@ -246,7 +246,7 @@ class TestCircuitBreaker:
         client._circuit_open_count = 1  # Previously opened once
 
         # Record a single failure
-        client._record_failure()
+        await client._record_failure()
 
         # Circuit should immediately re-open (not wait for threshold)
         assert client._circuit_open is True
@@ -254,13 +254,13 @@ class TestCircuitBreaker:
         assert client._circuit_open_count == 2  # Incremented
         assert client._circuit_open_until is not None
 
-    def test_exponential_backoff_for_reset_time(self):
+    async def test_exponential_backoff_for_reset_time(self):
         """Test that reset time doubles each time circuit opens."""
         client = WorkerAPIClient("http://test.example.com", "test-api-key")
 
         # First circuit open
         for _ in range(CIRCUIT_BREAKER_FAILURE_THRESHOLD):
-            client._record_failure()
+            await client._record_failure()
 
         first_reset = client._circuit_open_until
         first_duration = (first_reset - datetime.now()).total_seconds()
@@ -270,7 +270,7 @@ class TestCircuitBreaker:
         client._consecutive_failures = 0
 
         for _ in range(CIRCUIT_BREAKER_FAILURE_THRESHOLD):
-            client._record_failure()
+            await client._record_failure()
 
         second_reset = client._circuit_open_until
         second_duration = (second_reset - datetime.now()).total_seconds()

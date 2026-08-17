@@ -4,6 +4,10 @@ on:
   # Run automatically when merged to main/dev
   push:
     branches: [main, dev]
+  # Run on PRs so the "All Tests Passed" branch protection check can report.
+  # Without this the required check never runs and every PR blocks forever.
+  pull_request:
+    branches: [main, dev]
   # Manual trigger - use "Run workflow" button in GitHub Actions UI
   workflow_dispatch:
     inputs:
@@ -16,6 +20,12 @@ on:
           - quick
           - full
 
+# Keep the self-hosted runner from piling up when several PRs are pushed or
+# rebased at once - a superseded run for the same ref is no longer useful.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Quick tests for dev branch - faster feedback
   test-quick:
@@ -23,6 +33,7 @@ jobs:
     runs-on: self-hosted
     if: |
       (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'dev') ||
       (github.event_name == 'workflow_dispatch' && inputs.test_type == 'quick')
 
     services:
@@ -43,25 +54,32 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python virtual environment
+      # Test against the Python version we actually ship (the container images
+      # install python3.12). The runner's default python3 is 3.9, where pip
+      # backtracks over our unbounded ">=" requirements for an hour before
+      # aborting with "error: resolution-too-deep". actions/setup-python has no
+      # build for this runner's OS, so uv provides the interpreter.
+      - name: Provision Python 3.12 via uv
         run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
+          python3 -m venv .uv-bootstrap
+          ./.uv-bootstrap/bin/pip install --upgrade pip uv
+          ./.uv-bootstrap/bin/uv python install 3.12
+          ./.uv-bootstrap/bin/uv venv --python 3.12 .venv
+          .venv/bin/python --version
 
-      - name: Cache pip packages
+      - name: Cache uv packages
         uses: actions/cache@v5
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-uv-
 
       - name: Install dependencies
         run: |
-          source .venv/bin/activate
-          pip install -r requirements.txt -r requirements-dev.txt
-          pip install -e .
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
+            -r requirements.txt -r requirements-dev.txt
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -e .
 
       - name: Wait for PostgreSQL
         run: |
@@ -98,6 +116,7 @@ jobs:
     runs-on: self-hosted
     if: |
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
       (github.event_name == 'workflow_dispatch' && inputs.test_type == 'full')
 
     services:
@@ -118,25 +137,32 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python virtual environment
+      # Test against the Python version we actually ship (the container images
+      # install python3.12). The runner's default python3 is 3.9, where pip
+      # backtracks over our unbounded ">=" requirements for an hour before
+      # aborting with "error: resolution-too-deep". actions/setup-python has no
+      # build for this runner's OS, so uv provides the interpreter.
+      - name: Provision Python 3.12 via uv
         run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
+          python3 -m venv .uv-bootstrap
+          ./.uv-bootstrap/bin/pip install --upgrade pip uv
+          ./.uv-bootstrap/bin/uv python install 3.12
+          ./.uv-bootstrap/bin/uv venv --python 3.12 .venv
+          .venv/bin/python --version
 
-      - name: Cache pip packages
+      - name: Cache uv packages
         uses: actions/cache@v5
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-uv-
 
       - name: Install dependencies
         run: |
-          source .venv/bin/activate
-          pip install -r requirements.txt -r requirements-dev.txt
-          pip install -e .
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
+            -r requirements.txt -r requirements-dev.txt
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -e .
 
       - name: Wait for PostgreSQL
         run: |
@@ -207,21 +233,30 @@ jobs:
     steps:
       - name: Check all tests passed
         run: |
-          # Check lint always
+          # Lint runs on every event, so it must always succeed.
           if [[ "${{ needs.lint.result }}" != "success" ]]; then
-            echo "Lint failed"
+            echo "Lint did not succeed (result: ${{ needs.lint.result }})"
             exit 1
           fi
 
-          # For dev branch, check quick tests
-          if [[ "${{ needs.test-quick.result }}" == "failure" ]]; then
-            echo "Quick tests failed"
+          # Exactly one of the test jobs runs per event; the other is skipped by
+          # its own `if:`. Require success from whichever one was selected, so a
+          # cancelled or otherwise non-successful run cannot report green.
+          quick="${{ needs.test-quick.result }}"
+          full="${{ needs.test-full.result }}"
+
+          if [[ "$quick" == "skipped" && "$full" == "skipped" ]]; then
+            echo "Neither test job ran - refusing to report success"
             exit 1
           fi
 
-          # For main branch, check full tests
-          if [[ "${{ needs.test-full.result }}" == "failure" ]]; then
-            echo "Full tests failed"
+          if [[ "$quick" != "skipped" && "$quick" != "success" ]]; then
+            echo "Quick tests did not succeed (result: $quick)"
+            exit 1
+          fi
+
+          if [[ "$full" != "skipped" && "$full" != "success" ]]; then
+            echo "Full tests did not succeed (result: $full)"
             exit 1
           fi
 

@@ -98,7 +98,6 @@ RUN dnf install -y \
     ffmpeg \
     ffmpeg-libs \
     curl \
-    && dnf update -y \
     && dnf clean all
 
 # Install Intel VAAPI driver for Arc/Battlemage support
@@ -115,6 +114,12 @@ RUN dnf install -y \
     && dnf clean all && \
     alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
     alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.12 1
+
+# Patch OS packages AFTER every dnf install above.
+# This must stay last: intel-media-driver and python3.12 pull in transitive
+# packages (giflib, gnutls, libsoup3, mesa-*) that an earlier `dnf update`
+# cannot possibly have covered, which left known CVEs in the shipped image.
+RUN dnf update -y && dnf clean all && rm -rf /var/cache/dnf
 
 # Create non-root user for security
 RUN useradd -m -u 1000 -s /bin/bash vlog && \
