@@ -107,7 +107,14 @@ class TestHLSUploadStreaming:
 
     @pytest.mark.asyncio
     async def test_upload_hls_handles_upload_error(
-        self, worker_client, registered_worker, test_database, sample_pending_video, test_storage, monkeypatch
+        self,
+        worker_client,
+        registered_worker,
+        test_database,
+        sample_pending_video,
+        test_storage,
+        monkeypatch,
+        tmp_path,
     ):
         """Test that upload errors are handled gracefully and temp files are cleaned up."""
         # Create a transcoding job for this worker
@@ -124,10 +131,17 @@ class TestHLSUploadStreaming:
             )
         )
 
-        # Track temp directory before upload to verify cleanup
+        # Track temp directory before upload to verify cleanup.
+        # Point the upload at a private temp directory first: the endpoint uses
+        # tempfile.NamedTemporaryFile(suffix=".tar.gz"), and under `pytest -n 4`
+        # sibling tests drop their own .tar.gz files into the shared system temp
+        # directory. Scanning that shared directory made this test fail on
+        # someone else's leftovers.
         import os
 
-        temp_dir = tempfile.gettempdir()
+        temp_dir = str(tmp_path / "upload-tmp")
+        os.mkdir(temp_dir)
+        monkeypatch.setattr(tempfile, "tempdir", temp_dir)
         before_files = set(os.listdir(temp_dir))
 
         # Mock open to raise an exception to simulate upload failure
