@@ -14,10 +14,10 @@
   "devDependencies": {
     "@types/alpinejs": "^3.13.10",
     "@types/node": "^25.0.3",
-    "@vitest/coverage-v8": "^4.0.16",
+    "@vitest/coverage-v8": "^4.1.9",
     "typescript": "^5.7.2",
-    "vite": "^6.4.2",
-    "vitest": "^3.2.4"
+    "vite": "^8.1.0",
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "@alpinejs/csp": "^3.14.8"
