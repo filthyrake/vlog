@@ -52,7 +52,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Test against the Python version we actually ship (the container images
       # install python3.12). The runner's default python3 is 3.9, where pip
@@ -135,7 +135,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Test against the Python version we actually ship (the container images
       # install python3.12). The runner's default python3 is 3.9, where pip
@@ -195,7 +195,7 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Python virtual environment
         run: |
