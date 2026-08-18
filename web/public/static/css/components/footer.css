@@ -120,7 +120,9 @@
     }
 
     .site-footer__copyright {
-        color: var(--vlog-text-disabled, #64748b);
+        /* text-disabled (#64748b) on bg-secondary (#0f172a) is only 3.7:1.
+           text-muted reaches 6.8:1 and clears WCAG AA's 4.5:1 for body text. */
+        color: var(--vlog-text-muted, #94a3b8);
         font-size: 0.75rem;
     }
 
@@ -130,7 +132,7 @@
     }
 
     .site-footer__links a {
-        color: var(--vlog-text-disabled, #64748b);
+        color: var(--vlog-text-muted, #94a3b8);
         font-size: 0.75rem;
         text-decoration: none;
         transition: color var(--vlog-transition-fast, 150ms ease);

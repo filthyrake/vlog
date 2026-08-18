@@ -16,5 +16,8 @@
   },
   "dependencies": {
     "@alpinejs/csp": "^3.14.8"
+  },
+  "overrides": {
+    "postcss": "^8.5.23"
   }
 }
