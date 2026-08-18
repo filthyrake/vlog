@@ -24,7 +24,7 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -59,7 +59,7 @@ jobs:
     needs: trivy-filesystem
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # This job builds a multi-GB GPU image on every run. Without reclaiming
       # space first, layers and build cache from previous runs fill the disk.
@@ -121,7 +121,7 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Audit against the Python version we actually ship (the container images
       # install python3.12). The runner's default python3 is 3.9, and resolving
