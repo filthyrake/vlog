@@ -12,7 +12,7 @@ sqlalchemy>=2.0.0
 python-slugify>=8.0.0
 python-dateutil>=2.9.0.post0
 aiofiles>=23.0.0
-httpx>=0.25.0
+httpx>=0.28.1
 
 # Transcription
 faster-whisper>=1.2.1
