@@ -68,7 +68,7 @@ jobs:
           .venv/bin/python --version
 
       - name: Cache uv packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
@@ -151,7 +151,7 @@ jobs:
           .venv/bin/python --version
 
       - name: Cache uv packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
@@ -204,7 +204,7 @@ jobs:
           python -m pip install --upgrade pip
 
       - name: Cache pip packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-lint-${{ hashFiles('pyproject.toml') }}
