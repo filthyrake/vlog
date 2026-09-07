@@ -30,7 +30,7 @@ psutil>=5.9.0
 Pillow>=12.3.0
 
 # HTML sanitization for comments
-bleach>=6.0.0
+bleach>=6.4.0
 
 # S3 backup storage (Issue #216)
 boto3>=1.43.76
