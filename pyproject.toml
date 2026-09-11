@@ -31,7 +31,7 @@ dependencies = [
     "psutil>=7.2.2",  # System resource monitoring for sprite worker
     "Pillow>=12.3.0",  # Image processing for thumbnail uploads (security hardening)
     "argon2-cffi>=23.1.0",  # Secure API key hashing (Issue #445)
-    "email-validator>=2.0.0",  # Pydantic EmailStr validation (Issue #200)
+    "email-validator>=2.3.0",  # Pydantic EmailStr validation (Issue #200)
     "authlib>=1.3.0",  # OIDC integration (Issue #200)
     # Security patches for transitive dependencies
     # Note: filelock>=3.20.3 fix requires Python 3.10+, pinned in Dockerfile only
