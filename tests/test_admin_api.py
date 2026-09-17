@@ -232,19 +232,23 @@ class TestVideoUploadHTTP:
         final_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
         assert final_count == initial_count, "Database record was not cleaned up after upload failure"
 
-    @pytest.mark.skip(
-        reason="Database mocking for job creation failure is complex; cleanup logic verified by code review"
-    )
     @pytest.mark.asyncio
     async def test_upload_cleanup_on_job_creation_failure(self, admin_client, test_database, test_storage, monkeypatch):
-        """Test that database record and files are cleaned up when job creation fails.
+        """A failed job insert leaves neither an orphan video nor uploaded media."""
+        from unittest.mock import AsyncMock
 
-        Note: This test is skipped because mocking the database to fail specifically
-        on transcoding_jobs insert while allowing other operations is complex with
-        the databases library. The cleanup logic in admin.py has been verified by
-        code review to properly clean up on job creation failure (issue #162).
-        """
-        pass
+        from api import admin
+
+        monkeypatch.setattr(admin, "create_or_reset_transcoding_job", AsyncMock(side_effect=RuntimeError("job insert failed")))
+        initial_count = await test_database.fetch_val("SELECT COUNT(*) FROM videos")
+        response = admin_client.post(
+            "/api/videos", files={"file": ("test.mp4", b"test upload", "video/mp4")},
+            data={"title": "Failed job upload"},
+        )
+        assert response.status_code == 500
+        assert await test_database.fetch_val("SELECT COUNT(*) FROM videos") == initial_count
+        assert not list(test_storage["uploads"].iterdir())
+        assert not (test_storage["videos"] / "failed-job-upload").exists()
 
 
 class TestVideoManagementHTTP:

@@ -410,8 +410,9 @@ async def invalidate_session(session_id: str) -> bool:
         .where(user_sessions.c.id == session_id)
         .where(user_sessions.c.revoked_at.is_(None))
         .values(revoked_at=now)
+        .returning(user_sessions.c.id)
     )
-    return result > 0
+    return result is not None
 
 
 async def invalidate_user_sessions(user_id: str, except_session_id: Optional[str] = None) -> int:
@@ -435,8 +436,8 @@ async def invalidate_user_sessions(user_id: str, except_session_id: Optional[str
     if except_session_id:
         query = query.where(user_sessions.c.id != except_session_id)
 
-    result = await database.execute(query.values(revoked_at=now))
-    return result
+    rows = await database.fetch_all(query.values(revoked_at=now).returning(user_sessions.c.id))
+    return len(rows)
 
 
 async def get_user_sessions(user_id: str) -> list[dict]:
@@ -472,15 +473,16 @@ async def cleanup_expired_sessions() -> int:
     # Keep revoked sessions for a short time for audit trail
     cutoff = now - timedelta(days=7)  # Keep audit trail for 7 days
 
-    result = await database.execute(
+    rows = await database.fetch_all(
         user_sessions.delete().where(
             (user_sessions.c.refresh_expires_at < now)
             | (
                 (user_sessions.c.revoked_at.isnot(None))
                 & (user_sessions.c.revoked_at < cutoff)
             )
-        )
+        ).returning(user_sessions.c.id)
     )
+    result = len(rows)
 
     if result > 0:
         logger.info(f"Cleaned up {result} expired sessions")

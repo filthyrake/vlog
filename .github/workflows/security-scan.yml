@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # This job builds a multi-GB GPU image on every run. Without reclaiming
+      # This job builds a CPU worker image on every run. Without reclaiming
       # space first, layers and build cache from previous runs fill the disk.
       - name: Reclaim disk space
         run: |
@@ -72,9 +72,9 @@ jobs:
 
       - name: Build Docker image for scanning
         run: |
-          docker build -f Dockerfile.worker.gpu -t vlog-worker:scan .
+          docker build -f Dockerfile.worker-cpu-only -t vlog-worker:scan .
 
-      # Trivy exports this multi-GB image to a temp directory before analysing
+      # Trivy exports this worker image to a temp directory before analysing
       # it, and the runner's /tmp is too small - the scan died with "no space
       # left on device". Keep the export on the runner's own work volume.
       - name: Run Trivy image scan
@@ -142,19 +142,14 @@ jobs:
       - name: Install pip-audit and project dependencies
         run: |
           ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
-            pip-audit -r requirements.txt
+            --require-hashes -r requirements.lock
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -c requirements.lock pip-audit
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python --no-deps -e .
 
       - name: Run pip-audit
         run: |
           source .venv/bin/activate
-          # Ignored vulnerabilities (review quarterly):
-          # - PYSEC-2024-87: Jinja2 sandbox escape - not exploitable in our use case (no user templates)
-          # - GHSA-34jh-p97f-mpxf: aiohttp CRLF injection - we don't use aiohttp client with untrusted URLs
-          # - GHSA-qmgc-5h2g-mvrw: filelock TOCTOU - fix requires Python 3.10+, container image is patched
-          # - GHSA-w853-jp5j-5j7f: filelock TOCTOU (CVE-2025-68146) - same as above, fix requires Python 3.10+
-          # - GHSA-7gcm-g887-7qv7: protobuf JSON recursion DoS - no fix available, we don't use ParseDict()
-          # Last reviewed: 2026-01-24
-          pip-audit --ignore-vuln PYSEC-2024-87 --ignore-vuln GHSA-34jh-p97f-mpxf --ignore-vuln GHSA-qmgc-5h2g-mvrw --ignore-vuln GHSA-w853-jp5j-5j7f --ignore-vuln GHSA-7gcm-g887-7qv7
+          pip-audit
 
   security-summary:
     name: Security Scan Summary
@@ -165,12 +160,16 @@ jobs:
     steps:
       - name: Check scan results
         run: |
-          if [[ "${{ needs.trivy-filesystem.result }}" == "failure" ]]; then
+          if [[ "${{ needs.dependency-check.result }}" != "success" ]]; then
+            echo "::error::Python dependency audit did not succeed"
+            exit 1
+          fi
+          if [[ "${{ needs.trivy-filesystem.result }}" != "success" ]]; then
             echo "::error::Trivy filesystem scan found critical/high vulnerabilities"
             exit 1
           fi
 
-          if [[ "${{ needs.trivy-image.result }}" == "failure" ]]; then
+          if [[ "${{ needs.trivy-image.result }}" != "success" ]]; then
             echo "::error::Trivy image scan found critical/high vulnerabilities"
             exit 1
           fi

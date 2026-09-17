@@ -5,13 +5,35 @@
 # Run: docker run -e VLOG_WORKER_API_KEY=<key> -e VLOG_WORKER_API_URL=http://host:9002 vlog-worker
 
 # Pin base image version for reproducible builds
-# python:3.12-slim-bookworm is Debian Bookworm (12) based
-ARG PYTHON_VERSION=3.12-slim-bookworm
+# python:3.12-slim-trixie is Debian Trixie (13) based
+ARG PYTHON_VERSION=3.12-slim-trixie
 
 # Code version for worker compatibility checking
 # Set this during build: docker build --build-arg CODE_VERSION=$(git rev-parse --short HEAD) ...
 ARG CODE_VERSION=dev
 ARG BUILD_TIMESTAMP=""
+
+# Build the signed upstream FFmpeg release: Debian's FFmpeg is behind security fixes.
+FROM python:${PYTHON_VERSION} AS ffmpeg-builder
+ARG FFMPEG_VERSION=9.0.1
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    build-essential pkg-config nasm curl gnupg libx264-dev libdav1d-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build/ffmpeg
+RUN curl -fsSLO https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz \
+    && curl -fsSLO https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz.asc \
+    && curl -fsSLo release-key.asc https://ffmpeg.org/ffmpeg-devel.asc \
+    && gpg --batch --import release-key.asc \
+    && gpg --batch --status-fd 1 --verify ffmpeg-${FFMPEG_VERSION}.tar.xz.asc ffmpeg-${FFMPEG_VERSION}.tar.xz \
+       > signature.status \
+    && grep '^\[GNUPG:\] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' signature.status \
+    && tar xf ffmpeg-${FFMPEG_VERSION}.tar.xz --strip-components=1
+# Files are downloaded by the worker API client; FFmpeg needs no network protocols.
+RUN ./configure --prefix=/opt/ffmpeg --disable-shared --enable-static \
+    --disable-autodetect --enable-gpl --enable-libx264 --enable-libdav1d \
+    --disable-doc --disable-ffplay --disable-debug --disable-network --disable-devices \
+    && make -j4 && make install \
+    && mkdir -p /opt/ffmpeg/licenses && cp COPYING.* /opt/ffmpeg/licenses/
 
 # =============================================================================
 # Stage 1: Builder - Install Python dependencies
@@ -20,32 +42,16 @@ FROM python:${PYTHON_VERSION} AS builder
 
 # Install build dependencies for packages with C extensions (argon2-cffi)
 # These are only needed in the builder stage, not runtime
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     gcc \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Copy package files for dependency installation
-COPY pyproject.toml ./
-
-# Install Python dependencies to a specific location for copying
-RUN pip install --no-cache-dir --prefix=/install \
-    fastapi>=0.100.0 \
-    uvicorn>=0.23.0 \
-    python-multipart>=0.0.6 \
-    asyncpg>=0.29.0 \
-    "databases[postgresql]>=0.8.0" \
-    psycopg2-binary>=2.9.0 \
-    sqlalchemy>=2.0.0 \
-    alembic>=1.13.0 \
-    python-slugify>=8.0.0 \
-    aiofiles>=23.0.0 \
-    httpx>=0.25.0 \
-    watchdog>=3.0.0 \
-    slowapi>=0.1.9 \
-    limits>=3.0.0
+# Install the same dependency manifest used by the APIs and CI.
+COPY pyproject.toml requirements.lock README.md ./
+RUN pip3 install --no-cache-dir --prefix=/install --require-hashes -r requirements.lock
 
 # Copy source code and install the package
 COPY config.py ./
@@ -53,19 +59,22 @@ COPY code_version.py ./
 COPY api/ api/
 COPY worker/ worker/
 COPY cli/ cli/
+COPY backup/ backup/
 
-RUN pip install --no-cache-dir --prefix=/install .
+RUN pip install --no-cache-dir --no-deps --prefix=/install .
 
 # =============================================================================
 # Stage 2: Runtime - Minimal production image
 # =============================================================================
 FROM python:${PYTHON_VERSION} AS runtime
 
-# Install FFmpeg and curl (for health checks)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    curl \
+# Install only the shared libraries needed by our FFmpeg build.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    libx264-164 libdav1d7 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ffmpeg-builder /opt/ffmpeg/bin/ /usr/local/bin/
+COPY --from=ffmpeg-builder /opt/ffmpeg/licenses/ /usr/share/doc/vlog-ffmpeg/
 
 # Create non-root user for security
 RUN useradd -m -u 1000 -s /bin/bash vlog
@@ -75,12 +84,6 @@ WORKDIR /app
 # Copy installed Python packages from builder
 COPY --from=builder /install /usr/local
 
-# Ensure security-patched packages are at correct versions
-RUN pip install --no-cache-dir --upgrade \
-    "filelock>=3.20.3" \
-    "jaraco-context>=6.1.0" \
-    "wheel>=0.46.2"
-
 # Copy source code
 COPY --chown=vlog:vlog pyproject.toml ./
 COPY --chown=vlog:vlog config.py ./
@@ -88,6 +91,7 @@ COPY --chown=vlog:vlog code_version.py ./
 COPY --chown=vlog:vlog api/ api/
 COPY --chown=vlog:vlog worker/ worker/
 COPY --chown=vlog:vlog cli/ cli/
+COPY --chown=vlog:vlog backup/ backup/
 
 # Re-declare build args for use in this stage (args don't persist across stages)
 ARG CODE_VERSION=dev
@@ -115,7 +119,7 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
 # - API connection is working
 # - FFmpeg is available
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)" || exit 1
 
 # Run the remote transcoder
 CMD ["python", "-m", "worker.remote_transcoder"]

@@ -9,11 +9,15 @@ Description=VLog Worker API
 After=network.target postgresql.service mnt-nas.mount
 Wants=mnt-nas.mount postgresql.service
 
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=<YOUR_USER>
 Group=<YOUR_USER>
 WorkingDirectory=/path/to/vlog
+EnvironmentFile=/path/to/vlog/.env
 ExecStart=/path/to/vlog/venv/bin/python -m uvicorn api.worker_api:app --host 0.0.0.0 --port 9002
 
 # Security hardening
@@ -34,8 +38,6 @@ MemoryMax=2G
 # Restart policy
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Timeouts
 TimeoutStartSec=30

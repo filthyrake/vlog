@@ -36,9 +36,10 @@ class PlaybackAnalytics {
                 credentials: 'include',
                 body: JSON.stringify({
                     video_id: this.videoId,
-                    quality: quality
+                    quality: quality === 'auto' ? null : quality
                 })
             }, 5000);
+            if (!res.ok) throw new Error(`Analytics session failed: ${res.status}`);
             const data = await res.json();
             this.sessionToken = data.session_token;
             this.startHeartbeat();
@@ -231,6 +232,22 @@ function watchPage() {
             distribution: {}
         },
         submittingRating: false,
+        starClass(star) {
+            if (star <= (this.userRating || 0)) return 'text-yellow-400';
+            return star <= Math.round(this.ratingAggregates.average || 0)
+                ? 'text-yellow-400/50' : 'text-dark-600';
+        },
+        starLabel(star) { return 'Rate ' + star + ' star' + (star > 1 ? 's' : ''); },
+        starTitle(star) { return this.isLoggedIn ? this.starLabel(star) : 'Log in to rate'; },
+        get averageRatingLabel() {
+            return this.ratingAggregates.average == null ? '-' : this.ratingAggregates.average.toFixed(1);
+        },
+        commentAuthor(comment) {
+            return (comment.user && (comment.user.display_name || comment.user.username)) || 'Anonymous';
+        },
+        commentInitial(comment) { return this.commentAuthor(comment).charAt(0).toUpperCase(); },
+        commentStyle(comment) { return { marginLeft: Math.min(Math.max(comment.depth - 1, 0) * 24, 96) + 'px' }; },
+        get commentCount() { return (this.video && this.video.comment_count) || this.comments.length; },
         // Comments state
         comments: [],
         loadingComments: false,
@@ -1328,7 +1345,6 @@ function watchPage() {
             }
 
             const player = new shaka.Player();
-            player.attach(videoElement);
             this.shakaPlayer = player;
             this.player = videoElement;
 
@@ -1347,6 +1363,23 @@ function watchPage() {
                 }
             });
 
+            // Both the error event and load rejection can report the same failure.
+            // Finish Shaka's asynchronous detach before HLS attaches its MediaSource.
+            let fallbackPromise = null;
+            const fallback = () => {
+                if (fallbackPromise) return fallbackPromise;
+                fallbackPromise = (async () => {
+                    await player.destroy();
+                    self.shakaPlayer = null;
+                    self.shakaEventHandlers = {};
+                    self.initHlsPlayer(videoElement, hlsFallbackUrl);
+                })().catch(error => {
+                    console.error('Player fallback failed:', error);
+                    self.error = 'Video playback error';
+                });
+                return fallbackPromise;
+            };
+
             // Store event handlers for cleanup
             this.shakaEventHandlers.onError = (event) => {
                 const error = event.detail;
@@ -1355,9 +1388,7 @@ function watchPage() {
                 // Try fallback to HLS if DASH fails
                 if (hlsFallbackUrl && !self.hls) {
                     console.warn('DASH failed, falling back to HLS');
-                    player.destroy();
-                    self.shakaPlayer = null;
-                    self.initHlsPlayer(videoElement, hlsFallbackUrl);
+                    fallback();
                 } else if (!hlsFallbackUrl) {
                     self.error = 'Video playback error';
                 }
@@ -1409,16 +1440,14 @@ function watchPage() {
             player.addEventListener('adaptation', this.shakaEventHandlers.onAdaptation);
 
             // Load the manifest
-            player.load(dashUrl).then(() => {
+            player.attach(videoElement).then(() => player.load(dashUrl)).then(() => {
                 debugLog('Shaka loaded DASH manifest successfully');
             }).catch((error) => {
-                console.error('Shaka load error:', error);
+                console.error('Shaka load error:', error.code, error.data);
                 // Fallback to HLS
                 if (hlsFallbackUrl) {
                     console.warn('DASH load failed, falling back to HLS');
-                    player.destroy();
-                    self.shakaPlayer = null;
-                    self.initHlsPlayer(videoElement, hlsFallbackUrl);
+                    fallback();
                 } else {
                     self.error = 'Failed to load video';
                 }

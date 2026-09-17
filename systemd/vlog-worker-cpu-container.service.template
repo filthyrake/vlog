@@ -1,0 +1,36 @@
+# CPU worker on the application host, using the reviewed FFmpeg/Python image.
+# Install as vlog-worker.service after stopping the existing local worker.
+# Replace user, numeric UID/GID, paths, and immutable release image tag.
+[Unit]
+Description=VLog CPU Transcoding Worker (container)
+After=network.target docker.service mnt-nas.mount
+Requires=docker.service
+Wants=mnt-nas.mount
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=<YOUR_USER>
+Group=<YOUR_USER>
+ExecStart=/usr/bin/docker run --rm --init --name vlog-cpu-worker \
+    --network host --cpus 2 --memory 8g --pids-limit 512 \
+    --user <YOUR_UID>:<YOUR_GID> --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,size=256m \
+    --volume /mnt/nas/vlog-storage:/mnt/nas/vlog-storage \
+    --env-file /path/to/vlog/.env \
+    --env VLOG_HWACCEL_TYPE=none --env VLOG_PARALLEL_QUALITIES=1 \
+    --env VLOG_PARALLEL_QUALITIES_AUTO=false --env VLOG_JOB_QUEUE_MODE=database \
+    --env VLOG_LOG_FILE=/tmp/vlog-worker.log --env VLOG_AUDIT_LOG_PATH=/tmp/vlog-audit.log \
+    --no-healthcheck vlog-worker-cpu:<RELEASE_TAG> python -m worker.transcoder
+# The image's HTTP healthcheck belongs to its remote-worker entrypoint. The local
+# worker is monitored through process state, job progress, logs, and upload smoke tests.
+ExecStop=/usr/bin/docker stop --time 120 vlog-cpu-worker
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=30
+TimeoutStopSec=130
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

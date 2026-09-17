@@ -3,6 +3,9 @@ Description=VLog Redis Container
 After=docker.service network.target
 Requires=docker.service
 
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 # Replace <YOUR_USER> with your username
@@ -12,8 +15,6 @@ User=<YOUR_USER>
 Group=<YOUR_USER>
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Load Redis password from environment file
 # Copy vlog-redis.env.example to /etc/vlog/redis.env and set REDIS_PASSWORD

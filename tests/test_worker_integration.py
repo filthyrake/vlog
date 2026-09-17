@@ -27,22 +27,70 @@ from api.database import (
 from api.enums import VideoStatus
 
 
+@pytest.fixture
+async def paired_api_clients(test_storage, test_db_url, monkeypatch):
+    """Run both APIs on the test loop with one shared database pool.
+
+    Two synchronous TestClients run separate loops; reloading the shared database
+    for the second client leaves the first using a pool owned by another loop.
+    """
+    import importlib
+
+    import httpx
+
+    import config
+    from tests.conftest import (
+        TEST_ADMIN_API_SECRET,
+        TEST_WORKER_ADMIN_SECRET,
+        reload_api_database,
+    )
+    for key, value in {
+        "VIDEOS_DIR": test_storage["videos"],
+        "UPLOADS_DIR": test_storage["uploads"],
+        "ARCHIVE_DIR": test_storage["archive"],
+        "DATABASE_URL": test_db_url,
+        "ADMIN_API_SECRET": TEST_ADMIN_API_SECRET,
+        "WORKER_ADMIN_SECRET": TEST_WORKER_ADMIN_SECRET,
+    }.items():
+        monkeypatch.setattr(config, key, value)
+    db = reload_api_database()
+    from api import admin, worker_api, worker_auth
+    importlib.reload(worker_auth)
+    importlib.reload(admin)
+    importlib.reload(worker_api)
+    await db.connect()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=admin.app), base_url="http://testserver",
+            headers={"X-Admin-Secret": TEST_ADMIN_API_SECRET},
+        ) as admin_http, httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=worker_api.app), base_url="http://testserver",
+        ) as worker_http:
+            response = await worker_http.post(
+                "/api/worker/register", json={"worker_name": "paired-test-worker"},
+                headers={"X-Admin-Secret": TEST_WORKER_ADMIN_SECRET},
+            )
+            assert response.status_code == 200, response.text
+            yield admin_http, worker_http, response.json()
+    finally:
+        await db.disconnect()
+
+
 class TestWorkerJobClaiming:
     """Test worker job claiming functionality."""
 
     @pytest.mark.asyncio
     async def test_worker_can_claim_pending_job(
         self,
-        worker_client,
-        admin_client,
-        registered_worker,
+        paired_api_clients,
         test_database,
         test_storage,
     ):
         """Test that a registered worker can claim a pending job."""
+        admin_client, worker_client, registered_worker = paired_api_clients
         # First, upload a video via admin API to create a pending job
         file_content = b"test video for claiming"
-        upload_response = admin_client.post(
+        upload_response = await admin_client.post(
             "/api/videos",
             files={"file": ("claim_test.mp4", io.BytesIO(file_content), "video/mp4")},
             data={"title": "Claim Test", "description": "Testing job claiming"},
@@ -56,7 +104,7 @@ class TestWorkerJobClaiming:
 
         # Worker claims the job
         headers = {"X-Worker-API-Key": registered_worker["api_key"]}
-        claim_response = worker_client.post("/api/worker/claim", headers=headers)
+        claim_response = await worker_client.post("/api/worker/claim", headers=headers)
 
         assert claim_response.status_code == 200
         data = claim_response.json()
@@ -484,13 +532,12 @@ class TestWorkerProgressVisibility:
     @pytest.mark.asyncio
     async def test_video_progress_includes_quality_progress(
         self,
-        admin_client,
-        worker_client,
-        registered_worker,
+        paired_api_clients,
         test_database,
         sample_pending_video,
     ):
         """Test that /api/videos/{id}/progress returns quality_progress data."""
+        admin_client, worker_client, registered_worker = paired_api_clients
         video_id = sample_pending_video["id"]
 
         # Create transcoding job with progress
@@ -534,7 +581,7 @@ class TestWorkerProgressVisibility:
         )
 
         # Get progress via admin API
-        response = admin_client.get(f"/api/videos/{video_id}/progress")
+        response = await admin_client.get(f"/api/videos/{video_id}/progress")
         assert response.status_code == 200
 
         data = response.json()

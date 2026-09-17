@@ -475,7 +475,6 @@ class TestSessionManagement:
     async def test_invalidate_session(self, test_database, sample_user, monkeypatch):
         """invalidate_session should revoke a session."""
         import api.auth.sessions as sessions_module
-        from api.database import user_sessions
 
         monkeypatch.setattr(sessions_module, "database", test_database)
 
@@ -486,17 +485,33 @@ class TestSessionManagement:
         assert user is not None
         session_id = user["session_id"]
 
-        # Invalidate session directly via database
-        now = datetime.now(timezone.utc)
-        await test_database.execute(
-            user_sessions.update()
-            .where(user_sessions.c.id == session_id)
-            .values(revoked_at=now)
-        )
+        assert await sessions_module.invalidate_session(session_id) is True
+        assert await sessions_module.invalidate_session(session_id) is False
 
         # Verify session is no longer valid
         user = await sessions_module.validate_session_token(session_token)
         assert user is None
+
+    @pytest.mark.asyncio
+    async def test_session_bulk_revocation_and_cleanup_counts(self, test_database, sample_user, monkeypatch):
+        from datetime import timedelta
+
+        from api.auth import sessions
+        from api.database import user_sessions
+
+        monkeypatch.setattr(sessions, "database", test_database)
+        first, _, _, _ = await sessions.create_user_session(sample_user["id"])
+        await sessions.create_user_session(sample_user["id"])
+        retained = await sessions.validate_session_token(first)
+        assert await sessions.invalidate_user_sessions(sample_user["id"], retained["session_id"]) == 1
+        assert await sessions.invalidate_user_sessions(sample_user["id"], retained["session_id"]) == 0
+        assert await sessions.validate_session_token(first) is not None
+        assert await sessions.cleanup_expired_sessions() == 0
+        await test_database.execute(user_sessions.update().values(
+            refresh_expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        ))
+        assert await sessions.cleanup_expired_sessions() == 2
+        assert await sessions.cleanup_expired_sessions() == 0
 
     @pytest.mark.asyncio
     async def test_refresh_session(self, test_database, sample_user, monkeypatch):

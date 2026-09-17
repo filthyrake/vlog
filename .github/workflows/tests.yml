@@ -27,16 +27,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Quick tests for dev branch - faster feedback
+  # Explicit manual quick check; pushes and PRs run the full suite.
   test-quick:
     name: Quick Tests
     runs-on: self-hosted
-    if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
-      (github.event_name == 'pull_request' && github.base_ref == 'dev') ||
-      (github.event_name == 'workflow_dispatch' && inputs.test_type == 'quick')
+    if: github.event_name == 'workflow_dispatch' && inputs.test_type == 'quick'
 
     services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
       postgres:
         image: postgres:15
         env:
@@ -71,15 +72,16 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/uv
-          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'requirements.lock', 'pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-uv-
 
       - name: Install dependencies
         run: |
           ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
-            -r requirements.txt -r requirements-dev.txt
-          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -e .
+            --require-hashes -r requirements.lock
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -c requirements.lock -r requirements-dev.txt
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python --no-deps -e .
 
       - name: Wait for PostgreSQL
         run: |
@@ -90,6 +92,7 @@ jobs:
 
       - name: Run quick tests (skip slow integration tests)
         env:
+          VLOG_TEST_REDIS_URL: redis://localhost:56379
           VLOG_TEST_MODE: "1"
           VLOG_TEST_PG_HOST: localhost
           VLOG_TEST_PG_PORT: "5433"
@@ -98,8 +101,7 @@ jobs:
           VLOG_TEST_PG_ADMIN_DB: postgres
         run: |
           source .venv/bin/activate
-          # For dev branch: skip slow integration tests (~800-900 tests, ~5-6 min)
-          # Full test suite (~1000+ tests) runs on main branch
+          # Manual quick feedback; automatic branch and PR checks run the full suite.
           # Using -x to fail fast, -n 4 for parallelism (avoid too many DB connections)
           pytest -n 4 -x --tb=short \
             --ignore=tests/test_workflows.py \
@@ -110,16 +112,17 @@ jobs:
             --ignore=tests/test_remote_transcoder.py \
             --ignore=tests/test_cli.py
 
-  # Full tests for main branch - comprehensive coverage
+  # Full tests for both maintained branches.
   test-full:
     name: Full Tests (PostgreSQL)
     runs-on: self-hosted
-    if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-      (github.event_name == 'workflow_dispatch' && inputs.test_type == 'full')
+    if: github.event_name != 'workflow_dispatch' || inputs.test_type == 'full'
 
     services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
       postgres:
         image: postgres:15
         env:
@@ -154,15 +157,16 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/uv
-          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
+          key: ${{ runner.os }}-uv-${{ hashFiles('requirements*.txt', 'requirements.lock', 'pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-uv-
 
       - name: Install dependencies
         run: |
           ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python \
-            -r requirements.txt -r requirements-dev.txt
-          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -e .
+            --require-hashes -r requirements.lock
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python -c requirements.lock -r requirements-dev.txt
+          ./.uv-bootstrap/bin/uv pip install --python .venv/bin/python --no-deps -e .
 
       - name: Wait for PostgreSQL
         run: |
@@ -173,6 +177,7 @@ jobs:
 
       - name: Run full tests with coverage
         env:
+          VLOG_TEST_REDIS_URL: redis://localhost:56379
           VLOG_TEST_MODE: "1"
           VLOG_TEST_PG_HOST: localhost
           VLOG_TEST_PG_PORT: "5433"
@@ -224,15 +229,43 @@ jobs:
           source .venv/bin/activate
           ruff check api/ worker/ cli/ tests/ config.py --output-format=github
 
+  frontend:
+    name: Frontend builds and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/admin/package-lock.json
+            web/studio/package-lock.json
+      - run: npm ci
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - run: npm audit --audit-level=moderate
+      - run: npm run vendor:check && npm run test:public
+      - run: python3 scripts/sync-requirements.py --check
+      - run: npm ci && npm audit --audit-level=moderate && npm test && npm run build
+        working-directory: web/admin
+      - run: npm ci && npm audit --audit-level=moderate && npm run build
+        working-directory: web/studio
+
   # Summary job for branch protection
   tests-passed:
     name: All Tests Passed
     runs-on: self-hosted
-    needs: [test-quick, test-full, lint]
+    needs: [test-quick, test-full, lint, frontend]
     if: always()
     steps:
       - name: Check all tests passed
         run: |
+          if [[ "${{ needs.frontend.result }}" != "success" ]]; then
+            echo "Frontend checks did not succeed"
+            exit 1
+          fi
           # Lint runs on every event, so it must always succeed.
           if [[ "${{ needs.lint.result }}" != "success" ]]; then
             echo "Lint did not succeed (result: ${{ needs.lint.result }})"

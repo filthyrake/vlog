@@ -7,7 +7,7 @@ name = "vlog"
 version = "0.1.0"
 description = "Self-hosted video platform with 4K support and HLS streaming"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.4",
@@ -30,11 +30,13 @@ dependencies = [
     "prometheus-client>=0.19.0",  # Prometheus metrics
     "psutil>=7.2.2",  # System resource monitoring for sprite worker
     "Pillow>=12.3.0",  # Image processing for thumbnail uploads (security hardening)
+    "bleach>=6.4.0",  # Comment sanitization
+    "boto3>=1.43.76",  # S3 backups
+    "filelock>=3.20.3",  # Patched for all supported runtimes
     "argon2-cffi>=25.1.0",  # Secure API key hashing (Issue #445)
     "email-validator>=2.3.0",  # Pydantic EmailStr validation (Issue #200)
-    "authlib>=1.3.0",  # OIDC integration (Issue #200)
+    "authlib>=1.6.12",  # OIDC integration (Issue #200)
     # Security patches for transitive dependencies
-    # Note: filelock>=3.20.3 fix requires Python 3.10+, pinned in Dockerfile only
     "jaraco-context>=6.1.0",  # GHSA-58pv-8j8x-9vj2 path traversal vulnerability
     "wheel>=0.47.0",  # CVE-2026-24049 privilege escalation vulnerability
     "urllib3>=2.6.3",  # GHSA-38jv-5279-wg99, GHSA-2xpw-w6gg-jr37, GHSA-gm62-xv2j-4w53, GHSA-pq67-6m6q-mj2v
@@ -44,7 +46,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=9.0.3",
+    "pytest-xdist>=3.5.0",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.16.7",
@@ -54,7 +57,7 @@ dev = [
 vlog = "cli.main:main"
 
 [tool.setuptools.packages.find]
-include = ["api", "worker", "cli"]
+include = ["api*", "worker*", "cli*", "backup*"]
 where = ["."]
 
 [tool.setuptools]
@@ -106,7 +109,7 @@ directory = "htmlcov"
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

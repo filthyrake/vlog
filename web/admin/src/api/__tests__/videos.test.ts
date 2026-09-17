@@ -38,7 +38,7 @@ describe('videosApi', () => {
           created_at: '2024-01-01T00:00:00Z',
         },
       ];
-      mockApiClient.fetch.mockResolvedValueOnce(mockVideos);
+      mockApiClient.fetch.mockResolvedValueOnce({ videos: mockVideos });
 
       const result = await videosApi.list();
 

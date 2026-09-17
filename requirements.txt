@@ -1,43 +1,33 @@
-# NOTE: This file is maintained for backward compatibility.
-# The canonical dependency list is in pyproject.toml
-# For development, use: pip install -e .
-
+# Generated from pyproject.toml by scripts/sync-requirements.py.
 fastapi>=0.141.1
 uvicorn[standard]>=0.52.4
 python-multipart>=0.0.32
-asyncpg>=0.29.0
+asyncpg>=0.31.0
 databases[postgresql]>=0.9.0
 psycopg2-binary>=2.9.12
 sqlalchemy>=2.0.0
+alembic>=1.19.1
 python-slugify>=8.0.0
 python-dateutil>=2.9.0.post0
 aiofiles>=25.1.0
 httpx>=0.28.1
-
-# Transcription
 faster-whisper>=1.2.1
-
-# Filesystem watching (event-driven transcoding)
 watchdog>=6.0.0
-
-# Rate limiting
 slowapi>=0.1.9
-
-# System resource monitoring
-psutil>=5.9.0
-
-# Image processing for thumbnail uploads
+rich>=15.0.0
+redis>=8.1.0
+sse-starlette>=3.4.11
+prometheus-client>=0.19.0
+psutil>=7.2.2
 Pillow>=12.3.0
-
-# HTML sanitization for comments
 bleach>=6.4.0
-
-# S3 backup storage (Issue #216)
 boto3>=1.43.76
-
-# Security patches for transitive dependencies
-# Note: filelock>=3.20.3 fix requires Python 3.10+, pinned in Dockerfile only
-jaraco-context>=6.1.0  # GHSA-58pv-8j8x-9vj2 path traversal vulnerability
-wheel>=0.47.0  # CVE-2026-24049 privilege escalation vulnerability
-urllib3>=2.6.3  # GHSA-38jv-5279-wg99, GHSA-2xpw-w6gg-jr37, GHSA-gm62-xv2j-4w53, GHSA-pq67-6m6q-mj2v
-cryptography>=50.0.1  # GHSA-537c-gmf6-5ccf vulnerable OpenSSL bundled in wheels (via authlib)
+filelock>=3.20.3
+argon2-cffi>=25.1.0
+email-validator>=2.3.0
+authlib>=1.6.12
+jaraco-context>=6.1.0
+wheel>=0.47.0
+urllib3>=2.6.3
+cryptography>=50.0.1
+python-json-logger>=2.0.0

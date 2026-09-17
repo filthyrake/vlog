@@ -1,4 +1,4 @@
-name: Build Worker Container
+name: Build CPU Worker Container
 
 on:
   push:
@@ -8,8 +8,11 @@ on:
       - 'api/**'
       - 'cli/**'
       - 'config.py'
-      - 'Dockerfile.worker.gpu'
+      - 'Dockerfile.worker-cpu-only'
+      - 'backup/**'
+      - '.github/workflows/docker-build.yml'
       - 'requirements*.txt'
+      - 'requirements.lock'
       - 'pyproject.toml'
   workflow_dispatch:
     inputs:
@@ -19,9 +22,9 @@ on:
         default: 'false'
 
 env:
-  REGISTRY: 10.0.1.152:9003
-  IMAGE_NAME: vlog-worker-gpu
-  BASE_TAG: rocky10
+  REGISTRY: ${{ vars.VLOG_REGISTRY || 'localhost:9003' }}
+  IMAGE_NAME: vlog-worker-cpu
+  BASE_TAG: py312
 
 jobs:
   build:
@@ -30,6 +33,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Validate registry configuration
+        run: |
+          test -n "$REGISTRY" || { echo "Set the VLOG_REGISTRY repository variable before publishing images"; exit 1; }
 
       - name: Generate version tag
         id: version
@@ -43,7 +50,7 @@ jobs:
       - name: Build Docker image
         run: |
           docker build \
-            -f Dockerfile.worker.gpu \
+            -f Dockerfile.worker-cpu-only \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }} \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BASE_TAG }}-latest \
             --build-arg CODE_VERSION=${{ steps.version.outputs.sha }} \
@@ -57,18 +64,6 @@ jobs:
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BASE_TAG }}-latest
           echo "Pushed: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}"
-
-      - name: Update K8s deployment (dev branch)
-        if: github.ref == 'refs/heads/dev'
-        run: |
-          # Update the deployment to use the new image
-          kubectl -n vlog set image deployment/vlog-worker-intel \
-            worker=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.full_tag }}
-
-          # Wait for rollout
-          kubectl -n vlog rollout status deployment/vlog-worker-intel --timeout=300s
-
-          echo "Deployment updated to ${{ steps.version.outputs.full_tag }}"
 
       - name: Summary
         run: |

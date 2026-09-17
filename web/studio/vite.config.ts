@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 
 export default defineConfig({
-  root: resolve(__dirname),
+  root: resolve(import.meta.dirname),
 
   // Base path for assets when served under /studio/
   base: '/studio/',
@@ -13,8 +13,8 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        studio: resolve(__dirname, 'src/main.ts'),
+        main: resolve(import.meta.dirname, 'index.html'),
+        studio: resolve(import.meta.dirname, 'src/main.ts'),
       },
       output: {
         assetFileNames: 'assets/[name].[hash][extname]',
@@ -53,11 +53,11 @@ export default defineConfig({
   // Resolve configuration
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
-      '@api': resolve(__dirname, 'src/api'),
-      '@stores': resolve(__dirname, 'src/stores'),
-      '@utils': resolve(__dirname, 'src/utils'),
-      '@styles': resolve(__dirname, 'src/styles'),
+      '@': resolve(import.meta.dirname, 'src'),
+      '@api': resolve(import.meta.dirname, 'src/api'),
+      '@stores': resolve(import.meta.dirname, 'src/stores'),
+      '@utils': resolve(import.meta.dirname, 'src/utils'),
+      '@styles': resolve(import.meta.dirname, 'src/styles'),
     },
   },
 

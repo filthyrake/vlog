@@ -257,16 +257,16 @@
                                         <button
                                             type="button"
                                             class="text-xl transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-dark-900 rounded"
-                                            :class="star <= (userRating || 0) ? 'text-yellow-400' : star <= Math.round(ratingAggregates.average || 0) ? 'text-yellow-400/50' : 'text-dark-600'"
+                                            :class="starClass(star)"
                                             @click="submitRating(star)"
                                             :disabled="!isLoggedIn"
-                                            :title="isLoggedIn ? `Rate ${star} star${star > 1 ? 's' : ''}` : 'Log in to rate'"
-                                            :aria-label="`Rate ${star} star${star > 1 ? 's' : ''}`"
+                                            :title="starTitle(star)"
+                                            :aria-label="starLabel(star)"
                                         >&#9733;</button>
                                     </template>
                                 </div>
                                 <span class="text-dark-400 text-sm" x-show="ratingAggregates.count > 0">
-                                    <span x-text="ratingAggregates.average?.toFixed(1) || '-'"></span>
+                                    <span x-text="averageRatingLabel"></span>
                                     <span class="text-dark-500">(<span x-text="ratingAggregates.count"></span>)</span>
                                 </span>
                             </div>
@@ -357,7 +357,7 @@
                 <h2 class="text-lg font-semibold text-white mb-4">
                     Comments
                     <span class="text-dark-400 font-normal text-sm" x-show="comments.length > 0">
-                        (<span x-text="video?.comment_count || comments.length"></span>)
+                        (<span x-text="commentCount"></span>)
                     </span>
                 </h2>
 
@@ -373,7 +373,7 @@
                             :disabled="submittingComment"
                         ></textarea>
                         <div class="flex justify-between items-center mt-2">
-                            <span class="text-dark-500 text-xs" x-text="`${newComment.length}/5000`"></span>
+                            <span class="text-dark-500 text-xs" x-text="newComment.length + '/5000'"></span>
                             <button
                                 type="submit"
                                 class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -402,15 +402,15 @@
 
                     <!-- Comments -->
                     <template x-for="comment in comments" :key="comment.id">
-                        <div class="comment" :class="{ 'comment--nested': comment.depth > 1 }" :style="{ marginLeft: Math.min((comment.depth - 1) * 24, 96) + 'px' }">
+                        <div class="comment" :class="{ 'comment--nested': comment.depth > 1 }" :style="commentStyle(comment)">
                             <div class="flex gap-3">
                                 <!-- Avatar placeholder -->
                                 <div class="w-8 h-8 bg-dark-700 rounded-full flex-shrink-0 flex items-center justify-center text-dark-400 text-sm font-medium">
-                                    <span x-text="(comment.user?.display_name || comment.user?.username || 'U').charAt(0).toUpperCase()"></span>
+                                    <span x-text="commentInitial(comment)"></span>
                                 </div>
                                 <div class="flex-1 min-w-0">
                                     <div class="flex items-center gap-2 mb-1">
-                                        <span class="font-medium text-white text-sm" x-text="comment.user?.display_name || comment.user?.username || 'Anonymous'"></span>
+                                        <span class="font-medium text-white text-sm" x-text="commentAuthor(comment)"></span>
                                         <span class="text-dark-500 text-xs" x-text="formatCommentDate(comment.created_at)"></span>
                                         <span x-show="comment.video_timestamp" class="text-blue-400 text-xs cursor-pointer hover:underline" @click="seekToTimestamp(comment.video_timestamp)" x-text="formatTimestamp(comment.video_timestamp)"></span>
                                     </div>
@@ -425,7 +425,7 @@
                                             @click="startReply(comment)"
                                         >Reply</button>
                                         <button
-                                            x-show="isLoggedIn && currentUser?.id === comment.user?.id"
+                                            x-show="isLoggedIn && currentUser && comment.user && currentUser.id === comment.user.id"
                                             type="button"
                                             class="text-dark-400 hover:text-red-400 text-xs transition-colors"
                                             @click="deleteComment(comment.id)"

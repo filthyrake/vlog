@@ -150,9 +150,10 @@ async def detect_stale_streams() -> int:
                 )
             )
             .values(status="ending")
+            .returning(live_streams.c.id)
         )
 
-        if result > 0:
+        if result is not None:
             logger.info(f"Stream {stream['slug']} marked as ending (no segments received)")
             transitions += 1
 
@@ -182,9 +183,10 @@ async def detect_stale_streams() -> int:
                 )
             )
             .values(status="ended", ended_at=now)
+            .returning(live_streams.c.id)
         )
 
-        if result > 0:
+        if result is not None:
             logger.info(f"Stream {stream['slug']} marked as ended (stale timeout)")
 
             # Re-fetch stream after update to verify state before VOD recording (Issue #552)

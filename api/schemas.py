@@ -3,10 +3,10 @@ import math
 import socket
 from datetime import datetime
 from enum import Enum
-from typing import Any, List, Optional, Set
+from typing import Annotated, Any, List, Literal, Optional, Set
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator
 
 # Maximum position value (24 hours in seconds)
 MAX_POSITION_SECONDS = 86400
@@ -271,15 +271,20 @@ class PaginatedVideoListResponse(BaseModel):
 
 
 # Analytics request models
+# Unknown/automatic selection is stored as NULL, matching the database constraint.
+PlaybackQuality = Annotated[
+    Optional[Literal["2160p", "1440p", "1080p", "720p", "480p", "360p", "original"]],
+    BeforeValidator(lambda value: None if value == "auto" else value),
+]
 class PlaybackSessionCreate(BaseModel):
     video_id: int
-    quality: Optional[str] = None
+    quality: PlaybackQuality = None
 
 
 class PlaybackHeartbeat(BaseModel):
     session_token: str = Field(..., max_length=64)
     position: float
-    quality: Optional[str] = None
+    quality: PlaybackQuality = None
     playing: bool = True
 
     @field_validator("position")
