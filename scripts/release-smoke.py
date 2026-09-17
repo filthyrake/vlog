@@ -22,6 +22,7 @@ from psycopg2 import sql
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--hold-seconds', type=int, default=0, help='Keep the tested app available for browser checks')
 parser.add_argument('--worker-image', help='Use a built CPU image for the local worker process')
+parser.add_argument('--app-image', help='Run APIs on the same container runtime with release assets mounted')
 args = parser.parse_args()
 admin_url = os.environ['VLOG_SMOKE_ADMIN_DB']
 parsed = urlsplit(admin_url)
@@ -71,11 +72,24 @@ def wait_ready(url):
         time.sleep(1)
     raise RuntimeError('Startup timeout: ' + url)
 
+def api_command(module, port):
+    command = [sys.executable, '-m', 'uvicorn', module, '--host', '127.0.0.1', '--port', str(port)]
+    if not args.app_image:
+        return command
+    container = ['docker', 'run', '--rm', '--network', 'host', '--read-only',
+                 '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                 '--user', f'{os.getuid()}:{os.getgid()}', '--tmpfs', '/tmp:rw,nosuid,size=256m',
+                 '--volume', f'{work}:{work}', '--volume', f'{root}:/app:ro']
+    for key, value in env.items():
+        if key.startswith('VLOG_'):
+            container += ['--env', f'{key}={value}']
+    return container + [args.app_image, 'python'] + command[1:]
+
 try:
     subprocess.run([sys.executable, '-m', 'api.database'], cwd=root, env=env, check=True,
                    stdout=subprocess.DEVNULL)
-    start('admin', [sys.executable, '-m', 'uvicorn', 'api.admin:app', '--host', '127.0.0.1', '--port', '19001'])
-    start('public', [sys.executable, '-m', 'uvicorn', 'api.public:app', '--host', '127.0.0.1', '--port', '19000'])
+    start('admin', api_command('api.admin:app', 19001))
+    start('public', api_command('api.public:app', 19000))
     wait_ready('http://127.0.0.1:19001/health')
     wait_ready('http://127.0.0.1:19000/health')
     clip = work / 'sample.mp4'

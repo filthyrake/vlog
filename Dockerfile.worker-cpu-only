@@ -66,7 +66,7 @@ RUN pip install --no-cache-dir --no-deps --prefix=/install .
 # =============================================================================
 # Stage 2: Runtime - Minimal production image
 # =============================================================================
-FROM python:${PYTHON_VERSION} AS runtime
+FROM python:${PYTHON_VERSION} AS runtime-files
 
 # Install only the shared libraries needed by our FFmpeg build.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
@@ -103,6 +103,25 @@ USER vlog
 # Create work directory
 RUN mkdir -p /tmp/vlog-worker
 
+# Assemble only the Python/media runtime and its shared-library closure. Keep
+# Debian package provenance and licenses so scanners still inspect shipped code.
+USER root
+COPY scripts/assemble-worker-runtime.py /build/assemble-worker-runtime.py
+RUN python /build/assemble-worker-runtime.py
+
+FROM scratch AS runtime
+COPY --from=runtime-files /runtime/ /
+COPY --from=runtime-files --chown=1000:1000 /app/ /app/
+COPY --from=ffmpeg-builder /opt/ffmpeg/licenses/ /usr/share/doc/vlog-ffmpeg/
+ARG CODE_VERSION=dev
+ARG BUILD_TIMESTAMP=""
+WORKDIR /app
+USER 1000:1000
+ENV PATH=/usr/local/bin \
+    LD_LIBRARY_PATH=/usr/local/lib \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    LANG=C.UTF-8
+
 # Environment variables with defaults
 # VLOG_CODE_VERSION and VLOG_BUILD_TIMESTAMP are used for worker compatibility checking
 ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
@@ -119,7 +138,7 @@ ENV VLOG_WORKER_API_URL=http://vlog-worker-api:9002 \
 # - API connection is working
 # - FFmpeg is available
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)" || exit 1
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
 
 # Run the remote transcoder
 CMD ["python", "-m", "worker.remote_transcoder"]

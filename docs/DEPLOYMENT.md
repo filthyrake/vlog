@@ -58,6 +58,15 @@ immutable image tag. The image is built from `Dockerfile.worker-cpu-only` using
 Python 3.12 and signed upstream FFmpeg 9.0.1. Its decoder has network protocols
 disabled; input transfers remain in the application. Verify the source signature
 against the pinned FFmpeg release key whenever updating the version. The image
+uses a shell-free runtime containing Python, FFmpeg, and their shared-library
+dependencies. Optional terminal UI, Tk, and native UUID extensions are omitted;
+Python UUID generation remains available. Debian package versions, file provenance,
+and licenses are retained for vulnerability scanning. Container updates replace
+the image; in-container shell and git update commands are unavailable.
+The APIs can use this same runtime with the immutable release mounted at `/app`
+read-only, giving upload processing the same repaired media tools as the worker.
+Add `--app-image IMAGE` to the smoke test to verify that deployment mode.
+The image
 can also run the remote worker API client as its default entrypoint. The
 container publishing workflow defaults to the self-hosted runner's registry at
 `localhost:9003`; set repository variable `VLOG_REGISTRY` for another destination.
