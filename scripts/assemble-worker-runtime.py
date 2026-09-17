@@ -28,6 +28,9 @@ def copy_file(source):
     copied.add(str(source))
     copied.add(str(source.resolve()))
 
+for command in ('pg_dump', 'pg_restore'):
+    copy_file('/usr/lib/postgresql/17/bin/' + command)
+
 # ldd reports the recursive shared-library closure, including wheel libraries.
 for binary in (root / 'usr/local').rglob('*'):
     if not binary.is_file():

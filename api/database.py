@@ -163,12 +163,12 @@ videos = sa.Table(
     sa.Column("comments_enabled", sa.Boolean, nullable=True),
     sa.Column("ratings_enabled", sa.Boolean, nullable=True),
     # Denormalized aggregates for comments/ratings (updated via triggers)
-    sa.Column("comment_count", sa.Integer, default=0),
+    sa.Column("comment_count", sa.Integer, nullable=False, server_default="0"),
     sa.Column("rating_avg", sa.Numeric(3, 2), nullable=True),
-    sa.Column("rating_count", sa.Integer, default=0),
-    sa.Column("rating_distribution", sa.Text, default="{}"),  # JSON: {"1": 5, "2": 3, ...}
-    sa.Column("likes_count", sa.Integer, default=0),  # For thumbs up/down mode
-    sa.Column("dislikes_count", sa.Integer, default=0),  # For thumbs up/down mode
+    sa.Column("rating_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("rating_distribution", sa.Text, nullable=False, server_default="{}"),  # JSON: {"1": 5, "2": 3, ...}
+    sa.Column("likes_count", sa.Integer, nullable=False, server_default="0"),  # For thumbs up/down mode
+    sa.Column("dislikes_count", sa.Integer, nullable=False, server_default="0"),  # For thumbs up/down mode
     sa.Index("ix_videos_status", "status"),
     sa.Index("ix_videos_category_id", "category_id"),
     sa.Index("ix_videos_created_at", "created_at"),

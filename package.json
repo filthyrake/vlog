@@ -8,9 +8,11 @@
     "watch:css": "tailwindcss -i web/input.css -o web/public/static/vendor/tailwind.css --watch",
     "test:a11y": "pa11y-ci",
     "test:lighthouse": "lighthouse http://localhost:8000 --chrome-flags='--no-sandbox --headless' --output=json --output-path=./lighthouse-report.json --only-categories=accessibility",
-    "vendor:sync": "node scripts/sync-vendor.mjs",
-    "vendor:check": "node scripts/sync-vendor.mjs --check",
-    "test:public": "node --test tests/frontend/*.test.cjs"
+    "vendor:sync": "node scripts/sync-vendor.mjs && npm run assets:sync",
+    "vendor:check": "node scripts/sync-vendor.mjs --check && npm run assets:check",
+    "test:public": "node --test tests/frontend/*.test.cjs",
+    "assets:sync": "node scripts/version-public-assets.mjs",
+    "assets:check": "node scripts/version-public-assets.mjs --check"
   },
   "devDependencies": {
     "@alpinejs/csp": "3.15.3",

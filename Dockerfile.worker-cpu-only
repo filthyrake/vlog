@@ -68,10 +68,13 @@ RUN pip install --no-cache-dir --no-deps --prefix=/install .
 # =============================================================================
 FROM python:${PYTHON_VERSION} AS runtime-files
 
-# Install only the shared libraries needed by our FFmpeg build.
+# Runtime assembly keeps only required binaries/libraries, not the package tools.
+# PostgreSQL clients support the application's backup and restore endpoints.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    libx264-164 libdav1d7 \
-    && rm -rf /var/lib/apt/lists/*
+    libx264-164 libdav1d7 postgresql-client-17 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/lib/postgresql/17/bin/pg_dump /usr/local/bin/pg_dump \
+    && ln -s /usr/lib/postgresql/17/bin/pg_restore /usr/local/bin/pg_restore
 
 COPY --from=ffmpeg-builder /opt/ffmpeg/bin/ /usr/local/bin/
 COPY --from=ffmpeg-builder /opt/ffmpeg/licenses/ /usr/share/doc/vlog-ffmpeg/

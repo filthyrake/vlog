@@ -66,8 +66,20 @@ the image; in-container shell and git update commands are unavailable.
 The APIs can use this same runtime with the immutable release mounted at `/app`
 read-only, giving upload processing the same repaired media tools as the worker.
 Add `--app-image IMAGE` to the smoke test to verify that deployment mode.
-The image
-can also run the remote worker API client as its default entrypoint. The
+The runtime includes PostgreSQL 17 `pg_dump`/`pg_restore` for application backups.
+For a CPU host, install `vlog-database-backup.service.template` and its timer,
+using the release directory and private application environment. Create the mounted
+backup directory with mode 0700. Run the service once and verify a restore before
+enabling the timer or suspending an old backup job. The script creates mode-0600
+custom-format dumps, verifies the archive listing, publishes each file atomically,
+and retains seven days of its own completed backups. A listing check is not a full
+restore test; repeat restore rehearsals after database upgrades.
+
+Public HTML references content-versioned assets. Run `npm run assets:sync` after
+changing public JavaScript/CSS; `npm run vendor:check` checks these references too.
+This prevents returning browsers from retaining incompatible older runtime files.
+
+The image can also run the remote worker API client as its default entrypoint. The
 container publishing workflow defaults to the self-hosted runner's registry at
 `localhost:9003`; set repository variable `VLOG_REGISTRY` for another destination.
 It does not restart or deploy Kubernetes workers. Retire stale GPU deployments
