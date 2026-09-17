@@ -72,18 +72,27 @@ rehearsal script uses a consistent read-only snapshot and compares every public
 table's row count after restoring to PostgreSQL 17.11. Its temporary restore
 container is removed; the private backup and result report are retained.
 
-Automatic approval review blocked the production-data rehearsal because its
-persistent staging destination needs explicit authorization. No production dump
-or restore was performed. A PostgreSQL 13-to-17 rehearsal using the 43-table
-application schema and synthetic records passed. Proposed destination on the same host:
-`/home/damen/vlog-staging/repair-20260917/database-rehearsal` (directory mode 0700,
-backup mode 0600; restore endpoint bound only to loopback).
+After explicit authorization of the destination, the production-data rehearsal
+passed: PostgreSQL **17.11** restored all **56 public tables**, and every table's
+row count matched the consistent source snapshot, including **51 videos**.
+The 499,963-byte backup remains on rockyweb at
+`/home/damen/vlog-staging/repair-20260917/database-rehearsal/snapshot.dump`.
+Verified directory mode **0700**, backup mode **0600**, removal of the temporary
+restore container and credential file, all six live VLog services active, and
+public API health reporting healthy database and storage checks after completion.
+The restore endpoint was bound only to loopback. Metadata is recorded alongside
+the dump in `result.json`; no production records were copied to this repository.
+
+This proves a schema/data restore and matching row counts, not a production
+migration or exhaustive data equality. Database ownership and ACLs were excluded
+from the dump/restore; the final application role and grants require separate
+setup. The live database remains PostgreSQL 13.23.
 
 ## Cutover and rollback
 
-1. Obtain approval for the private production backup destination and verify its
-   restore with `scripts/rehearse-postgres-upgrade.py`. A rehearsal snapshot is
-   not a final cutover snapshot: later writes must not be lost.
+1. Private production backup and restore rehearsal completed with approval using
+   `scripts/rehearse-postgres-upgrade.py`. A rehearsal snapshot is not a final
+   cutover snapshot: later writes must not be lost.
 2. Stage an immutable candidate checkout, Python 3.12 venv from `requirements.lock`,
    built admin/studio assets, and a tagged CPU image. Preserve the old checkout,
    venv, environment file, and exact systemd units for rollback.
