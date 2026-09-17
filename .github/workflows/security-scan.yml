@@ -54,9 +54,19 @@ jobs:
         continue-on-error: true
 
   trivy-image:
-    name: Trivy Container Image Scan
+    name: Trivy Container Image Scan (${{ matrix.name }})
     runs-on: self-hosted
     needs: trivy-filesystem
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cpu
+            dockerfile: Dockerfile.worker-cpu-only
+            image: vlog-worker:scan
+          - name: postgres
+            dockerfile: Dockerfile.postgres
+            image: vlog-postgres:scan
 
     steps:
       - uses: actions/checkout@v7
@@ -72,7 +82,7 @@ jobs:
 
       - name: Build Docker image for scanning
         run: |
-          docker build -f Dockerfile.worker-cpu-only -t vlog-worker:scan .
+          docker build -f ${{ matrix.dockerfile }} -t ${{ matrix.image }} .
 
       # Trivy exports this worker image to a temp directory before analysing
       # it, and the runner's /tmp is too small - the scan died with "no space
@@ -82,7 +92,7 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         with:
-          image-ref: 'vlog-worker:scan'
+          image-ref: ${{ matrix.image }}
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
           format: 'table'
@@ -94,7 +104,7 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         with:
-          image-ref: 'vlog-worker:scan'
+          image-ref: ${{ matrix.image }}
           severity: 'CRITICAL,HIGH,MEDIUM'
           exit-code: '0'
           format: 'sarif'
@@ -111,7 +121,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          docker rmi vlog-worker:scan || true
+          docker rmi ${{ matrix.image }} || true
           # Removing the tag alone leaves the build cache behind, which is what
           # actually accumulates between runs.
           docker builder prune -f || true
