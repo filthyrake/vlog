@@ -355,7 +355,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Content Security Policy - restrict resource loading
         # Skip CSP for HTML pages (they have their own CSP meta tag with Alpine.js support)
         content_type = response.headers.get("content-type", "")
-        if "text/html" not in content_type:
+        if "text/html" in content_type:
+            # Revalidate the document so deployments can change versioned asset
+            # URLs; browser heuristic caching otherwise retains old HTML for days.
+            response.headers["Cache-Control"] = "no-cache"
+        else:
             # API responses get restrictive CSP
             response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
         return response
