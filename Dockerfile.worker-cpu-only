@@ -17,7 +17,7 @@ ARG BUILD_TIMESTAMP=""
 FROM python:${PYTHON_VERSION} AS ffmpeg-builder
 ARG FFMPEG_VERSION=9.0.1
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    build-essential pkg-config nasm curl gnupg libx264-dev libdav1d-dev \
+    build-essential pkg-config nasm curl gnupg libx264-dev libx265-dev libsvtav1enc-dev libdav1d-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build/ffmpeg
 RUN curl -fsSLO https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz \
@@ -30,7 +30,7 @@ RUN curl -fsSLO https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz \
     && tar xf ffmpeg-${FFMPEG_VERSION}.tar.xz --strip-components=1
 # Files are downloaded by the worker API client; FFmpeg needs no network protocols.
 RUN ./configure --prefix=/opt/ffmpeg --disable-shared --enable-static \
-    --disable-autodetect --enable-gpl --enable-libx264 --enable-libdav1d \
+    --disable-autodetect --enable-gpl --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libdav1d \
     --disable-doc --disable-ffplay --disable-debug --disable-network --disable-devices \
     && make -j4 && make install \
     && mkdir -p /opt/ffmpeg/licenses && cp COPYING.* /opt/ffmpeg/licenses/
@@ -71,7 +71,7 @@ FROM python:${PYTHON_VERSION} AS runtime-files
 # Runtime assembly keeps only required binaries/libraries, not the package tools.
 # PostgreSQL clients support the application's backup and restore endpoints.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    libx264-164 libdav1d7 postgresql-client-17 \
+    libx264-164 libx265-dev libsvtav1enc-dev libdav1d7 postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/lib/postgresql/17/bin/pg_dump /usr/local/bin/pg_dump \
     && ln -s /usr/lib/postgresql/17/bin/pg_restore /usr/local/bin/pg_restore

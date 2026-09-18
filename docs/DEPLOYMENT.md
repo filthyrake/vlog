@@ -1,5 +1,12 @@
 # VLog Deployment Guide
 
+Password recovery uses indexed SHA-256 digests for random reset tokens. Reset
+links created before this change used Argon2 and are deliberately invalidated;
+request a new link after upgrading. Recovery limits are always enforced, even
+when general API rate limiting is disabled. Configure `VLOG_RATE_LIMIT_STORAGE_URL`
+to a shared Redis instance for multiple API processes or replicas; `memory://`
+limits only one process. If the configured store fails, recovery returns 503.
+
 ## Prerequisites
 
 ### System Requirements
@@ -58,6 +65,10 @@ immutable image tag. The image is built from `Dockerfile.worker-cpu-only` using
 Python 3.12 and signed upstream FFmpeg 9.0.1. Its decoder has network protocols
 disabled; input transfers remain in the application. Verify the source signature
 against the pinned FFmpeg release key whenever updating the version. The image
+includes the libx264, libx265, and SVT-AV1 software encoders used by remote
+re-encode jobs. CI runs `scripts/smoke-worker-codecs.py` inside the built image to
+exercise CMAF encoding and decoding for all three codecs without network access.
+The image
 uses a shell-free runtime containing Python, FFmpeg, and their shared-library
 dependencies. Optional terminal UI, Tk, and native UUID extensions are omitted;
 Python UUID generation remains available. Debian package versions, file provenance,

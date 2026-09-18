@@ -84,6 +84,14 @@ jobs:
         run: |
           docker build -f ${{ matrix.dockerfile }} -t ${{ matrix.image }} .
 
+      - name: Verify CPU re-encode capabilities
+        if: matrix.name == 'cpu'
+        run: |
+          docker run --rm --network none --read-only --cpus 2 --memory 4g \
+            --tmpfs /tmp:rw,nosuid,size=256m -e VLOG_TEST_MODE=1 -e PYTHONPATH=/app \
+            -v "$PWD/scripts/smoke-worker-codecs.py:/smoke-worker-codecs.py:ro" \
+            ${{ matrix.image }} python /smoke-worker-codecs.py
+
       # Trivy exports this worker image to a temp directory before analysing
       # it, and the runner's /tmp is too small - the scan died with "no space
       # left on device". Keep the export on the runner's own work volume.
