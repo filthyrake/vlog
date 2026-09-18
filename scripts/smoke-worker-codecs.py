@@ -20,16 +20,19 @@ async def main():
         source = root / "source.mp4"
         subprocess.run(
             ["ffmpeg", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-             "-s", "128x128", "-r", "10", "-i", "pipe:0", "-c:v", "libx264",
+             "-s", "256x256", "-r", "10", "-i", "pipe:0", "-c:v", "libx264",
              "-pix_fmt", "yuv420p", str(source)],
-            input=bytes((40, 120, 200)) * 128 * 128 * 10,
+            input=bytes((40, 120, 200)) * 256 * 256 * 10,
             check=True, timeout=60,
         )
-        for codec in (VideoCodec.H264, VideoCodec.HEVC, VideoCodec.AV1):
-            output = root / codec.value
-            (output / "test").mkdir(parents=True)
+        concat = root / "source.txt"
+        concat.write_text(f"file '{source}'\n")
+        cases = [(codec, path) for codec in (VideoCodec.H264, VideoCodec.HEVC, VideoCodec.AV1)
+                 for path in (source, concat)]
+        for codec, input_path in cases:
+            output = root / (codec.value + input_path.suffix)
             await reencode_quality(
-                source, output,
+                input_path, output,
                 {"name": "test", "height": 128, "bitrate": "250k", "audio_bitrate": "64k"},
                 codec, duration=1.0, gpu_caps=None,
             )
@@ -38,17 +41,20 @@ async def main():
                 raise RuntimeError(f"Missing CMAF output for {codec.value}")
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                 "stream=codec_name", "-of", "json", str(playlist)],
+                 "stream=codec_name,height", "-of", "json", str(playlist)],
                 capture_output=True, text=True, check=True, timeout=30,
             )
-            actual = json.loads(probe.stdout)["streams"][0]["codec_name"]
+            stream = json.loads(probe.stdout)["streams"][0]
+            actual = stream["codec_name"]
             if actual != codec.value:
                 raise RuntimeError(f"Expected {codec.value}, got {actual}")
+            if stream["height"] != 128:
+                raise RuntimeError(f"Incorrect output height for {codec.value}: {stream['height']}")
             subprocess.run(
                 ["ffmpeg", "-v", "error", "-i", str(playlist), "-f", "null", "-"],
                 check=True, timeout=60,
             )
-            print(f"{codec.value}: CMAF re-encode and decode passed", flush=True)
+            print(f"{codec.value} from {input_path.suffix}: CMAF re-encode and decode passed", flush=True)
 
 
 if __name__ == "__main__":

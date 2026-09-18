@@ -644,6 +644,12 @@ def _select_software_encoder(codec: VideoCodec, target_height: int) -> EncoderSe
     )
 
 
+def build_bitrate_args(selection: EncoderSelection, bitrate: str) -> List[str]:
+    """Keep SVT-AV1 in capped CRF mode without an incompatible target bitrate."""
+    args = [] if selection.encoder.name == "libsvtav1" and "-crf" in selection.output_args else ["-b:v", bitrate]
+    return args + ["-maxrate", bitrate, "-bufsize", f"{int(bitrate.lower().replace('k', '')) * 2}k"]
+
+
 def build_transcode_command(
     input_path: Path,
     output_dir: Path,
@@ -683,16 +689,7 @@ def build_transcode_command(
     cmd.extend(selection.output_args)
 
     # Bitrate control
-    cmd.extend(
-        [
-            "-b:v",
-            bitrate,
-            "-maxrate",
-            bitrate,
-            "-bufsize",
-            f"{int(bitrate.replace('k', '')) * 2}k",
-        ]
-    )
+    cmd.extend(build_bitrate_args(selection, bitrate))
 
     # Video filter (scaling)
     cmd.extend(["-vf", selection.scale_filter])
@@ -780,16 +777,7 @@ def build_cmaf_transcode_command(
     cmd.extend(selection.output_args)
 
     # Bitrate control
-    cmd.extend(
-        [
-            "-b:v",
-            bitrate,
-            "-maxrate",
-            bitrate,
-            "-bufsize",
-            f"{int(bitrate.replace('k', '')) * 2}k",
-        ]
-    )
+    cmd.extend(build_bitrate_args(selection, bitrate))
 
     # Video filter (scaling)
     cmd.extend(["-vf", selection.scale_filter])

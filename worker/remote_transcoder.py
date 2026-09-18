@@ -56,6 +56,7 @@ from worker.http_client import WorkerAPIClient, WorkerAPIError
 from worker.hwaccel import (
     GPUCapabilities,
     VideoCodec,
+    build_bitrate_args,
     build_cmaf_transcode_command,
     detect_deployment_type,
     detect_gpu_capabilities,
@@ -1363,6 +1364,7 @@ async def reencode_quality(
 ) -> None:
     """Encode a single quality level to CMAF format."""
     target_height = quality.get("height", 1080)
+    (output_dir / quality["name"]).mkdir(parents=True, exist_ok=True)
 
     # Select encoder
     selection = select_encoder(gpu_caps, target_height, target_codec)
@@ -1389,12 +1391,14 @@ async def reencode_quality(
     timeout = calculate_ffmpeg_timeout(duration, target_height)
 
     # Run FFmpeg
-    await run_ffmpeg_with_progress(
+    success, error = await run_ffmpeg_with_progress(
         cmd,
         duration,
         progress_callback=None,
         timeout=timeout,
     )
+    if not success:
+        raise RuntimeError(error or "Re-encoding failed")
 
 
 def build_concat_cmaf_command(
@@ -1424,17 +1428,8 @@ def build_concat_cmaf_command(
     cmd.extend(selection.output_args)
 
     # Bitrate control
-    bitrate_kbps = int(bitrate.replace("k", "").replace("K", ""))
-    cmd.extend(
-        [
-            "-b:v",
-            bitrate,
-            "-maxrate",
-            bitrate,
-            "-bufsize",
-            f"{bitrate_kbps * 2}k",
-        ]
-    )
+    cmd.extend(build_bitrate_args(selection, bitrate))
+    cmd.extend(["-vf", selection.scale_filter])
 
     # Audio encoding
     cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate, "-ac", "2"])
