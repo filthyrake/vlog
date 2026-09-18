@@ -10,11 +10,15 @@ Description=VLog Transcription Worker
 After=network.target postgresql.service mnt-nas.mount
 Wants=mnt-nas.mount postgresql.service
 
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=<YOUR_USER>
 Group=<YOUR_USER>
 WorkingDirectory=/path/to/vlog
+EnvironmentFile=/path/to/vlog/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/path/to/vlog/venv/bin/python worker/transcription.py
 
@@ -36,8 +40,6 @@ MemoryMax=8G
 # Restart policy (longer delay for transcription)
 Restart=on-failure
 RestartSec=30
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Timeouts (longer for transcription jobs)
 TimeoutStartSec=60

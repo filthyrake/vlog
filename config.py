@@ -558,7 +558,7 @@ elif _redis_url_for_rate_limit:
     RATE_LIMIT_STORAGE_URL = _redis_url_for_rate_limit
     if not os.environ.get("VLOG_TEST_MODE"):
         logger.info(
-            f"Rate limiting auto-detected Redis from VLOG_REDIS_URL: {_redis_url_for_rate_limit}"
+            "Rate limiting auto-detected Redis from VLOG_REDIS_URL"
         )
 else:
     # Fallback to in-memory (single instance only)

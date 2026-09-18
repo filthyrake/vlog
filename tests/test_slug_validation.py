@@ -239,7 +239,6 @@ class TestWorkerTranscoderSlugValidation:
         video = await test_database.fetch_one(videos.select().where(videos.c.id == video_id))
         assert video["error_message"] != "Invalid video slug"
 
-    @pytest.mark.skip(reason="Flaky in full suite due to test isolation - passes individually")
     @pytest.mark.asyncio
     async def test_cleanup_partial_output_invalid_slug(self, caplog, test_storage, monkeypatch):
         """Test that cleanup_partial_output rejects invalid slugs."""
@@ -253,6 +252,9 @@ class TestWorkerTranscoderSlugValidation:
         # Try to cleanup with an invalid slug
         invalid_slug = "../etc/passwd"
 
+        # API logging setup may disable propagation in earlier tests.
+        monkeypatch.setattr(logging.getLogger("worker.transcoder"), "propagate", True)
+        monkeypatch.setattr(logging.getLogger("worker.transcoder"), "disabled", False)
         # Explicitly set log level to capture ERROR logs from worker.transcoder
         with caplog.at_level(logging.ERROR, logger="worker.transcoder"):
             # Should log error and return early

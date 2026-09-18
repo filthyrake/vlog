@@ -1,0 +1,26 @@
+# Keep Debian/glibc locale semantics while omitting unused OS utilities.
+FROM python:3.12-slim-trixie AS builder
+ARG POSTGRES_VERSION=17.11
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    build-essential pkg-config curl bison flex libssl-dev libicu-dev zlib1g-dev liblz4-dev libzstd-dev locales \
+    && localedef -i en_US -f UTF-8 en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN curl -fsSLO https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.bz2 \
+    && curl -fsSLO https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.bz2.sha256 \
+    && sha256sum -c postgresql-${POSTGRES_VERSION}.tar.bz2.sha256 \
+    && tar xf postgresql-${POSTGRES_VERSION}.tar.bz2
+RUN cd postgresql-${POSTGRES_VERSION} \
+    && ./configure --prefix=/opt/postgresql --with-openssl --with-icu --with-lz4 --with-zstd --without-readline \
+    && make -j4 world-bin && make install-world-bin \
+    && cp COPYRIGHT /opt/postgresql/COPYRIGHT
+COPY scripts/assemble-postgres-runtime.py /build/
+RUN python /build/assemble-postgres-runtime.py
+FROM scratch
+COPY --from=builder /runtime/ /
+ENV PATH=/opt/postgresql/bin:/bin LANG=en_US.utf8 PGDATA=/var/lib/postgresql/data
+USER 999:999
+EXPOSE 5432
+STOPSIGNAL SIGINT
+HEALTHCHECK --interval=30s --timeout=5s CMD ["pg_isready", "-U", "vlog_pg_admin", "-d", "postgres"]
+CMD ["postgres", "-D", "/var/lib/postgresql/data"]

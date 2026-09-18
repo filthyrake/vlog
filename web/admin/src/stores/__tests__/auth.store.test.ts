@@ -11,6 +11,8 @@ import { apiClient } from '@/api/client';
 vi.mock('@/api/endpoints/auth', () => ({
   authApi: {
     check: vi.fn(),
+    checkSetup: vi.fn(),
+    loginUser: vi.fn(),
     login: vi.fn(),
     logout: vi.fn(),
     fetchCsrfToken: vi.fn(),
@@ -28,7 +30,8 @@ const mockApiClient = vi.mocked(apiClient);
 
 describe('AuthStore', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockAuthApi.checkSetup.mockResolvedValue({ needs_setup: false, message: "Setup complete" });
   });
 
   describe('initial state', () => {
@@ -92,6 +95,7 @@ describe('AuthStore', () => {
       mockAuthApi.fetchCsrfToken.mockResolvedValueOnce('new-token');
 
       const store = createAuthStore();
+      store.authMode = 'legacy';
       store.authSecretInput = 'secret123';
 
       await store.submitAuth();
@@ -110,6 +114,7 @@ describe('AuthStore', () => {
       });
 
       const store = createAuthStore();
+      store.authMode = 'legacy';
       store.authSecretInput = 'wrong-secret';
 
       await store.submitAuth();
@@ -124,6 +129,7 @@ describe('AuthStore', () => {
       );
 
       const store = createAuthStore();
+      store.authMode = 'legacy';
       store.authSecretInput = 'secret';
 
       const promise = store.submitAuth();

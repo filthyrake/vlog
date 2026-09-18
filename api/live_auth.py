@@ -292,9 +292,10 @@ async def revoke_stream_key(stream_id: int) -> bool:
         .where(live_streams.c.id == stream_id)
         .where(live_streams.c.status != "ended")
         .values(status="ended", ended_at=now)
+        .returning(live_streams.c.id)
     )
 
-    if result > 0:
+    if result is not None:
         logger.info(f"Revoked stream key for stream {stream_id}")
         return True
     else:

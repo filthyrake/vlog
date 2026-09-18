@@ -54,7 +54,7 @@ A lightweight, self-hosted video platform with 4K support, HLS adaptive streamin
 
 ## Requirements
 
-- **Python 3.9+** (uses `Optional[]` typing syntax)
+- **Python 3.12+**
 - **ffmpeg** with libx264 and aac support
 - **yt-dlp** (optional, for YouTube downloads)
 - **faster-whisper** (optional, for auto-transcription)

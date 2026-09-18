@@ -453,10 +453,10 @@ async def force_password_reset(
         )
 
     # Generate reset token
-    from api.auth.password import generate_token, hash_token
+    from api.auth.password import generate_token, hash_token_fast
 
     token = generate_token(32)
-    token_hash = hash_token(token)
+    token_hash = hash_token_fast(token)
     now = datetime.now(timezone.utc)
 
     from datetime import timedelta

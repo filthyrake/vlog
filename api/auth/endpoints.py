@@ -8,6 +8,7 @@ Provides endpoints for:
 - Profile management
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -29,11 +30,12 @@ from api.auth.middleware import (
 from api.auth.password import (
     generate_token,
     hash_password,
-    hash_token,
+    hash_token_fast,
     validate_password_strength,
     verify_password,
 )
 from api.auth.permissions import get_role_permissions
+from api.auth.reset_limits import enforce_reset_limit
 from api.auth.sessions import (
     RefreshTokenReusedError,
     SessionError,
@@ -131,8 +133,8 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     """Reset password request."""
 
-    token: str
-    new_password: str = Field(..., min_length=12)
+    token: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=12, max_length=1024)
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -828,10 +830,19 @@ async def forgot_password(
         )
 
     ip_address = _get_client_ip(request)
+    await enforce_reset_limit("forgot-global", "all", "100/hour")
+    await enforce_reset_limit("forgot-ip", ip_address, "5/hour")
     now = datetime.now(timezone.utc)
 
-    # Always return success (constant-time response)
+    # Use the same response for unknown, SSO-only and throttled accounts.
     success_response = {"message": "If an account exists with this email, a reset link has been sent"}
+
+    try:
+        await enforce_reset_limit("forgot-account", body.email.lower(), "3/hour")
+    except HTTPException as exc:
+        if exc.status_code != 429:
+            raise
+        return success_response
 
     # Find user
     user = await database.fetch_one(
@@ -839,8 +850,6 @@ async def forgot_password(
     )
 
     if not user:
-        # Simulate work to prevent timing attacks
-        hash_password("dummy")
         return success_response
 
     if not user["password_hash"]:
@@ -849,7 +858,7 @@ async def forgot_password(
 
     # Generate reset token
     token = generate_token(32)
-    token_hash = hash_token(token)
+    token_hash = hash_token_fast(token)
     expires_at = now + timedelta(hours=PASSWORD_RESET_EXPIRY_HOURS)
 
     # Store token
@@ -895,6 +904,8 @@ async def reset_password(
         )
 
     ip_address = _get_client_ip(request)
+    await enforce_reset_limit("reset-global", "all", "100/minute")
+    await enforce_reset_limit("reset-ip", ip_address, "20/minute")
     now = datetime.now(timezone.utc)
 
     # Validate new password
@@ -902,54 +913,39 @@ async def reset_password(
     if not is_valid:
         raise HTTPException(status_code=400, detail=error)
 
-    # Find token
-    all_tokens = await database.fetch_all(
-        password_reset_tokens.select()
-        .where(password_reset_tokens.c.used_at.is_(None))
-        .where(password_reset_tokens.c.expires_at > now)
-    )
-
-    from api.auth.password import verify_token
-
-    valid_token = None
-    for token_record in all_tokens:
-        if verify_token(body.token, token_record["token_hash"]):
-            valid_token = token_record
-            break
-
-    if not valid_token:
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-
-    # Get user
-    user = await database.fetch_one(
-        users.select().where(users.c.id == valid_token["user_id"])
-    )
-
-    if not user or user["status"] != "active":
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-
-    # Update password
-    new_hash = hash_password(body.new_password)
-    await database.execute(
-        users.update()
-        .where(users.c.id == user["id"])
-        .values(
-            password_hash=new_hash,
-            failed_login_attempts=0,
-            locked_until=None,
-            updated_at=now,
+    # The digest equality uses the existing unique token_hash index. Legacy
+    # Argon2 links deliberately expire at this upgrade; never scan/verify them.
+    async with database.transaction():
+        valid_token = await database.fetch_one(
+            password_reset_tokens.select()
+            .where(password_reset_tokens.c.token_hash == hash_token_fast(body.token))
+            .where(password_reset_tokens.c.used_at.is_(None))
+            .where(password_reset_tokens.c.expires_at > now)
+            .with_for_update()
         )
-    )
+        if not valid_token:
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
-    # Mark token as used
-    await database.execute(
-        password_reset_tokens.update()
-        .where(password_reset_tokens.c.id == valid_token["id"])
-        .values(used_at=now)
-    )
+        await enforce_reset_limit("reset-account", valid_token["user_id"], "5/hour")
+        user = await database.fetch_one(
+            users.select().where(users.c.id == valid_token["user_id"]).with_for_update()
+        )
+        if not user or user["status"] != "active":
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
-    # Invalidate all sessions for security
-    await invalidate_user_sessions(user["id"])
+        # Keep expensive password hashing off the event loop. Row locks prevent
+        # concurrent reuse; consume, password update and revocation commit together.
+        new_hash = await asyncio.to_thread(hash_password, body.new_password)
+        await database.execute(
+            users.update().where(users.c.id == user["id"]).values(
+                password_hash=new_hash, failed_login_attempts=0, locked_until=None, updated_at=now,
+            )
+        )
+        await database.execute(
+            password_reset_tokens.update().where(password_reset_tokens.c.id == valid_token["id"])
+            .values(used_at=now)
+        )
+        await invalidate_user_sessions(user["id"])
 
     security_logger.info(
         "Password reset completed",

@@ -12,12 +12,15 @@ Related Issue: #530
 
 import io
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlencode
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from slowapi import Limiter
 
 # Import PIL at module level and configure decompression bomb protection
@@ -39,6 +42,7 @@ from api.auth.permissions import Permission, Role, has_permission
 from api.common import get_real_ip, get_request_id, require_valid_slug
 from api.database import database, live_streams, playback_sessions, videos
 from api.db_retry import db_execute_with_retry, fetch_all_with_retry, fetch_one_with_retry, fetch_val_with_retry
+from api.download_tokens import sign_download, verify_download
 from api.live_schemas import (
     StudioVODAnalyticsResponse,
     StudioVODDownloadResponse,
@@ -504,20 +508,44 @@ async def get_vod_download_url(
     if not source_file:
         raise HTTPException(status_code=404, detail="Source file not found")
 
-    # For now, return a direct path. In production, this could be a
-    # signed URL with expiration for CDN/S3.
-    # The download endpoint would verify the token server-side.
-    expires_at = datetime.now(timezone.utc).replace(
-        second=0, microsecond=0
-    )
-    # Expire in 1 hour
-    from datetime import timedelta
-    expires_at = expires_at + timedelta(hours=1)
-
+    expires = int(time.time()) + 3600
+    query = urlencode({
+        "expires": expires,
+        "token": sign_download(slug, source_file.name, str(user["id"]), expires),
+    })
     return StudioVODDownloadResponse(
-        download_url=f"/videos/{video['slug']}/{source_file.name}",
+        download_url=f"/api/v1/studio/vods/{slug}/source/{source_file.name}?{query}",
         filename=f"{video['slug']}{source_file.suffix}",
-        expires_at=expires_at,
+        expires_at=datetime.fromtimestamp(expires, timezone.utc),
+    )
+
+
+@router.get("/vods/{slug}/source/{filename}")
+@limiter.limit("10/minute")
+async def download_vod_source(
+    request: Request,
+    slug: str,
+    filename: str,
+    expires: int,
+    token: str,
+    user: dict = Depends(require_auth),
+):
+    """Require the signature, current session, and current ownership on every request."""
+    if not LIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Live streaming is disabled")
+    if filename not in {"original.mp4", "original.mkv", "original.webm", "original.mov"}:
+        raise HTTPException(status_code=404, detail="Source file not found")
+    if not verify_download(slug, filename, str(user["id"]), expires, token):
+        raise HTTPException(status_code=403, detail="Invalid or expired download link")
+    video = await verify_vod_access(slug, user)
+    directory = (VIDEOS_DIR / video["slug"]).resolve()
+    source = (directory / filename).resolve()
+    if source.parent != directory or not source.is_file():
+        raise HTTPException(status_code=404, detail="Source file not found")
+    return FileResponse(
+        source,
+        filename=f"{slug}{source.suffix}",
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

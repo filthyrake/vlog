@@ -1,0 +1,8 @@
+[Unit]
+Description=VLog daily PostgreSQL 17 backup
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+[Install]
+WantedBy=timers.target

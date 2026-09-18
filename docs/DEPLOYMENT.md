@@ -1,18 +1,25 @@
 # VLog Deployment Guide
 
+Password recovery uses indexed SHA-256 digests for random reset tokens. Reset
+links created before this change used Argon2 and are deliberately invalidated;
+request a new link after upgrading. Recovery limits are always enforced, even
+when general API rate limiting is disabled. Configure `VLOG_RATE_LIMIT_STORAGE_URL`
+to a shared Redis instance for multiple API processes or replicas; `memory://`
+limits only one process. If the configured store fails, recovery returns 503.
+
 ## Prerequisites
 
 ### System Requirements
 
 - **OS:** Linux (tested on RHEL/CentOS 9)
-- **Python:** 3.9+ (uses `Optional[]` syntax instead of `X | None`)
+- **Python:** 3.12+
 - **RAM:** 4GB minimum (8GB+ recommended for transcription)
 - **Storage:** NAS or large local storage for video files
 
 ### Required Software
 
 ```bash
-# Python 3.9+
+# Python 3.12+
 python3 --version
 
 # ffmpeg with libx264 and aac
@@ -21,6 +28,103 @@ ffmpeg -version
 # Optional: yt-dlp for YouTube downloads
 pip install yt-dlp
 ```
+
+---
+
+## CPU baseline and release verification
+
+Use Python 3.12 for APIs and workers. `pyproject.toml` is the dependency source;
+`requirements.txt` and `requirements-dev.txt` are compatibility exports. Production
+and container builds install the reviewed, hashed `requirements.lock`:
+
+```bash
+python3.12 -m venv venv
+venv/bin/pip install --require-hashes -r requirements.lock
+venv/bin/pip install --no-deps -e .
+```
+
+To update dependencies, edit `pyproject.toml`, run
+`python3.12 scripts/sync-requirements.py`, then regenerate the lock with
+`uv pip compile pyproject.toml --python-version 3.12 --generate-hashes -o requirements.lock`.
+Audit and test the newly resolved environment before releasing it. CI runs the
+full PostgreSQL suite plus isolated Redis tests, public DOM tests, admin tests,
+and both frontend builds on PRs to `dev` and `main`.
+
+The native local worker is described by `vlog-worker.service.template`. It forces CPU encoding,
+processes one quality at a time, and limits the whole worker process tree to two
+CPU cores with an 8 GiB memory limit and lower scheduling priority. The command
+sets CPU options explicitly so a shared `.env` cannot silently enable GPU use.
+This is a conservative starting point; measure queue times before increasing it.
+All service templates load the installation `.env`, including transcription.
+
+For a host with an old FFmpeg, use `vlog-worker-cpu-container.service.template`
+instead. It runs the same local database-backed worker with resource limits and a
+read-only container root, mounting only the media storage. Stop the old worker
+before enabling its replacement. Fill in the host user's numeric UID/GID and an
+immutable image tag. The image is built from `Dockerfile.worker-cpu-only` using
+Python 3.12 and signed upstream FFmpeg 9.0.1. Its decoder has network protocols
+disabled; input transfers remain in the application. Verify the source signature
+against the pinned FFmpeg release key whenever updating the version. The image
+includes the libx264, libx265, and SVT-AV1 software encoders used by remote
+re-encode jobs. CI runs `scripts/smoke-worker-codecs.py` inside the built image to
+exercise CMAF encoding and decoding for all three codecs without network access.
+The image
+uses a shell-free runtime containing Python, FFmpeg, and their shared-library
+dependencies. Optional terminal UI, Tk, and native UUID extensions are omitted;
+Python UUID generation remains available. Debian package versions, file provenance,
+and licenses are retained for vulnerability scanning. Container updates replace
+the image; in-container shell and git update commands are unavailable.
+The APIs can use this same runtime with the immutable release mounted at `/app`
+read-only, giving upload processing the same repaired media tools as the worker.
+Add `--app-image IMAGE` to the smoke test to verify that deployment mode.
+The runtime includes PostgreSQL 17 `pg_dump`/`pg_restore` for application backups.
+For a CPU host, install `vlog-database-backup.service.template` and its timer,
+using the release directory and private application environment. Create the mounted
+backup directory with mode 0700. Run the service once and verify a restore before
+enabling the timer or suspending an old backup job. The script creates mode-0600
+custom-format dumps, verifies the archive listing, publishes each file atomically,
+and retains seven days of its own completed backups. A listing check is not a full
+restore test; repeat restore rehearsals after database upgrades.
+
+Public HTML references content-versioned assets. Run `npm run assets:sync` after
+changing public JavaScript/CSS; `npm run vendor:check` checks these references too.
+This prevents returning browsers from retaining incompatible older runtime files.
+
+The image can also run the remote worker API client as its default entrypoint. The
+container publishing workflow defaults to the self-hosted runner's registry at
+`localhost:9003`; set repository variable `VLOG_REGISTRY` for another destination.
+It does not restart or deploy Kubernetes workers. Retire stale GPU deployments
+only after the replacement worker has successfully processed a real test upload.
+Future GPU hosts can use the existing worker API and a separately verified GPU
+image; the CPU baseline does not depend on their availability.
+
+For a release smoke test, start an isolated PostgreSQL instance bound to
+`127.0.0.1:55433`, then run the following from a separate candidate checkout
+without a production `.env`:
+
+```bash
+VLOG_SMOKE_ADMIN_DB=postgresql://vlog:TEST_PASSWORD@127.0.0.1:55433/postgres \
+  venv/bin/python scripts/release-smoke.py --hold-seconds 600
+```
+
+Add `--worker-image vlog-worker-cpu:RELEASE_TAG` to exercise the actual container
+worker against that isolated database.
+
+The script creates a disposable database and storage directory, sets up an admin
+account, uploads a generated clip, runs the actual local CPU worker, and checks
+playback files. APIs listen on loopback ports 19000 and 19001. During the hold,
+open the printed watch URL through an SSH tunnel and verify playback advances,
+quality controls work, and browser/server logs have no unexpected errors. On exit
+it removes only its own database and stops its child processes; logs remain in
+the printed temporary directory. Never point tests at the production database.
+
+Before switching production, retain the previous checkout, virtual environment,
+service configuration, and a database backup. Build frontend assets in the
+candidate, verify dependency audit and schema compatibility, and record a rollback
+command that restores the prior paths. Restart one API at a time, verify its
+health and public behavior, then start the CPU worker. Do not call a release
+complete until real upload, playback, search, and worker progress pass after the
+switch. A green dependency scan of a candidate does not cover the old live venv.
 
 ---
 

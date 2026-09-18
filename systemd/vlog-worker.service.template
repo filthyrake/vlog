@@ -10,13 +10,21 @@ Description=VLog Transcoding Worker
 After=network.target postgresql.service mnt-nas.mount
 Wants=mnt-nas.mount postgresql.service
 
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=<YOUR_USER>
 Group=<YOUR_USER>
 WorkingDirectory=/path/to/vlog
+EnvironmentFile=/path/to/vlog/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/path/to/vlog/venv/bin/python worker/transcoder.py
+# CPU baseline: one quality at a time; GPU hosts may override these values.
+Environment=VLOG_HWACCEL_TYPE=none
+Environment=VLOG_PARALLEL_QUALITIES=1
+Environment=VLOG_PARALLEL_QUALITIES_AUTO=false
+ExecStart=/usr/bin/env VLOG_HWACCEL_TYPE=none VLOG_PARALLEL_QUALITIES=1 VLOG_PARALLEL_QUALITIES_AUTO=false /path/to/vlog/venv/bin/python worker/transcoder.py
 
 # Security hardening
 PrivateTmp=true
@@ -32,12 +40,14 @@ ReadWritePaths=/path/to/vlog /mnt/nas/vlog-storage
 # Resource limits (higher for transcoding)
 LimitNOFILE=65535
 MemoryMax=8G
+CPUQuota=200%
+Nice=10
+CPUWeight=25
+IOWeight=25
 
 # Restart policy (longer delay for worker to avoid rapid restarts)
 Restart=on-failure
 RestartSec=30
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Timeouts (longer for transcoding jobs)
 TimeoutStartSec=30

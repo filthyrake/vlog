@@ -112,6 +112,7 @@ from api.schemas import (
     VideoSocialStatus,
     VideoTagInfo,
 )
+from api.source_files import PlaybackStaticFiles
 from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 from config import (
     API_INCLUDE_LEGACY_ROUTES,
@@ -621,7 +622,7 @@ app.add_middleware(HTTPMetricsMiddleware, api_name="public")
 
 
 # Custom static files handler with proper headers for HLS/DASH/CMAF streaming
-class StreamingStaticFiles(StaticFiles):
+class StreamingStaticFiles(PlaybackStaticFiles):
     """
     Static files handler for video streaming content.
 

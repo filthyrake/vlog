@@ -39,6 +39,8 @@ from api.auth import endpoints as auth_endpoints
 from api.auth import invite as auth_invite
 from api.auth import oidc as auth_oidc
 from api.auth import users as auth_users
+from api.auth.middleware import SESSION_COOKIE_NAME
+from api.auth.sessions import validate_session_token as validate_user_session
 from api.chapter_detection import (
     extract_chapters_from_metadata,
     filter_chapters_by_length,
@@ -242,6 +244,7 @@ from api.settings_service import (
 from api.settings_service import (
     get_setting as get_db_setting,
 )
+from api.source_files import PlaybackStaticFiles
 from api.versioning import VersionHeaderMiddleware, configure_openapi_schema
 from api.worker_auth import authenticate_api_key
 from config import (
@@ -638,6 +641,10 @@ class AdminAuthMiddleware:
             "/api/auth/reset-password",
             "/api/v1/auth/forgot-password",
             "/api/v1/auth/reset-password",
+            "/api/auth/forgot",
+            "/api/auth/reset",
+            "/api/v1/auth/forgot",
+            "/api/v1/auth/reset",
             # OIDC endpoints (must be public for SSO flows)
             "/api/auth/oidc/status",
             "/api/auth/oidc/authorize",
@@ -716,6 +723,27 @@ class AdminAuthMiddleware:
         # Method 2: Check session cookie (for browser UI)
         cookie_header = headers.get(b"cookie", b"")
         cookies = self._parse_cookies(cookie_header)
+        # The account login/setup endpoints issue vlog_session, not the legacy
+        # admin cookie. Validate the user and role before exposing admin APIs.
+        user_token = cookies.get(SESSION_COOKIE_NAME, "")
+        if user_token:
+            user = await validate_user_session(user_token)
+            if user:
+                account_route = normalized_path.startswith(("/api/auth/", "/api/v1/auth/"))
+                if user["role"] != "admin" and not account_route:
+                    response = JSONResponse(status_code=403, content={"detail": "Administrator access required"})
+                    await response(scope, receive, send)
+                    return
+                if self._requires_csrf(method):
+                    csrf = headers.get(CSRF_TOKEN_HEADER.lower().encode(), b"")
+                    expected = hmac.new(SESSION_SECRET_KEY.encode(), user_token.encode(), "sha256").hexdigest()[:32]
+                    if not hmac.compare_digest(csrf, expected.encode()):
+                        response = JSONResponse(status_code=403, content={"detail": "CSRF token invalid or missing"})
+                        await response(scope, receive, send)
+                        return
+                await self.app(scope, receive, send)
+                return
+
         session_token = cookies.get(ADMIN_SESSION_COOKIE, "")
 
         if session_token:
@@ -1225,7 +1253,7 @@ app.add_middleware(
 app.add_middleware(HTTPMetricsMiddleware, api_name="admin")
 
 # Serve video files for preview
-app.mount("/videos", StaticFiles(directory=str(VIDEOS_DIR)), name="videos")
+app.mount("/videos", PlaybackStaticFiles(directory=str(VIDEOS_DIR)), name="videos")
 
 # Serve admin web files
 # Use dist/ for production (built files), source for development
@@ -1374,6 +1402,13 @@ async def get_csrf_token(request: Request):
 
     Returns 401 if not authenticated.
     """
+    # This route predates account auth and is registered before the account router.
+    # Serve the matching token for a valid account session before legacy fallback.
+    user_token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if user_token and await validate_user_session(user_token):
+        csrf_token = hmac.new(SESSION_SECRET_KEY.encode(), user_token.encode(), "sha256").hexdigest()[:32]
+        return {"csrf_token": csrf_token, "required": True}
+
     # If auth is not configured, CSRF is not needed
     if not ADMIN_API_SECRET:
         return {"csrf_token": "", "required": False}

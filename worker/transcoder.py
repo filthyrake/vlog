@@ -2281,6 +2281,8 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         transcoder_settings = await get_transcoder_settings()
         streaming_format = transcoder_settings.get("streaming_format", "cmaf")
         streaming_codec = transcoder_settings.get("streaming_codec", "av1")
+        if state.gpu_caps is None:
+            streaming_codec = "h264"  # The local CPU command uses libx264.
         logger.info(f"Output format: {streaming_format}, codec: {streaming_codec}")
 
         qualities = get_applicable_qualities(info["height"])
@@ -2747,7 +2749,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         if streaming_format == "cmaf":
             # Use CMAF-specific master playlist generator
             # Get codec from settings for CMAF manifest
-            primary_codec = transcoder_settings.get("streaming_codec", "av1")
+            primary_codec = streaming_codec
             # Convert codec string to VideoCodec enum for manifest generators
             codec_enum = {"h264": VideoCodec.H264, "hevc": VideoCodec.HEVC, "av1": VideoCodec.AV1}.get(
                 primary_codec.lower(), VideoCodec.AV1
@@ -2806,7 +2808,7 @@ async def process_video_resumable(video_id: int, video_slug: str, state: Optiona
         }
         # Set primary_codec for CMAF (from settings)
         if streaming_format == "cmaf":
-            video_updates["primary_codec"] = transcoder_settings.get("streaming_codec", "av1")
+            video_updates["primary_codec"] = streaming_codec
         else:
             video_updates["primary_codec"] = "h264"  # HLS/TS always uses H.264
         if video_row and video_row["published_at"] is None:

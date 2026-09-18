@@ -45,28 +45,9 @@ RUN dnf install -y \
 
 WORKDIR /build
 
-# Copy package files for dependency installation
-COPY pyproject.toml ./
-
-# Install Python dependencies to a specific location for copying
-# Note: filelock and jaraco-context are security patches for transitive dependencies
-RUN pip3 install --no-cache-dir --prefix=/install \
-    fastapi>=0.100.0 \
-    uvicorn>=0.23.0 \
-    python-multipart>=0.0.6 \
-    asyncpg>=0.29.0 \
-    "databases[postgresql]>=0.8.0" \
-    psycopg2-binary>=2.9.0 \
-    sqlalchemy>=2.0.0 \
-    alembic>=1.13.0 \
-    python-slugify>=8.0.0 \
-    aiofiles>=23.0.0 \
-    httpx>=0.25.0 \
-    watchdog>=3.0.0 \
-    slowapi>=0.1.9 \
-    limits>=3.0.0 \
-    "filelock>=3.20.3" \
-    "jaraco-context>=6.1.0"
+# Install the same dependency manifest used by the APIs and CI.
+COPY pyproject.toml requirements.lock README.md ./
+RUN pip3 install --no-cache-dir --prefix=/install --require-hashes -r requirements.lock
 
 # Copy source code and install the package
 COPY config.py ./
@@ -74,11 +55,12 @@ COPY code_version.py ./
 COPY api/ api/
 COPY worker/ worker/
 COPY cli/ cli/
+COPY backup/ backup/
 
 # Create constraints file for security-patched transitive dependencies
 RUN echo "filelock>=3.20.3" > /tmp/constraints.txt && \
     echo "jaraco-context>=6.1.0" >> /tmp/constraints.txt && \
-    pip3 install --no-cache-dir --prefix=/install -c /tmp/constraints.txt .
+    pip3 install --no-cache-dir --no-deps --prefix=/install -c /tmp/constraints.txt .
 
 # =============================================================================
 # Stage 2: Runtime - Minimal production image
@@ -130,19 +112,13 @@ WORKDIR /app
 # Copy installed Python packages from builder
 COPY --from=builder /install /usr/local
 
-# Ensure security-patched packages are at correct versions
-# (dnf-installed Python packages may have brought in older transitive deps)
-RUN pip3 install --no-cache-dir --upgrade \
-    "filelock>=3.20.3" \
-    "jaraco-context>=6.1.0" \
-    "wheel>=0.46.2"
-
 # Copy source code
 COPY --chown=vlog:vlog config.py ./
 COPY --chown=vlog:vlog code_version.py ./
 COPY --chown=vlog:vlog api/ api/
 COPY --chown=vlog:vlog worker/ worker/
 COPY --chown=vlog:vlog cli/ cli/
+COPY --chown=vlog:vlog backup/ backup/
 COPY --chown=vlog:vlog pyproject.toml ./
 
 # Re-declare build args for use in this stage (args don't persist across stages)

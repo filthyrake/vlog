@@ -19,6 +19,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from urllib.parse import urlparse
 
+import asyncpg
+
 from backup.exceptions import BackupError, BackupTimeoutError, ValidationError
 from backup.manifest import compute_file_checksum
 
@@ -255,28 +257,33 @@ class PostgreSQLBackupHandler(DatabaseBackupHandler):
             raise BackupError(f"Failed to run pg_restore: {e}. Is PostgreSQL client installed?")
 
     async def get_table_count(self) -> int:
-        """Get number of tables in PostgreSQL database."""
-        cmd = [
-            "psql",
-            *self._get_pg_args(),
-            "-t",  # Tuples only
-            "-c", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
-        ]
+        """Count public tables without requiring a psql executable.
 
+        Fail the backup if metadata cannot be read rather than recording an
+        incorrect zero. Driver timeouts also bound connection cleanup.
+        """
+        connection = None
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                env=self._get_pg_env(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await process.communicate()
-
-            if process.returncode == 0:
-                return int(stdout.decode().strip())
-            return 0
+            connection = await asyncpg.connect(self.database_url, timeout=10)
+            return int(await connection.fetchval(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
+                timeout=10,
+            ))
         except Exception:
-            return 0
+            # Driver errors may contain connection credentials; do not expose
+            # their text or chain in the backup failure reported to callers.
+            raise BackupError("Failed to count PostgreSQL tables") from None
+        finally:
+            if connection is not None:
+                try:
+                    await connection.close(timeout=5)
+                except asyncio.CancelledError:
+                    connection.terminate()
+                    raise
+                except Exception:
+                    # Force synchronous termination when graceful close fails
+                    # or times out, retaining the original query outcome.
+                    connection.terminate()
 
     def get_database_type(self) -> str:
         return "postgresql"

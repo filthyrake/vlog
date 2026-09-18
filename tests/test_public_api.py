@@ -239,15 +239,23 @@ class TestAnalyticsHTTP:
     """HTTP-level tests for analytics endpoints."""
 
     @pytest.mark.asyncio
-    async def test_start_analytics_session(self, public_client, sample_video):
+    @pytest.mark.parametrize("quality", ["1080p", "auto", None])
+    async def test_start_analytics_session(self, public_client, sample_video, quality):
         """Test starting an analytics session."""
         response = public_client.post(
             "/api/analytics/session",
-            json={"video_id": sample_video["id"], "quality": "1080p"},
+            json={"video_id": sample_video["id"], "quality": quality},
         )
         assert response.status_code == 200
         data = response.json()
         assert "session_token" in data
+
+    @pytest.mark.asyncio
+    async def test_invalid_analytics_quality_returns_validation_error(self, public_client, sample_video):
+        response = public_client.post(
+            "/api/analytics/session", json={"video_id": sample_video["id"], "quality": "bogus"},
+        )
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_start_session_invalid_video(self, public_client, sample_video):

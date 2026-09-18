@@ -15,10 +15,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
-      '@api': resolve(__dirname, 'src/api'),
-      '@components': resolve(__dirname, 'src/components'),
-      '@styles': resolve(__dirname, 'src/styles'),
+      '@': resolve(import.meta.dirname, 'src'),
+      '@api': resolve(import.meta.dirname, 'src/api'),
+      '@components': resolve(import.meta.dirname, 'src/components'),
+      '@styles': resolve(import.meta.dirname, 'src/styles'),
     },
   },
 });

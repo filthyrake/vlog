@@ -19,6 +19,8 @@ Error Handling Patterns (Issue #561):
 import asyncio
 import json
 import logging
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -33,6 +35,7 @@ from api.database import chat_messages, live_streams, stream_moderators
 from api.db_retry import db_execute_with_retry, fetch_one_with_retry
 from api.live_schemas import ChatSettingsResponse, WSMessageType
 from api.pubsub import subscribe_to_stream_chat
+from api.redis_client import get_redis
 from api.websocket_manager import (
     ConnectionInfo,
     ConnectionLimitError,
@@ -42,7 +45,7 @@ from api.websocket_manager import (
     get_client_ip,
     websocket_manager,
 )
-from config import LIVE_ENABLED
+from config import LIVE_ENABLED, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -71,36 +74,62 @@ def sanitize_message(content: str) -> str:
     return bleach.clean(content, tags=ALLOWED_HTML_TAGS, strip=True)
 
 
-# Rate limiting for chat messages (in-memory, per connection)
-# More sophisticated rate limiting could use Redis for cross-connection limits
-class MessageRateLimiter:
-    """Simple in-memory rate limiter for chat messages."""
+# Atomic sliding window shared by all connections and instances for a user/stream.
+_CHAT_WINDOW_SCRIPT = """
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) + tonumber(clock[2]) / 1000000
+local window = tonumber(ARGV[1])
+local maximum = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
+if redis.call('ZCARD', KEYS[1]) >= maximum then
+    local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+    return math.max(1, math.ceil(tonumber(oldest[2]) + window - now))
+end
+redis.call('ZADD', KEYS[1], now, ARGV[3])
+redis.call('EXPIRE', KEYS[1], math.ceil(window))
+return 0
+"""
 
-    def __init__(self, max_messages: int = 60, window_seconds: int = 60):
+
+class MessageRateLimiter:
+    """Share limits across reconnects; fail closed if configured Redis is unavailable."""
+
+    _local_windows: dict[str, list[float]] = {}
+
+    def __init__(self, key: str, max_messages: int = 60, window_seconds: int = 60):
+        self.key = "vlog:chat:rate:" + key
         self.max_messages = max_messages
         self.window_seconds = window_seconds
-        self._timestamps: list[float] = []
 
-    def is_allowed(self) -> tuple[bool, int]:
-        """
-        Check if a message is allowed.
+    async def is_allowed(self) -> tuple[bool, int]:
+        if REDIS_URL:
+            try:
+                redis = await get_redis()
+                if redis is None:
+                    return False, 1
+                retry = int(await redis.eval(
+                    _CHAT_WINDOW_SCRIPT, 1, self.key,
+                    self.window_seconds, self.max_messages, uuid.uuid4().hex,
+                ))
+                return retry == 0, retry
+            except Exception:
+                logger.warning("Chat rate-limit storage unavailable", exc_info=True)
+                return False, 1
 
-        Returns:
-            (allowed, retry_after_seconds)
-        """
-        now = datetime.now(timezone.utc).timestamp()
-        window_start = now - self.window_seconds
-
-        # Clean old timestamps
-        self._timestamps = [t for t in self._timestamps if t > window_start]
-
-        if len(self._timestamps) >= self.max_messages:
-            # Calculate retry_after
-            oldest_in_window = min(self._timestamps) if self._timestamps else now
-            retry_after = int(oldest_in_window + self.window_seconds - now) + 1
-            return False, max(1, retry_after)
-
-        self._timestamps.append(now)
+        # Single-instance installations without Redis still share limits across sockets.
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        if len(self._local_windows) >= 10000:
+            for key, timestamps in list(self._local_windows.items()):
+                if not timestamps or timestamps[-1] <= cutoff:
+                    del self._local_windows[key]
+            if self.key not in self._local_windows and len(self._local_windows) >= 10000:
+                return False, self.window_seconds
+        timestamps = [t for t in self._local_windows.get(self.key, []) if t > cutoff]
+        self._local_windows[self.key] = timestamps
+        if len(timestamps) >= self.max_messages:
+            return False, max(1, int(timestamps[0] + self.window_seconds - now) + 1)
+        timestamps.append(now)
         return True, 0
 
 
@@ -206,17 +235,13 @@ async def handle_chat_message(
         await conn.send_error("chat_disabled", "Chat is disabled for this stream")
         return
 
-    # Rate limit check
-    allowed, retry_after = rate_limiter.is_allowed()
+    # Apply slow mode before consuming the shared user/stream budget.
+    slow_mode = stream.get("chat_slow_mode_seconds", 0)
+    rate_limiter.max_messages = max(1, 60 // slow_mode) if slow_mode > 0 else 60
+    allowed, retry_after = await rate_limiter.is_allowed()
     if not allowed:
         await conn.send_error("rate_limited", "Slow down!", retry_after=retry_after)
         return
-
-    # Check slow mode
-    slow_mode = stream.get("chat_slow_mode_seconds", 0)
-    if slow_mode > 0:
-        # Update rate limiter for slow mode
-        rate_limiter.max_messages = max(1, 60 // slow_mode)
 
     # Validate and sanitize content
     if not content or not content.strip():
@@ -534,7 +559,7 @@ async def chat_websocket(websocket: WebSocket, slug: str):
     if not conn_info:
         return
 
-    rate_limiter = MessageRateLimiter(max_messages=60, window_seconds=60)
+    rate_limiter = MessageRateLimiter(key=f"{ctx.stream['id']}:{ctx.user['id']}")
     managed_conn = ManagedWebSocketConnection(
         manager=websocket_manager,
         conn_info=conn_info,

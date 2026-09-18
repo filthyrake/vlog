@@ -1,0 +1,10 @@
+[Unit]
+Description=VLog PostgreSQL 17 private backup
+After=docker.service network.target mnt-nas.mount
+Requires=docker.service
+[Service]
+Type=oneshot
+User=<YOUR_USER>
+UMask=0077
+ExecStart=/usr/bin/docker run --rm --network host --user <YOUR_UID>:<YOUR_GID> --read-only --cap-drop ALL --security-opt no-new-privileges --memory 512m --cpus 1 --tmpfs /tmp:rw,nosuid,size=64m --volume /path/to/vlog:/app:ro --volume /mnt/nas/vlog-storage/backups/postgres17:/backups --env-file /path/to/application.env --no-healthcheck vlog-worker-cpu:<RELEASE_TAG> python /app/scripts/backup-postgres.py --directory /backups --retention-days 7
+TimeoutStartSec=1900

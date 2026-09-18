@@ -644,6 +644,12 @@ def _select_software_encoder(codec: VideoCodec, target_height: int) -> EncoderSe
     )
 
 
+def build_bitrate_args(selection: EncoderSelection, bitrate: str) -> List[str]:
+    """Keep SVT-AV1 in capped CRF mode without an incompatible target bitrate."""
+    args = [] if selection.encoder.name == "libsvtav1" and "-crf" in selection.output_args else ["-b:v", bitrate]
+    return args + ["-maxrate", bitrate, "-bufsize", f"{int(bitrate.lower().replace('k', '')) * 2}k"]
+
+
 def build_transcode_command(
     input_path: Path,
     output_dir: Path,
@@ -683,16 +689,7 @@ def build_transcode_command(
     cmd.extend(selection.output_args)
 
     # Bitrate control
-    cmd.extend(
-        [
-            "-b:v",
-            bitrate,
-            "-maxrate",
-            bitrate,
-            "-bufsize",
-            f"{int(bitrate.replace('k', '')) * 2}k",
-        ]
-    )
+    cmd.extend(build_bitrate_args(selection, bitrate))
 
     # Video filter (scaling)
     cmd.extend(["-vf", selection.scale_filter])
@@ -780,16 +777,7 @@ def build_cmaf_transcode_command(
     cmd.extend(selection.output_args)
 
     # Bitrate control
-    cmd.extend(
-        [
-            "-b:v",
-            bitrate,
-            "-maxrate",
-            bitrate,
-            "-bufsize",
-            f"{int(bitrate.replace('k', '')) * 2}k",
-        ]
-    )
+    cmd.extend(build_bitrate_args(selection, bitrate))
 
     # Video filter (scaling)
     cmd.extend(["-vf", selection.scale_filter])
@@ -889,7 +877,8 @@ async def extract_codec_string_from_file(file_path: Path) -> Optional[str]:
                 "-print_format",
                 "json",
                 "-show_entries",
-                "stream=codec_name,profile,level,pix_fmt,codec_tag_string,sample_rate",
+                "stream=codec_name,profile,level,pix_fmt,codec_tag_string,sample_rate,extradata",
+                "-show_data",
             ]
             + [str(file_path)],
             capture_output=True,
@@ -945,8 +934,18 @@ async def extract_codec_string_from_file(file_path: Path) -> Optional[str]:
                 # PP = profile (42=baseline, 4d=main, 64=high)
                 # CC = constraints (usually 00)
                 # LL = level (1e=3.0, 1f=3.1, 28=4.0, 29=4.1, 2a=4.2)
+                # An init segment has no frames, so ffprobe may report level=-99.
+                # avcC contains the exact RFC 6381 profile/constraints/level bytes.
+                # https://www.rfc-editor.org/rfc/rfc6381#section-3.3
+                first_row = re.search(r"00000000:\s+([0-9a-fA-F ]+?)  ", stream.get("extradata", ""))
+                avcc = bytes.fromhex(first_row.group(1)) if first_row else b""
+                if len(avcc) >= 4 and avcc[0] == 1:
+                    video_codec = "avc1." + avcc[1:4].hex()
+                    continue
                 profile = stream.get("profile", "High")
                 level = stream.get("level", 40)
+                if not isinstance(level, int) or not 0 < level <= 255:
+                    return None
 
                 profile_hex = {"Baseline": "42", "Main": "4d", "High": "64"}.get(
                     profile, "64"
