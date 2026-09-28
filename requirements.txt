@@ -30,4 +30,4 @@ jaraco-context>=6.1.2
 wheel>=0.47.0
 urllib3>=2.6.3
 cryptography>=50.0.1
-python-json-logger>=2.0.0
+python-json-logger>=4.2.0
