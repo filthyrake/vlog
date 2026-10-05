@@ -28,6 +28,6 @@ email-validator>=2.3.0
 authlib>=1.8.0
 jaraco-context>=6.1.2
 wheel>=0.48.0
-urllib3>=2.6.3
+urllib3>=2.8.0
 cryptography>=50.0.1
 python-json-logger>=4.2.0
