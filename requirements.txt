@@ -1,5 +1,5 @@
 # Generated from pyproject.toml by scripts/sync-requirements.py.
-fastapi>=0.141.1
+fastapi>=0.143.0
 uvicorn[standard]>=0.54.0
 python-multipart>=0.0.32
 asyncpg>=0.31.0
