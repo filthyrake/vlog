@@ -35,7 +35,7 @@ dependencies = [
     "filelock>=4.2.0",  # Patched for all supported runtimes
     "argon2-cffi>=25.1.0",  # Secure API key hashing (Issue #445)
     "email-validator>=2.3.0",  # Pydantic EmailStr validation (Issue #200)
-    "authlib>=1.8.0",  # OIDC integration (Issue #200)
+    "authlib>=1.9.1",  # OIDC integration (Issue #200)
     # Security patches for transitive dependencies
     "jaraco-context>=6.1.2",  # GHSA-58pv-8j8x-9vj2 path traversal vulnerability
     "wheel>=0.48.0",  # CVE-2026-24049 privilege escalation vulnerability
