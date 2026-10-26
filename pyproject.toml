@@ -9,7 +9,7 @@ description = "Self-hosted video platform with 4K support and HLS streaming"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.143.0",
+    "fastapi>=0.161.1",
     "uvicorn[standard]>=0.54.0",
     "python-multipart>=0.0.32",
     "asyncpg>=0.32.0",
